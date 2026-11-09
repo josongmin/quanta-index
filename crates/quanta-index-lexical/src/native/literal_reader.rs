@@ -2,8 +2,8 @@
 
 use super::{LiteralPage, LiteralQuery, LiteralReadContext, NativeLiteralIndex};
 use quanta_index_core::index::{
-    IndexError, IndexQueryPort, MemberBinding, QueryOutcome, QueryReadContext,
-    effort::ResourceNeed, member_map_key, ports::IndexBuildPort,
+    IndexError, IndexQueryPort, QueryOutcome, QueryReadContext, effort::ResourceNeed,
+    ports::IndexBuildPort,
 };
 
 const MAX_PAGE: u32 = 128;
@@ -53,36 +53,6 @@ impl NativeLiteralReader {
             need,
         })
     }
-
-    fn pinned_member(context: &mut QueryReadContext<'_>) -> Result<MemberBinding, IndexError> {
-        let key = member_map_key(context.instance.instance);
-        let reference = context
-            .maps
-            .lookup_object(context.ticket.view.members, &key, context.budget)?
-            .ok_or(IndexError::SnapshotUnavailable)?;
-        let stored = context.objects.get(reference, context.budget)?;
-        let member =
-            quanta_index_core::index::decode_member_binding(&stored.payload, context.budget)?;
-        let children = [Some(member.artifact), member.input.root.0];
-        if stored.registration.reference != reference
-            || !stored
-                .registration
-                .children
-                .iter()
-                .copied()
-                .eq(children.into_iter().flatten())
-            || member.instance != context.instance.instance
-            || member.format != context.instance.format
-            || member.input.schema != context.instance.schema
-            || member.input.policy != context.instance.policy
-            || member.input.root != context.ticket.view.source.owners
-        {
-            return Err(IndexError::CorruptObject(
-                "native literal member differs from selected ticket or instance".into(),
-            ));
-        }
-        Ok(member)
-    }
 }
 
 impl IndexQueryPort<LiteralReadRequest, LiteralPage> for NativeLiteralReader {
@@ -106,7 +76,7 @@ impl IndexQueryPort<LiteralReadRequest, LiteralPage> for NativeLiteralReader {
         self.validate_instance(context.instance)?;
         let _need = self.reservation(request)?;
         context.budget.checkpoint()?;
-        let member = Self::pinned_member(context)?;
+        let member = context.source_member_binding()?;
         let page = self.index.search(
             &member,
             LiteralQuery {
@@ -273,7 +243,7 @@ mod tests {
         }
     }
     struct MemberMap {
-        reference: ObjectRef,
+        reference: Option<ObjectRef>,
         lookups: AtomicUsize,
     }
     impl PersistentMapPort for MemberMap {
@@ -285,7 +255,7 @@ mod tests {
         ) -> Result<Option<ObjectRef>, IndexError> {
             let _prior = self.lookups.fetch_add(1, Ordering::Relaxed);
             if key.starts_with(b"member\0") {
-                Ok(Some(self.reference))
+                Ok(self.reference)
             } else {
                 Err(IndexError::BackendViolation("unexpected map lookup".into()))
             }
@@ -366,7 +336,7 @@ mod tests {
             gets: AtomicUsize::new(0),
         };
         let maps = MemberMap {
-            reference: member_ref,
+            reference: Some(member_ref),
             lookups: AtomicUsize::new(0),
         };
         let reader = NativeLiteralReader::new(need())?;
@@ -480,6 +450,101 @@ mod tests {
                 "cancelled literal read entered storage".into(),
             )
             .into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn source_member_rejects_missing_pin_children_and_root()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (ticket, instance) = selected()?;
+        let artifact = ObjectRef(Digest([31; 32]));
+        let member_ref = ObjectRef(Digest([32; 32]));
+        let member = MemberBinding {
+            instance: instance.instance,
+            format: instance.format,
+            artifact,
+            input: InputBinding {
+                root: ticket.view.source.owners,
+                schema: instance.schema,
+                policy: instance.policy,
+                context: Digest([33; 32]),
+            },
+            logical_commitment: Digest([34; 32]),
+        };
+        for (bound, children) in [
+            (member.clone(), Vec::new()),
+            (
+                MemberBinding {
+                    input: InputBinding {
+                        root: MapRoot(Some(ObjectRef(Digest([35; 32])))),
+                        ..member.input
+                    },
+                    ..member.clone()
+                },
+                vec![artifact, ObjectRef(Digest([35; 32]))],
+            ),
+        ] {
+            let objects = SpyObjects {
+                member_ref,
+                member: StoredObject::new(
+                    RegisteredObject::unscoped(member_ref, 0, children),
+                    serde_json::to_vec(&bound)?,
+                    None,
+                ),
+                gets: AtomicUsize::new(0),
+            };
+            let maps = MemberMap {
+                reference: Some(member_ref),
+                lookups: AtomicUsize::new(0),
+            };
+            let mut budget = budget()?;
+            let mut context = QueryReadContext {
+                ticket: &ticket,
+                instance: &instance,
+                objects: &objects,
+                maps: &maps,
+                budget: &mut budget,
+            };
+            if !matches!(
+                context.source_member_binding(),
+                Err(IndexError::CorruptObject(_))
+            ) || maps.lookups.load(Ordering::Relaxed) != 1
+                || objects.gets.load(Ordering::Relaxed) != 1
+            {
+                return Err(
+                    "invalid source member must be refused after one map and object read".into(),
+                );
+            }
+        }
+        let objects = SpyObjects {
+            member_ref,
+            member: StoredObject::new(
+                RegisteredObject::unscoped(member_ref, 0, vec![artifact]),
+                serde_json::to_vec(&member)?,
+                None,
+            ),
+            gets: AtomicUsize::new(0),
+        };
+        let maps = MemberMap {
+            reference: None,
+            lookups: AtomicUsize::new(0),
+        };
+        let mut budget = budget()?;
+        let mut context = QueryReadContext {
+            ticket: &ticket,
+            instance: &instance,
+            objects: &objects,
+            maps: &maps,
+            budget: &mut budget,
+        };
+        if !matches!(
+            context.source_member_binding(),
+            Err(IndexError::SnapshotUnavailable)
+        ) || maps.lookups.load(Ordering::Relaxed) != 1
+            || objects.gets.load(Ordering::Relaxed) != 0
+        {
+            return Err("missing source member must be refused before any object read".into());
         }
         Ok(())
     }

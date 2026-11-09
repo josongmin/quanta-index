@@ -5227,6 +5227,16 @@ mod tests {
                 "unexpected test renewal".into(),
             ))
         }
+        fn renew_ticket_for_request(
+            &self,
+            session: &dyn ReadSessionLease,
+            ticket: quanta_index_core::index::ReadTicketLease,
+            lease: Duration,
+            budget: &WorkBudget,
+        ) -> Result<quanta_index_core::index::ReadTicketLease, IndexError> {
+            budget.checkpoint()?;
+            self.renew_ticket(session, ticket, lease)
+        }
         fn validate_ticket(
             &self,
             session: &dyn ReadSessionLease,
@@ -5247,6 +5257,15 @@ mod tests {
                 return Err(IndexError::SnapshotUnavailable);
             }
             Ok(())
+        }
+        fn validate_ticket_for_request(
+            &self,
+            session: &dyn ReadSessionLease,
+            ticket: quanta_index_core::index::ReadTicketLease,
+            budget: &WorkBudget,
+        ) -> Result<(), IndexError> {
+            budget.checkpoint()?;
+            self.validate_ticket(session, ticket)
         }
         fn release_ticket(
             &self,

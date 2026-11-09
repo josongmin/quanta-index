@@ -106,6 +106,79 @@ fn scoped_reader_reuses_only_its_own_successful_physical_gets() -> TestResult {
 }
 
 #[test]
+fn scoped_batch_keeps_path_and_data_reuse_across_pages() -> TestResult {
+    let directory = TestDir::new();
+    let store = FileObjectStore::open(&directory.0)?;
+    let mut setup = budget()?;
+    let first = value(&store, b"batch-first", &mut setup)?;
+    let second = value(&store, b"batch-second", &mut setup)?;
+    let edits = (0_u8..48)
+        .map(|id| MapEdit::objects(vec![id], None, Some(first)))
+        .collect::<Vec<_>>();
+    let root = store
+        .apply(MapRoot(None), &edits, &RecordingSink::default(), &mut setup)?
+        .root;
+    let keys = (0_u8..48).map(|id| vec![id]).collect::<Vec<_>>();
+    let mut scalar_work = budget()?;
+    let scalar = super::super::scoped_reads::ScopedReads::new(&store, &scalar_work)?;
+    for key in &keys {
+        check_eq!(scalar.lookup(root, key, &mut scalar_work)?, Some(first.into()));
+    }
+    let scalar_gets = scalar.physical_gets();
+    check!(scalar_gets > 0);
+
+    let mut batch_work = budget()?;
+    let batch = super::super::scoped_reads::ScopedReads::new(&store, &batch_work)?;
+    for page in keys.chunks(24) {
+        let inputs = page.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let mut values = [None; 24];
+        batch.lookup_batch(root, &inputs, &mut values, &mut batch_work)?;
+        check!(values.iter().all(|value| *value == Some(first.into())));
+    }
+    let batch_gets = batch.physical_gets();
+    check!(batch_gets > 0);
+    check!(batch_gets <= scalar_gets);
+    check!(batch_work.usage().reads < scalar_work.usage().reads);
+
+    let mut repeated = [None];
+    batch.lookup_batch(
+        root,
+        &[keys.get(47).ok_or("last key absent")?.as_slice()],
+        &mut repeated,
+        &mut batch_work,
+    )?;
+    check_eq!(repeated, [Some(first.into())]);
+    check_eq!(batch.physical_gets(), batch_gets);
+
+    let changed = store
+        .apply(
+            root,
+            &[MapEdit::objects(vec![7], Some(first), Some(second))],
+            &RecordingSink::default(),
+            &mut setup,
+        )?
+        .root;
+    let mut replaced = [None];
+    batch.lookup_batch(changed, &[b"\x07".as_slice()], &mut replaced, &mut batch_work)?;
+    check_eq!(replaced, [Some(second.into())]);
+    batch.lookup_batch(root, &[b"\x07".as_slice()], &mut replaced, &mut batch_work)?;
+    check_eq!(replaced, [Some(first.into())]);
+
+    let before_cancel = batch.physical_gets();
+    let mut cancelled = budget()?;
+    cancelled.request().cancel_handle().cancel();
+    let mut untouched = [Some(second.into())];
+    check_eq!(
+        batch.lookup_batch(root, &[b"\x07".as_slice()], &mut untouched, &mut cancelled),
+        Err(IndexError::Cancelled)
+    );
+    check_eq!(untouched, [Some(second.into())]);
+    check_eq!(cancelled.usage(), WorkUsage::default());
+    check_eq!(batch.physical_gets(), before_cancel);
+    Ok(())
+}
+
+#[test]
 fn scoped_paged_scan_reuses_authenticated_nodes_without_changing_pages_or_work() -> TestResult {
     let directory = TestDir::new();
     let store = FileObjectStore::open(&directory.0)?;

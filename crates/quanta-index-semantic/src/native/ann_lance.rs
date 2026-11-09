@@ -20,9 +20,11 @@ use quanta_index_contract::native_protocol::{
 };
 use quanta_index_core::RequestBudgetV1;
 use quanta_index_core::domains::semantic::DenseIndexV1;
+#[cfg(test)]
+use quanta_index_core::index::MemoryLease;
 use quanta_index_core::index::{
-    Digest, IndexError, MemoryLease, MemoryLifetime, OwnerInputBinding, OwnerKey, ProducerId,
-    StableOwnerId, WorkBudget, WorkUsage,
+    Digest, IndexError, MemoryLifetime, OwnerInputBinding, OwnerKey, ProducerId, StableOwnerId,
+    WorkBudget, WorkUsage,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -98,17 +100,71 @@ pub(super) struct RegionCandidate {
 /// source coverage. Approximate traversal never certifies exhaustive recall.
 #[derive(Debug)]
 pub(super) struct RegionPage {
-    hits: Vec<RegionCandidate>,
     pub inspected: u32,
     pub traversal: NativeSemanticTraversal,
-    _memory: Option<MemoryLease>,
 }
 
-impl RegionPage {
-    #[cfg(test)]
-    #[must_use]
-    pub(super) fn hits(&self) -> &[RegionCandidate] {
-        &self.hits
+/// One region query's verified decisions across widening backend prefixes.
+/// The temporary memory grant in `query_region` covers both bounded vectors.
+struct RefillDecisions {
+    candidates: Vec<RegionCandidate>,
+    accepted: Vec<bool>,
+    accepted_count: usize,
+}
+
+impl RefillDecisions {
+    fn with_capacity(capacity: usize) -> Result<Self, IndexError> {
+        let mut candidates = Vec::new();
+        candidates
+            .try_reserve_exact(capacity)
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        let mut accepted = Vec::new();
+        accepted
+            .try_reserve_exact(capacity)
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        if candidates.capacity() > capacity || accepted.capacity() > capacity {
+            return Err(IndexError::ResourceLimited);
+        }
+        Ok(Self {
+            candidates,
+            accepted,
+            accepted_count: 0,
+        })
+    }
+
+    fn admit(
+        &mut self,
+        candidate: &RegionCandidate,
+        budget: &mut WorkBudget,
+        accept: &mut impl FnMut(&RegionCandidate, &mut WorkBudget) -> Result<bool, IndexError>,
+    ) -> Result<bool, IndexError> {
+        if let Some((index, prior)) = self.candidates.iter().enumerate().find(|(_, prior)| {
+            prior.owner == candidate.owner
+                && prior.member == candidate.member
+                && prior.vector_id == candidate.vector_id
+        }) {
+            if prior.input_stamp != candidate.input_stamp {
+                return Err(corrupt(
+                    "Native ANN refill changed immutable candidate input",
+                ));
+            }
+            return Ok(self.accepted[index]);
+        }
+        if self.candidates.len() == self.candidates.capacity() {
+            return Err(IndexError::BackendViolation(
+                "Native ANN refill exceeded candidate capacity".into(),
+            ));
+        }
+        let decision = accept(candidate, budget)?;
+        self.candidates.push(candidate.clone());
+        self.accepted.push(decision);
+        if decision {
+            self.accepted_count = self
+                .accepted_count
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?;
+        }
+        Ok(decision)
     }
 }
 
@@ -532,7 +588,7 @@ pub(super) async fn query_region(
     let rows = usize::try_from(region.seal.rows).map_err(|_error| IndexError::ResourceLimited)?;
     // A single-prefix policy needs no extra retained merge buffer.
     if initial_candidate_cap == candidate_cap || rows <= initial_candidate_cap {
-        return query_prefix(region, vector, top_k, initial_candidate_cap, budget, accept).await;
+        return query_prefix(region, vector, initial_candidate_cap, budget, accept).await;
     }
     let capacity = candidate_cap.min(rows);
     let result_bytes = capacity
@@ -540,23 +596,22 @@ pub(super) async fn query_region(
         .and_then(|bytes| {
             bytes.checked_add(capacity.checked_mul(MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES)?)
         })
+        .and_then(|bytes| bytes.checked_add(capacity.checked_mul(std::mem::size_of::<bool>())?))
         .ok_or(IndexError::ResourceLimited)?;
-    let result_memory = budget.reserve_memory(
+    let _decisions_memory = budget.reserve_memory(
         u64::try_from(result_bytes).map_err(|_error| IndexError::ResourceLimited)?,
-        MemoryLifetime::Retained,
+        MemoryLifetime::Temporary,
     )?;
-    let mut hits = Vec::<RegionCandidate>::new();
-    hits.try_reserve_exact(capacity)
-        .map_err(|_error| IndexError::ResourceLimited)?;
-    if hits.capacity() > capacity {
-        return Err(IndexError::ResourceLimited);
-    }
+    let mut decisions = RefillDecisions::with_capacity(capacity)?;
     let mut requested = 0usize;
     let mut inspected = 0u32;
     let mut fetch = initial_candidate_cap.min(capacity);
     let mut traversal;
     loop {
-        let page = query_prefix(region, vector, fetch, fetch, budget, &mut accept).await?;
+        let page = query_prefix(region, vector, fetch, budget, |candidate, budget| {
+            decisions.admit(candidate, budget, &mut accept)
+        })
+        .await?;
         requested = requested
             .checked_add(fetch)
             .ok_or(IndexError::ResourceLimited)?;
@@ -564,28 +619,8 @@ pub(super) async fn query_region(
             .checked_add(page.inspected)
             .ok_or(IndexError::ResourceLimited)?;
         traversal = page.traversal;
-        for candidate in page.hits {
-            budget.checkpoint()?;
-            if let Some(prior) = hits.iter().find(|prior| {
-                prior.owner == candidate.owner
-                    && prior.member == candidate.member
-                    && prior.vector_id == candidate.vector_id
-            }) {
-                if prior.input_stamp != candidate.input_stamp {
-                    return Err(corrupt(
-                        "Native ANN refill changed immutable candidate input",
-                    ));
-                }
-            } else {
-                if hits.len() == capacity {
-                    return Err(IndexError::BackendViolation(
-                        "Native ANN refill exceeded result capacity".into(),
-                    ));
-                }
-                hits.push(candidate);
-            }
-        }
-        if hits.len() >= top_k || traversal == NativeSemanticTraversal::ExactExhausted {
+        if decisions.accepted_count >= top_k || traversal == NativeSemanticTraversal::ExactExhausted
+        {
             break;
         }
         let remaining = candidate_cap
@@ -598,26 +633,11 @@ pub(super) async fn query_region(
         }
         fetch = next;
     }
-    sort_candidates(&mut hits);
-    hits.truncate(top_k);
     budget.checkpoint()?;
     Ok(RegionPage {
-        hits,
         inspected,
         traversal,
-        _memory: result_memory,
     })
-}
-
-fn sort_candidates(hits: &mut [RegionCandidate]) {
-    hits.sort_by(|left, right| {
-        right
-            .cosine
-            .total_cmp(&left.cosine)
-            .then_with(|| left.owner.cmp(&right.owner))
-            .then_with(|| left.member.cmp(&right.member))
-            .then_with(|| left.vector_id.cmp(&right.vector_id))
-    });
 }
 
 fn validate_region_query(
@@ -648,7 +668,6 @@ fn validate_region_query(
 async fn query_prefix(
     region: &OpenRegion,
     vector: &[f32],
-    top_k: usize,
     candidate_cap: usize,
     budget: &mut WorkBudget,
     mut accept: impl FnMut(&RegionCandidate, &mut WorkBudget) -> Result<bool, IndexError>,
@@ -677,13 +696,6 @@ async fn query_prefix(
         .and_then(|bytes| bytes.checked_add(vector_bytes))
         .and_then(|bytes| bytes.checked_add(4096))
         .ok_or(IndexError::ResourceLimited)?;
-    let result_bytes = fetch_u64
-        .checked_mul(
-            candidate_bytes
-                .checked_add(vector_id_max)
-                .ok_or(IndexError::ResourceLimited)?,
-        )
-        .ok_or(IndexError::ResourceLimited)?;
     budget.charge(WorkUsage {
         reads: 1,
         bytes: fetch_u64
@@ -696,7 +708,6 @@ async fn query_prefix(
         ..WorkUsage::default()
     })?;
     let _scratch_memory = budget.reserve_memory(scratch_bytes, MemoryLifetime::Temporary)?;
-    let result_memory = budget.reserve_memory(result_bytes, MemoryLifetime::Retained)?;
     let mut query_vector = Vec::new();
     query_vector
         .try_reserve_exact(vector.len())
@@ -705,13 +716,10 @@ async fn query_prefix(
         return Err(IndexError::ResourceLimited);
     }
     query_vector.extend_from_slice(vector);
-    let mut hits = Vec::new();
-    hits.try_reserve_exact(fetch)
-        .map_err(|_error| IndexError::ResourceLimited)?;
-    let mut seen: Vec<(RegionCandidate, bool)> = Vec::new();
+    let mut seen: Vec<RegionCandidate> = Vec::new();
     seen.try_reserve_exact(fetch)
         .map_err(|_error| IndexError::ResourceLimited)?;
-    if hits.capacity() > fetch || seen.capacity() > fetch {
+    if seen.capacity() > fetch {
         return Err(IndexError::ResourceLimited);
     }
     let query = region
@@ -792,24 +800,17 @@ async fn query_prefix(
                 input_stamp: digest(input.value(row)),
                 cosine: distance.mul_add(-1.0, 1.0),
             };
-            if seen.iter().any(|(prior, _)| {
+            if seen.iter().any(|prior| {
                 prior.owner == candidate.owner
                     && prior.member == candidate.member
                     && prior.vector_id == candidate.vector_id
             }) {
                 return Err(corrupt("Native ANN duplicate logical candidate"));
             }
-            let accepted = accept(&candidate, budget)?;
-            seen.push((candidate, accepted));
+            let _accepted = accept(&candidate, budget)?;
+            seen.push(candidate);
         }
     }
-    for (candidate, accepted) in seen {
-        if accepted {
-            hits.push(candidate);
-        }
-    }
-    sort_candidates(&mut hits);
-    hits.truncate(top_k);
     budget.checkpoint()?;
     let approximate = matches!(
         region.index.contract().index,
@@ -824,10 +825,8 @@ async fn query_prefix(
         NativeSemanticTraversal::ExactExhausted
     };
     Ok(RegionPage {
-        hits,
         inspected: u32::try_from(inspected).map_err(|_error| IndexError::ResourceLimited)?,
         traversal,
-        _memory: result_memory,
     })
 }
 
@@ -914,6 +913,37 @@ mod tests {
             input: input(recipe),
             vector,
         }
+    }
+
+    #[test]
+    fn refill_reuses_verified_decision_and_refuses_changed_stamp() -> Result<(), IndexError> {
+        let mut budget = budget()?;
+        let mut decisions = RefillDecisions::with_capacity(2)?;
+        let candidate = RegionCandidate {
+            owner: owner(),
+            member: Digest([7; 32]),
+            vector_id: b"chunk-a".to_vec(),
+            input_stamp: Digest([8; 32]),
+            cosine: 0.75,
+        };
+        let mut calls = 0;
+        let mut accept = |_: &RegionCandidate, _: &mut WorkBudget| {
+            calls += 1;
+            Ok(true)
+        };
+        assert!(decisions.admit(&candidate, &mut budget, &mut accept)?);
+        assert!(decisions.admit(&candidate, &mut budget, &mut accept)?);
+        let mut changed = candidate.clone();
+        changed.input_stamp = Digest([9; 32]);
+        assert!(matches!(
+            decisions.admit(&changed, &mut budget, &mut accept),
+            Err(IndexError::CorruptObject(_))
+        ));
+        assert_eq!(calls, 1);
+        assert_eq!(decisions.candidates, vec![candidate]);
+        assert_eq!(decisions.accepted, vec![true]);
+        assert_eq!(decisions.accepted_count, 1);
+        Ok(())
     }
 
     #[test]
@@ -1014,8 +1044,8 @@ mod tests {
     }
 
     #[test]
-    fn exact_region_obeys_selected_filter_and_stable_ties() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn exact_region_obeys_selected_filter_and_releases_query_memory()
+    -> Result<(), Box<dyn std::error::Error>> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -1103,6 +1133,7 @@ mod tests {
             "region seal changed vector row identities",
         )?;
         let opened = open_region(table, seal, &mut work).await?;
+        let mut accepted = Vec::new();
         let page = query_region(
             &opened,
             &[1.0, 0.0, 0.0],
@@ -1110,19 +1141,35 @@ mod tests {
             4,
             4,
             &mut work,
-            |candidate, _| Ok(candidate.vector_id != b"chunk-a"),
+            |candidate, _| {
+                verify(
+                    memory.live.load(Ordering::SeqCst) > 0,
+                    "query callback ran without scratch admission",
+                )
+                .map_err(|error| IndexError::Storage(error.to_string()))?;
+                if candidate.vector_id != b"chunk-a" {
+                    accepted.push(candidate.clone());
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            },
         )
         .await?;
         verify(
-            page.hits()
+            accepted
                 .iter()
                 .map(|hit| hit.vector_id.as_slice())
-                .collect::<Vec<_>>()
-                == vec![b"chunk-b".as_slice(), b"chunk-c".as_slice()],
-            "selected filter/tie returned wrong vector IDs",
+                .collect::<std::collections::BTreeSet<_>>()
+                == std::collections::BTreeSet::from([
+                    b"chunk-b".as_slice(),
+                    b"chunk-c".as_slice(),
+                    b"chunk-d".as_slice(),
+                ]),
+            "selected callback accepted wrong vector IDs",
         )?;
         verify(
-            page.hits().iter().all(|hit| {
+            accepted.iter().all(|hit| {
                 selected_input_matches(hit, owner(), hit.member, &hit.vector_id, input(recipe))
             }),
             "selected vector binding mismatch",
@@ -1137,16 +1184,12 @@ mod tests {
         )?;
         verify(page.inspected == 4, "query did not inspect bounded rows")?;
         verify(
-            memory.live.load(Ordering::SeqCst) > 0,
-            "query result escaped without retained charge",
-        )?;
-        drop(page);
-        verify(
             memory.live.load(Ordering::SeqCst) == 0,
-            "query result leaked retained charge",
+            "completed query retained scratch memory",
         )?;
         let reopened_table = connection.open_table("region").execute().await?;
         let reopened = open_region(reopened_table, opened.seal.clone(), &mut work).await?;
+        let mut reopened_accepted = Vec::new();
         let reopened_page = query_region(
             &reopened,
             &[1.0, 0.0, 0.0],
@@ -1154,26 +1197,34 @@ mod tests {
             4,
             4,
             &mut work,
-            |candidate, _| Ok(candidate.vector_id != b"chunk-a"),
+            |candidate, _| {
+                if candidate.vector_id != b"chunk-a" {
+                    reopened_accepted.push(candidate.clone());
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            },
         )
         .await?;
         verify(
-            reopened_page
-                .hits()
+            reopened_accepted
                 .iter()
                 .map(|hit| hit.vector_id.as_slice())
-                .collect::<Vec<_>>()
-                == vec![b"chunk-b".as_slice(), b"chunk-c".as_slice()],
+                .collect::<std::collections::BTreeSet<_>>()
+                == accepted
+                    .iter()
+                    .map(|hit| hit.vector_id.as_slice())
+                    .collect::<std::collections::BTreeSet<_>>(),
             "reopen changed vector identity mapping",
         )?;
         verify(
-            memory.live.load(Ordering::SeqCst) > 0,
-            "reopened result escaped without retained charge",
+            reopened_page.inspected == 4,
+            "reopen changed inspected rows",
         )?;
-        drop(reopened_page);
         verify(
             memory.live.load(Ordering::SeqCst) == 0,
-            "reopened result leaked retained charge",
+            "reopened query retained scratch memory",
         )?;
         Ok(())
     }
@@ -1220,18 +1271,24 @@ mod tests {
             memory.clone(),
         )))));
         let mut calls = 0u32;
+        let mut accepted = Vec::new();
         let page = query_region(&opened, &[1.0, 0.0, 0.0], 1, 2, 14, &mut work, |hit, _| {
             calls = calls.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-            Ok(hit.vector_id == b"h")
+            if memory.live.load(Ordering::SeqCst) == 0 {
+                return Err(IndexError::ResourceLimited);
+            }
+            if hit.vector_id == b"h" {
+                accepted.push(hit.vector_id.clone());
+                Ok(true)
+            } else {
+                Ok(false)
+            }
         })
         .await?;
+        verify(accepted == [b"h".to_vec()], "refill missed eligible tail")?;
         verify(
-            page.hits().len() == 1 && page.hits().first().is_some_and(|hit| hit.vector_id == b"h"),
-            "refill missed eligible tail",
-        )?;
-        verify(
-            page.inspected == 14 && calls == 14,
-            "repeated prefixes escaped cumulative accounting",
+            page.inspected == 14 && calls == 8,
+            "repeated prefixes revalidated an already verified candidate",
         )?;
         verify(
             work.usage().reads == 3,
@@ -1242,69 +1299,74 @@ mod tests {
             "exhaustive exact prefix was mislabeled",
         )?;
         verify(
-            memory.live.load(Ordering::SeqCst) > 0,
-            "refill result lost its grant",
-        )?;
-        drop(page);
-        verify(
             memory.live.load(Ordering::SeqCst) == 0,
-            "refill result did not refund",
+            "completed refill retained scratch memory",
         )?;
 
         let mut calls = 0u32;
+        let mut accepted = Vec::new();
         let page = query_region(&opened, &[1.0, 0.0, 0.0], 1, 2, 8, &mut work, |hit, _| {
             calls = calls.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-            Ok(hit.vector_id == b"h")
+            if hit.vector_id == b"h" {
+                accepted.push(hit.vector_id.clone());
+                Ok(true)
+            } else {
+                Ok(false)
+            }
         })
         .await?;
         verify(
-            page.hits().is_empty() && page.traversal == NativeSemanticTraversal::ExactCapped,
+            accepted.is_empty() && page.traversal == NativeSemanticTraversal::ExactCapped,
             "cap exhaustion claimed empty corpus",
         )?;
         verify(
-            page.inspected == 6 && calls == 6,
-            "refill exceeded cumulative candidate cap",
+            page.inspected == 6 && calls == 4,
+            "refill exceeded cumulative candidate cap or repeated callbacks",
         )?;
-        drop(page);
         verify(
             memory.live.load(Ordering::SeqCst) == 0,
             "capped refill retained memory",
         )?;
 
+        let mut accepted = Vec::new();
         let page = query_region(&opened, &[1.0, 0.0, 0.0], 2, 4, 12, &mut work, |hit, _| {
-            Ok(hit.vector_id == b"a" || hit.vector_id == b"h")
+            if hit.vector_id == b"a" || hit.vector_id == b"h" {
+                accepted.push(hit.vector_id.clone());
+                Ok(true)
+            } else {
+                Ok(false)
+            }
         })
         .await?;
         verify(
-            page.hits()
-                .iter()
-                .map(|hit| hit.vector_id.as_slice())
-                .collect::<Vec<_>>()
-                == vec![b"a".as_slice(), b"h".as_slice()],
+            accepted == [b"a".to_vec(), b"h".to_vec()],
             "refill duplicated a logical hit across prefixes",
         )?;
         verify(
             page.inspected == 12 && page.traversal == NativeSemanticTraversal::ExactExhausted,
             "refill did not exhaust the immutable exact region",
         )?;
-        drop(page);
         verify(
             memory.live.load(Ordering::SeqCst) == 0,
             "deduplicated refill leaked memory",
         )?;
 
+        let mut accepted = Vec::new();
         let page = query_region(&opened, &[1.0, 0.0, 0.0], 1, 8, 8, &mut work, |hit, _| {
-            Ok(hit.vector_id == b"h")
+            if hit.vector_id == b"h" {
+                accepted.push(hit.vector_id.clone());
+                Ok(true)
+            } else {
+                Ok(false)
+            }
         })
         .await?;
         verify(
-            page.hits().len() == 1
-                && page.hits().first().is_some_and(|hit| hit.vector_id == b"h")
+            accepted == [b"h".to_vec()]
                 && page.inspected == 8
                 && page.traversal == NativeSemanticTraversal::ExactExhausted,
             "explicit one-prefix policy lost an eligible tail within its original cap",
         )?;
-        drop(page);
         verify(
             memory.live.load(Ordering::SeqCst) == 0,
             "one-prefix query leaked memory",

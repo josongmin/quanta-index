@@ -4,17 +4,20 @@
 //! operation. Successful publications and on-time renewals read no configuration.
 
 use std::{
+    cell::Cell,
     ffi::OsStr,
     io::Write as _,
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
+    sync::atomic::{AtomicU16, AtomicUsize, Ordering},
+    time::{Duration, Instant},
 };
 
 use quanta_index_core::index::{
-    IndexError, OperationKey, OperationStatus, OwnedWorkGrant, OwnedWorkReport, OwnedWorkTerminal,
-    Refusal, SubmitOutcome, UpdateKind, WorkBudget, WorkClaim, WorkIntent,
+    IndexError, NativeReadSettlement, NativeReadSettlementBlocker, NativeReadSettlementStatus,
+    OperationKey, OperationStatus, OwnedWorkGrant, OwnedWorkReport, OwnedWorkTerminal, Refusal,
+    SubmitOutcome, UpdateKind, WorkBudget, WorkClaim, WorkIntent, ports::TerminalCustodyPage,
 };
 use quanta_index_core::{DiagnosticCaptureIdV1, DiagnosticTraceRefV1};
+use quanta_index_kernel::QueryExecutionTimings;
 use serde::Serialize;
 
 const ENV: &str = "QUANTA_INDEX_NATIVE_WORK_DIAGNOSTICS_V1";
@@ -27,6 +30,548 @@ static OWNED_RENEWALS_SAMPLED: AtomicUsize = AtomicUsize::new(0);
 static OWNED_FAST_FENCE_RENEWALS_SAMPLED: AtomicUsize = AtomicUsize::new(0);
 static QUERY_FAILURES_SAMPLED: AtomicUsize = AtomicUsize::new(0);
 static QUERY_POST_TERMINAL_CANCELS_SAMPLED: AtomicUsize = AtomicUsize::new(0);
+static ORDINARY_SEARCH_FAILURES_SAMPLED: AtomicUsize = AtomicUsize::new(0);
+static RETAINED_SEARCH_FAILURES_SAMPLED: AtomicUsize = AtomicUsize::new(0);
+static RETAINED_SEARCH_TIMINGS_SAMPLED: AtomicUsize = AtomicUsize::new(0);
+// Only the first sixteen fresh-client requests pay for a clock. Classify the
+// completed observations into separate eight-record success and error caps.
+static FIRST_RETAINED_SEARCH_TIMING_PERMITS: AtomicUsize = AtomicUsize::new(0);
+static FIRST_RETAINED_SEARCH_SUCCESSES_SAMPLED: AtomicUsize = AtomicUsize::new(0);
+static FIRST_RETAINED_SEARCH_ERRORS_SAMPLED: AtomicUsize = AtomicUsize::new(0);
+static RETAINED_CONTROL_FAILURES_SAMPLED: AtomicUsize = AtomicUsize::new(0);
+static READ_VIEW_FAILURES_SAMPLED: AtomicUsize = AtomicUsize::new(0);
+static SETTLEMENT_BLOCKERS_SAMPLED: AtomicU16 = AtomicU16::new(0);
+static TERMINAL_CUSTODY_POLLS: AtomicU16 = AtomicU16::new(0);
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ReadFailureRoute {
+    OrdinarySearch,
+    RetainedSearch,
+    RetainedControl,
+    ReadView,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ReadFailureStage {
+    Checkpoint,
+    ReplyReservation,
+    ControlAdmission,
+    InteractiveAdmission,
+    SessionCustody,
+    QueryPreparation,
+    QueryExecution,
+    ResultConversion,
+    ViewCustody,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum SessionCustodyPart {
+    RegistryLookup,
+    EntryPre,
+    ExitPost,
+}
+
+impl SessionCustodyPart {
+    const fn index(self) -> usize {
+        match self {
+            Self::RegistryLookup => 0,
+            Self::EntryPre => 1,
+            Self::ExitPost => 2,
+        }
+    }
+}
+
+/// Optional timing for retained SearchText requests. The publisher reuses its
+/// client request counter; offered queries start new counters. Later requests
+/// retain failure-prefix timing: reserving those before execution would let
+/// high-volume successes exhaust slots before a later failure occurs.
+pub(super) struct RetainedSearchTimer {
+    stage: Cell<ReadFailureStage>,
+    entered: Cell<Option<Instant>>,
+    elapsed: Cell<[Duration; 7]>,
+    session_custody_part: Cell<SessionCustodyPart>,
+    session_custody_elapsed: Cell<[Option<Duration>; 3]>,
+    query_execution_timings: Cell<Option<QueryExecutionTimings>>,
+    first_request_permit: Option<usize>,
+}
+
+impl RetainedSearchTimer {
+    pub(super) fn new(context: &quanta_index_ipc::DispatchContextV1) -> Self {
+        let diagnostic = std::env::var_os(ENV).as_deref() == Some(OsStr::new("1"));
+        let first_request = context.request_id.get() == 1;
+        let first_request_permit = if diagnostic && first_request {
+            prefix_sample_slot(&FIRST_RETAINED_SEARCH_TIMING_PERMITS, 16)
+        } else {
+            None
+        };
+        let enabled = diagnostic && (!first_request || first_request_permit.is_some());
+        Self {
+            stage: Cell::new(ReadFailureStage::SessionCustody),
+            entered: Cell::new(enabled.then(Instant::now)),
+            elapsed: Cell::new([Duration::ZERO; 7]),
+            session_custody_part: Cell::new(SessionCustodyPart::RegistryLookup),
+            session_custody_elapsed: Cell::new([None; 3]),
+            query_execution_timings: Cell::new(None),
+            first_request_permit,
+        }
+    }
+
+    pub(super) fn stage(&self) -> ReadFailureStage {
+        self.stage.get()
+    }
+
+    pub(super) fn is_enabled(&self) -> bool {
+        self.entered.get().is_some()
+    }
+
+    pub(super) fn record_execution_timings(&self, timings: QueryExecutionTimings) {
+        self.query_execution_timings.set(Some(timings));
+    }
+
+    pub(super) fn mark_session_custody(&self, part: SessionCustodyPart) {
+        self.mark(ReadFailureStage::SessionCustody);
+        self.session_custody_part.set(part);
+    }
+
+    pub(super) fn mark(&self, next: ReadFailureStage) {
+        if let Some(entered) = self.entered.get() {
+            let now = Instant::now();
+            self.entered.set(Some(now));
+            let (elapsed, detail) = self.elapsed_through(now.saturating_duration_since(entered));
+            self.elapsed.set(elapsed);
+            self.session_custody_elapsed.set(detail);
+        }
+        self.stage.set(next);
+    }
+
+    fn elapsed_through(&self, elapsed_here: Duration) -> ([Duration; 7], [Option<Duration>; 3]) {
+        let mut elapsed = self.elapsed.get();
+        let mut detail = self.session_custody_elapsed.get();
+        let stage = self.stage.get();
+        if let Some(bucket) = elapsed.get_mut(retained_stage_index(stage)) {
+            *bucket = bucket.saturating_add(elapsed_here);
+        }
+        if matches!(stage, ReadFailureStage::SessionCustody)
+            && let Some(bucket) = detail.get_mut(self.session_custody_part.get().index())
+        {
+            *bucket = Some(bucket.unwrap_or_default().saturating_add(elapsed_here));
+        }
+        (elapsed, detail)
+    }
+
+    pub(super) fn record_result(
+        &self,
+        context: &quanta_index_ipc::DispatchContextV1,
+        budget: &WorkBudget,
+        error: Option<&IndexError>,
+    ) {
+        if context.request_id.get() == 1 {
+            self.record_first_result(context, budget, error);
+        } else if let Some(error) = error {
+            self.record_failure(context, budget, error);
+        }
+    }
+
+    fn record_first_result(
+        &self,
+        context: &quanta_index_ipc::DispatchContextV1,
+        budget: &WorkBudget,
+        error: Option<&IndexError>,
+    ) {
+        if self.first_request_permit.is_none() {
+            return;
+        }
+        let Some(entered) = self.entered.get() else {
+            return;
+        };
+        let Some(sample_ordinal) = first_retained_result_sample_slot(
+            error.is_some(),
+            &FIRST_RETAINED_SEARCH_SUCCESSES_SAMPLED,
+            &FIRST_RETAINED_SEARCH_ERRORS_SAMPLED,
+        ) else {
+            return;
+        };
+        let (elapsed_us, session_custody_us) = self.finished_elapsed_us(entered);
+        let elapsed = retained_elapsed_json(elapsed_us);
+        let session_custody_detail_us =
+            Self::session_custody_detail_us(elapsed_us, session_custody_us);
+        let query_execution_detail_us = self.execution_detail_us(elapsed_us);
+        let event = serde_json::json!({
+            "event": "native_retained_search_timing",
+            "sample_population": "first_request",
+            "result": if error.is_some() { "error" } else { "success" },
+            "request_id": context.request_id.get(),
+            "connection_id": context.connection_id,
+            "stage": self.stage(),
+            "outcome": error.map_or("success", error_outcome),
+            "first_local_denial": format!("{:?}", budget.first_denial()),
+            "elapsed_us": elapsed,
+            "session_custody_detail_us": session_custody_detail_us,
+            "query_execution_detail_us": query_execution_detail_us,
+            "sample_ordinal": sample_ordinal,
+            "sample_limit": OWNED_FAILURE_SAMPLE_LIMIT,
+        });
+        write_diagnostic_event(&event);
+    }
+
+    fn record_failure(
+        &self,
+        context: &quanta_index_ipc::DispatchContextV1,
+        budget: &WorkBudget,
+        error: &IndexError,
+    ) {
+        let Some(entered) = self.entered.get() else {
+            return;
+        };
+        let Some(sample_ordinal) = owned_failure_sample_slot(&RETAINED_SEARCH_TIMINGS_SAMPLED)
+        else {
+            return;
+        };
+        let (elapsed_us, session_custody_us) = self.finished_elapsed_us(entered);
+        let elapsed = retained_elapsed_json(elapsed_us);
+        let session_custody_detail_us =
+            Self::session_custody_detail_us(elapsed_us, session_custody_us);
+        let query_execution_detail_us = self.execution_detail_us(elapsed_us);
+        let event = serde_json::json!({
+            "event": "native_retained_search_timing",
+            "request_id": context.request_id.get(),
+            "connection_id": context.connection_id,
+            "stage": self.stage(),
+            "outcome": error_outcome(error),
+            "first_local_denial": format!("{:?}", budget.first_denial()),
+            "elapsed_us": elapsed,
+            "session_custody_detail_us": session_custody_detail_us,
+            "query_execution_detail_us": query_execution_detail_us,
+            "sample_ordinal": sample_ordinal,
+            "sample_limit": OWNED_FAILURE_SAMPLE_LIMIT,
+        });
+        write_diagnostic_event(&event);
+    }
+
+    fn finished_elapsed_us(&self, entered: Instant) -> ([u64; 7], [Option<u64>; 3]) {
+        let (elapsed, detail) =
+            self.elapsed_through(Instant::now().saturating_duration_since(entered));
+        (
+            elapsed.map(duration_us),
+            detail.map(|part| part.map(duration_us)),
+        )
+    }
+
+    fn session_custody_detail_us(
+        elapsed_us: [u64; 7],
+        detail_us: [Option<u64>; 3],
+    ) -> Option<serde_json::Value> {
+        if detail_us.iter().all(Option::is_none) {
+            return None;
+        }
+        let [registry_lookup, entry_pre, exit_post] = detail_us;
+        let measured = registry_lookup
+            .unwrap_or(0)
+            .saturating_add(entry_pre.unwrap_or(0))
+            .saturating_add(exit_post.unwrap_or(0));
+        let total = *elapsed_us.get(retained_stage_index(ReadFailureStage::SessionCustody))?;
+        Some(serde_json::json!({
+            "registry_lookup": registry_lookup,
+            "entry_pre": entry_pre,
+            "exit_post": exit_post,
+            "other": total.saturating_sub(measured),
+        }))
+    }
+
+    fn execution_detail_us(&self, elapsed_us: [u64; 7]) -> Option<serde_json::Value> {
+        let timings = self.query_execution_timings.get()?;
+        let before = timings.before_ticket_validation.map(duration_us);
+        let reader = timings.reader_query.map(duration_us);
+        let after = timings.after_ticket_validation.map(duration_us);
+        let measured = before
+            .unwrap_or(0)
+            .saturating_add(reader.unwrap_or(0))
+            .saturating_add(after.unwrap_or(0));
+        let total = elapsed_us
+            .get(retained_stage_index(ReadFailureStage::QueryExecution))
+            .copied()?;
+        Some(serde_json::json!({
+            "before_ticket_validation": before,
+            "reader_query": reader,
+            "after_ticket_validation": after,
+            "other": total.saturating_sub(measured),
+        }))
+    }
+}
+
+fn duration_us(duration: Duration) -> u64 {
+    duration
+        .as_secs()
+        .saturating_mul(1_000_000)
+        .saturating_add(u64::from(duration.subsec_micros()))
+}
+
+fn write_diagnostic_event(event: &serde_json::Value) {
+    let Ok(mut line) = serde_json::to_vec(event) else {
+        return;
+    };
+    line.push(b'\n');
+    let _written = std::io::stderr().lock().write_all(&line);
+}
+
+fn retained_elapsed_json(elapsed: [u64; 7]) -> serde_json::Value {
+    let [
+        control_admission,
+        session_custody,
+        query_preparation,
+        interactive_admission,
+        query_execution,
+        result_conversion,
+        checkpoint,
+    ] = elapsed;
+    serde_json::json!({
+        "control_admission": control_admission,
+        "session_custody": session_custody,
+        "query_preparation": query_preparation,
+        "interactive_admission": interactive_admission,
+        "query_execution": query_execution,
+        "result_conversion": result_conversion,
+        "checkpoint": checkpoint,
+    })
+}
+
+fn retained_stage_index(stage: ReadFailureStage) -> usize {
+    match stage {
+        ReadFailureStage::ControlAdmission => 0,
+        ReadFailureStage::SessionCustody => 1,
+        ReadFailureStage::QueryPreparation => 2,
+        ReadFailureStage::InteractiveAdmission => 3,
+        ReadFailureStage::QueryExecution => 4,
+        ReadFailureStage::ResultConversion => 5,
+        ReadFailureStage::Checkpoint
+        | ReadFailureStage::ReplyReservation
+        | ReadFailureStage::ViewCustody => 6,
+    }
+}
+
+pub(super) fn record_read_error_if_enabled(
+    context: &quanta_index_ipc::DispatchContextV1,
+    route: ReadFailureRoute,
+    stage: ReadFailureStage,
+    budget: &WorkBudget,
+    error: &IndexError,
+) {
+    if std::env::var_os(ENV).as_deref() != Some(OsStr::new("1")) {
+        return;
+    }
+    let counter = match route {
+        ReadFailureRoute::OrdinarySearch => &ORDINARY_SEARCH_FAILURES_SAMPLED,
+        ReadFailureRoute::RetainedSearch => &RETAINED_SEARCH_FAILURES_SAMPLED,
+        ReadFailureRoute::RetainedControl => &RETAINED_CONTROL_FAILURES_SAMPLED,
+        ReadFailureRoute::ReadView => &READ_VIEW_FAILURES_SAMPLED,
+    };
+    let Some(sample_ordinal) = owned_failure_sample_slot(counter) else {
+        return;
+    };
+    let event = serde_json::json!({
+        "event": "native_read_error_observed",
+        "request_id": context.request_id.get(),
+        "connection_id": context.connection_id,
+        "route": route,
+        "stage": stage,
+        "outcome": error_outcome(error),
+        "first_local_denial": format!("{:?}", budget.first_denial()),
+        "sample_ordinal": sample_ordinal,
+        "sample_limit": OWNED_FAILURE_SAMPLE_LIMIT,
+    });
+    let Ok(mut line) = serde_json::to_vec(&event) else {
+        return;
+    };
+    line.push(b'\n');
+    let _written = std::io::stderr().lock().write_all(&line);
+}
+
+/// Keep one observation of each blocker per process, with bounded progress
+/// samples for terminal custody. The returned SDK state and Catalog snapshot
+/// that decided it remain unchanged.
+pub(super) fn record_settlement_if_enabled(
+    context: &quanta_index_ipc::DispatchContextV1,
+    observation: &NativeReadSettlement,
+) {
+    let slot = match observation.status {
+        NativeReadSettlementStatus::Pending(blocker) => match blocker {
+            NativeReadSettlementBlocker::TargetPin => 0,
+            NativeReadSettlementBlocker::ExactFloor => 1,
+            NativeReadSettlementBlocker::WorkBelowFloor => 2,
+            NativeReadSettlementBlocker::TerminalWork => 3,
+            NativeReadSettlementBlocker::TerminalCustody { .. } => 4,
+            NativeReadSettlementBlocker::UnretiredView => 5,
+            NativeReadSettlementBlocker::ReclaimQueue => 6,
+            NativeReadSettlementBlocker::ObjectLifecycle => 7,
+            NativeReadSettlementBlocker::UnreferencedObject => 8,
+        },
+        NativeReadSettlementStatus::Incomplete => 15,
+        NativeReadSettlementStatus::SettledAtSnapshot => return,
+    };
+    if std::env::var_os(ENV).as_deref() != Some(OsStr::new("1")) {
+        return;
+    }
+    let custody_sample =
+        if let NativeReadSettlementStatus::Pending(NativeReadSettlementBlocker::TerminalCustody {
+            oldest_ready_sequence,
+        }) = observation.status
+        {
+            let Ok(previous) = TERMINAL_CUSTODY_POLLS.fetch_update(
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                |count| count.checked_add(1).filter(|next| *next <= 60),
+            ) else {
+                return;
+            };
+            let ordinal = previous.saturating_add(1);
+            if !matches!(ordinal, 1 | 16 | 32 | 48 | 60) {
+                return;
+            }
+            Some((ordinal, oldest_ready_sequence))
+        } else {
+            let Some(mask) = 1_u16.checked_shl(slot) else {
+                return;
+            };
+            if SETTLEMENT_BLOCKERS_SAMPLED.fetch_or(mask, Ordering::Relaxed) & mask != 0 {
+                return;
+            }
+            None
+        };
+    let mut event = serde_json::json!({
+        "event": "native_read_settlement_blocked",
+        "request_id": context.request_id.get(),
+        "connection_id": context.connection_id,
+        "status": format!("{:?}", observation.status),
+        "target_sequence": observation.scope.target.sequence,
+        "head_sequence": observation.head.sequence,
+        "exact_floor": observation.exact_floor,
+        "has_remaining_target_pins": observation.has_remaining_target_pins,
+    });
+    if let Some((ordinal, oldest_ready_sequence)) = custody_sample
+        && let Some(fields) = event.as_object_mut()
+    {
+        let _prior = fields.insert(
+            "status".into(),
+            serde_json::json!("Pending(TerminalCustody)"),
+        );
+        let _prior = fields.insert("terminal_custody_poll".into(), serde_json::json!(ordinal));
+        let _prior = fields.insert(
+            "oldest_ready_sequence".into(),
+            serde_json::json!(oldest_ready_sequence),
+        );
+    }
+    let Ok(mut line) = serde_json::to_vec(&event) else {
+        return;
+    };
+    line.push(b'\n');
+    let _written = std::io::stderr().lock().write_all(&line);
+}
+
+/// Cumulative, bounded maintenance samples. No Catalog read or write is
+/// added, and the pump never renews a phase budget to collect a sample.
+pub(super) struct RetentionProgress {
+    next_sample: Instant,
+    remaining_samples: u8,
+    counts: RetentionProgressCounts,
+}
+
+#[derive(Default, Serialize)]
+struct RetentionProgressCounts {
+    admission_refusals: u64,
+    floor_rounds: u64,
+    floor_refusals: u64,
+    custody_probe_refusals: u64,
+    custody_release_refusals: u64,
+    custody_pages: u64,
+    custody_rows: u64,
+    oldest_ready_sequence: Option<u64>,
+    oldest_operation_sequence: Option<u64>,
+    oldest_released_rows: u64,
+    oldest_has_more: Option<bool>,
+}
+
+impl RetentionProgress {
+    const INTERVAL: Duration = Duration::from_secs(45);
+
+    pub(super) fn new_if_enabled() -> Option<Self> {
+        if std::env::var_os(ENV).as_deref() != Some(OsStr::new("1")) {
+            return None;
+        }
+        Some(Self {
+            next_sample: Instant::now().checked_add(Self::INTERVAL)?,
+            remaining_samples: 16,
+            counts: RetentionProgressCounts::default(),
+        })
+    }
+
+    pub(super) fn admission_refused(&mut self) {
+        self.counts.admission_refusals = self.counts.admission_refusals.saturating_add(1);
+        self.emit_due();
+    }
+
+    pub(super) fn floor_result(&mut self, refused: bool) {
+        self.counts.floor_rounds = self.counts.floor_rounds.saturating_add(1);
+        if refused {
+            self.counts.floor_refusals = self.counts.floor_refusals.saturating_add(1);
+        }
+    }
+
+    pub(super) fn custody_probe_refused(&mut self) {
+        self.counts.custody_probe_refusals = self.counts.custody_probe_refusals.saturating_add(1);
+    }
+
+    pub(super) fn oldest_candidate(&mut self, ready: u64, operation: u64) {
+        if self.counts.oldest_ready_sequence != Some(ready) {
+            self.counts.oldest_ready_sequence = Some(ready);
+            self.counts.oldest_operation_sequence = Some(operation);
+            self.counts.oldest_released_rows = 0;
+            self.counts.oldest_has_more = None;
+        }
+    }
+
+    pub(super) fn custody_release(&mut self, ready: u64, page: Option<&TerminalCustodyPage>) {
+        let Some(page) = page else {
+            self.counts.custody_release_refusals =
+                self.counts.custody_release_refusals.saturating_add(1);
+            return;
+        };
+        let released = u64::from(page.released);
+        self.counts.custody_pages = self.counts.custody_pages.saturating_add(1);
+        self.counts.custody_rows = self.counts.custody_rows.saturating_add(released);
+        if self.counts.oldest_ready_sequence == Some(ready) {
+            self.counts.oldest_released_rows =
+                self.counts.oldest_released_rows.saturating_add(released);
+            self.counts.oldest_has_more = Some(page.has_more);
+        }
+    }
+
+    pub(super) fn emit_due(&mut self) {
+        if self.remaining_samples == 0 {
+            return;
+        }
+        let now = Instant::now();
+        if now < self.next_sample {
+            return;
+        }
+        let Some(next_sample) = now.checked_add(Self::INTERVAL) else {
+            self.remaining_samples = 0;
+            return;
+        };
+        self.next_sample = next_sample;
+        self.remaining_samples = self.remaining_samples.saturating_sub(1);
+        let event = serde_json::json!({
+            "event": "native_retention_progress",
+            "cumulative": &self.counts,
+        });
+        let Ok(mut line) = serde_json::to_vec(&event) else {
+            return;
+        };
+        line.push(b'\n');
+        let _written = std::io::stderr().lock().write_all(&line);
+    }
+}
 
 pub(super) fn capture_id_hex(capture_id: DiagnosticCaptureIdV1) -> String {
     use std::fmt::Write as _;
@@ -149,14 +694,24 @@ pub(super) fn record_if_enabled(
 /// A process-local prefix sample. Missing records after the first eight do
 /// not prove that owned work stopped failing.
 fn owned_failure_sample_slot(counter: &AtomicUsize) -> Option<usize> {
+    prefix_sample_slot(counter, OWNED_FAILURE_SAMPLE_LIMIT)
+}
+
+fn prefix_sample_slot(counter: &AtomicUsize, limit: usize) -> Option<usize> {
     match counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |previous| {
-        previous
-            .checked_add(1)
-            .filter(|next| *next <= OWNED_FAILURE_SAMPLE_LIMIT)
+        previous.checked_add(1).filter(|next| *next <= limit)
     }) {
         Ok(previous) => previous.checked_add(1),
         Err(_saturated) => None,
     }
+}
+
+fn first_retained_result_sample_slot(
+    is_error: bool,
+    successes: &AtomicUsize,
+    errors: &AtomicUsize,
+) -> Option<usize> {
+    owned_failure_sample_slot(if is_error { errors } else { successes })
 }
 
 #[derive(Serialize)]
@@ -726,6 +1281,211 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn retained_search_timer_accumulates_reentered_stages() -> Result<(), IndexError> {
+        let prior = Duration::from_millis(10);
+        let entered = Instant::now()
+            .checked_sub(prior)
+            .ok_or(IndexError::ResourceLimited)?;
+        let timer = RetainedSearchTimer {
+            stage: Cell::new(ReadFailureStage::SessionCustody),
+            entered: Cell::new(Some(entered)),
+            elapsed: Cell::new([Duration::ZERO; 7]),
+            session_custody_part: Cell::new(SessionCustodyPart::RegistryLookup),
+            session_custody_elapsed: Cell::new([None; 3]),
+            query_execution_timings: Cell::new(None),
+            first_request_permit: None,
+        };
+        timer.mark(ReadFailureStage::ControlAdmission);
+        assert!(matches!(timer.stage(), ReadFailureStage::ControlAdmission));
+        let first = timer.elapsed.get();
+        let slot = retained_stage_index(ReadFailureStage::SessionCustody);
+        assert!(first.get(slot).is_some_and(|elapsed| *elapsed >= prior));
+        timer.mark(ReadFailureStage::SessionCustody);
+        timer.entered.set(Some(entered));
+        timer.mark(ReadFailureStage::QueryPreparation);
+        let second = timer.elapsed.get();
+        assert!(
+            second
+                .get(slot)
+                .is_some_and(|elapsed| *elapsed >= prior.saturating_mul(2))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retained_execution_detail_preserves_aggregate_and_partial_steps() {
+        let timer = RetainedSearchTimer {
+            stage: Cell::new(ReadFailureStage::QueryExecution),
+            entered: Cell::new(None),
+            elapsed: Cell::new([Duration::ZERO; 7]),
+            session_custody_part: Cell::new(SessionCustodyPart::RegistryLookup),
+            session_custody_elapsed: Cell::new([None; 3]),
+            query_execution_timings: Cell::new(None),
+            first_request_permit: None,
+        };
+        let mut elapsed = [0_u64; 7];
+        if let Some(slot) = elapsed.get_mut(retained_stage_index(ReadFailureStage::QueryExecution))
+        {
+            *slot = 100;
+        }
+        assert!(timer.execution_detail_us(elapsed).is_none());
+        timer.record_execution_timings(QueryExecutionTimings {
+            before_ticket_validation: Some(Duration::from_micros(20)),
+            reader_query: Some(Duration::from_micros(30)),
+            after_ticket_validation: None,
+        });
+        let detail = timer.execution_detail_us(elapsed);
+        assert_eq!(
+            detail
+                .as_ref()
+                .and_then(|value| value.get("before_ticket_validation")),
+            Some(&serde_json::json!(20))
+        );
+        assert_eq!(
+            detail.as_ref().and_then(|value| value.get("reader_query")),
+            Some(&serde_json::json!(30))
+        );
+        assert_eq!(
+            detail
+                .as_ref()
+                .and_then(|value| value.get("after_ticket_validation")),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            detail.as_ref().and_then(|value| value.get("other")),
+            Some(&serde_json::json!(50))
+        );
+        assert_eq!(
+            elapsed.get(retained_stage_index(ReadFailureStage::QueryExecution)),
+            Some(&100)
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the serialized fields are independent test oracles"
+    )]
+    fn retained_session_custody_detail_tracks_existing_transitions() -> Result<(), &'static str> {
+        let selected = || RetainedSearchTimer {
+            stage: Cell::new(ReadFailureStage::SessionCustody),
+            entered: Cell::new(Some(Instant::now())),
+            elapsed: Cell::new([Duration::ZERO; 7]),
+            session_custody_part: Cell::new(SessionCustodyPart::RegistryLookup),
+            session_custody_elapsed: Cell::new([None; 3]),
+            query_execution_timings: Cell::new(None),
+            first_request_permit: None,
+        };
+
+        let success = selected();
+        success.mark(ReadFailureStage::ControlAdmission);
+        success.mark_session_custody(SessionCustodyPart::EntryPre);
+        success.mark(ReadFailureStage::QueryPreparation);
+        success.mark(ReadFailureStage::InteractiveAdmission);
+        success.mark(ReadFailureStage::QueryExecution);
+        success.mark(ReadFailureStage::Checkpoint);
+        success.mark_session_custody(SessionCustodyPart::ExitPost);
+        let entered = success.entered.get().ok_or("selected timer has no clock")?;
+        let (elapsed, parts) = success.finished_elapsed_us(entered);
+        assert!(parts.iter().all(Option::is_some));
+        let detail = RetainedSearchTimer::session_custody_detail_us(elapsed, parts)
+            .ok_or("missing selected session detail")?;
+        let other = detail
+            .get("other")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("missing session rounding remainder")?;
+        let measured: u64 = parts.iter().flatten().copied().sum();
+        assert_eq!(
+            Some(measured.saturating_add(other)),
+            elapsed
+                .get(retained_stage_index(ReadFailureStage::SessionCustody))
+                .copied()
+        );
+        assert_eq!(
+            serde_json::to_value(success.stage()).ok(),
+            Some(serde_json::json!("session_custody"))
+        );
+
+        let failed = selected();
+        failed.mark(ReadFailureStage::ControlAdmission);
+        failed.mark_session_custody(SessionCustodyPart::EntryPre);
+        failed.mark(ReadFailureStage::QueryPreparation);
+        failed.mark(ReadFailureStage::QueryExecution);
+        let entered = failed.entered.get().ok_or("selected timer has no clock")?;
+        let (_elapsed, [lookup, entry, exit]) = failed.finished_elapsed_us(entered);
+        assert!(lookup.is_some() && entry.is_some());
+        assert_eq!(exit, None);
+        assert_eq!(
+            serde_json::to_value(failed.stage()).ok(),
+            Some(serde_json::json!("query_execution"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn first_retained_request_timing_has_bounded_distinct_results() {
+        let permits = AtomicUsize::new(0);
+        let successes = AtomicUsize::new(0);
+        let errors = AtomicUsize::new(0);
+        for expected in 1..=16 {
+            assert_eq!(prefix_sample_slot(&permits, 16), Some(expected));
+        }
+        assert_eq!(prefix_sample_slot(&permits, 16), None);
+        for expected in 1..=OWNED_FAILURE_SAMPLE_LIMIT {
+            assert_eq!(
+                first_retained_result_sample_slot(false, &successes, &errors),
+                Some(expected)
+            );
+            assert_eq!(
+                first_retained_result_sample_slot(true, &successes, &errors),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            first_retained_result_sample_slot(false, &successes, &errors),
+            None
+        );
+        assert_eq!(
+            first_retained_result_sample_slot(true, &successes, &errors),
+            None
+        );
+    }
+
+    #[test]
+    fn retention_progress_counts_committed_pages_and_oldest_separately() {
+        let mut progress = RetentionProgress {
+            next_sample: Instant::now(),
+            remaining_samples: 0,
+            counts: RetentionProgressCounts::default(),
+        };
+        progress.admission_refused();
+        progress.floor_result(true);
+        progress.floor_result(false);
+        progress.custody_probe_refused();
+        progress.oldest_candidate(41, 2);
+        let page = TerminalCustodyPage {
+            released: 32,
+            has_more: true,
+        };
+        progress.custody_release(41, None);
+        progress.custody_release(41, Some(&page));
+        progress.custody_release(42, Some(&page));
+        progress.oldest_candidate(41, 2);
+        assert_eq!(progress.counts.admission_refusals, 1);
+        assert_eq!(progress.counts.floor_rounds, 2);
+        assert_eq!(progress.counts.floor_refusals, 1);
+        assert_eq!(progress.counts.custody_probe_refusals, 1);
+        assert_eq!(progress.counts.custody_release_refusals, 1);
+        assert_eq!(progress.counts.custody_pages, 2);
+        assert_eq!(progress.counts.custody_rows, 64);
+        assert_eq!(progress.counts.oldest_released_rows, 32);
+        assert_eq!(progress.counts.oldest_has_more, Some(true));
+        progress.oldest_candidate(42, 3);
+        assert_eq!(progress.counts.oldest_released_rows, 0);
+        assert_eq!(progress.counts.oldest_has_more, None);
+    }
 
     fn key() -> OperationKey {
         OperationKey {

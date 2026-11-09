@@ -1293,6 +1293,10 @@ mod tests {
                 DiagnosticStageV1::ManagedObjectConfirm,
                 "managed_object_confirm",
             ),
+            (
+                DiagnosticStageV1::ManagedObjectAdvance,
+                "managed_object_advance",
+            ),
             (DiagnosticStageV1::NativePublish, "native_publish"),
             (DiagnosticStageV1::FilePublish, "file_publish"),
             (DiagnosticStageV1::LexicalSeal, "lexical_seal"),
@@ -1354,6 +1358,7 @@ mod tests {
                 DiagnosticStageV1::NativeTextPostingEdit,
                 "native_text_posting_edit",
             ),
+            (DiagnosticStageV1::MapApply, "map_apply"),
         ];
         for (variant, name) in stage_golden {
             assert_eq!(known_stage_name(variant), Some(name));
@@ -1526,6 +1531,12 @@ mod tests {
                 DiagnosticCounterV1::ManagedObjectInputs,
                 "managed_object_inputs",
             ),
+            (
+                DiagnosticCounterV1::MapRootReuseCandidates,
+                "map_root_reuse_candidates",
+            ),
+            (DiagnosticCounterV1::MapRootReuses, "map_root_reuses"),
+            (DiagnosticCounterV1::MapRootBuilds, "map_root_builds"),
             (
                 DiagnosticCounterV1::TextOccurrencePriorValidationAttempts,
                 "text_occurrence_prior_validation_attempts",
@@ -2259,6 +2270,10 @@ mod tests {
             (
                 DiagnosticStageV1::ManagedObjectConfirm,
                 "managed_object_confirm",
+            ),
+            (
+                DiagnosticStageV1::ManagedObjectAdvance,
+                "managed_object_advance",
             ),
             (DiagnosticStageV1::LexicalSeal, "lexical_seal"),
             (DiagnosticStageV1::LexicalProof, "lexical_proof"),

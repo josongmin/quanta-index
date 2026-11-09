@@ -534,6 +534,21 @@ pub trait SemanticSearcher: Send + Sync {
         }
     }
 
+    /// Exact dense Top-K with canonical source/path/line/id tie selection
+    /// performed before the backend cut. Implementations must not sort only
+    /// the already truncated result.
+    fn search_constrained_canonical_ties(
+        &self,
+        _query_vector: &[f32],
+        _constraints: &QueryConstraintSetV1,
+        _top_k: u32,
+        _budget: &RequestBudgetV1,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        Err(CoreError::NotImplemented(
+            "semantic searcher has no exact canonical Top-K capability".to_string(),
+        ))
+    }
+
     /// Exact-generation work-bounded search. Only adapters that can charge
     /// their native scan before execution may implement this capability.
     fn search_work_bounded_v1(

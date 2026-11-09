@@ -92,7 +92,7 @@ use crate::{
     native_reclaim_driver::reclaim_one_step,
     native_resources::{NativeClassScheduler, NativeResourceClass, NativeResourceLedger},
     native_scratch_io::NativeScratchIo,
-    native_work_diagnostic::{self, DiscardFailureStage},
+    native_work_diagnostic::{self, DiscardFailureStage, ReadFailureStage},
     native_worker::{DIRECT_ENRICHMENT_DISPATCH_LIMIT, NativeOperationWorker},
     publication_file_capacity::{InodeObservation, PublicationFileCapacity},
     publication_inventory::{PublicationBootInventoryLimits, seed_publication_capacity},
@@ -135,9 +135,9 @@ const NATIVE_BOOT_WORK_LIMITS: WorkLimits = WorkLimits {
     mutations: 2_048,
 };
 /// Distinct from the legacy daemon's current-format root.
-pub const NATIVE_MARKER_NAME: &str = ".native-index-v18";
-pub const NATIVE_MARKER_CONTENT: &[u8] = b"quanta-index-native-state-v18\n";
-const PRIOR_NATIVE_MARKER_NAMES: [&str; 17] = [
+pub const NATIVE_MARKER_NAME: &str = ".native-index-v19";
+pub const NATIVE_MARKER_CONTENT: &[u8] = b"quanta-index-native-state-v19\n";
+const PRIOR_NATIVE_MARKER_NAMES: [&str; 18] = [
     ".native-index-v1",
     ".native-index-v2",
     ".native-index-v3",
@@ -155,6 +155,7 @@ const PRIOR_NATIVE_MARKER_NAMES: [&str; 17] = [
     ".native-index-v15",
     ".native-index-v16",
     ".native-index-v17",
+    ".native-index-v18",
 ];
 
 fn resolved_socket_entry(socket: &Path) -> Result<PathBuf> {
@@ -410,14 +411,15 @@ impl NativeDispatcher {
         instance: IndexInstanceId,
         query: &TextQueryRequest,
         budget: &mut WorkBudget,
+        stage: &mut ReadFailureStage,
     ) -> Result<ScopedNativeTextResult, IndexError> {
         let (prepared, result_limit) = {
-            let control = ReservationGuard::try_acquire(
-                Arc::clone(&self.control_scheduler),
-                self.control_need,
-            )
-            .ok_or_else(|| self.control_scheduler.denial())?;
+            *stage = ReadFailureStage::ControlAdmission;
+            let control = self
+                .control_scheduler
+                .acquire_control_for_request(self.control_need, budget)?;
             budget.bind_memory_scope(control.memory_scope());
+            *stage = ReadFailureStage::QueryPreparation;
             let planned = plan_native_text(query, |bytes, lifetime| {
                 budget.reserve_memory(bytes, lifetime)
             })?;
@@ -432,17 +434,24 @@ impl NativeDispatcher {
             (prepared, result_limit)
         };
         let need = prepared.required_resources();
-        let Some(reservation) =
-            ReservationGuard::try_acquire(Arc::clone(&self.interactive_scheduler), need)
-        else {
-            let denial = self.interactive_scheduler.denial();
-            prepared.abort()?;
-            return Err(denial);
+        *stage = ReadFailureStage::InteractiveAdmission;
+        let reservation = match self
+            .interactive_scheduler
+            .acquire_interactive_for_request(need, prepared.admission_budget())
+        {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                prepared.abort()?;
+                return Err(error);
+            }
         };
+        *stage = ReadFailureStage::QueryExecution;
         let outcome = prepared.execute(&reservation)?;
+        *stage = ReadFailureStage::ResultConversion;
         let result = native_text_result(outcome, instance, result_limit, |bytes, lifetime| {
             budget.reserve_memory(bytes, lifetime)
         })?;
+        *stage = ReadFailureStage::Checkpoint;
         budget.checkpoint()?;
         Ok(result)
     }
@@ -847,7 +856,9 @@ impl NativeDispatcher {
             }
             NativeIndexRequest::ReadView(selection) => {
                 let ticket = self.kernel.pin_view(selection, budget)?;
-                let result = ticket.validate().map(|()| ticket.view().clone());
+                let result = ticket
+                    .validate_for_request(budget)
+                    .map(|()| ticket.view().clone());
                 let view = ticket.finish(result, budget)?;
                 Ok(NativeIndexResponse::View(view))
             }

@@ -11,10 +11,14 @@ use quanta_index_core::RequestBudgetV1;
 use sha2::{Digest as _, Sha256};
 
 use super::paged_bootstrap::{BootstrapMap, NativeBootstrapMaps};
+use super::paged_transition::verify_transition_for_seal_with_policy;
+use super::paged_verify::verify_all_for_scrub;
+use super::paged_wire::{encode_source, source_digest};
 use super::{
     AddedTextDoc, NativeAuthority, NativeSourceEdit, prepare_compaction, publish_delta,
     publish_delta_prepared, source_ids,
 };
+use crate::lexical_allocation::DocVersionReservation;
 use crate::lexical_store::{AttemptBinding, BlobRef, MapRoot, ObjectKind, ObjectStore};
 
 fn binding(generation: u64) -> AttemptBinding {
@@ -32,6 +36,18 @@ fn binding(generation: u64) -> AttemptBinding {
 
 fn key(number: u32) -> Vec<u8> {
     number.to_be_bytes().to_vec()
+}
+
+fn gram_key(number: u32) -> Vec<u8> {
+    let mut key = vec![1, 0, 0, 0];
+    key.extend_from_slice(&u64::from(number).to_be_bytes());
+    key
+}
+
+fn staged_gram_rows(first: u32, end: u32, value: &BlobRef) -> BTreeMap<Vec<u8>, Option<BlobRef>> {
+    (first..end)
+        .map(|number| (gram_key(number), Some(value.clone())))
+        .collect()
 }
 
 fn staged_rows(first: u32, end: u32, value: &BlobRef) -> BTreeMap<Vec<u8>, Option<BlobRef>> {
@@ -65,12 +81,15 @@ fn bootstrap_sorts_cross_cohort_keys_into_five_independent_roots() {
         .put_blob(&lease, ObjectKind::Record, &[], b"fixed-value")
         .expect("value");
     let mut staged = NativeBootstrapMaps::new().expect("scratch");
-    for (first, end) in [(4100, 6210), (0, 2000), (2000, 4100)] {
+    for (first, end) in [(9000, 16450), (0, 5000), (5000, 9000)] {
         staged
-            .stage(BootstrapMap::GramRoutes, staged_rows(first, end, &value))
+            .stage(
+                BootstrapMap::GramRoutes,
+                staged_gram_rows(first, end, &value),
+            )
             .expect("out-of-order gram cohort");
     }
-    for (first, end) in [(96, 193), (0, 96)] {
+    for (first, end) in [(256, 513), (0, 256)] {
         staged
             .stage(BootstrapMap::Current, staged_rows(first, end, &value))
             .expect("out-of-order current cohort");
@@ -90,11 +109,14 @@ fn bootstrap_sorts_cross_cohort_keys_into_five_independent_roots() {
             .map(|number| (key(number), value.clone()))
             .collect::<BTreeMap<_, _>>()
     };
-    assert_rows(&store, &roots.current, &expected(0, 193));
+    assert_rows(&store, &roots.current, &expected(0, 513));
     assert_rows(&store, &roots.membership, &expected(7, 10));
     assert_rows(&store, &roots.segments, &expected(1, 2));
-    assert_rows(&store, &roots.gram_routes, &expected(0, 6210));
-    assert_rows(&store, &roots.term_routes, &expected(0, 193));
+    let expected_gram = (0..16450)
+        .map(|number| (gram_key(number), value.clone()))
+        .collect::<BTreeMap<_, _>>();
+    assert_rows(&store, &roots.gram_routes, &expected_gram);
+    assert_rows(&store, &roots.term_routes, &expected(0, 513));
     assert_eq!(roots.current.page.as_ref().expect("current page").height, 1);
     assert_eq!(
         roots
@@ -103,13 +125,13 @@ fn bootstrap_sorts_cross_cohort_keys_into_five_independent_roots() {
             .as_ref()
             .expect("gram route page")
             .height,
-        2,
-        "6,210 keys cross both the 96-row leaf and 64-child branch boundaries"
+        1,
+        "16,450 gram keys fit under the bounded wide leaf and one branch"
     );
-    for number in [0, 95, 96, 6143, 6144, 6209] {
+    for number in [0, 255, 256, 16383, 16384, 16449] {
         assert_eq!(
             store
-                .map_get(&roots.gram_routes, &key(number), None)
+                .map_get(&roots.gram_routes, &gram_key(number), None)
                 .expect("boundary lookup"),
             Some(value.clone())
         );
@@ -198,6 +220,177 @@ fn coverage(file: &SourceFileKey, revision: &str, text: &str) -> SourceFileCover
         text_admitted: true,
         symbols: SymbolCoverage::Complete { symbol_count: 0 },
     }
+}
+
+#[test]
+fn native_source_record_groups_cross_count_bound_and_preserve_cold_seal() {
+    let first_dir = tempfile::tempdir().expect("first store");
+    let first_store = ObjectStore::open(first_dir.path()).expect("first object store");
+    let files = (0..66)
+        .map(|ordinal| source(&format!("pack-{ordinal:03}")))
+        .collect::<Vec<_>>();
+    let edits = files
+        .iter()
+        .map(|file| NativeSourceEdit::Upsert(coverage(file, "r1", "packed alpha")))
+        .collect::<Vec<_>>();
+    let added = [AddedTextDoc {
+        doc_id: 1,
+        source_file: files.first().expect("first source").clone(),
+        candidate_id: "packed-alpha".into(),
+        text: "packed alpha".into(),
+    }];
+    let first_lease = first_store
+        .begin_attempt(&binding(1), &[])
+        .expect("first attempt");
+    let (first, _) = publish_delta(
+        &first_store,
+        &first_lease,
+        None,
+        &edits,
+        &[],
+        &added,
+        false,
+        ManifestGeneration::new(1),
+        [9; 32],
+    )
+    .expect("packed Native publication");
+    assert_eq!(first.source.entries, 66);
+    let mut roots = std::collections::BTreeSet::new();
+    let cold = ObjectStore::open(first_dir.path()).expect("cold independent store");
+    for file in &files {
+        let digest = source_digest(file).expect("source key");
+        let reference = first_store
+            .map_get(&first.source, &digest, None)
+            .expect("source lookup")
+            .expect("source record");
+        let encoded =
+            encode_source(&coverage(file, "r1", "packed alpha")).expect("independent source CBOR");
+        assert_eq!(
+            reference.bytes,
+            u64::try_from(encoded.len()).expect("width")
+        );
+        assert_eq!(reference.sha256, <[u8; 32]>::from(Sha256::digest(&encoded)));
+        assert_eq!(
+            cold.read_blob(&reference, 64 * 1024, None)
+                .expect("cold record"),
+            encoded
+        );
+        let _new_root = roots.insert(reference.root);
+    }
+    assert_eq!(roots.len(), 2, "64 plus two source records use two packs");
+    let reservation = DocVersionReservation {
+        first: 1,
+        count: 1,
+        scope_sha256: [9; 32],
+    };
+    let _proof = verify_transition_for_seal_with_policy(
+        &cold,
+        &first,
+        None,
+        &reservation,
+        &edits,
+        &[],
+        &added,
+        false,
+        1,
+        None,
+        None,
+        None,
+    )
+    .expect("independent Native source seal");
+    verify_all_for_scrub(&cold, &first, None).expect("cold full scrub");
+
+    let second_dir = tempfile::tempdir().expect("second store");
+    let second_store = ObjectStore::open(second_dir.path()).expect("second object store");
+    let second_lease = second_store
+        .begin_attempt(&binding(1), &[])
+        .expect("second attempt");
+    let reversed = edits.iter().cloned().rev().collect::<Vec<_>>();
+    let (second, _) = publish_delta(
+        &second_store,
+        &second_lease,
+        None,
+        &reversed,
+        &[],
+        &added,
+        false,
+        ManifestGeneration::new(1),
+        [9; 32],
+    )
+    .expect("permuted Native publication");
+    assert_eq!(
+        first.source, second.source,
+        "source pack roots depend on keys, not caller order"
+    );
+}
+
+#[test]
+fn native_source_record_groups_flush_at_byte_and_repo_boundaries() {
+    let dir = tempfile::tempdir().expect("store");
+    let store = ObjectStore::open(dir.path()).expect("object store");
+    let long_tail = "x".repeat(3_960);
+    let mut files = (0..16)
+        .map(|ordinal| SourceFileKey {
+            source_repo_id: RepoId::new("source-repo").expect("repo"),
+            repo_relative_path: RepoRelativePath::new(format!("src/{ordinal:02}-{long_tail}.rs")),
+        })
+        .collect::<Vec<_>>();
+    let foreign = SourceFileKey {
+        source_repo_id: RepoId::new("other-repo").expect("foreign repo"),
+        repo_relative_path: RepoRelativePath::new("src/foreign.rs"),
+    };
+    files.push(foreign.clone());
+    let edits = files
+        .iter()
+        .map(|file| NativeSourceEdit::Upsert(coverage(file, "r1", "")))
+        .collect::<Vec<_>>();
+    let lease = store.begin_attempt(&binding(1), &[]).expect("attempt");
+    let (root, _) = publish_delta(
+        &store,
+        &lease,
+        None,
+        &edits,
+        &[],
+        &[],
+        false,
+        ManifestGeneration::new(1),
+        [9; 32],
+    )
+    .expect("bounded source publication");
+    let foreign_ref = store
+        .map_get(
+            &root.source,
+            &source_digest(&foreign).expect("foreign key"),
+            None,
+        )
+        .expect("foreign lookup")
+        .expect("foreign record");
+    let mut local_roots = std::collections::BTreeSet::new();
+    for file in files.iter().take(16) {
+        let encoded = encode_source(&coverage(file, "r1", "")).expect("long source CBOR");
+        assert!(encoded.len() > 4_000 && encoded.len() < 4_500);
+        let reference = store
+            .map_get(
+                &root.source,
+                &source_digest(file).expect("source key"),
+                None,
+            )
+            .expect("source lookup")
+            .expect("source record");
+        assert_ne!(
+            reference.root, foreign_ref.root,
+            "pack crosses repository owner"
+        );
+        let _new_local_root = local_roots.insert(reference.root);
+    }
+    assert!(
+        local_roots.len() >= 2,
+        "valid 4 KiB paths must cross pack byte limit"
+    );
+    assert!(
+        local_roots.len() <= 3,
+        "foreign owner must not fragment three local byte windows"
+    );
 }
 
 #[test]
@@ -495,6 +688,17 @@ fn multi_cohort_initial_root_keeps_update_delete_and_clear_all_query_exact() {
     .expect("multi-cohort initial publication");
     assert_eq!(initial.current.entries, 3);
     assert_eq!(initial.membership.entries, 3);
+    let cold = ObjectStore::open(dir.path()).expect("cold object store");
+    let (current2, row2) = super::paged_writer::read_current_with_ref(&cold, &initial, 2)
+        .expect("second lookup")
+        .expect("second current row");
+    let (current3, row3) = super::paged_writer::read_current_with_ref(&cold, &initial, 3)
+        .expect("third lookup")
+        .expect("third current row");
+    assert_eq!(row2.body.root, row3.body.root);
+    assert_eq!(current2.root, current3.root);
+    assert_ne!(row2.body.sha256, row3.body.sha256);
+    verify_all_for_scrub(&cold, &initial, None).expect("cold packed Native scrub");
     assert!(
         initial.next_segment_id >= 3,
         "large first body must split cohorts"

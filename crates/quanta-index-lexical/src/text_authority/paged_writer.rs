@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
-use quanta_index_contract::{ManifestGeneration, SourceFileKey};
+use quanta_index_contract::{ManifestGeneration, RepoId, SourceFileKey};
 use quanta_index_core::ingest_resource::INGEST_RESOURCE_BUDGET_EXCEEDED_CODE;
 use quanta_index_core::lexical_maintenance::{
     LexicalMaintenancePolicy, StagedPacketBounds, StagedPacketIdentity,
@@ -17,8 +17,8 @@ use crate::lexical_runs::{
 };
 use crate::lexical_store::{
     AttemptLease, Authority, BlobRef, CandidateWitness, EligibilityWitness, IneligibleReason,
-    MAX_CLOSURE_REFS, MapEdit, MapRoot, ObjectKind, ObjectRef, ObjectStore, ScanLane,
-    WindowWitness,
+    MAX_CLOSURE_REFS, MAX_PACKED_RECORDS, MAX_RECORD_GROUP_BYTES, MapEdit, MapRoot, ObjectKind,
+    ObjectRef, ObjectStore, ScanLane, WindowWitness,
 };
 use crate::text_authority::paged_bootstrap::{BootstrapMap, NativeBootstrapMaps};
 use crate::text_authority::paged_manifest::NativeRoot;
@@ -37,6 +37,11 @@ use crate::text_authority::types::{AddedTextDoc, TextAuthorityWriteReceipt};
 const SEGMENT_TARGET_TEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CURRENT_RECORD_BYTES: u64 = 32 * 1024;
 const MAX_SOURCE_RECORD_BYTES: u64 = 64 * 1024;
+const NATIVE_SOURCE_RECORD_GROUP_COUNT: usize = 64;
+
+fn flush_native_adoption(store: &ObjectStore) -> Result<(), CoreError> {
+    crate::causal_profile::timed_work("native_adoption_flush", || store.flush_adoption_batch())
+}
 
 impl NativeRoot {
     /// A maintenance-only no-op may persist bounded scan progress without
@@ -1256,6 +1261,45 @@ fn checked_insert(
     Ok(())
 }
 
+fn flush_source_record_group(
+    store: &ObjectStore,
+    lease: &AttemptLease,
+    source_map: &mut BTreeMap<Vec<u8>, Option<BlobRef>>,
+    keys: &mut Vec<[u8; 32]>,
+    records: &mut Vec<Box<[u8]>>,
+) -> Result<(), CoreError> {
+    if keys.is_empty() {
+        return Ok(());
+    }
+    let references = store.put_record_group(lease, records.as_slice())?;
+    if references.len() != keys.len() {
+        return Err(CoreError::InvalidContract(
+            "lexical: Native source record group lost an entry".into(),
+        ));
+    }
+    for (key, reference) in keys.drain(..).zip(references) {
+        set_source_record(source_map, &key, reference)?;
+    }
+    records.clear();
+    Ok(())
+}
+
+fn set_source_record(
+    source_map: &mut BTreeMap<Vec<u8>, Option<BlobRef>>,
+    key: &[u8; 32],
+    reference: BlobRef,
+) -> Result<(), CoreError> {
+    let slot = source_map.get_mut(key.as_slice()).ok_or_else(|| {
+        CoreError::InvalidContract("lexical: Native source edit placeholder absent".into())
+    })?;
+    if slot.replace(reference).is_some() {
+        return Err(CoreError::InvalidContract(
+            "lexical: Native source edit was written twice".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Publish one complete effective change set. The caller owns the durable
 /// allocation reservation and supplies the exact retired IDs before mutating
 /// Tantivy.
@@ -1380,28 +1424,32 @@ fn publish_delta_with_option(
     policy: Option<&LexicalMaintenancePolicy>,
     hard_scan: Option<&ScanLane>,
 ) -> Result<(NativeRoot, TextAuthorityWriteReceipt), CoreError> {
-    store.with_adoption_batch(lease, |batched_store| {
-        // Preserve an explicit caller's physical-read meter. Ordinary callers
-        // receive a bounded producer cache; seal proofs create fresh scopes.
-        let producer_store = if batched_store.has_read_meter() {
-            batched_store.clone()
-        } else {
-            batched_store.metered_clone()
-        };
-        publish_delta_inner(
-            &producer_store,
-            lease,
-            base,
-            source_edits,
-            retired,
-            added,
-            clear_all,
-            target_generation,
-            allocation_scope_sha256,
-            prepared,
-            policy,
-            hard_scan,
-        )
+    crate::causal_profile::timed_work("native_adoption_scope", || {
+        store.with_adoption_batch(lease, |batched_store| {
+            // Preserve an explicit caller's physical-read meter. Ordinary callers
+            // receive a bounded producer cache; seal proofs create fresh scopes.
+            let producer_store = if batched_store.has_read_meter() {
+                batched_store.clone()
+            } else {
+                batched_store.metered_clone()
+            };
+            crate::causal_profile::timed_work("native_publish_inner", || {
+                publish_delta_inner(
+                    &producer_store,
+                    lease,
+                    base,
+                    source_edits,
+                    retired,
+                    added,
+                    clear_all,
+                    target_generation,
+                    allocation_scope_sha256,
+                    prepared,
+                    policy,
+                    hard_scan,
+                )
+            })
+        })
     })
 }
 
@@ -1472,16 +1520,32 @@ fn publish_delta_inner(
     let mut term_map = BTreeMap::new();
     let mut due_map = BTreeMap::new();
     let mut retired_segments = BTreeMap::<u64, SegmentDescriptor>::new();
-    let mut changed_sources = BTreeSet::<[u8; 32]>::new();
-    let mut upserted_sources = BTreeSet::<[u8; 32]>::new();
+    // One borrowed index replaces the changed/upserted digest sets. Repo is
+    // primary so a mixed-owner input cannot fragment same-owner packs; digest
+    // fixes every group's order independent of caller edit order.
+    let mut source_edits_by_owner = BTreeMap::<(&RepoId, [u8; 32]), &NativeSourceEdit>::new();
     for edit in source_edits {
         let digest = source_digest(edit.key())?;
-        if !changed_sources.insert(digest) {
+        if source_edits_by_owner
+            .insert((&edit.key().source_repo_id, digest), edit)
+            .is_some()
+        {
             return Err(CoreError::InvalidContract(
                 "lexical: duplicate Native source edit".into(),
             ));
         }
-        if !clear_all && let Some(prior) = store.map_get(&inherited.source, &digest, None)? {
+        // The existing edit map also rejects a digest collision across repos.
+        // Upserts remain private None placeholders until their Record is born.
+        checked_insert(&mut source_map, digest.to_vec(), None)?;
+    }
+    // The input window is at most one 32 KiB Record payload plus 64 keys.
+    // Wide sources take the old singleton path; no new logical size refusal.
+    let mut group_keys = Vec::<[u8; 32]>::new();
+    let mut group_records = Vec::<Box<[u8]>>::new();
+    let mut group_repo: Option<&RepoId> = None;
+    let mut group_width = 3_usize;
+    for ((repo, digest), edit) in &source_edits_by_owner {
+        if !clear_all && let Some(prior) = store.map_get(&inherited.source, digest, None)? {
             let prior = decode_source(&store.read_blob(&prior, MAX_SOURCE_RECORD_BYTES, None)?)?;
             if prior.source.file != *edit.key() {
                 return Err(CoreError::InvalidContract(
@@ -1489,16 +1553,71 @@ fn publish_delta_inner(
                 ));
             }
         }
-        let value = match edit {
+        match edit {
             NativeSourceEdit::Upsert(coverage) => {
-                let _new = upserted_sources.insert(digest);
-                let bytes = encode_source(coverage)?;
-                Some(store.put_blob(lease, ObjectKind::Record, &[], &bytes)?)
+                let bytes = encode_source(coverage)?.into_boxed_slice();
+                let solo_width = bytes.len().checked_add(5);
+                let next_width = group_width
+                    .checked_add(2)
+                    .and_then(|width| width.checked_add(bytes.len()));
+                if !group_keys.is_empty()
+                    && (group_repo != Some(*repo)
+                        || group_keys.len() == NATIVE_SOURCE_RECORD_GROUP_COUNT
+                        || next_width.is_none_or(|width| width > MAX_RECORD_GROUP_BYTES))
+                {
+                    flush_source_record_group(
+                        store,
+                        lease,
+                        &mut source_map,
+                        &mut group_keys,
+                        &mut group_records,
+                    )?;
+                    group_repo = None;
+                    group_width = 3;
+                }
+                if solo_width.is_none_or(|width| width > MAX_RECORD_GROUP_BYTES) {
+                    let reference = store.put_blob(lease, ObjectKind::Record, &[], &bytes)?;
+                    set_source_record(&mut source_map, digest, reference)?;
+                } else {
+                    if group_keys.capacity() == 0 {
+                        group_keys
+                            .try_reserve_exact(NATIVE_SOURCE_RECORD_GROUP_COUNT)
+                            .map_err(|error| {
+                                CoreError::Storage(format!(
+                                    "lexical: reserve Native source group keys: {error}"
+                                ))
+                            })?;
+                        group_records
+                            .try_reserve_exact(NATIVE_SOURCE_RECORD_GROUP_COUNT)
+                            .map_err(|error| {
+                                CoreError::Storage(format!(
+                                    "lexical: reserve Native source group rows: {error}"
+                                ))
+                            })?;
+                    }
+                    group_repo = Some(*repo);
+                    group_width = group_width
+                        .checked_add(2)
+                        .and_then(|width| width.checked_add(bytes.len()))
+                        .ok_or_else(|| {
+                            CoreError::InvalidContract(
+                                "lexical: Native source group width overflow".into(),
+                            )
+                        })?;
+                    group_keys.push(*digest);
+                    group_records.push(bytes);
+                }
             }
-            NativeSourceEdit::Delete(_) => None,
-        };
-        checked_insert(&mut source_map, digest.to_vec(), value)?;
+            NativeSourceEdit::Delete(_) => {}
+        }
     }
+    flush_source_record_group(
+        store,
+        lease,
+        &mut source_map,
+        &mut group_keys,
+        &mut group_records,
+    )?;
     if clear_all && !retired.is_empty() {
         return Err(CoreError::InvalidContract(
             "lexical: Native clear-all cannot also name individual retirements".into(),
@@ -1617,7 +1736,10 @@ fn publish_delta_inner(
     }
     for doc in added {
         let digest = source_digest(&doc.source_file)?;
-        if !upserted_sources.contains(&digest) {
+        if !source_map
+            .get(digest.as_slice())
+            .is_some_and(Option::is_some)
+        {
             return Err(CoreError::InvalidContract(
                 "lexical: Native added document has no upserted source binding".into(),
             ));
@@ -1657,40 +1779,88 @@ fn publish_delta_inner(
         && next.term_routes.entries == 0
         && next.compaction_due.entries == 0
     {
-        store.flush_adoption_batch()?;
+        flush_native_adoption(store)?;
         Some(NativeBootstrapMaps::new()?)
     } else {
         None
     };
+    let mut bootstrap_footprints = BTreeMap::new();
     for group in segment_groups(added.get(consumed..).ok_or_else(|| {
         CoreError::InvalidContract("lexical: Native consumed beyond added documents".into())
     })?) {
         let group = group?;
         // Tokenization is bounded by one segment cohort; release the write
         // gate while building its postings, then reacquire on the next write.
-        store.flush_adoption_batch()?;
-        let segment = BuiltSegment::build(next.next_segment_id, target_generation, group)?;
+        flush_native_adoption(store)?;
+        let build_started = crate::causal_profile::begin_phase("native_segment_build");
+        let segment = crate::causal_profile::timed_work("native_segment_build", || {
+            BuiltSegment::build(next.next_segment_id, target_generation, group)
+        })?;
+        crate::causal_profile::finish_phase("native_segment_build", build_started);
         let mut current_map = BTreeMap::new();
         let mut membership_map = BTreeMap::new();
         let mut segment_map = BTreeMap::new();
         let mut gram_map = BTreeMap::new();
         let mut term_map = BTreeMap::new();
-        posting_stats.add(write_segment(
-            store,
-            lease,
-            &next,
-            &segment,
-            group,
-            &mut current_map,
-            &mut membership_map,
-            &mut segment_map,
-            &mut gram_map,
-            &mut term_map,
-            None,
-        )?)?;
+        let write_started = crate::causal_profile::begin_phase("native_segment_write");
+        let written = crate::causal_profile::timed_work("native_segment_write", || {
+            write_segment(
+                store,
+                lease,
+                &next,
+                &segment,
+                group,
+                &mut current_map,
+                &mut membership_map,
+                &mut segment_map,
+                &mut gram_map,
+                &mut term_map,
+                None,
+            )
+        })?;
+        crate::causal_profile::finish_phase("native_segment_write", write_started);
+        posting_stats.add(written)?;
         if let Some(scratch) = &mut bootstrap {
             // Keep private SQLite work outside the durable adoption gate.
-            store.flush_adoption_batch()?;
+            flush_native_adoption(store)?;
+            if clean_merge.is_none() {
+                let key = segment_key(next.next_segment_id).to_vec();
+                let descriptor =
+                    segment_map
+                        .get(&key)
+                        .and_then(Option::as_ref)
+                        .ok_or_else(|| {
+                            CoreError::InvalidContract(
+                                "lexical: Native bootstrap segment absent".into(),
+                            )
+                        })?;
+                // The producer has just generated the complete route edits for
+                // this immutable segment. Its descriptor links the inventory.
+                // Seal independently authenticates the finished route maps.
+                let footprint =
+                    crate::causal_profile::timed_work("native_bootstrap_footprint", || {
+                        let mut roots = BTreeSet::from([descriptor.root.clone()]);
+                        roots.extend(
+                            gram_map
+                                .values()
+                                .chain(term_map.values())
+                                .flatten()
+                                .map(|reference| reference.root.clone()),
+                        );
+                        let roots = roots.into_iter().collect::<Vec<_>>();
+                        segment_index_encoded_bytes(
+                            store,
+                            &roots,
+                            None,
+                            u64::try_from(MAX_CLOSURE_REFS).map_err(|error| {
+                                CoreError::InvalidContract(format!(
+                                    "lexical: closure bound width: {error}"
+                                ))
+                            })?,
+                        )
+                    })?;
+                let _prior = bootstrap_footprints.insert(key, (descriptor.clone(), footprint));
+            }
             scratch.stage(BootstrapMap::Current, current_map)?;
             scratch.stage(BootstrapMap::Membership, membership_map)?;
             scratch.stage(BootstrapMap::Segments, segment_map)?;
@@ -1708,8 +1878,12 @@ fn publish_delta_inner(
         })?;
     }
     if let Some(scratch) = bootstrap {
-        store.flush_adoption_batch()?;
-        let roots = scratch.finish(store, lease)?;
+        flush_native_adoption(store)?;
+        let finish_started = crate::causal_profile::begin_phase("native_bootstrap_finish");
+        let roots = crate::causal_profile::timed_work("native_bootstrap_finish", || {
+            scratch.finish(store, lease)
+        })?;
+        crate::causal_profile::finish_phase("native_bootstrap_finish", finish_started);
         next.current = roots.current;
         next.membership = roots.membership;
         next.segments = roots.segments;
@@ -1737,64 +1911,95 @@ fn publish_delta_inner(
     // genuinely corpus-sized delta can still visit the full segment set.
     // Release the adoption write gate before reading changed descriptors and
     // posting closures. Run-map writes reacquire it after this read phase.
-    store.flush_adoption_batch()?;
+    flush_native_adoption(store)?;
     let mut removed = Vec::new();
     let mut changed = Vec::new();
-    store.map_changed_keys(
-        &inherited.segments,
-        &next.segments,
-        None,
-        &mut |key, before, after| {
-            if let Some(reference) = before {
-                removed.push(SegmentRemoval {
-                    key: key.to_vec(),
-                    reference: reference.clone(),
-                });
-            }
-            if let Some(reference) = after {
-                changed.push((key.to_vec(), reference.clone()));
-            }
-            Ok(())
-        },
-    )?;
+    let changed_started = crate::causal_profile::begin_phase("native_run_changed_keys");
+    crate::causal_profile::timed_work("native_run_changed_keys", || {
+        store.map_changed_keys(
+            &inherited.segments,
+            &next.segments,
+            None,
+            &mut |key, before, after| {
+                if let Some(reference) = before {
+                    removed.push(SegmentRemoval {
+                        key: key.to_vec(),
+                        reference: reference.clone(),
+                    });
+                }
+                if let Some(reference) = after {
+                    changed.push((key.to_vec(), reference.clone()));
+                }
+                Ok(())
+            },
+        )
+    })?;
+    crate::causal_profile::finish_phase("native_run_changed_keys", changed_started);
     let old_by_key = removed
         .iter()
         .map(|row| (row.key.as_slice(), &row.reference))
         .collect::<BTreeMap<_, _>>();
-    let mut created = Vec::new();
-    for (key, reference) in changed {
-        let inherited_bytes = old_by_key
-            .get(key.as_slice())
-            .map(|old_ref| {
-                inherit_unchanged_posting_index_bytes(
-                    store, &inherited, &next, &key, old_ref, &reference,
-                )
-            })
-            .transpose()?
-            .flatten();
-        let index_encoded_bytes = if let Some(bytes) = inherited_bytes {
-            bytes
-        } else {
-            let index_roots = native_segment_index_roots(store, &next, &key, &reference)?;
-            segment_index_encoded_bytes(
-                store,
-                &index_roots,
-                None,
-                u64::try_from(MAX_CLOSURE_REFS).map_err(|error| {
-                    CoreError::InvalidContract(format!("lexical: closure bound width: {error}"))
-                })?,
-            )?
-        };
-        created.push(SegmentInput {
-            key,
-            reference,
-            index_encoded_bytes,
-        });
-    }
-    next.run_registry = inherited
-        .run_registry
-        .apply(store, lease, &removed, &created)?
-        .with_selection_progress(selection_progress)?;
+    let index_started = crate::causal_profile::begin_phase("native_run_index_roots");
+    let created = crate::causal_profile::timed_work(
+        "native_run_index_roots",
+        || -> Result<Vec<SegmentInput>, CoreError> {
+            let mut created = Vec::new();
+            for (key, reference) in changed {
+                let inherited_bytes = old_by_key
+                    .get(key.as_slice())
+                    .map(|old_ref| {
+                        inherit_unchanged_posting_index_bytes(
+                            store, &inherited, &next, &key, old_ref, &reference,
+                        )
+                    })
+                    .transpose()?
+                    .flatten();
+                let index_encoded_bytes = if let Some(bytes) = inherited_bytes {
+                    bytes
+                } else if let Some((producer_ref, bytes)) = bootstrap_footprints.remove(&key) {
+                    if producer_ref != reference {
+                        return Err(CoreError::InvalidContract(
+                            "lexical: Native bootstrap segment differs from staged reference"
+                                .into(),
+                        ));
+                    }
+                    bytes
+                } else {
+                    let index_roots = native_segment_index_roots(store, &next, &key, &reference)?;
+                    segment_index_encoded_bytes(
+                        store,
+                        &index_roots,
+                        None,
+                        u64::try_from(MAX_CLOSURE_REFS).map_err(|error| {
+                            CoreError::InvalidContract(format!(
+                                "lexical: closure bound width: {error}"
+                            ))
+                        })?,
+                    )?
+                };
+                created.push(SegmentInput {
+                    key,
+                    reference,
+                    index_encoded_bytes,
+                });
+            }
+            if !bootstrap_footprints.is_empty() {
+                return Err(CoreError::InvalidContract(
+                    "lexical: Native bootstrap segment missing from final map".into(),
+                ));
+            }
+            Ok(created)
+        },
+    )?;
+    crate::causal_profile::finish_phase("native_run_index_roots", index_started);
+    let registry_started = crate::causal_profile::begin_phase("native_run_registry_apply");
+    next.run_registry = crate::causal_profile::timed_work("native_run_registry_apply", || {
+        inherited
+            .run_registry
+            .apply(store, lease, &removed, &created)?
+            .with_selection_progress(selection_progress)
+    })?;
+    crate::causal_profile::finish_phase("native_run_registry_apply", registry_started);
     next.live_docs = next.current.entries;
     next.validate()?;
     let shards_written = next
@@ -1918,26 +2123,41 @@ fn native_segment_index_roots(
     let inventory = descriptor.route_inventory.as_ref().ok_or_else(|| {
         CoreError::InvalidContract("lexical: Native run route inventory absent".into())
     })?;
+    let routes = read_route_inventory(store, &descriptor)?;
+    if routes.iter().any(|route| {
+        !matches!(
+            route.first().copied(),
+            Some(GRAM_RAW | GRAM_FOLDED | TERM_RAW | TERM_FOLDED)
+        )
+    }) {
+        return Err(CoreError::InvalidContract(
+            "lexical: Native run route surface differs".into(),
+        ));
+    }
+    let gram_end = routes
+        .partition_point(|route| matches!(route.first().copied(), Some(GRAM_RAW | GRAM_FOLDED)));
+    let (gram_routes, term_routes) = routes.split_at(gram_end);
     let mut roots = BTreeSet::from([reference.root.clone(), inventory.root.clone()]);
-    for route in read_route_inventory(store, &descriptor)? {
-        let (map, kind) = match route.first().copied() {
-            Some(GRAM_RAW | GRAM_FOLDED) => (&root.gram_routes, ObjectKind::NativeTrigrams),
-            Some(TERM_RAW | TERM_FOLDED) => (&root.term_routes, ObjectKind::NativePositions),
-            _ => {
+    for (map, keys, kind) in [
+        (&root.gram_routes, gram_routes, ObjectKind::NativeTrigrams),
+        (&root.term_routes, term_routes, ObjectKind::NativePositions),
+    ] {
+        let mut found = 0;
+        store.map_lookup_sorted(map, keys, None, &mut |_, posting| {
+            if posting.root.kind != kind {
                 return Err(CoreError::InvalidContract(
-                    "lexical: Native run route surface differs".into(),
+                    "lexical: Native run posting page kind differs".into(),
                 ));
             }
-        };
-        let posting = store.map_get(map, &route, None)?.ok_or_else(|| {
-            CoreError::InvalidContract("lexical: Native run posting route absent".into())
+            let _inserted = roots.insert(posting.root.clone());
+            found += 1;
+            Ok(())
         })?;
-        if posting.root.kind != kind {
+        if found != keys.len() {
             return Err(CoreError::InvalidContract(
-                "lexical: Native run posting page kind differs".into(),
+                "lexical: Native run posting route absent".into(),
             ));
         }
-        let _inserted = roots.insert(posting.root);
     }
     Ok(roots.into_iter().collect())
 }
@@ -2557,40 +2777,61 @@ fn write_segment(
     term_map: &mut BTreeMap<Vec<u8>, Option<BlobRef>>,
     replace_existing: Option<&BTreeSet<u64>>,
 ) -> Result<PostingPageStats, CoreError> {
-    let mut inventory = Vec::new();
-    inventory
+    let inventory_started = crate::causal_profile::begin_phase("native_segment_route_inventory");
+    let mut route_keys = Vec::new();
+    route_keys
         .try_reserve(segment.grams.len().saturating_add(segment.terms.len()))
         .map_err(|error| {
             CoreError::Storage(format!("lexical: reserve Native route inventory: {error}"))
         })?;
     for posting in &segment.grams {
+        if !matches!(posting.surface, GRAM_RAW | GRAM_FOLDED) {
+            return Err(CoreError::InvalidContract(
+                "lexical: Native gram surface differs".into(),
+            ));
+        }
         let gram: [u8; 3] = posting.key.as_slice().try_into().map_err(|_error| {
             CoreError::InvalidContract("lexical: Native gram key width differs".into())
         })?;
-        inventory.push(route_key(
+        route_keys.push(route_key(
             &gram_prefix(posting.surface, gram),
             segment.descriptor.id,
         ));
     }
     for posting in &segment.terms {
+        if !matches!(posting.surface, TERM_RAW | TERM_FOLDED) {
+            return Err(CoreError::InvalidContract(
+                "lexical: Native term surface differs".into(),
+            ));
+        }
         let term = std::str::from_utf8(&posting.key).map_err(|error| {
             CoreError::InvalidContract(format!("lexical: Native term UTF-8: {error}"))
         })?;
-        inventory.push(route_key(
+        route_keys.push(route_key(
             &term_prefix(posting.surface, term)?,
             segment.descriptor.id,
         ));
     }
-    let inventory_count = inventory.len();
-    inventory.sort_unstable();
-    inventory.dedup();
-    if inventory.len() != inventory_count {
-        return Err(CoreError::InvalidContract(
-            "lexical: duplicate Native segment route".into(),
-        ));
-    }
-    let inventory_bytes =
-        crate::channel_payloads::encode_cbor(&(1_u16, &inventory), "Native route inventory")?;
+    let inventory_bytes = {
+        // Serialize in key order while retaining the original posting order
+        // for the gram and term page writers.
+        let mut inventory = Vec::new();
+        inventory
+            .try_reserve_exact(route_keys.len())
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: reserve sorted Native route inventory: {error}"
+                ))
+            })?;
+        inventory.extend(route_keys.iter());
+        inventory.sort_unstable();
+        if inventory.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(CoreError::InvalidContract(
+                "lexical: duplicate Native segment route".into(),
+            ));
+        }
+        crate::channel_payloads::encode_cbor(&(1_u16, &inventory), "Native route inventory")?
+    };
     let inventory_ref = store.put_blob(lease, ObjectKind::Record, &[], &inventory_bytes)?;
     let mut descriptor = segment.descriptor.clone();
     descriptor.route_inventory = Some(inventory_ref.clone());
@@ -2606,6 +2847,9 @@ fn write_segment(
         segment_key(segment.descriptor.id).to_vec(),
         Some(descriptor_ref),
     )?;
+    crate::causal_profile::finish_phase("native_segment_route_inventory", inventory_started);
+    let body_started = crate::causal_profile::begin_phase("native_segment_body_records");
+    let mut current_inputs = Vec::with_capacity(segment.bodies.len());
     for body in &segment.bodies {
         let input = docs
             .get(usize::try_from(body.local_id).map_err(|error| {
@@ -2650,50 +2894,89 @@ fn write_segment(
                 ));
             }
         }
-        let source = source_digest(&input.source_file)?;
-        let body_ref = store.put_blob(lease, ObjectKind::NativeBody, &[], &body.bytes)?;
-        let record = CurrentRecord {
-            id: body.logical_id,
-            source: input.source_file.clone(),
-            candidate_id: body.candidate_id.clone(),
-            indexed_sha256: body.indexed_sha256,
-            body: body_ref.clone(),
-            segment_key: segment.descriptor.id,
-            local_id: body.local_id,
-        };
-        let record_ref = store.put_blob(
-            lease,
-            ObjectKind::Record,
-            &[body_ref.root],
-            &record.encode()?,
-        )?;
-        checked_insert(
-            current_map,
-            current_key(body.logical_id).to_vec(),
-            Some(record_ref.clone()),
-        )?;
-        checked_insert(
-            membership_map,
-            membership_key(&source, body.logical_id),
-            Some(record_ref),
-        )?;
+        current_inputs.push((body, input, source_digest(&input.source_file)?));
     }
-    let mut posting_stats = write_posting_pages(
-        store,
-        lease,
-        segment.descriptor.id,
-        &segment.grams,
-        ObjectKind::NativeTrigrams,
-        gram_map,
-    )?;
-    posting_stats.add(write_posting_pages(
-        store,
-        lease,
-        segment.descriptor.id,
-        &segment.terms,
-        ObjectKind::NativePositions,
-        term_map,
+    let bodies = segment
+        .bodies
+        .iter()
+        .map(|body| body.bytes.as_slice())
+        .collect::<Vec<_>>();
+    let body_refs = store.put_body_groups(lease, ObjectKind::NativeBody, &bodies)?;
+    let mut current_inputs = current_inputs.into_iter();
+    for group in body_refs
+        .chunk_by(|left, right| left.root == right.root)
+        .flat_map(|group| group.chunks(MAX_PACKED_RECORDS))
+    {
+        let first = group.first().ok_or_else(|| {
+            CoreError::InvalidContract("lexical: Native body group is empty".into())
+        })?;
+        let mut records = Vec::with_capacity(group.len());
+        let mut keys = Vec::with_capacity(group.len());
+        for body_ref in group {
+            let (body, input, source) = current_inputs.next().ok_or_else(|| {
+                CoreError::InvalidContract(
+                    "lexical: Native body references outnumber inputs".into(),
+                )
+            })?;
+            let record = CurrentRecord {
+                id: body.logical_id,
+                source: input.source_file.clone(),
+                candidate_id: body.candidate_id.clone(),
+                indexed_sha256: body.indexed_sha256,
+                body: body_ref.clone(),
+                segment_key: segment.descriptor.id,
+                local_id: body.local_id,
+            };
+            records.push(record.encode()?);
+            keys.push((body.logical_id, source));
+        }
+        let references = store.put_body_record_groups(lease, &first.root, &records)?;
+        for ((id, source), reference) in keys.into_iter().zip(references) {
+            checked_insert(
+                current_map,
+                current_key(id).to_vec(),
+                Some(reference.clone()),
+            )?;
+            checked_insert(membership_map, membership_key(&source, id), Some(reference))?;
+        }
+    }
+    if current_inputs.next().is_some() {
+        return Err(CoreError::InvalidContract(
+            "lexical: Native body inputs outnumber references".into(),
+        ));
+    }
+    crate::causal_profile::finish_phase("native_segment_body_records", body_started);
+    let mut route_keys = route_keys.into_iter();
+    let mut posting_stats = crate::causal_profile::timed_work("native_segment_gram_pages", || {
+        write_posting_pages(
+            store,
+            lease,
+            segment.descriptor.id,
+            &segment.grams,
+            ObjectKind::NativeTrigrams,
+            &mut route_keys,
+            gram_map,
+        )
+    })?;
+    posting_stats.add(crate::causal_profile::timed_work(
+        "native_segment_term_pages",
+        || {
+            write_posting_pages(
+                store,
+                lease,
+                segment.descriptor.id,
+                &segment.terms,
+                ObjectKind::NativePositions,
+                &mut route_keys,
+                term_map,
+            )
+        },
     )?)?;
+    if route_keys.next().is_some() {
+        return Err(CoreError::InvalidContract(
+            "lexical: Native routes outnumber postings".into(),
+        ));
+    }
     Ok(posting_stats)
 }
 
@@ -2703,6 +2986,7 @@ fn write_posting_pages(
     segment_key: u64,
     postings: &[BuiltPosting],
     kind: ObjectKind,
+    route_keys: &mut impl Iterator<Item = Vec<u8>>,
     edits: &mut BTreeMap<Vec<u8>, Option<BlobRef>>,
 ) -> Result<PostingPageStats, CoreError> {
     let mut page = Vec::<&BuiltPosting>::new();
@@ -2727,6 +3011,7 @@ fn write_posting_pages(
                 segment_key,
                 kind,
                 &page,
+                route_keys,
                 edits,
             )?)?;
             page.clear();
@@ -2749,6 +3034,7 @@ fn write_posting_pages(
             segment_key,
             kind,
             &page,
+            route_keys,
             edits,
         )?)?;
     }
@@ -2761,6 +3047,7 @@ fn flush_posting_page(
     segment_key: u64,
     kind: ObjectKind,
     page: &[&BuiltPosting],
+    route_keys: &mut impl Iterator<Item = Vec<u8>>,
     edits: &mut BTreeMap<Vec<u8>, Option<BlobRef>>,
 ) -> Result<PostingPageStats, CoreError> {
     let bytes = PostingPage::encode(segment_key, page)?;
@@ -2772,50 +3059,11 @@ fn flush_posting_page(
     // An oversized singleton remains one bounded logical blob; the object
     // store splits its physical representation into fixed-size blocks.
     let reference = store.put_blob(lease, kind, &[], &bytes)?;
-    for posting in page {
-        let prefix = match kind {
-            ObjectKind::NativeTrigrams => {
-                if !matches!(posting.surface, GRAM_RAW | GRAM_FOLDED) {
-                    return Err(CoreError::InvalidContract(
-                        "lexical: Native gram surface differs".into(),
-                    ));
-                }
-                let gram: [u8; 3] = posting.key.as_slice().try_into().map_err(|_error| {
-                    CoreError::InvalidContract("lexical: Native gram key width differs".into())
-                })?;
-                gram_prefix(posting.surface, gram).to_vec()
-            }
-            ObjectKind::NativePositions => {
-                if !matches!(posting.surface, TERM_RAW | TERM_FOLDED) {
-                    return Err(CoreError::InvalidContract(
-                        "lexical: Native term surface differs".into(),
-                    ));
-                }
-                let term = std::str::from_utf8(&posting.key).map_err(|error| {
-                    CoreError::InvalidContract(format!("lexical: Native term UTF-8: {error}"))
-                })?;
-                term_prefix(posting.surface, term)?
-            }
-            ObjectKind::FileBody
-            | ObjectKind::FilePostings
-            | ObjectKind::NativeBody
-            | ObjectKind::Segment
-            | ObjectKind::Record
-            | ObjectKind::MapPage
-            | ObjectKind::BlobBlock
-            | ObjectKind::BlobNode
-            | ObjectKind::AttemptBatch
-            | ObjectKind::HardScanAnchor => {
-                return Err(CoreError::InvalidContract(
-                    "lexical: Native posting object kind differs".into(),
-                ));
-            }
-        };
-        checked_insert(
-            edits,
-            route_key(&prefix, segment_key),
-            Some(reference.clone()),
-        )?;
+    for _ in page {
+        let key = route_keys.next().ok_or_else(|| {
+            CoreError::InvalidContract("lexical: Native posting lacks its route key".into())
+        })?;
+        checked_insert(edits, key, Some(reference.clone()))?;
     }
     let oversized = bytes.len() > TARGET_BYTES;
     Ok(PostingPageStats {
@@ -2836,10 +3084,11 @@ fn flush_posting_page(
 #[cfg(test)]
 mod fairness_tests {
     use super::{
-        CLEAN_MERGE_PREPARE_CALLS, PreparedNativeCompaction, inherit_unchanged_posting_index_bytes,
-        native_root_sha256, native_segment_index_roots, prepare_hard_scan_window, publish_delta,
+        CLEAN_MERGE_PREPARE_CALLS, PreparedNativeCompaction, current_key,
+        inherit_unchanged_posting_index_bytes, membership_key, native_root_sha256,
+        native_segment_index_roots, prepare_hard_scan_window, publish_delta,
         publish_delta_prepared_with_policy, read_current, read_route_inventory, read_segment,
-        select_clean_merge_inputs,
+        select_clean_merge_inputs, source_digest,
     };
     use crate::file_authority::paged::{FileAuthorityMutation, build_for_seal};
     use crate::lexical_allocation::DocVersionReservation;
@@ -2848,7 +3097,7 @@ mod fairness_tests {
         RunSelectionProgress, SegmentInput, SegmentRemoval, segment_index_encoded_bytes,
     };
     use crate::lexical_store::{
-        AttemptBinding, Authority, EligibilityWitness, MapEdit, ObjectStore, ScanLane,
+        AttemptBinding, Authority, EligibilityWitness, MapEdit, ObjectKind, ObjectStore, ScanLane,
     };
     use crate::text_authority::paged_manifest::NativeRoot;
     use crate::text_authority::paged_transition::verify_transition_for_seal_with_policy;
@@ -2985,29 +3234,70 @@ mod fairness_tests {
         );
         first_lease.finish_published(&old.root_objects())?;
 
+        // The publisher pays partial-retirement debt immediately. Exercise
+        // the independently authenticated descriptor rewrite stage directly.
         let second_lease = store.begin_attempt(&binding(2)?, &old.root_objects())?;
-        let (next, _) = publish_delta(
-            &store,
-            &second_lease,
-            Some(&old),
-            &[NativeSourceEdit::Delete(source_one)],
-            &[1],
-            &[],
-            false,
-            ManifestGeneration::new(2),
-            [9; 32],
-        )?;
-        check!(
-            !next.is_cursor_only_successor_of(&old)?,
-            "a source retirement cannot use cursor-only admission"
-        );
         let key = 1_u64.to_be_bytes();
         let old_ref = store
             .map_get(&old.segments, &key, None)?
             .ok_or("old segment missing")?;
-        let next_ref = store
-            .map_get(&next.segments, &key, None)?
-            .ok_or("rewritten segment missing")?;
+        let mut descriptor = read_segment(&store, &old, 1)?;
+        check_eq!(descriptor.logical_ids, vec![1, 2]);
+        check_eq!(descriptor.live_locals, vec![0, 1]);
+        let _retired_local = descriptor.live_locals.remove(0);
+        let inventory = descriptor
+            .route_inventory
+            .as_ref()
+            .ok_or("old route inventory missing")?;
+        let next_ref = store.put_blob(
+            &second_lease,
+            ObjectKind::Segment,
+            std::slice::from_ref(&inventory.root),
+            &descriptor.encode()?,
+        )?;
+        let retired_source = source_digest(&source_one)?;
+        let mut next = old.clone();
+        next.source = store.map_apply(
+            &second_lease,
+            &old.source,
+            std::iter::once(Ok(MapEdit {
+                key: retired_source.to_vec(),
+                value: None,
+            })),
+        )?;
+        next.current = store.map_apply(
+            &second_lease,
+            &old.current,
+            std::iter::once(Ok(MapEdit {
+                key: current_key(1).to_vec(),
+                value: None,
+            })),
+        )?;
+        next.membership = store.map_apply(
+            &second_lease,
+            &old.membership,
+            std::iter::once(Ok(MapEdit {
+                key: membership_key(&retired_source, 1),
+                value: None,
+            })),
+        )?;
+        next.segments = store.map_apply(
+            &second_lease,
+            &old.segments,
+            std::iter::once(Ok(MapEdit {
+                key: key.to_vec(),
+                value: Some(next_ref.clone()),
+            })),
+        )?;
+        next.compaction_due = store.map_apply(
+            &second_lease,
+            &old.compaction_due,
+            std::iter::once(Ok(MapEdit {
+                key: key.to_vec(),
+                value: Some(next_ref.clone()),
+            })),
+        )?;
+        next.live_docs = 1;
         check_ne!(old_ref, next_ref);
         let inherited =
             inherit_unchanged_posting_index_bytes(&store, &old, &next, &key, &old_ref, &next_ref)?
@@ -3022,6 +3312,31 @@ mod fairness_tests {
             inherited,
             full,
             "inherited charge must equal physical closure oracle"
+        );
+        let mut incomplete = next.clone();
+        incomplete.gram_routes = crate::lexical_store::MapRoot::default();
+        check!(matches!(
+            native_segment_index_roots(&store, &incomplete, &key, &next_ref),
+            Err(CoreError::InvalidContract(message))
+                if message == "lexical: Native run posting route absent"
+        ));
+        next.run_registry = old.run_registry.apply(
+            &store,
+            &second_lease,
+            &[SegmentRemoval {
+                key: key.to_vec(),
+                reference: old_ref.clone(),
+            }],
+            &[SegmentInput {
+                key: key.to_vec(),
+                reference: next_ref.clone(),
+                index_encoded_bytes: inherited,
+            }],
+        )?;
+        next.validate()?;
+        check!(
+            !next.is_cursor_only_successor_of(&old)?,
+            "a source retirement cannot use cursor-only admission"
         );
         check_eq!(
             next.run_registry
@@ -3079,6 +3394,14 @@ mod fairness_tests {
             .is_err(),
             "independent transition must reject a forged target charge"
         );
+        verify_all_for_scrub(&store, &next, None)?;
+        let staged = NativeAuthority::open(store.clone(), next.clone())?;
+        let staged_budget = RequestBudgetV1::unbounded();
+        check!(staged.read_document(1, &staged_budget)?.is_none());
+        check_eq!(
+            staged.intersect_terms(&["spectral"], true, &staged_budget)?,
+            vec![2]
+        );
 
         let descriptor = read_segment(&store, &next, 1)?;
         let changed_route = read_route_inventory(&store, &descriptor)?
@@ -3125,9 +3448,25 @@ mod fairness_tests {
             ManifestGeneration::new(3),
             [9; 32],
         )?;
-        check_eq!(no_op.segments, next.segments);
-        check_eq!(no_op.run_registry, next.run_registry);
-        check_eq!(no_op_receipt.posting_pages_written, 0);
+        check_ne!(no_op.segments, next.segments);
+        check_eq!(no_op.compaction_due.entries, 0);
+        check_eq!(no_op_receipt.compaction_rederived_docs, 1);
+        check_eq!(no_op_receipt.docs_derived, 0);
+        let _paid_debt = verify_transition_for_seal_with_policy(
+            &store,
+            &no_op,
+            Some(&next),
+            &reservation,
+            &[],
+            &[],
+            &[],
+            false,
+            next.next_segment_id,
+            None,
+            None,
+            None,
+        )?;
+        verify_all_for_scrub(&store, &no_op, None)?;
         third_lease.finish_published(&no_op.root_objects())?;
         let authority = NativeAuthority::open(store, no_op)?;
         let budget = RequestBudgetV1::unbounded();
@@ -3159,11 +3498,20 @@ mod fairness_tests {
         })
     }
 
+    fn distinct_index_terms(id: u64, count: usize) -> String {
+        let mut text = format!("needle{id}");
+        for ordinal in 0..count {
+            text.push(' ');
+            text.push_str(&format!("word{id}x{ordinal:04}"));
+        }
+        text
+    }
+
     fn corpus_text(id: u64) -> String {
         match id {
-            1 => format!("needle{id} {}", "anchor ".repeat(128)),
+            1 => distinct_index_terms(id, 128),
             10 | 19 => format!("needle{id} tiny"),
-            _ => format!("needle{id} {}", "filler ".repeat(512)),
+            _ => distinct_index_terms(id, 256),
         }
     }
 
@@ -3233,9 +3581,9 @@ mod fairness_tests {
         let mut base: Option<NativeRoot> = None;
         for id in 1_u64..=34 {
             let text = if id == 1 {
-                format!("needle{id} {}", "filler ".repeat(64))
+                distinct_index_terms(id, 64)
             } else if id <= 32 {
-                format!("needle{id} {}", "filler ".repeat(512))
+                distinct_index_terms(id, 256)
             } else {
                 format!("needle{id} tiny")
             };
@@ -3492,7 +3840,9 @@ mod fairness_tests {
             base.run_registry.snapshot()?,
             target.run_registry.snapshot()?,
         )?;
-        check_eq!(target.run_registry.runs.entries, 34);
+        // The append and rebuilt pair are two new segments in one new run.
+        // The two selected old runs disappear: 34 - 2 + 1 = 33.
+        check_eq!(target.run_registry.runs.entries, 33);
         check!(
             target
                 .run_registry
@@ -3505,6 +3855,32 @@ mod fairness_tests {
                 .candidate_by_id(&store, 34, None)?
                 .is_none()
         );
+        let replacement_run = target
+            .run_registry
+            .candidate_by_id(&store, 35, None)?
+            .ok_or("missing append and rebuilt run")?;
+        let mut replacement_members = Vec::new();
+        target.run_registry.visit_run_members(
+            &store,
+            &replacement_run,
+            None,
+            &mut |key, _reference, _bytes| {
+                replacement_members.push(key.to_vec());
+                Ok(())
+            },
+        )?;
+        check_eq!(
+            replacement_members,
+            vec![
+                super::segment_key(base.next_segment_id).to_vec(),
+                super::segment_key(
+                    base.next_segment_id
+                        .checked_add(1)
+                        .ok_or("segment ID overflow")?
+                )
+                .to_vec(),
+            ]
+        );
         verify_all_for_scrub(&store, &target, None)?;
         let authority = NativeAuthority::open(store.clone(), target)?;
         let budget = RequestBudgetV1::unbounded();
@@ -3514,9 +3890,9 @@ mod fairness_tests {
                 vec![id]
             );
             let expected = if id == 1 {
-                format!("needle{id} {}", "filler ".repeat(64))
+                distinct_index_terms(id, 64)
             } else if id <= 32 {
-                format!("needle{id} {}", "filler ".repeat(512))
+                distinct_index_terms(id, 256)
             } else {
                 format!("needle{id} tiny")
             };

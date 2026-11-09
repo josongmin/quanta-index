@@ -18,6 +18,10 @@ Current proposals (not accepted decisions or implementation authority):
 ADR 변경은 decision을 바꾸는 breaking change다. 같은 commit에서 downstream contract, inventory, migration
 class와 proof authority를 갱신한다. optional compatibility field나 dual live decoder로 decision drift를 숨기지 않는다.
 
+## November 2026 implemented contracts
+
+- [Native Index execution and custody](NOV-07-001-native-index-execution-and-custody.md) covers the Native occurrence policy, publication/readback custody, IPC settlement and the configured provider boundary. The [November recovery entry](../ARCHIVE-INDEX.md#2026-11-07-november-closeout) maps the retired plans and current acceptance owners.
+
 ## OCT-05 implemented contracts
 
 Oct-04 handoff/implementation history is consolidated into four `Accepted` ADRs.

@@ -24,8 +24,16 @@ pub(crate) fn catalog_lock_span(
     diagnostics: Option<&DiagnosticContextV1>,
     stage: DiagnosticStageV1,
 ) -> Option<DiagnosticSpanGuardV1> {
+    catalog_work_span(diagnostics, stage, DiagnosticLaneV1(0))
+}
+
+pub(crate) fn catalog_work_span(
+    diagnostics: Option<&DiagnosticContextV1>,
+    stage: DiagnosticStageV1,
+    lane: DiagnosticLaneV1,
+) -> Option<DiagnosticSpanGuardV1> {
     let context = diagnostics?;
-    context.enter(stage, DiagnosticLaneV1(0)).map_or_else(
+    context.enter(stage, lane).map_or_else(
         |error| {
             context.health(match error {
                 DiagnosticTraceErrorV1::SpanIdentityExhausted => {

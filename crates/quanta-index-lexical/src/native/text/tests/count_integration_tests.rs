@@ -40,11 +40,15 @@ fn bounded_count_uses_real_postings_and_keeps_full_match_total() -> Result<(), I
 #[test]
 fn bounded_count_discards_provisional_prefix_on_late_posting_corruption() -> Result<(), IndexError>
 {
-    let (mut fixture, second) = two_owner_phrase_fixture()?;
+    let (mut fixture, _second) = two_owner_phrase_fixture()?;
     let plan = keyword_plan(Some(LqCountBound::Bounded(1)))?;
     let second_occurrence = fixture
         .maps
-        .lookup_object(fixture.posting_root, &owner_key(second), &mut budget()?)?
+        .lookup_object(
+            MapRoot(Some(reference(72))),
+            &stored_term_key("one", CaseMode::Sensitive)?,
+            &mut budget()?,
+        )?
         .ok_or_else(|| IndexError::BackendViolation("second posting absent".into()))?;
     fixture.objects.counted_occurrence = Some(second_occurrence);
     fixture

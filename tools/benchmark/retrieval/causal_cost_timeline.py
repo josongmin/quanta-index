@@ -39,6 +39,9 @@ TEXT_OCCURRENCE_DIFF_COUNTERS = frozenset(
         "text_occurrence_validation_failures",
     }
 )
+MAP_ROOT_REUSE_COUNTERS = frozenset(
+    {"map_root_reuse_candidates", "map_root_reuses", "map_root_builds"}
+)
 BM25_AGGREGATE_STAGES = {
     "bm25_census_aggregate": "bm25_census_build",
     "bm25_boundary_aggregate": "bm25_boundary",
@@ -90,11 +93,17 @@ THREAD_CPU_STAGES = frozenset(
     }
 )
 THREAD_CPU_V5_STAGES = THREAD_CPU_STAGES | frozenset(
-    {"managed_object_reserve", "managed_object_confirm", "managed_object_install"}
+    {
+        "managed_object_reserve",
+        "managed_object_confirm",
+        "managed_object_install",
+        "managed_object_advance",
+    }
 )
 THREAD_CPU_V5_SQLITE_LANES = frozenset(
     {*range(3, 9), 11, 12, 15, 16, 21, 25, 26}
 )
+THREAD_CPU_V5_MAP_APPLY_LANES = frozenset(range(6))
 SQLITE_WRITE_BOUNDARY_COUNTERS = frozenset(
     {
         "sqlite_write_admission_calls",
@@ -127,6 +136,8 @@ OBJECT_INSTALL_PHASES = frozenset(
     {
         "child_validation", "namespace_and_create", "write", "file_sync",
         "publish_and_retire", "directory_sync", "barrier", "settlement", "existing",
+        "namespace_validation", "writer_create", "writer_ticket_prepare", "writer_open",
+        "writer_created_witness",
     }
 )
 EXECUTION_BINDING_WIDTHS = {
@@ -412,6 +423,16 @@ def _schema_for_version(schema: dict[str, Any], version: int) -> dict[str, Any]:
         selected["$defs"]["spanBegin"]["properties"]["stage"]["enum"].remove(
             "managed_object_install"
         )
+        selected["$defs"]["spanBegin"]["properties"]["stage"]["enum"].remove(
+            "managed_object_advance"
+        )
+        selected["$defs"]["spanBegin"]["properties"]["stage"]["enum"].remove(
+            "map_apply"
+        )
+        selected["$defs"]["counterKey"]["enum"] = [
+            key for key in selected["$defs"]["counterKey"]["enum"]
+            if key not in MAP_ROOT_REUSE_COUNTERS
+        ]
     if version < 4:
         selected["$defs"]["event"]["properties"]["kind"]["oneOf"] = [
             reference
@@ -643,6 +664,8 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
             if span is None:
                 if kind["key"] in TEXT_OCCURRENCE_DIFF_COUNTERS:
                     raise ValueError("text occurrence Diff counter has no existing owner span")
+                if kind["key"] in MAP_ROOT_REUSE_COUNTERS:
+                    raise ValueError("map root reuse counter has no existing owner span")
                 if kind["key"] in THREAD_CPU_COUNTERS:
                     raise ValueError("thread CPU counter has no existing owner span")
                 if kind["key"] in (
@@ -661,6 +684,13 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
                     raise ValueError("text occurrence Diff counter follows span end")
                 if key in span["counters"]:
                     raise ValueError("text occurrence Diff counter is duplicated")
+            if key in MAP_ROOT_REUSE_COUNTERS:
+                if version != 5 or span["stage"] != "map_apply" or span["lane_id"] != 0:
+                    raise ValueError("map root reuse counter targets wrong version, stage or lane")
+                if span["end_ns"] is not None:
+                    raise ValueError("map root reuse counter follows span end")
+                if key in span["counters"]:
+                    raise ValueError("map root reuse counter is duplicated")
             if (
                 version >= 2
                 and key in NATIVE_IO_SUMMARY_COUNTERS
@@ -671,11 +701,23 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
                 raise ValueError("native IO summary counter follows operation end")
             if key in THREAD_CPU_COUNTERS:
                 stage = span["stage"]
+                map_apply_lane = (
+                    version == 5
+                    and stage == "map_apply"
+                    and span["lane_id"] in THREAD_CPU_V5_MAP_APPLY_LANES
+                )
+                if map_apply_lane and span["lane_id"] != 0:
+                    parent = spans.get(span["parent_span_id"])
+                    map_apply_lane = bool(
+                        parent
+                        and parent["stage"] == "map_apply"
+                        and parent["lane_id"] == (1 if span["lane_id"] == 2 else 0)
+                    )
                 allowed = stage in (THREAD_CPU_V5_STAGES if version == 5 else THREAD_CPU_STAGES) or (
                     version == 5
                     and stage == "sqlite_work"
                     and span["lane_id"] in THREAD_CPU_V5_SQLITE_LANES
-                )
+                ) or map_apply_lane
                 if not allowed:
                     raise ValueError("thread CPU counter targets wrong stage")
                 if key in span["counters"]:
@@ -1157,6 +1199,20 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
                 raise ValueError(f"text occurrence Diff validation attempts exceed u64: {span_id}")
             if span["counters"]["text_occurrence_validation_failures"] > attempts:
                 raise ValueError(f"text occurrence Diff validation failures exceed attempts: {span_id}")
+    for span_id, span in spans.items():
+        observed = set(span["counters"]) & MAP_ROOT_REUSE_COUNTERS
+        if complete and span["stage"] == "map_apply" and span["lane_id"] == 0:
+            if observed != MAP_ROOT_REUSE_COUNTERS:
+                raise ValueError(f"map root reuse counter family is partial: {span_id}")
+        if not observed:
+            continue
+        if span["stage"] != "map_apply" or span["lane_id"] != 0:
+            raise ValueError(f"map root reuse counters target wrong owner span: {span_id}")
+        if {"map_root_reuse_candidates", "map_root_reuses"} <= observed and (
+            span["counters"]["map_root_reuses"]
+            > span["counters"]["map_root_reuse_candidates"]
+        ):
+            raise ValueError(f"map root reuses exceed candidates: {span_id}")
     pager_counts = Counter(
         (counter["span_id"], counter["key"])
         for counter in counters

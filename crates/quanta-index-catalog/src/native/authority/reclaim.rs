@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use super::registration_codec::decode as decode_registration;
 use super::{
-    SqliteCatalog, begin, cached_query_row, check_digest, decode, encode, exactly_one,
-    fields_digest, int, next_fence, object_install, object_key, sql, uint,
+    SqliteCatalog, begin, cached_execute, cached_query_row, check_digest, decode, encode,
+    exactly_one, fields_digest, int, next_fence, object_install, object_key, sql, uint,
 };
 
 const LIVE: i64 = 0;
@@ -276,12 +276,14 @@ fn read_row_with_access(
             (None, stored)
         }
         RowReadAccess::Inspect => {
-            let lengths: Option<(i64, Option<i64>, Option<i64>)> = connection
-                .query_row(
-                    "SELECT phase,length(target),length(row_digest) FROM native_gc_object_v1 WHERE object=?1",
-                    params![&key],
-                    |record| Ok((record.get(0)?, record.get(1)?, record.get(2)?)),
-                ).optional().map_err(|error| sql(&error))?;
+            let lengths: Option<(i64, Option<i64>, Option<i64>)> = cached_query_row(
+                connection,
+                "SELECT phase,length(target),length(row_digest) FROM native_gc_object_v1 WHERE object=?1",
+                params![&key],
+                |record| Ok((record.get(0)?, record.get(1)?, record.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| sql(&error))?;
             let Some((_observed_phase, target_len, digest_len)) = lengths else {
                 return Ok(None);
             };
@@ -292,7 +294,8 @@ fn read_row_with_access(
                     "reclaim object row shape mismatch".into(),
                 ));
             }
-            let stored: StoredLifecycleRow = connection.query_row(
+            let stored: StoredLifecycleRow = cached_query_row(
+                connection,
                 "SELECT generation,kind,phase,direct_children,drained_children,target,row_digest FROM native_gc_object_v1 WHERE object=?1",
                 params![&key],
                 |record| Ok((record.get(0)?,record.get(1)?,record.get(2)?,record.get(3)?,record.get(4)?,record.get(5)?,record.get(6)?)),
@@ -415,7 +418,8 @@ fn update_row(connection: &Connection, row: &Row) -> Result<(), IndexError> {
 
 fn queued(connection: &Connection, object: ObjectRef) -> Result<bool, IndexError> {
     let key = object_key(object);
-    let checksum: Option<Option<Vec<u8>>> = connection.query_row(
+    let checksum: Option<Option<Vec<u8>>> = cached_query_row(
+        connection,
         "SELECT CASE WHEN length(row_digest)=32 THEN row_digest END FROM native_gc_queue_v1 WHERE object=?1",
         params![&key], |record| record.get(0),
     ).optional().map_err(|error| sql(&error))?;
@@ -457,12 +461,12 @@ fn enqueue_row(connection: &Connection, row: &Row) -> Result<bool, IndexError> {
         return Ok(false);
     }
     let key = object_key(row.object);
-    let changed = connection
-        .execute(
-            "INSERT INTO native_gc_queue_v1(object,row_digest) VALUES (?1,?2)",
-            params![&key, fields_digest(b"qidx.native.gc.queue.v1", &key)?],
-        )
-        .map_err(|error| sql(&error))?;
+    let changed = cached_execute(
+        connection,
+        "INSERT INTO native_gc_queue_v1(object,row_digest) VALUES (?1,?2)",
+        params![&key, fields_digest(b"qidx.native.gc.queue.v1", &key)?],
+    )
+    .map_err(|error| sql(&error))?;
     exactly_one(changed, "enqueue reclaim object")?;
     Ok(true)
 }
@@ -641,10 +645,6 @@ pub(super) fn from_key(key: &[u8]) -> Result<ObjectRef, IndexError> {
     Ok(ObjectRef(Digest(exact)))
 }
 
-pub(super) fn release_key(connection: &Connection, key: &[u8]) -> Result<(), IndexError> {
-    release(connection, from_key(key)?)
-}
-
 pub(super) fn release(connection: &Connection, object: ObjectRef) -> Result<(), IndexError> {
     if is_bound(connection)? {
         let _queued = enqueue(connection, object)?;
@@ -723,9 +723,9 @@ pub(super) fn reference_exists(
             reads: 1,
             ..WorkUsage::default()
         })?;
-        let exists: i64 = connection
-            .query_row(query, params![&key], |record| record.get(0))
-            .map_err(|error| sql(&error))?;
+        let exists: i64 =
+            cached_query_row(connection, query, params![&key], |record| record.get(0))
+                .map_err(|error| sql(&error))?;
         if exists != 0 {
             return Ok(true);
         }

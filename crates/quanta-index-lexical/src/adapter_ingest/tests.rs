@@ -276,6 +276,13 @@ fn retention_measurement_includes_shared_closure_and_uncollected_objects() {
 
 #[test]
 fn sealed_replay_and_maintenance_settle_crash_adoptions_before_collection() {
+    use quanta_index_contract::{GenerationSnapshot, SearchPlaneErrorCodeV2};
+    use quanta_index_core::{
+        CoreError, IntegrityScrubBudgetV1, IntegrityScrubPort, SharedObjectCollectionStepV1,
+    };
+    use std::sync::mpsc;
+    use std::time::Duration;
+
     for replay in [false, true] {
         let directory = tempfile::tempdir().expect("state");
         let adapter = LexicalAdapter::with_state_root(directory.path().to_path_buf());
@@ -332,6 +339,58 @@ fn sealed_replay_and_maintenance_settle_crash_adoptions_before_collection() {
                     .pending_target_scopes()
                     .expect("settled replay")
                     .is_empty()
+            );
+        } else {
+            let key = super::GenKey {
+                repo_id: request.repo_id.clone(),
+                revision_id: request.revision_id.clone(),
+                generation: request.generation,
+            };
+            let generation = GenerationSnapshot {
+                repo_id: key.repo_id.clone(),
+                revision_id: key.revision_id.clone(),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: key.generation,
+                manifest_digest: request.manifest_digest.clone(),
+            };
+            let mutation = adapter
+                .generation_mutation_guard(&key)
+                .expect("foreground custody");
+            let (finished, outcome) = mpsc::channel();
+            let background = std::thread::scope(|scope| {
+                let adapter = &adapter;
+                let _worker = scope.spawn(move || {
+                    let collection = adapter.collect_shared_objects_step(32);
+                    let scrub = adapter.scrub_with_quarantine_fence(
+                        &generation,
+                        None,
+                        IntegrityScrubBudgetV1 { max_bytes: 1024 },
+                        &|_| Err(CoreError::InvalidContract("unexpected quarantine".into())),
+                    );
+                    let _sent = finished.send((collection, scrub));
+                });
+                let result = outcome.recv_timeout(Duration::from_secs(5));
+                drop(mutation);
+                result
+            });
+            let (collection, scrub) = background.expect("maintenance deferred without waiting");
+            assert_eq!(
+                collection.expect("collection result"),
+                SharedObjectCollectionStepV1::Paused
+            );
+            assert!(matches!(
+                scrub,
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+                    ..
+                })
+            ));
+            assert_eq!(
+                store
+                    .pending_target_scopes()
+                    .expect("pending attempts")
+                    .len(),
+                1
             );
         }
         let mut completed = false;

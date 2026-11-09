@@ -28,11 +28,32 @@ impl NamespaceFile {
     }
 }
 
+struct HeldDirectory {
+    file: File,
+    device: u64,
+    inode: u64,
+}
+
+impl HeldDirectory {
+    fn new(file: File, metadata: &fs::Metadata) -> Self {
+        Self {
+            file,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        }
+    }
+
+    fn names_same_inode(&self, linked: &fs::Metadata) -> bool {
+        self.device == linked.dev() && self.inode == linked.ino()
+    }
+}
+
 pub(super) struct NamespaceLease {
     root_path: PathBuf,
-    root: File,
+    lease_path: PathBuf,
+    root: HeldDirectory,
     lock: NamespaceFile,
-    objects: Option<File>,
+    objects: Option<HeldDirectory>,
 }
 
 impl NamespaceLease {
@@ -158,7 +179,8 @@ impl NamespaceLease {
         }
         Ok(Self {
             root_path: root.to_path_buf(),
-            root: root_file,
+            lease_path: root.join(LEASE_NAME),
+            root: HeldDirectory::new(root_file, &opened_root),
             lock,
             objects: None,
         })
@@ -185,7 +207,7 @@ impl NamespaceLease {
                 "object directory changed during open".into(),
             ));
         }
-        self.objects = Some(file);
+        self.objects = Some(HeldDirectory::new(file, &opened));
         let _binding = self.validate_objects(objects)?;
         Ok(())
     }
@@ -194,59 +216,53 @@ impl NamespaceLease {
         &self,
         objects: &Path,
     ) -> Result<ObjectNamespaceBinding, IndexError> {
-        let held_root = self
-            .root
-            .metadata()
-            .map_err(|error| IndexError::Storage(format!("inspect held root: {error}")))?;
+        // The concrete root FD stays owned for this lease's lifetime. Its
+        // device/inode cannot be recycled while open; current name metadata
+        // still checks every mode, owner and replacement on each operation.
         let linked_root = fs::symlink_metadata(&self.root_path)
             .map_err(|error| IndexError::Storage(format!("inspect root: {error}")))?;
-        validate_private_root(&held_root)?;
         validate_private_root(&linked_root)?;
-        if held_root.dev() != linked_root.dev() || held_root.ino() != linked_root.ino() {
+        if !self.root.names_same_inode(&linked_root) {
             return Err(IndexError::Storage("object root name changed".into()));
         }
         let held_lock = self.lock.file()?.metadata().map_err(|error| {
             IndexError::Storage(format!("inspect held namespace lease: {error}"))
         })?;
-        let linked_lock = fs::symlink_metadata(self.root_path.join(LEASE_NAME))
+        let linked_lock = fs::symlink_metadata(&self.lease_path)
             .map_err(|error| IndexError::Storage(format!("inspect namespace lease: {error}")))?;
-        validate_private_lease(&held_lock, held_root.dev())?;
-        validate_private_lease(&linked_lock, held_root.dev())?;
+        validate_private_lease(&held_lock, self.root.device)?;
+        validate_private_lease(&linked_lock, self.root.device)?;
         if held_lock.dev() != linked_lock.dev() || held_lock.ino() != linked_lock.ino() {
             return Err(IndexError::Storage(
                 "object namespace lease name changed".into(),
             ));
         }
-        let held_objects = self
-            .objects
-            .as_ref()
-            .ok_or_else(|| {
-                IndexError::BackendViolation("managed object directory is not bound".into())
-            })?
-            .metadata()
-            .map_err(|error| IndexError::Storage(format!("inspect held objects: {error}")))?;
+        let held_objects = self.objects.as_ref().ok_or_else(|| {
+            IndexError::BackendViolation("managed object directory is not bound".into())
+        })?;
         let linked_objects = fs::symlink_metadata(objects)
             .map_err(|error| IndexError::Storage(format!("inspect objects: {error}")))?;
-        validate_private_root(&held_objects)?;
         validate_private_root(&linked_objects)?;
-        if held_objects.dev() != linked_objects.dev() || held_objects.ino() != linked_objects.ino()
-        {
+        if !held_objects.names_same_inode(&linked_objects) {
             return Err(IndexError::Storage("object directory name changed".into()));
         }
         Ok(ObjectNamespaceBinding {
-            root_device: held_root.dev(),
-            root_inode: held_root.ino(),
-            objects_device: held_objects.dev(),
-            objects_inode: held_objects.ino(),
+            root_device: self.root.device,
+            root_inode: self.root.inode,
+            objects_device: held_objects.device,
+            objects_inode: held_objects.inode,
             lease_device: held_lock.dev(),
             lease_inode: held_lock.ino(),
         })
     }
 
     pub(super) fn held_objects(&self) -> Result<&File, IndexError> {
-        self.objects.as_ref().ok_or_else(|| {
-            IndexError::BackendViolation("managed object directory is not bound".into())
-        })
+        self.objects
+            .as_ref()
+            .map(|directory| &directory.file)
+            .ok_or_else(|| {
+                IndexError::BackendViolation("managed object directory is not bound".into())
+            })
     }
 }
 

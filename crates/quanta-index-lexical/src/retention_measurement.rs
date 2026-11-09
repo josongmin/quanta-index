@@ -7,8 +7,9 @@
 //! blocks or bound `SQLite`'s process memory journal. This is disposable state.
 
 use std::collections::BTreeSet;
-use std::sync::{MutexGuard, RwLockReadGuard, TryLockError};
-use std::time::Instant;
+use std::sync::{Arc, Mutex, MutexGuard, RwLockReadGuard, TryLockError, mpsc};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
 use quanta_index_core::domains::generation::{
@@ -25,6 +26,42 @@ use crate::LexicalAdapter;
 use crate::causal_profile::ClosureReadTotalsV1;
 use crate::generation_dir::is_writer_lock_entry;
 use crate::lexical_store::{MAX_CLOSURE_REFS, ObjectKind, ObjectRef, ObjectStore};
+
+const PENDING_BATCH_SIZE: usize = 64;
+const CLOSURE_READ_WORKERS: usize = 4;
+const MIN_PARALLEL_CLOSURE_BATCH: usize = 8;
+
+type ClosureReadResult = (
+    usize,
+    Result<Vec<ObjectRef>, CoreError>,
+    ClosureReadTotalsV1,
+);
+
+fn merge_read_totals(target: &mut ClosureReadTotalsV1, source: ClosureReadTotalsV1) {
+    macro_rules! merge {
+        ($field:ident, $flag:ident) => {
+            if source.overflowed & ClosureReadTotalsV1::$flag != 0 {
+                target.overflowed |= ClosureReadTotalsV1::$flag;
+            } else {
+                ClosureReadTotalsV1::accumulate(
+                    &mut target.$field,
+                    Some(source.$field),
+                    &mut target.overflowed,
+                    ClosureReadTotalsV1::$flag,
+                );
+            }
+        };
+    }
+    merge!(objects_read, OBJECTS_READ);
+    merge!(bytes_read, BYTES_READ);
+    merge!(objects_hashed, OBJECTS_HASHED);
+    merge!(bytes_hashed, BYTES_HASHED);
+    merge!(objects_decoded, OBJECTS_DECODED);
+    merge!(bytes_decoded, BYTES_DECODED);
+    merge!(read_elapsed_ns, READ_ELAPSED);
+    merge!(hash_elapsed_ns, HASH_ELAPSED);
+    merge!(decode_elapsed_ns, DECODE_ELAPSED);
+}
 
 fn storage(action: &str, error: impl std::fmt::Display) -> CoreError {
     CoreError::Storage(format!("lexical retention membership {action}: {error}"))
@@ -351,24 +388,30 @@ impl ClosureMembership {
 
     fn insert_reference(&self, reference: &ObjectRef) -> Result<(), CoreError> {
         let encoded_bytes = width(reference.bytes)?;
-        let _inserted = self
+        let inserted = self
             .db
-            .execute(
-                "INSERT OR IGNORE INTO objects(sha,kind,bytes) VALUES (?1,?2,?3)",
-                params![
+            .prepare_cached("INSERT OR IGNORE INTO objects(sha,kind,bytes) VALUES (?1,?2,?3)")
+            .and_then(|mut statement| {
+                statement.execute(params![
                     reference.sha256.as_slice(),
                     i64::from(reference.kind.code()),
                     encoded_bytes
-                ],
-            )
+                ])
+            })
             .map_err(|error| storage("insert object", error))?;
+        // A newly inserted row has the supplied descriptor. A reused digest
+        // must still prove that its existing kind and width match.
+        if inserted == 1 {
+            return Ok(());
+        }
         let observed: (i64, i64) = self
             .db
-            .query_row(
-                "SELECT kind,bytes FROM objects WHERE sha=?1",
-                params![reference.sha256.as_slice()],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+            .prepare_cached("SELECT kind,bytes FROM objects WHERE sha=?1")
+            .and_then(|mut statement| {
+                statement.query_row(params![reference.sha256.as_slice()], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+            })
             .map_err(|error| storage("read object descriptor", error))?;
         if observed != (i64::from(reference.kind.code()), encoded_bytes) {
             return Err(refusal("one digest has conflicting kind or encoded width"));
@@ -383,82 +426,112 @@ impl ClosureMembership {
     ) -> Result<usize, CoreError> {
         self.insert_reference(reference)?;
         self.db
-            .execute(
-                "INSERT OR IGNORE INTO members(generation,sha) VALUES (?1,?2)",
-                params![&generation[..], reference.sha256.as_slice()],
-            )
+            .prepare_cached("INSERT OR IGNORE INTO members(generation,sha) VALUES (?1,?2)")
+            .and_then(|mut statement| {
+                statement.execute(params![&generation[..], reference.sha256.as_slice()])
+            })
             .map_err(|error| storage("insert generation member", error))
     }
 
-    fn next_pending(&self, generation: &[u8; 8]) -> Result<Option<ObjectRef>, CoreError> {
-        let row: Option<(Vec<u8>, i64, i64)> = self
+    fn pending_batch(&self, generation: &[u8; 8]) -> Result<Vec<ObjectRef>, CoreError> {
+        let limit = i64::try_from(PENDING_BATCH_SIZE)
+            .map_err(|error| storage("pending batch limit width", error))?;
+        let mut statement = self
             .db
-            .query_row(
+            .prepare_cached(
                 "SELECT o.sha,o.kind,o.bytes FROM members m
                  JOIN objects o ON o.sha=m.sha
-                 WHERE m.generation=?1 AND m.expanded=0 ORDER BY m.sha LIMIT 1",
-                params![&generation[..]],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                 WHERE m.generation=?1 AND m.expanded=0 ORDER BY m.sha LIMIT ?2",
             )
-            .optional()
-            .map_err(|error| storage("read pending member", error))?;
-        row.map(|(sha, kind, bytes)| decode_reference(sha, kind, bytes))
-            .transpose()
+            .map_err(|error| storage("prepare pending members", error))?;
+        let mut rows = statement
+            .query(params![&generation[..], limit])
+            .map_err(|error| storage("query pending members", error))?;
+        let mut batch = Vec::new();
+        batch
+            .try_reserve_exact(PENDING_BATCH_SIZE)
+            .map_err(|error| storage("reserve pending members", error))?;
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| storage("next pending member", error))?
+        {
+            batch.push(decode_reference(
+                row.get(0)
+                    .map_err(|error| storage("pending member sha", error))?,
+                row.get(1)
+                    .map_err(|error| storage("pending member kind", error))?,
+                row.get(2)
+                    .map_err(|error| storage("pending member width", error))?,
+            )?);
+        }
+        Ok(batch)
+    }
+
+    fn authentication_state(
+        &self,
+        reference: &ObjectRef,
+        observation: &mut ClosureObservation,
+    ) -> Result<i64, CoreError> {
+        let authenticated: i64 = observation.sql(|| {
+            self.db
+                .prepare_cached("SELECT authenticated FROM objects WHERE sha=?1")
+                .and_then(|mut statement| {
+                    statement.query_row(params![reference.sha256.as_slice()], |row| row.get(0))
+                })
+                .map_err(|error| storage("read object authentication", error))
+        })?;
+        if authenticated != 0 && authenticated != 1 {
+            return Err(refusal("invalid authentication state"));
+        }
+        Ok(authenticated)
     }
 
     fn dependencies(
         &self,
-        store: &ObjectStore,
         reference: &ObjectRef,
+        authenticated: i64,
+        prefetched: Option<Vec<ObjectRef>>,
         observation: &mut ClosureObservation,
         budget: Option<&RequestBudgetV1>,
     ) -> Result<Vec<ObjectRef>, CoreError> {
         checkpoint(budget, "lexical-retention:dependencies")?;
-        let authenticated: i64 = observation.sql(|| {
-            self.db
-                .query_row(
-                    "SELECT authenticated FROM objects WHERE sha=?1",
-                    params![reference.sha256.as_slice()],
-                    |row| row.get(0),
-                )
-                .map_err(|error| storage("read object authentication", error))
-        })?;
         if authenticated == 0 {
-            let children = if observation.enabled {
-                store.object_dependencies_for_closure(reference, &mut observation.totals)?
-            } else {
-                store.object_dependencies(reference, budget)?
-            };
+            let children = prefetched.ok_or_else(|| refusal("authenticated read is absent"))?;
             observation.authenticated(reference, children.len());
             for child in &children {
                 checkpoint(budget, "lexical-retention:dependency")?;
                 observation.sql(|| self.insert_reference(child))?;
                 let _inserted = observation.sql(|| {
                     self.db
-                        .execute(
-                            "INSERT OR IGNORE INTO edges(parent,child) VALUES (?1,?2)",
-                            params![reference.sha256.as_slice(), child.sha256.as_slice()],
-                        )
+                        .prepare_cached("INSERT OR IGNORE INTO edges(parent,child) VALUES (?1,?2)")
+                        .and_then(|mut statement| {
+                            statement.execute(params![
+                                reference.sha256.as_slice(),
+                                child.sha256.as_slice()
+                            ])
+                        })
                         .map_err(|error| storage("insert authenticated dependency", error))
                 })?;
             }
             let _updated = observation.sql(|| {
                 self.db
-                    .execute(
+                    .prepare_cached(
                         "UPDATE objects SET authenticated=1 WHERE sha=?1 AND authenticated=0",
-                        params![reference.sha256.as_slice()],
                     )
+                    .and_then(|mut statement| {
+                        statement.execute(params![reference.sha256.as_slice()])
+                    })
                     .map_err(|error| storage("record object authentication", error))
             })?;
             return Ok(children);
         }
-        if authenticated != 1 {
+        if authenticated != 1 || prefetched.is_some() {
             return Err(refusal("invalid authentication state"));
         }
         let children = observation.sql(|| {
             let mut statement = self
                 .db
-                .prepare(
+                .prepare_cached(
                     "SELECT o.sha,o.kind,o.bytes FROM edges e
                  JOIN objects o ON o.sha=e.child WHERE e.parent=?1 ORDER BY e.child",
                 )
@@ -484,6 +557,45 @@ impl ClosureMembership {
             Ok(children)
         })?;
         Ok(children)
+    }
+
+    fn expand_member(
+        &self,
+        generation: &[u8; 8],
+        reference: &ObjectRef,
+        children: Vec<ObjectRef>,
+        members: &mut usize,
+        expanded_rows: &mut usize,
+        observation: &mut ClosureObservation,
+        budget: Option<&RequestBudgetV1>,
+    ) -> Result<(), CoreError> {
+        for child in children {
+            checkpoint(budget, "lexical-retention:child-object")?;
+            let inserted = observation.sql(|| self.insert_member(generation, &child))?;
+            *members = (*members)
+                .checked_add(inserted)
+                .ok_or_else(|| refusal("member count overflow"))?;
+            if *members > MAX_CLOSURE_REFS {
+                return Err(refusal("object closure exceeds traversal bound"));
+            }
+        }
+        let updated = observation.sql(|| {
+            self.db
+                .prepare_cached(
+                    "UPDATE members SET expanded=1 WHERE generation=?1 AND sha=?2 AND expanded=0",
+                )
+                .and_then(|mut statement| {
+                    statement.execute(params![&generation[..], reference.sha256.as_slice()])
+                })
+                .map_err(|error| storage("complete member expansion", error))
+        })?;
+        if updated != 1 {
+            return Err(refusal("member expansion changed unexpectedly"));
+        }
+        *expanded_rows = (*expanded_rows)
+            .checked_add(updated)
+            .ok_or_else(|| refusal("expanded member count overflow"))?;
+        Ok(())
     }
 
     /// Stage one complete, independently authenticated sealed closure.
@@ -583,38 +695,189 @@ impl ClosureMembership {
             if members > MAX_CLOSURE_REFS {
                 return Err(refusal("object closure exceeds traversal bound"));
             }
-            loop {
-                checkpoint(budget, "lexical-retention:pending-object")?;
-                observation.batch();
-                let Some(reference) = observation.sql(|| self.next_pending(&generation))? else {
-                    break;
-                };
-                let store =
-                    store.ok_or_else(|| refusal("object store missing for nonempty closure"))?;
-                let children = self.dependencies(store, &reference, observation, budget)?;
-                for child in children {
-                    checkpoint(budget, "lexical-retention:child-object")?;
-                    let inserted = observation.sql(|| self.insert_member(&generation, &child))?;
-                    members = members
-                        .checked_add(inserted)
-                        .ok_or_else(|| refusal("member count overflow"))?;
-                    if members > MAX_CLOSURE_REFS {
-                        return Err(refusal("object closure exceeds traversal bound"));
+            thread::scope(|scope| -> Result<(), CoreError> {
+                let (task_tx, task_rx) = mpsc::channel::<(usize, ObjectRef)>();
+                let task_rx = Arc::new(Mutex::new(task_rx));
+                let (result_tx, result_rx) = mpsc::channel::<ClosureReadResult>();
+                let mut result_tx = Some(result_tx);
+                let mut workers = Vec::new();
+                let expansion = (|| -> Result<(), CoreError> {
+                    loop {
+                        checkpoint(budget, "lexical-retention:pending-batch")?;
+                        observation.batch();
+                        let pending = observation.sql(|| self.pending_batch(&generation))?;
+                        if pending.is_empty() {
+                            break;
+                        }
+                        let store = store
+                            .ok_or_else(|| refusal("object store missing for nonempty closure"))?;
+                        if workers.is_empty() && pending.len() < MIN_PARALLEL_CLOSURE_BATCH {
+                            for reference in pending {
+                                checkpoint(budget, "lexical-retention:pending-object")?;
+                                let state = self.authentication_state(&reference, observation)?;
+                                let prefetched = if state == 0 {
+                                    Some(if observation.enabled {
+                                        store.object_dependencies_for_closure(
+                                            &reference,
+                                            budget,
+                                            &mut observation.totals,
+                                        )?
+                                    } else {
+                                        store.object_dependencies(&reference, budget)?
+                                    })
+                                } else {
+                                    None
+                                };
+                                let children = self.dependencies(
+                                    &reference,
+                                    state,
+                                    prefetched,
+                                    observation,
+                                    budget,
+                                )?;
+                                self.expand_member(
+                                    &generation,
+                                    &reference,
+                                    children,
+                                    &mut members,
+                                    &mut expanded_rows,
+                                    observation,
+                                    budget,
+                                )?;
+                            }
+                            continue;
+                        }
+                        if workers.is_empty() {
+                            for _ in 0..CLOSURE_READ_WORKERS {
+                                let receiver = Arc::clone(&task_rx);
+                                let sender = result_tx
+                                    .as_ref()
+                                    .ok_or_else(|| refusal("read worker sender is absent"))?
+                                    .clone();
+                                let observed = observation.enabled;
+                                workers.push(
+                                    thread::Builder::new()
+                                        .name("lexical-closure-read".into())
+                                        .spawn_scoped(scope, move || {
+                                            loop {
+                                                let task = match receiver.lock() {
+                                                    Ok(receiver) => receiver.recv(),
+                                                    Err(_) => break,
+                                                };
+                                                let Ok((index, reference)) = task else { break };
+                                                let mut totals = ClosureReadTotalsV1::default();
+                                                let dependencies = if observed {
+                                                    store.object_dependencies_for_closure(
+                                                        &reference,
+                                                        budget,
+                                                        &mut totals,
+                                                    )
+                                                } else {
+                                                    store.object_dependencies(&reference, budget)
+                                                };
+                                                if sender
+                                                    .send((index, dependencies, totals))
+                                                    .is_err()
+                                                {
+                                                    break;
+                                                }
+                                            }
+                                        })
+                                        .map_err(|error| {
+                                            storage("spawn authenticated read worker", error)
+                                        })?,
+                                );
+                            }
+                            drop(result_tx.take());
+                        }
+                        let mut states = Vec::with_capacity(pending.len());
+                        let mut reads = 0_usize;
+                        for reference in &pending {
+                            checkpoint(budget, "lexical-retention:pending-object")?;
+                            let state = self.authentication_state(reference, observation);
+                            if matches!(&state, Ok(0)) {
+                                reads += 1;
+                            }
+                            states.push(state);
+                        }
+                        // The channel contains at most one pending batch. Workers
+                        // return dependencies only; object bodies retire in store.
+                        let mut prefetched: Vec<Option<Result<Vec<ObjectRef>, CoreError>>> =
+                            std::iter::repeat_with(|| None)
+                                .take(pending.len())
+                                .collect();
+                        for (index, reference) in pending.iter().enumerate() {
+                            if matches!(states.get(index), Some(Ok(0))) {
+                                task_tx
+                                    .send((index, reference.clone()))
+                                    .map_err(|error| storage("queue authenticated read", error))?;
+                            }
+                        }
+                        for _ in 0..reads {
+                            let (index, result, totals) = loop {
+                                match result_rx.recv_timeout(Duration::from_millis(50)) {
+                                    Ok(result) => break result,
+                                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                        return Err(refusal(
+                                            "authenticated read worker disconnected",
+                                        ));
+                                    }
+                                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                                        checkpoint(budget, "lexical-retention:read-worker")?;
+                                        if workers.iter().any(|worker| worker.is_finished()) {
+                                            return Err(refusal(
+                                                "authenticated read worker stopped early",
+                                            ));
+                                        }
+                                    }
+                                }
+                            };
+                            merge_read_totals(&mut observation.totals, totals);
+                            if !matches!(states.get(index), Some(Ok(0)))
+                                || prefetched[index].is_some()
+                            {
+                                return Err(refusal("duplicate or unexpected authenticated read"));
+                            }
+                            prefetched[index] = Some(result);
+                        }
+                        // Apply dependency edges and members in the original SHA
+                        // order so the first error and rollback are deterministic.
+                        for (index, (reference, state)) in
+                            pending.into_iter().zip(states.into_iter()).enumerate()
+                        {
+                            checkpoint(budget, "lexical-retention:pending-object")?;
+                            let state = state?;
+                            let children = self.dependencies(
+                                &reference,
+                                state,
+                                prefetched[index].take().transpose()?,
+                                observation,
+                                budget,
+                            )?;
+                            self.expand_member(
+                                &generation,
+                                &reference,
+                                children,
+                                &mut members,
+                                &mut expanded_rows,
+                                observation,
+                                budget,
+                            )?;
+                        }
                     }
+                    Ok(())
+                })();
+                drop(task_tx);
+                drop(result_tx);
+                let mut panicked = false;
+                for worker in workers {
+                    panicked |= worker.join().is_err();
                 }
-                let updated = observation.sql(|| self.db
-                    .execute(
-                        "UPDATE members SET expanded=1 WHERE generation=?1 AND sha=?2 AND expanded=0",
-                        params![&generation[..], reference.sha256.as_slice()],
-                    )
-                    .map_err(|error| storage("complete member expansion", error)))?;
-                if updated != 1 {
-                    return Err(refusal("member expansion changed unexpectedly"));
+                if panicked {
+                    return Err(storage("authenticated read worker", "panicked"));
                 }
-                expanded_rows = expanded_rows
-                    .checked_add(updated)
-                    .ok_or_else(|| refusal("expanded member count overflow"))?;
-            }
+                expansion
+            })?;
             let inserted = observation.sql(|| {
                 self.db
                     .execute(
@@ -1055,6 +1318,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::lexical_store::AttemptBinding;
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
     use quanta_index_core::{
         DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticEmitV1, DiagnosticEventKindV1,
         DiagnosticEventSinkV1, DiagnosticLaneV1, DiagnosticRootKindV1,
@@ -1103,6 +1367,83 @@ mod tests {
     }
 
     #[test]
+    fn parallel_closure_read_preserves_fixed_authentication_and_corruption_oracles()
+    -> Result<(), Box<dyn Error>> {
+        let directory = tempfile::tempdir()?;
+        let store = ObjectStore::open(directory.path())?;
+        let lease = store.begin_attempt(&binding(), &[])?;
+        let fixed = store.put_blob(&lease, ObjectKind::Record, &[], b"auth-parity")?;
+        // SHA-256 of QLSTOR01, format 1, Record, zero dependencies,
+        // and the inline blob payload 0x00 || "auth-parity".
+        assert_eq!(fixed.root.bytes, 33);
+        assert_eq!(
+            fixed.root.sha256,
+            [
+                0x74, 0xe8, 0x95, 0x07, 0xb9, 0x01, 0x3a, 0x5e, 0xfc, 0x5c, 0xbe, 0xa8, 0x36, 0x59,
+                0x90, 0xed, 0xa3, 0x99, 0x29, 0x6a, 0x94, 0xc4, 0xae, 0x1c, 0x41, 0x3f, 0xf2, 0x96,
+                0x60, 0x3d, 0x7c, 0xf3,
+            ]
+        );
+        assert!(store.object_dependencies(&fixed.root, None)?.is_empty());
+
+        let mut roots = vec![fixed.root.clone()];
+        for index in 0..64 {
+            let object = store.put_blob(
+                &lease,
+                ObjectKind::Record,
+                &[],
+                format!("auth-parity-{index}").as_bytes(),
+            )?;
+            roots.push(object.root);
+        }
+        let expected_bytes = roots.iter().try_fold(0_u64, |sum, reference| {
+            sum.checked_add(reference.bytes)
+                .ok_or("fixture byte overflow")
+        })?;
+        let mut membership = ClosureMembership::open(1024 * 1024)?;
+        let generation = ManifestGeneration::new(1);
+        membership.record_generation(Some(&store), generation, "fixed", &roots, None)?;
+        assert_eq!(membership.union_bytes(&set(&[1]))?, expected_bytes);
+
+        let corrupt = [
+            ObjectRef {
+                kind: ObjectKind::FileBody,
+                ..fixed.root.clone()
+            },
+            ObjectRef {
+                bytes: fixed.root.bytes + 1,
+                ..fixed.root.clone()
+            },
+            ObjectRef {
+                sha256: [u8::MAX; 32],
+                ..fixed.root.clone()
+            },
+        ];
+        for reference in corrupt {
+            let direct = store.object_dependencies(&reference, None).unwrap_err();
+            let mut membership = ClosureMembership::open(1024 * 1024)?;
+            let mut corrupt_roots = roots.clone();
+            corrupt_roots[0] = reference;
+            let result = membership.record_generation(
+                Some(&store),
+                generation,
+                "corrupt",
+                &corrupt_roots,
+                None,
+            );
+            assert_eq!(result.unwrap_err().to_string(), direct.to_string());
+            assert!(!membership.cached(generation, "corrupt")?);
+            assert!(matches!(
+                membership.union_bytes(&set(&[1])),
+                Err(CoreError::InvalidContract(message))
+                    if message.contains("requested closure was not authenticated")
+            ));
+        }
+        lease.discard_unsealed()?;
+        Ok(())
+    }
+
+    #[test]
     fn closure_trace_charges_only_new_authentication_on_shared_and_cached_paths()
     -> Result<(), Box<dyn Error>> {
         macro_rules! check {
@@ -1140,6 +1481,21 @@ mod tests {
             std::slice::from_ref(&shared.root),
             b"right",
         )?;
+        let expired = RequestBudgetV1::until(Instant::now());
+        let mut totals = ClosureReadTotalsV1::default();
+        for result in [
+            store.object_dependencies(&shared.root, Some(&expired)),
+            store.object_dependencies_for_closure(&shared.root, Some(&expired), &mut totals),
+        ] {
+            check!(matches!(
+                result,
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::RequestDeadlineExceeded,
+                    ..
+                })
+            ));
+        }
+        check_eq!(totals.objects_read, 0);
         let sink = Arc::new(RecordingSink::default());
         let context = DiagnosticContextV1::new(
             DiagnosticCaptureIdV1([9; 16]),
@@ -1229,7 +1585,10 @@ mod tests {
             ]
         );
         check_eq!(values(DiagnosticCounterV1::FilesRead), [2, 1, 1, 0]);
-        check_eq!(values(DiagnosticCounterV1::SqliteBatches), [3, 3, 3, 0]);
+        // Each successful uncached probe fetches its root, then its child,
+        // then an empty batch. The failed probe fetches both roots together
+        // and stops on the missing object before another query.
+        check_eq!(values(DiagnosticCounterV1::SqliteBatches), [3, 3, 1, 0]);
         check_eq!(values(DiagnosticCounterV1::SqliteRows), [2, 2, 0, 0]);
         lease.discard_unsealed()?;
         Ok(())
@@ -1296,6 +1655,30 @@ mod tests {
         check_eq!(membership.union_bytes(&set(&[]))?, 0);
         check_eq!(membership.union_bytes(&set(&[1, 2]))?, both_gold);
 
+        let conflicting = ObjectRef {
+            bytes: shared
+                .root
+                .bytes
+                .checked_add(1)
+                .ok_or("fixture width overflow")?,
+            ..shared.root.clone()
+        };
+        let Err(conflict) = membership.record_generation(
+            Some(&store),
+            ManifestGeneration::new(3),
+            "g3",
+            &[conflicting],
+            None,
+        ) else {
+            return Err("a reused digest must prove its descriptor".into());
+        };
+        check!(
+            conflict
+                .to_string()
+                .contains("conflicting kind or encoded width")
+        );
+        check!(!membership.cached(ManifestGeneration::new(3), "g3")?);
+
         let missing = ObjectRef {
             kind: ObjectKind::Record,
             bytes: 1,
@@ -1307,7 +1690,7 @@ mod tests {
                     Some(&store),
                     ManifestGeneration::new(3),
                     "g3",
-                    &[right.root.clone(), missing],
+                    &[right.root.clone(), missing.clone()],
                     None,
                 )
                 .is_err()
@@ -1344,6 +1727,48 @@ mod tests {
                 .cached(ManifestGeneration::new(3), "forged")
                 .is_err()
         );
+
+        // Cross multiple pending batches with a shared dependency. A late
+        // missing object must roll back all earlier authenticated members.
+        let wide_generation = ManifestGeneration::new(4);
+        let mut wide_roots = Vec::new();
+        let mut wide_gold = shared.root.bytes;
+        for index in 0..129 {
+            let payload = format!("wide-{index}");
+            let object = store.put_blob(
+                &lease,
+                ObjectKind::Record,
+                std::slice::from_ref(&shared.root),
+                payload.as_bytes(),
+            )?;
+            wide_gold = wide_gold
+                .checked_add(object.root.bytes)
+                .ok_or("wide closure byte total overflow")?;
+            check!(object.root.sha256 < missing.sha256);
+            wide_roots.push(object.root);
+        }
+        let mut failing_roots = wide_roots.clone();
+        failing_roots.push(missing);
+        let scratch_counts = || -> rusqlite::Result<(i64, i64, i64)> {
+            membership.db.query_row(
+                "SELECT (SELECT count(*) FROM members),
+                        (SELECT count(*) FROM objects),
+                        (SELECT count(*) FROM edges)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+        };
+        let before_failure = scratch_counts()?;
+        check!(
+            membership
+                .record_generation(Some(&store), wide_generation, "wide", &failing_roots, None)
+                .is_err()
+        );
+        check_eq!(scratch_counts()?, before_failure);
+        check!(!membership.cached(wide_generation, "wide")?);
+        check_eq!(membership.union_bytes(&set(&[1, 2]))?, both_gold);
+        membership.record_generation(Some(&store), wide_generation, "wide", &wide_roots, None)?;
+        check_eq!(membership.union_bytes(&set(&[4]))?, wide_gold);
         lease.discard_unsealed()?;
         Ok(())
     }

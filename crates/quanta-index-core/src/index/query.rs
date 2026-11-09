@@ -2,9 +2,10 @@
 //! existing query contract; concrete adapters choose their own typed result.
 
 use super::{
-    CoverageBinding, CoverageStatus, GroupActivation, IndexError, InstanceSpec, ObjectRef,
-    TicketRecord, ViewRef, WorkBudget,
+    CoverageBinding, CoverageStatus, GroupActivation, IndexError, InputDomain, InstanceSpec,
+    MemberBinding, ObjectRef, TicketRecord, ViewRef, WorkBudget, decode_member_binding,
     effort::ResourceNeed,
+    member_map_key,
     ports::{ImmutableObjectPort, PersistentMapPort},
 };
 pub use quanta_index_contract::{FiniteScore, FiniteScoreError};
@@ -126,6 +127,43 @@ pub struct QueryReadContext<'a> {
     pub objects: &'a dyn ImmutableObjectPort,
     pub maps: &'a dyn PersistentMapPort,
     pub budget: &'a mut WorkBudget,
+}
+
+impl QueryReadContext<'_> {
+    /// Read the source-local member pinned by this ticket and instance.
+    pub fn source_member_binding(&mut self) -> Result<MemberBinding, IndexError> {
+        if self.instance.input_domain != InputDomain::SourceLocal {
+            return Err(IndexError::InvalidInput(
+                "source member requires a source-local instance".into(),
+            ));
+        }
+        let key = member_map_key(self.instance.instance);
+        let reference = self
+            .maps
+            .lookup_object(self.ticket.view.members, &key, self.budget)?
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        let stored = self.objects.get(reference, self.budget)?;
+        let member = decode_member_binding(&stored.payload, self.budget)?;
+        let children = [Some(member.artifact), member.input.root.0];
+        if stored.registration.reference != reference
+            || !stored
+                .registration
+                .children
+                .iter()
+                .copied()
+                .eq(children.into_iter().flatten())
+            || member.instance != self.instance.instance
+            || member.format != self.instance.format
+            || member.input.schema != self.instance.schema
+            || member.input.policy != self.instance.policy
+            || member.input.root != self.ticket.view.source.owners
+        {
+            return Err(IndexError::CorruptObject(
+                "source member differs from selected ticket or instance".into(),
+            ));
+        }
+        Ok(member)
+    }
 }
 
 /// Generic over the existing typed public request and the adapter's result.

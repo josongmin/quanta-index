@@ -615,11 +615,19 @@ mod tests {
                 .lookup_object(owners, b"owner", &mut budget())?
                 == Some(owner_ref),
         )?;
-        let mut values = [None];
+        let keys = [
+            b"owner".as_slice(),
+            b"absent".as_slice(),
+            b"owner".as_slice(),
+        ];
+        let mut values = [None; 3];
         scope
             .maps()
-            .lookup_batch(owners, &[b"owner".as_slice()], &mut values, &mut budget())?;
-        require(values.first().copied() == Some(Some(owner_ref.into())))?;
+            .lookup_batch(owners, &keys, &mut values, &mut budget())?;
+        require(values == [Some(owner_ref.into()), None, Some(owner_ref.into())])?;
+        for (key, value) in keys.iter().zip(values) {
+            require(scope.maps().lookup(owners, key, &mut budget())? == value)?;
+        }
         let page = scope.maps().scan(owners, None, 1, &mut budget())?;
         require(
             page.entries.len() == 1

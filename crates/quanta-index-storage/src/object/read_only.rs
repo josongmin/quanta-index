@@ -90,6 +90,37 @@ impl FileObjectReader {
         max_pending: u32,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
+        self.verify_closure_inner(roots, None, max_pending, budget)
+            .map(|_| ())
+    }
+
+    /// Authenticate the complete closure and retain two protected root bodies
+    /// from that same traversal for the caller's domain validation. The two
+    /// roots may alias; `StoredObject` clones share their charged allocation.
+    pub fn verify_closure_with_selected_roots(
+        &self,
+        roots: &[ObjectRef],
+        selected: [ObjectRef; 2],
+        max_pending: u32,
+        budget: &mut WorkBudget,
+    ) -> Result<[StoredObject; 2], IndexError> {
+        budget.checkpoint()?;
+        if selected.iter().any(|reference| !roots.contains(reference)) {
+            return Err(IndexError::CorruptObject(
+                "selected object absent from protected roots".into(),
+            ));
+        }
+        self.verify_closure_inner(roots, Some(selected), max_pending, budget)?
+            .ok_or_else(|| IndexError::CorruptObject("selected closure roots missing".into()))
+    }
+
+    fn verify_closure_inner(
+        &self,
+        roots: &[ObjectRef],
+        selected: Option<[ObjectRef; 2]>,
+        max_pending: u32,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<[StoredObject; 2]>, IndexError> {
         budget.checkpoint()?;
         let maximum = usize::try_from(max_pending).map_err(|_error| IndexError::ResourceLimited)?;
         if maximum == 0 || roots.len() > maximum {
@@ -108,6 +139,7 @@ impl FileObjectReader {
             .try_reserve_exact(maximum)
             .map_err(|_error| IndexError::ResourceLimited)?;
         pending.extend(roots.iter().rev().copied());
+        let mut selected_objects = [None, None];
         while let Some(reference) = pending.pop() {
             let stored = self.get(reference, budget)?;
             let needed = pending
@@ -118,9 +150,27 @@ impl FileObjectReader {
                 return Err(IndexError::ResourceLimited);
             }
             pending.extend(stored.registration.children.iter().rev().copied());
+            if let Some(selected) = selected {
+                for (target, slot) in selected.into_iter().zip(&mut selected_objects) {
+                    if reference == target && slot.is_none() {
+                        *slot = Some(stored.clone());
+                    }
+                }
+            }
         }
         let _binding = self.namespace_binding()?;
-        budget.checkpoint()
+        budget.checkpoint()?;
+        match selected {
+            Some(_) => Ok(Some([
+                selected_objects[0].take().ok_or_else(|| {
+                    IndexError::CorruptObject("selected closure request missing".into())
+                })?,
+                selected_objects[1].take().ok_or_else(|| {
+                    IndexError::CorruptObject("selected closure profile missing".into())
+                })?,
+            ])),
+            None => Ok(None),
+        }
     }
 }
 

@@ -2785,6 +2785,174 @@ def _v5_bytes(rows: list[dict | list]) -> bytes:
     return b"".join(json.dumps(row, separators=(",", ":")).encode() + b"\n" for row in rows)
 
 
+def _v5_map_root_rows(*, outcome: str = "ok") -> list[dict | list]:
+    rows = _v5_rows()
+    rows[2][4] = ["b", 2, 1, "map_apply", 0, None]
+    rows[3:4] = [
+        ["e", 0, CAPTURE, 25, ["c", 2, key, value]]
+        for key, value in (
+            ("map_root_reuse_candidates", 2),
+            ("map_root_reuses", 1),
+            ("map_root_builds", 1),
+        )
+    ]
+    rows[-3][4] = ["e", 2, outcome, 1 if outcome == "error" else None]
+    count = len(rows) - 2
+    for sequence, event in enumerate(rows[1:-1], 1):
+        event[1] = sequence
+    rows[-1].update(
+        last_output_seq=count, events_attempted=count,
+        events_accepted=count, events_written=count,
+    )
+    return rows
+
+
+def _v5_map_cpu_rows(lane: int) -> list[dict | list]:
+    rows = _v5_map_root_rows()
+    if lane != 0:
+        if lane == 2:
+            rows.insert(3, ["e", 0, CAPTURE, 21, ["b", 3, 2, "map_apply", 1, None]])
+            rows.insert(4, ["e", 0, CAPTURE, 22, ["b", 4, 3, "map_apply", lane, None]])
+            span_id = 4
+        else:
+            rows.insert(3, ["e", 0, CAPTURE, 22, ["b", 3, 2, "map_apply", lane, None]])
+            span_id = 3
+    else:
+        span_id = 2
+    rows.insert(-3, ["e", 0, CAPTURE, 27, ["c", span_id, "thread_cpu_ns", 7]])
+    if lane != 0:
+        rows.insert(-3, ["e", 0, CAPTURE, 30, ["e", span_id, "ok", None]])
+        if lane == 2:
+            rows.insert(-3, ["e", 0, CAPTURE, 32, ["e", 3, "ok", None]])
+    count = len(rows) - 2
+    for sequence, event in enumerate(rows[1:-1], 1):
+        event[1] = sequence
+    rows[-1].update(
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
+    )
+    return rows
+
+
+@pytest.mark.parametrize("lane", range(6))
+def test_v5_map_apply_cpu_accepts_only_emitted_phase_lanes(lane: int) -> None:
+    captured = parse(_v5_bytes(_v5_map_cpu_rows(lane)))
+    assert captured["status"] == "complete"
+    span_id = 4 if lane == 2 else 3 if lane else 2
+    span = captured["spans"][span_id]
+    assert span["stage"] == "map_apply"
+    assert span["lane_id"] == lane
+    assert span["counters"]["thread_cpu_ns"] == 7
+    assert span["parent_span_id"] == (3 if lane == 2 else 2 if lane else 1)
+
+
+@pytest.mark.parametrize("fault", ("unknown_lane", "wrong_parent", "wrong_nested_parent"))
+def test_v5_map_apply_cpu_rejects_unknown_lane_or_parent(fault: str) -> None:
+    lane = 2 if fault == "wrong_nested_parent" else 1
+    rows = _v5_map_cpu_rows(lane)
+    if fault == "unknown_lane":
+        rows[3][4][4] = 6
+    elif fault == "wrong_parent":
+        rows[3][4][2] = 1
+    else:
+        rows[4][4][2] = 2
+    with pytest.raises(ValueError, match="thread CPU counter targets wrong stage"):
+        parse(_v5_bytes(rows))
+
+
+def test_v4_map_apply_cpu_is_not_admitted_as_a_legacy_stage() -> None:
+    rows = _v5_map_cpu_rows(0)
+    rows[0]["schema_version"] = rows[-1]["schema_version"] = 4
+    with pytest.raises(ValueError):
+        parse(_v5_bytes(rows))
+
+
+@pytest.mark.parametrize("outcome", ("ok", "error"))
+def test_v5_map_root_reuse_counters_keep_completed_and_failed_batch(outcome: str) -> None:
+    captured = parse(_v5_bytes(_v5_map_root_rows(outcome=outcome)))
+    assert captured["status"] == "complete"
+    assert captured["spans"][2]["outcome"] == outcome
+    assert captured["spans"][2]["counters"] == {
+        "map_root_reuse_candidates": 2,
+        "map_root_reuses": 1,
+        "map_root_builds": 1,
+    }
+    summary = next(row for row in summarize(captured)["spans"] if row["span_id"] == 2)
+    assert summary["counters"] == captured["spans"][2]["counters"]
+
+
+@pytest.mark.parametrize(
+    ("fault", "error"),
+    (
+        ("missing", "family is partial"),
+        ("absent", "family is partial"),
+        ("duplicate", "duplicated"),
+        ("wrong_stage", "wrong version, stage or lane"),
+        ("wrong_lane", "wrong version, stage or lane"),
+        ("orphan", "no existing owner"),
+        ("after_end", "follows span end"),
+        ("reuses_exceed_candidates", "reuses exceed candidates"),
+    ),
+)
+def test_v5_map_root_reuse_rejects_invalid_family(fault: str, error: str) -> None:
+    rows = _v5_map_root_rows()
+    if fault == "missing":
+        del rows[3]
+    elif fault == "absent":
+        del rows[3:6]
+    elif fault == "duplicate":
+        rows.insert(4, copy.deepcopy(rows[3]))
+    elif fault == "wrong_stage":
+        rows[2][4][3] = "native_text_inventory_map_apply"
+    elif fault == "wrong_lane":
+        rows[2][4][4] = 1
+    elif fault == "orphan":
+        rows[3][4][1] = 99
+    elif fault == "after_end":
+        rows[3], rows[-3] = rows[-3], rows[3]
+        rows[-3][3] = rows[3][3]
+    else:
+        rows[4][4][3] = 3
+    count = len(rows) - 2
+    for sequence, event in enumerate(rows[1:-1], 1):
+        event[1] = sequence
+    rows[-1].update(
+        last_output_seq=count, events_attempted=count,
+        events_accepted=count, events_written=count,
+    )
+    with pytest.raises(ValueError, match=error):
+        parse(_v5_bytes(rows))
+
+
+def test_v5_map_root_partial_capture_keeps_observed_prefix() -> None:
+    rows = _v5_map_root_rows()
+    del rows[5]
+    rows[-1]["status"] = "partial"
+    count = len(rows) - 2
+    for sequence, event in enumerate(rows[1:-1], 1):
+        event[1] = sequence
+    rows[-1].update(
+        last_output_seq=count, events_attempted=count,
+        events_accepted=count, events_written=count,
+    )
+    captured = parse(_v5_bytes(rows))
+    assert captured["status"] == "partial"
+    assert captured["spans"][2]["counters"] == {
+        "map_root_reuse_candidates": 2,
+        "map_root_reuses": 1,
+    }
+
+
+def test_v4_rejects_v5_map_root_stage_and_counters() -> None:
+    schema = _schema_for_version(json.loads(SCHEMA.read_text()), 4)
+    assert "map_apply" not in schema["$defs"]["spanBegin"]["properties"]["stage"]["enum"]
+    assert not set(("map_root_reuse_candidates", "map_root_reuses", "map_root_builds")) & set(
+        schema["$defs"]["counterKey"]["enum"]
+    )
+
+
 TEXT_OCCURRENCE_DIFF_GOLD = (
     ("text_occurrence_prior_validation_attempts", 2),
     ("text_occurrence_next_validation_attempts", 3),
@@ -2965,6 +3133,25 @@ def test_v5_object_install_phase_replay_summary_and_perfetto() -> None:
 
 
 @pytest.mark.parametrize(
+    "phase",
+    (
+        "namespace_and_create",
+        "namespace_validation",
+        "writer_create",
+        "writer_ticket_prepare",
+        "writer_open",
+        "writer_created_witness",
+    ),
+)
+def test_v5_object_install_namespace_phases_replay(phase: str) -> None:
+    rows = _v5_object_install_rows()
+    rows[3][4]["phase"] = phase
+    captured = parse(_v5_bytes(rows))
+    observed = summarize(captured)["object_install_aggregates"]
+    assert observed[0]["phase"] == phase
+
+
+@pytest.mark.parametrize(
     ("field", "value", "error"),
     (
         ("phase", "unknown", "invalid causal timeline row"),
@@ -2994,13 +3181,14 @@ def test_v5_object_install_rejects_duplicate_phase_and_missing_cpu_field() -> No
         parse(_v5_bytes(rows))
 
 
-def test_v4_rejects_v5_object_install_stage_and_aggregate() -> None:
+def test_v4_rejects_v5_object_install_advance_stages_and_aggregate() -> None:
     rows = [json.loads(line) for line in _capture().splitlines()]
     for row in (rows[0], rows[-1]):
         row["schema_version"] = 4
-    rows[2]["kind"]["stage"] = "managed_object_install"
-    with pytest.raises(ValueError, match="invalid causal timeline row"):
-        parse(_v5_bytes(rows))
+    for stage in ("managed_object_install", "managed_object_advance"):
+        rows[2]["kind"]["stage"] = stage
+        with pytest.raises(ValueError, match="invalid causal timeline row"):
+            parse(_v5_bytes(rows))
     rows[2]["kind"]["stage"] = "query_candidate"
     rows[3]["kind"] = _v5_object_install_rows()[3][4]
     with pytest.raises(ValueError, match="invalid causal timeline row"):
@@ -3043,6 +3231,7 @@ def test_v5_compaction_thread_cpu_keeps_exact_wire_and_rejects_async_stage() -> 
     (
         ("managed_object_reserve", 0),
         ("managed_object_confirm", 0),
+        ("managed_object_advance", 0),
         ("sqlite_work", 3),
         ("sqlite_work", 8),
         ("sqlite_work", 11),

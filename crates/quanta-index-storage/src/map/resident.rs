@@ -1,13 +1,13 @@
 //! Bounded, request-owned staging for one short scalar map edit.
 //!
 //! `update_one` walks at most one node per key nibble. Each unwound frame
-//! writes at most one node; a split writes at most three more, and root
-//! materialization at most one. Unary compression rewrites its result, not an
-//! additional level. Thus a 64-byte key can stage no more than 2*64+4 nodes.
-//! Existing nodes may still have the full physical prefix/inline payload, so
-//! wire capacity is bounded by the physical node limit, never by key length.
+//! produces at most one radix node; a split adds at most three, and root
+//! materialization at most one. A rewritten node can also spill at most one
+//! terminal-only packed child per edge. Each spill has no packed descendants.
+//! Existing nodes may have the full physical prefix/inline payload, so wire
+//! capacity is bounded by the physical node limit, never by key length.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use quanta_index_core::index::{IndexError, ObjectRef, WorkBudget, WorkUsage};
 
@@ -19,7 +19,7 @@ use crate::{
 
 pub(super) const MAX_SINGLE_KEY_BYTES: usize =
     quanta_index_core::index::ports::MAX_OBJECT_MAP_BATCH_KEY_BYTES;
-const MAX_RESIDENT_NODES: usize = MAX_SINGLE_KEY_BYTES * 2 + 4;
+const MAX_RESIDENT_NODES: usize = (MAX_SINGLE_KEY_BYTES * 2 + 4) * 17;
 const MAX_NODE_WIRE_BYTES: usize = 16 + MAX_NODE_CHILDREN * 32 + MAX_NODE_PAYLOAD;
 const MAX_RESIDENT_WIRE_BYTES: usize = MAX_RESIDENT_NODES * MAX_NODE_WIRE_BYTES;
 
@@ -38,6 +38,8 @@ struct State {
 
 pub(super) struct ResidentStage {
     state: RefCell<State>,
+    packed_root: Option<usize>,
+    pack_terminal_subtrees: Cell<bool>,
     node_limit: usize,
     wire_limit: usize,
     object_wire_allowance_added: bool,
@@ -50,8 +52,19 @@ impl ResidentStage {
 
     /// Two original short-key paths contribute at most twice the single-root
     /// bound. One shared stage still deduplicates their reachable DAG/installs.
-    pub(super) fn pair() -> Self {
-        Self::with_bounds(2 * MAX_RESIDENT_NODES, 2 * MAX_RESIDENT_WIRE_BYTES)
+    pub(super) fn pair(packed_root: Option<usize>) -> Self {
+        let mut stage = Self::with_bounds(2 * MAX_RESIDENT_NODES, 2 * MAX_RESIDENT_WIRE_BYTES);
+        stage.packed_root = packed_root;
+        stage
+    }
+
+    pub(super) fn select_root(&self, ordinal: usize) {
+        self.pack_terminal_subtrees
+            .set(self.packed_root == Some(ordinal));
+    }
+
+    pub(super) fn shares_pair_layout(&self) -> bool {
+        self.packed_root.is_none()
     }
 
     pub(super) fn with_objects(count: usize, bytes: usize) -> Result<Self, IndexError> {
@@ -139,6 +152,8 @@ impl ResidentStage {
                 entries: MapBuffer::new(node_limit),
                 wire_bytes: 0,
             }),
+            packed_root: None,
+            pack_terminal_subtrees: Cell::new(false),
             node_limit,
             wire_limit,
             object_wire_allowance_added: false,
@@ -203,6 +218,10 @@ impl ResidentStage {
 }
 
 impl MapStage for ResidentStage {
+    fn pack_terminal_subtrees(&self) -> bool {
+        self.pack_terminal_subtrees.get()
+    }
+
     fn read_node(
         &self,
         store: &FileObjectStore,

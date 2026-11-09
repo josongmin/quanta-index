@@ -966,6 +966,23 @@ pub fn publish_and_activate(
     SearchCorpusIngestObservation,
     SdkPublishActivateDurationsV1,
 )> {
+    publish_and_activate_with_timeout_observer(session, batch, expected, expected_active, || Ok(()))
+}
+
+/// Observe an ingest read timeout while the runner still owns the live daemon.
+/// A diagnostic failure is appended to the original SDK error.
+pub fn publish_and_activate_with_timeout_observer(
+    session: &DaemonSession,
+    batch: &SearchCorpusBatch,
+    expected: &BatchIdentity,
+    expected_active: Option<&SearchCorpusActiveHeadV1>,
+    on_read_timeout: impl FnOnce() -> BenchResult<()>,
+) -> BenchResult<(
+    BatchReceipt,
+    SearchPlaneSearchCorpusActivationCasAck,
+    SearchCorpusIngestObservation,
+    SdkPublishActivateDurationsV1,
+)> {
     let digest = batch
         .batch_digest()
         .map_err(|err| BenchError::Sdk(format!("failed to compute batch digest: {err}")))?;
@@ -973,7 +990,25 @@ pub fn publish_and_activate(
         .client()
         .search_corpus()
         .publish_and_activate_observed(batch, expected_active.cloned())
-        .map_err(|err| BenchError::Sdk(format!("publish_and_activate failed: {err}")))?;
+        .map_err(|err| {
+            let detail = if matches!(
+                &err,
+                quanta_index_sdk::SdkError::Transport(quanta_index_ipc::IpcError::Timeout {
+                    operation: quanta_index_ipc::IpcIoOperation::Read,
+                    ..
+                })
+            ) {
+                on_read_timeout().err()
+            } else {
+                None
+            };
+            BenchError::Sdk(match detail {
+                Some(detail) => {
+                    format!("publish_and_activate failed: {err}; timeout diagnostic: {detail}")
+                }
+                None => format!("publish_and_activate failed: {err}"),
+            })
+        })?;
     let observation = outcome.observation.ok_or_else(|| {
         BenchError::Protocol("observed publish returned no transient observation".to_string())
     })?;

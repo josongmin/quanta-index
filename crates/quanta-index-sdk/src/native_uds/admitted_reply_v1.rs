@@ -22,6 +22,7 @@ use serde::de::{self, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
 use super::NativeUdsError;
 
 pub(super) const MAX_PUBLICATION_SOURCE_REFS: usize = super::MAX_NATIVE_STAGE_SOURCES_INPUTS;
+const SOURCE_REFS_BOUND_ERROR: &str = "source reference count exceeds native bound";
 pub(super) const MAX_PUBLICATION_ERROR_MESSAGE_BYTES: usize = 4096;
 // The longest current publication field or enum identifier is shorter than
 // 32 bytes. A longer token is not produced by the canonical wire encoder.
@@ -702,7 +703,10 @@ impl<'de> serde::Deserialize<'de> for BoundedSourceRefs {
             type Value = BoundedSourceRefs;
 
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("at most 32 source object references")
+                write!(
+                    f,
+                    "at most {MAX_PUBLICATION_SOURCE_REFS} source object references"
+                )
             }
 
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
@@ -710,7 +714,7 @@ impl<'de> serde::Deserialize<'de> for BoundedSourceRefs {
                     .size_hint()
                     .is_some_and(|count| count > MAX_PUBLICATION_SOURCE_REFS)
                 {
-                    return Err(de::Error::custom("source reference count exceeds 32"));
+                    return Err(de::Error::custom(SOURCE_REFS_BOUND_ERROR));
                 }
                 let mut references = Vec::new();
                 references
@@ -723,7 +727,7 @@ impl<'de> serde::Deserialize<'de> for BoundedSourceRefs {
                     references.push(reference);
                 }
                 if seq.next_element_seed(RejectExtraElement)?.is_some() {
-                    return Err(de::Error::custom("source reference count exceeds 32"));
+                    return Err(de::Error::custom(SOURCE_REFS_BOUND_ERROR));
                 }
                 Ok(BoundedSourceRefs(references))
             }
@@ -741,7 +745,7 @@ impl<'de> de::DeserializeSeed<'de> for RejectExtraElement {
         self,
         _deserializer: D,
     ) -> Result<Self::Value, D::Error> {
-        Err(de::Error::custom("source reference count exceeds 32"))
+        Err(de::Error::custom(SOURCE_REFS_BOUND_ERROR))
     }
 }
 
@@ -954,7 +958,13 @@ mod tests {
     #[test]
     fn bounded_publication_decodes_canonical_cbor_without_wire_twin()
     -> Result<(), Box<dyn std::error::Error>> {
-        let sources: Vec<ObjectRef> = (0..32).map(|id| ObjectRef(Digest([id; 32]))).collect();
+        let sources: Vec<ObjectRef> = (0..MAX_PUBLICATION_SOURCE_REFS)
+            .map(|id| {
+                ObjectRef(Digest(
+                    [u8::try_from(id).expect("source ordinal fits u8"); 32],
+                ))
+            })
+            .collect();
         let projection_owner = NativeIndexResponse::ProjectionOwners(NativeProjectionOwnerLookup {
             view: ViewRef {
                 workspace: operation().workspace,
@@ -1046,7 +1056,13 @@ mod tests {
     #[test]
     fn publication_decoder_rejects_unbounded_or_unrelated_payloads()
     -> Result<(), Box<dyn std::error::Error>> {
-        let many: Vec<ObjectRef> = (0..33).map(|id| ObjectRef(Digest([id; 32]))).collect();
+        let many: Vec<ObjectRef> = (0..=MAX_PUBLICATION_SOURCE_REFS)
+            .map(|id| {
+                ObjectRef(Digest(
+                    [u8::try_from(id).expect("source ordinal fits u8"); 32],
+                ))
+            })
+            .collect();
         let invalid = [
             NativeIndexResponse::StagedSources(many),
             NativeIndexResponse::Error(NativeIndexWireError {

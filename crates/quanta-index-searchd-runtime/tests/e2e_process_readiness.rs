@@ -45,6 +45,12 @@ fn ingest_failure_event_tail(
     let (_, control_socket, _) = runtime
         .socket_paths()
         .ok_or("failed publication has no running control socket")?;
+    ingest_failure_event_tail_from_socket(control_socket)
+}
+
+fn ingest_failure_event_tail_from_socket(
+    control_socket: &std::path::Path,
+) -> Result<ProcessRequestEventsV1, Box<dyn Error>> {
     let request = SearchPlaneControlIpcRequestEnvelope {
         request_id: u64::MAX,
         diagnostic_attempt: quanta_index_contract::ipc::DiagnosticAttemptFieldV1::Absent,
@@ -127,15 +133,14 @@ fn large_fixture_closeout_preserves_primary_source_and_secondary_detail() -> Tes
     Ok(())
 }
 
-fn large_fixture_capture(
-    output: Option<std::ffi::OsString>,
-) -> Result<Option<quanta_index_searchd::DiagnosticCaptureV1>, Box<dyn Error>> {
-    let Some(output) = output else {
-        return Ok(None);
-    };
-    let output = std::path::PathBuf::from(output);
-    if !output.is_absolute() || output.exists() {
+fn validate_large_fixture_trace_path(output: &std::path::Path) -> TestResult {
+    if !output.is_absolute() {
         return Err("Large fixture trace requires an absolute new output path".into());
+    }
+    match std::fs::symlink_metadata(output) {
+        Ok(_) => return Err("Large fixture trace requires an absolute new output path".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
     let parent = output.parent().ok_or("Large fixture trace has no parent")?;
     let parent = parent.canonicalize()?;
@@ -145,10 +150,130 @@ fn large_fixture_capture(
     if parent.starts_with(checkout) {
         return Err("Large fixture trace must be outside the checkout".into());
     }
+    Ok(())
+}
+
+fn large_fixture_capture(
+    output: Option<std::ffi::OsString>,
+) -> Result<Option<quanta_index_searchd::DiagnosticCaptureV1>, Box<dyn Error>> {
+    let Some(output) = output else {
+        return Ok(None);
+    };
+    let output = std::path::PathBuf::from(output);
+    validate_large_fixture_trace_path(&output)?;
     Ok(Some(quanta_index_searchd::DiagnosticCaptureV1::start(
         output,
         quanta_index_searchd::DiagnosticCaptureLimitsV1::default(),
     )?))
+}
+
+fn large_fixture_restart_trace_paths(
+    output: Option<&std::ffi::OsString>,
+) -> Result<Option<[std::path::PathBuf; 2]>, Box<dyn Error>> {
+    let Some(output) = output else {
+        return Ok(None);
+    };
+    let paths = [".restart1", ".restart2"].map(|suffix| {
+        let mut path = output.clone();
+        path.push(suffix);
+        std::path::PathBuf::from(path)
+    });
+    for path in &paths {
+        validate_large_fixture_trace_path(path)?;
+    }
+    Ok(Some(paths))
+}
+
+fn large_fixture_sdk_batch(
+    files: &[(&str, &[quanta_index_searchd_harness::E2eTextChunkSpec<'_>])],
+) -> Result<quanta_index_sdk::SearchCorpusBatch, Box<dyn Error>> {
+    use quanta_index_contract::{
+        ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+        SourceFileKey, SourcePublicationEvent, lex::LanguageCode,
+    };
+    use quanta_index_searchd_harness::{
+        fixture_source_scope_v1, semantic_source_scopes_for_chunk_records,
+    };
+
+    let repo = RepoId::new("repo-e2e")?;
+    let revision = RevisionId::new("rev-e2e")?;
+    let mut batch = quanta_index_sdk::SearchCorpusBatch::replace_generation(
+        repo.clone(),
+        revision.clone(),
+        ManifestGeneration::new(1),
+        "lex-seal:1",
+    )
+    .source_event(SourcePublicationEvent {
+        stream_id: "e2e-harness-source-v1".to_owned(),
+        event_id: "e2e-source-event-1".to_owned(),
+        expected_base_event_id: None,
+        payload_sha256: [0; 32],
+    });
+    // The harness assigns chunk IDs in caller order, then emits source scopes
+    // from its SourceFileKey-ordered map. Preserve both independent orders.
+    let mut source_order = (0..files.len()).collect::<Vec<_>>();
+    source_order.sort_by(|&left, &right| {
+        let (left_path, left_chunks) = files[left];
+        let (right_path, right_chunks) = files[right];
+        left_chunks
+            .first()
+            .and_then(|chunk| chunk.source_repo_id)
+            .cmp(
+                &right_chunks
+                    .first()
+                    .and_then(|chunk| chunk.source_repo_id),
+            )
+            .then(left_path.cmp(right_path))
+    });
+    for index in source_order {
+        let (path, chunks) = files[index];
+        let [chunk] = chunks else {
+            return Err("large SDK fixture requires one chunk per source".into());
+        };
+        let source_repo_id = RepoId::new(
+            chunk
+                .source_repo_id
+                .ok_or("large SDK fixture chunk has no source owner")?,
+        )?;
+        let path = RepoRelativePath::new(path);
+        let record = ChunkRecord {
+            chunk_id: ChunkId::new(format!("e2e-{}-{}", index + 1, path.as_str())),
+            repo_relative_path: path.clone(),
+            language: LanguageCode::new("rust")?,
+            start_byte: 0,
+            end_byte: u32::try_from(chunk.content.len())?,
+            start_line: chunk.start_line,
+            end_line: chunk.end_line,
+            text: chunk.content.to_owned().into_boxed_str(),
+            structural: None,
+            parent_chunk_id: None,
+            source_repo_id: Some(source_repo_id.clone()),
+        };
+        let scope = fixture_source_scope_v1(
+            SourceFileKey {
+                source_repo_id,
+                repo_relative_path: path,
+            },
+            revision.clone(),
+            vec![record],
+            Vec::new(),
+        )?;
+        for semantic in semantic_source_scopes_for_chunk_records(&repo, &scope.chunks) {
+            batch = batch.replace_semantic_scope(
+                semantic.scope,
+                semantic.scope_digest,
+                semantic.sources,
+                semantic.cluster_memberships,
+            );
+        }
+        batch = batch.replace_scope(
+            scope.coverage,
+            scope.source_bytes,
+            scope.chunks,
+            scope.symbols,
+        );
+    }
+    Ok(batch)
 }
 
 #[test]
@@ -1175,9 +1300,11 @@ fn binary_daemon_restart_preserves_active_source_and_ranked_rows() -> TestResult
 
 /// E4-05: observe every large-tier source after an OS process restart.
 ///
-/// Two child daemons open the same sealed generation. The fixture supplies
-/// independent source bytes, identities and cardinality. The ordered ranking
-/// comparison across process instances is not a relevance ranking golden.
+/// A preparation daemon publishes the fixture through the SDK, then two child
+/// daemons open the same sealed generation. The explicit parent-trace mode
+/// retains the in-process preparation capture and its Complete-footer check.
+/// The fixture supplies independent source bytes, identities and cardinality.
+/// Ordered ranking equality across process instances is not a relevance golden.
 #[test]
 fn binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page() -> TestResult {
     use std::collections::{BTreeMap, BTreeSet};
@@ -1260,88 +1387,185 @@ fn binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page() -
         .zip(&chunks)
         .map(|(file, chunk)| (file.repo_relative_path.as_str(), chunk.as_slice()))
         .collect::<Vec<_>>();
-    let mut prepared =
-        E2eRuntime::boot_in_with_client_request_timeout(&state_root, Duration::from_secs(300))?
-            .with_history_max_generations(2)
-            .with_history_max_bytes(HISTORY_MAX_BYTES);
-    let mut capture =
-        large_fixture_capture(std::env::var_os("QUANTA_INDEX_LARGE_FIXTURE_TRACE_OUT"))?;
-    if let Some(capture) = &capture {
-        let lease = capture
-            .lease()
-            .ok_or("Large fixture capture has no lease")?;
-        prepared = prepared.with_diagnostic_capture(lease)?;
+    let trace_output = std::env::var_os("QUANTA_INDEX_LARGE_FIXTURE_TRACE_OUT");
+    let sdk_trace_output = std::env::var_os("QUANTA_INDEX_LARGE_FIXTURE_SDK_TRACE_OUT")
+        .map(std::path::PathBuf::from);
+    let boot_trace_output = std::env::var_os("QUANTA_INDEX_LARGE_FIXTURE_BOOT_TRACE_OUT");
+    let restart_traces = large_fixture_restart_trace_paths(boot_trace_output.as_ref())?;
+    if trace_output.is_some() && sdk_trace_output.is_some() {
+        return Err("Large fixture parent and SDK preparation traces are mutually exclusive".into());
     }
-    let preparation = (|| -> Result<GenerationPin, Box<dyn Error>> {
-        let chunk_ids = prepared
-            .ingest_text_files_one_batch(&batch_files)
-            .map_err(|error| {
-                let context = format!("large fixture staging failed: {error}");
-                error.context(context)
-            })?;
-        require_eq(&chunk_ids.len(), &expected.len(), "staged chunk count")?;
-        let sealed = prepared.seal().map_err(|error| {
-            // Read the separate control plane before teardown removes the
-            // process-local ring. Preserve loss metadata and any read failure;
-            // this diagnostic never replaces the original publication error.
-            let events = ingest_failure_event_tail(&prepared);
-            let context =
-                format!("large fixture seal failed: {error}; ingest event tail: {events:?}");
-            error.context(context)
-        })?;
-        prepared
-            .activate_last_sealed_generation()
-            .map_err(|error| {
-                let context = format!("large fixture activation failed: {error}");
-                error.context(context)
-            })?;
-        Ok(GenerationPin::new(
-            prepared.repo(),
-            prepared.revision(),
-            sealed,
-        ))
-    })();
-    let teardown = prepared.stop();
-    // stop consumes the harness and drops its retained capture lease. A
-    // timeout may still leave producer leases alive; preserve that status.
-    let trace_close = capture
-        .as_mut()
-        .map(|capture| capture.close(Duration::from_secs(5)));
-    let pin = match (preparation, teardown) {
-        (Ok(pin), Ok(())) => {
-            match trace_close {
-                Some(Err(error)) => return Err(error.into()),
-                Some(Ok(closed))
-                    if closed.status
-                        != quanta_index_searchd::DiagnosticCaptureStatusV1::Complete =>
-                {
-                    return Err(
-                        format!("Large fixture diagnostic capture incomplete: {closed:?}").into(),
-                    );
-                }
-                Some(Ok(_)) | None => {}
+    if let Some(path) = &sdk_trace_output {
+        validate_large_fixture_trace_path(path)?;
+    }
+    let preparation_output = sdk_trace_output
+        .clone()
+        .or_else(|| trace_output.as_ref().map(std::path::PathBuf::from));
+    if let (Some(parent), Some(children)) = (&preparation_output, &restart_traces) {
+        let parent = parent
+            .parent()
+            .ok_or("Large fixture trace has no parent")?
+            .canonicalize()?
+            .join(parent.file_name().ok_or("Large fixture trace has no filename")?);
+        for child in children {
+            let child = child
+                .parent()
+                .ok_or("Large boot trace has no parent")?
+                .canonicalize()?
+                .join(child.file_name().ok_or("Large boot trace has no filename")?);
+            if child == parent {
+                return Err("Large fixture and boot traces must have distinct output paths".into());
             }
-            pin
         }
-        (Err(fixture_error), Ok(())) => {
-            return Err(large_fixture_closeout_error(
-                fixture_error,
-                format!("diagnostic close: {trace_close:?}"),
-            ));
+    }
+    let pin = if trace_output.is_some() {
+        // This opt-in path owns the capture lease in this process and checks
+        // its Complete footer after the harness has dropped all leases.
+        let mut prepared =
+            E2eRuntime::boot_in_with_client_request_timeout(&state_root, Duration::from_secs(300))?
+                .with_history_max_generations(2)
+                .with_history_max_bytes(HISTORY_MAX_BYTES);
+        let mut capture = large_fixture_capture(trace_output)?;
+        if let Some(capture) = &capture {
+            let lease = capture
+                .lease()
+                .ok_or("Large fixture capture has no lease")?;
+            prepared = prepared.with_diagnostic_capture(lease)?;
         }
-        (Ok(_), Err(teardown_error)) => {
-            return Err(large_fixture_closeout_error(
-                teardown_error.into(),
-                format!("diagnostic close: {trace_close:?}"),
-            ));
+        let preparation = (|| -> Result<GenerationPin, Box<dyn Error>> {
+            let chunk_ids = prepared
+                .ingest_text_files_one_batch(&batch_files)
+                .map_err(|error| {
+                    let context = format!("large fixture staging failed: {error}");
+                    error.context(context)
+                })?;
+            require_eq(&chunk_ids.len(), &expected.len(), "staged chunk count")?;
+            let sealed = prepared.seal().map_err(|error| {
+                // Read the separate control plane before teardown removes the
+                // process-local ring. This never replaces the primary error.
+                let events = ingest_failure_event_tail(&prepared);
+                let context =
+                    format!("large fixture seal failed: {error}; ingest event tail: {events:?}");
+                error.context(context)
+            })?;
+            prepared
+                .activate_last_sealed_generation()
+                .map_err(|error| {
+                    let context = format!("large fixture activation failed: {error}");
+                    error.context(context)
+                })?;
+            Ok(GenerationPin::new(
+                prepared.repo(),
+                prepared.revision(),
+                sealed,
+            ))
+        })();
+        let teardown = prepared.stop();
+        let trace_close = capture
+            .as_mut()
+            .map(|capture| capture.close(Duration::from_secs(5)));
+        match (preparation, teardown) {
+            (Ok(pin), Ok(())) => {
+                match trace_close {
+                    Some(Err(error)) => return Err(error.into()),
+                    Some(Ok(closed))
+                        if closed.status
+                            != quanta_index_searchd::DiagnosticCaptureStatusV1::Complete =>
+                    {
+                        return Err(format!(
+                            "Large fixture diagnostic capture incomplete: {closed:?}"
+                        )
+                        .into());
+                    }
+                    Some(Ok(_)) | None => {}
+                }
+                pin
+            }
+            (Err(fixture_error), Ok(())) => {
+                return Err(large_fixture_closeout_error(
+                    fixture_error,
+                    format!("diagnostic close: {trace_close:?}"),
+                ));
+            }
+            (Ok(_), Err(teardown_error)) => {
+                return Err(large_fixture_closeout_error(
+                    teardown_error.into(),
+                    format!("diagnostic close: {trace_close:?}"),
+                ));
+            }
+            (Err(fixture_error), Err(teardown_error)) => {
+                return Err(large_fixture_closeout_error(
+                    fixture_error,
+                    format!(
+                        "daemon teardown also failed: {teardown_error:#}; diagnostic close: {trace_close:?}"
+                    ),
+                ));
+            }
         }
-        (Err(fixture_error), Err(teardown_error)) => {
-            return Err(large_fixture_closeout_error(
-                fixture_error,
-                format!(
-                    "daemon teardown also failed: {teardown_error:#}; diagnostic close: {trace_close:?}"
-                ),
-            ));
+    } else {
+        use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
+        use quanta_index_sdk::{ConnectOptions, QuantaIndex};
+
+        require_eq(&batch_files.len(), &expected.len(), "SDK staged chunk count")?;
+        let batch = large_fixture_sdk_batch(&batch_files)?;
+        let mut command = searchd_command(&state_root, 2);
+        let _configured = command.env(
+            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
+            HISTORY_MAX_BYTES.to_string(),
+        );
+        if let Some(path) = &sdk_trace_output {
+            let _configured = command.arg("--diagnostic-trace").arg(path);
+        }
+        let preparation_process = SearchdBinaryProcess::start_with_command(&state_root, command)?;
+        let preparation = (|| -> Result<GenerationPin, Box<dyn Error>> {
+            let client = QuantaIndex::connect(
+                ConnectOptions::from_state_root(&state_root)
+                    .with_request_io_timeout(Duration::from_secs(300)),
+            )?;
+            let (_receipt, activated) = client
+                .search_corpus()
+                .publish_and_activate(&batch, None)
+                .map_err(|error| {
+                    let control = daemon_socket_paths(&state_root)[1].clone();
+                    let events = ingest_failure_event_tail_from_socket(&control);
+                    large_fixture_closeout_error(
+                        Box::new(error),
+                        format!("large fixture SDK publication failed; ingest event tail: {events:?}"),
+                    )
+                })?;
+            let lexical = &activated.active.generation.lexical;
+            let repo = RepoId::new("repo-e2e")?;
+            let revision = RevisionId::new("rev-e2e")?;
+            require_eq(&lexical.repo_id, &repo, "SDK active owner")?;
+            require_eq(&lexical.revision_id, &revision, "SDK active revision")?;
+            require_eq(
+                &lexical.manifest_generation,
+                &ManifestGeneration::new(1),
+                "SDK active generation",
+            )?;
+            require_eq(
+                &lexical.manifest_digest.as_str(),
+                &"lex-seal:1",
+                "SDK active manifest digest",
+            )?;
+            drop(client);
+            Ok(GenerationPin::new(
+                repo,
+                revision,
+                lexical.manifest_generation,
+            ))
+        })();
+        let teardown = preparation_process.stop();
+        match (preparation, teardown) {
+            (Ok(pin), Ok(())) => pin,
+            (Err(error), Ok(())) => return Err(error),
+            (Ok(_), Err(error)) => return Err(error),
+            (Err(primary), Err(teardown_error)) => {
+                return Err(large_fixture_closeout_error(
+                    primary,
+                    format!("preparation daemon teardown also failed: {teardown_error:#}"),
+                ));
+            }
         }
     };
 
@@ -1481,6 +1705,9 @@ fn binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page() -
         "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
         HISTORY_MAX_BYTES.to_string(),
     );
+    if let Some([first_trace, _]) = &restart_traces {
+        let _configured = command.arg("--diagnostic-trace").arg(first_trace);
+    }
     let first = SearchdBinaryProcess::start_with_command(&state_root, command)?;
     let first_observed = observe(&first, 0x5ca1_e000);
     let first_stopped = first.stop();
@@ -1492,6 +1719,9 @@ fn binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page() -
         "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES",
         HISTORY_MAX_BYTES.to_string(),
     );
+    if let Some([_, second_trace]) = &restart_traces {
+        let _configured = command.arg("--diagnostic-trace").arg(second_trace);
+    }
     let second = SearchdBinaryProcess::start_with_command(&state_root, command)?;
     let second_observed = observe(&second, 0x5ca2_e000);
     let second_stopped = second.stop();

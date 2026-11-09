@@ -77,6 +77,14 @@ impl ReadTicket {
             .validate_ticket(self.session.as_ref(), self.record.lease)
     }
 
+    pub fn validate_for_request(&self, budget: &WorkBudget) -> Result<(), IndexError> {
+        if self.released {
+            return Err(IndexError::SnapshotUnavailable);
+        }
+        self.catalog
+            .validate_ticket_for_request(self.session.as_ref(), self.record.lease, budget)
+    }
+
     pub fn renew(&mut self) -> Result<(), IndexError> {
         if self.released {
             return Err(IndexError::SnapshotUnavailable);
@@ -87,6 +95,19 @@ impl ReadTicket {
         self.record.lease =
             self.catalog
                 .renew_ticket(self.session.as_ref(), self.record.lease, self.lease)?;
+        Ok(())
+    }
+
+    pub fn renew_for_request(&mut self, budget: &WorkBudget) -> Result<(), IndexError> {
+        if self.released {
+            return Err(IndexError::SnapshotUnavailable);
+        }
+        self.record.lease = self.catalog.renew_ticket_for_request(
+            self.session.as_ref(),
+            self.record.lease,
+            self.lease,
+            budget,
+        )?;
         Ok(())
     }
 

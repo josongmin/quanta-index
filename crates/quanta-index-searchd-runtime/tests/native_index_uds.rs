@@ -1974,6 +1974,65 @@ fn native_uds_source_advance_progresses_while_owner_materialization_is_blocked()
 }
 
 #[test]
+fn native_uds_stage_sources_accepts_full_object_batch_and_refuses_overflow() -> TestResult {
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let running = NativeServiceGuard::start(bind_service(
+        root.path(),
+        &socket,
+        work_limits(),
+        descriptors(),
+    )?);
+    let client = NativeUdsClient::new(socket);
+    let created = client.request(
+        NativeIndexRequest::CreateWorkspace {
+            workspace: workspace(),
+            epoch: 1,
+        },
+        &budget(),
+    )?;
+    assert!(matches!(created, NativeIndexResponse::Created(_)));
+    let ingress = client.begin_input(operation(1), &budget())?;
+    let source = |index: u8| SourceInput {
+        path: format!("batch/{index}.rs"),
+        bytes: vec![index],
+        text: SourceTextAdmission::Excluded,
+    };
+    assert!(matches!(
+        client.request(
+            NativeIndexRequest::StageSources {
+                ingress,
+                inputs: (0..=128).map(source).collect(),
+            },
+            &budget(),
+        ),
+        Err(NativeUdsError::Refused(error))
+            if error.code == NativeIndexErrorCode::ResourceLimited
+    ));
+    let staged = client.stage_sources(ingress, (0..128).map(source).collect(), &budget())?;
+    assert_eq!(staged.len(), 128);
+    for index in [0u8, 127] {
+        let SourceInput { path, bytes, text } = source(index);
+        let direct = client.request(
+            NativeIndexRequest::StageSource {
+                ingress,
+                path,
+                bytes,
+                text,
+            },
+            &budget(),
+        )?;
+        let reference = *staged
+            .get(usize::from(index))
+            .ok_or("staged reference absent")?;
+        assert_eq!(direct, NativeIndexResponse::Staged(reference));
+    }
+    client.discard_input(ingress, &budget())?;
+    running.stop()?;
+    Ok(())
+}
+
+#[test]
 fn native_uds_source_lifecycle_status_old_view_and_reopen() -> TestResult {
     let root = private_root()?;
     let socket = root.path().join("native.sock");
@@ -2976,7 +3035,7 @@ fn native_format_refuses_v6_before_initializing_catalog() -> TestResult {
     if std::fs::read(marker)? != b"quanta-index-native-state-v6\n" {
         return Err("v6 refusal changed the original marker".into());
     }
-    for entry in [".native-index-v18", "catalog", "native-objects"] {
+    for entry in [".native-index-v19", "catalog", "native-objects"] {
         if prior.path().join(entry).try_exists()? {
             return Err(format!("v6 refusal initialized {entry}").into());
         }
@@ -3005,7 +3064,7 @@ fn native_format_refuses_v7_before_initializing_bootstrap_catalog() -> TestResul
     if std::fs::read(marker)? != b"quanta-index-native-state-v7\n" {
         return Err("v7 refusal changed the original marker".into());
     }
-    for entry in [".native-index-v18", "catalog", "native-objects"] {
+    for entry in [".native-index-v19", "catalog", "native-objects"] {
         if prior.path().join(entry).try_exists()? {
             return Err(format!("v7 refusal initialized {entry}").into());
         }
@@ -3035,7 +3094,7 @@ fn native_format_refuses_v8_before_initializing_gc_catalog_or_objects() -> TestR
         return Err("v8 refusal changed the original marker".into());
     }
     for entry in [
-        ".native-index-v18",
+        ".native-index-v19",
         "catalog",
         "native-objects",
         "native-scratch-v1",
@@ -3057,8 +3116,8 @@ fn native_format_refuses_unmarked_existing_data_and_symlink_marker() -> TestResu
         descriptors(),
     )?;
     assert_eq!(
-        std::fs::read(native.path().join(".native-index-v18"))?,
-        b"quanta-index-native-state-v18\n"
+        std::fs::read(native.path().join(".native-index-v19"))?,
+        b"quanta-index-native-state-v19\n"
     );
     assert!(matches!(
         quanta_index_searchd::app::state_format::refuse_legacy_state_root_v1(native.path()),
@@ -3096,7 +3155,7 @@ fn native_format_refuses_unmarked_existing_data_and_symlink_marker() -> TestResu
         Err(error) => error,
     };
     assert!(prior_error.to_string().contains("explicit rebuild"));
-    assert!(!prior.path().join(".native-index-v18").exists());
+    assert!(!prior.path().join(".native-index-v19").exists());
 
     let prior_v2 = private_root()?;
     let prior_v2_marker = prior_v2.path().join(".native-index-v2");
@@ -3112,7 +3171,7 @@ fn native_format_refuses_unmarked_existing_data_and_symlink_marker() -> TestResu
         Err(error) => error,
     };
     assert!(prior_v2_error.to_string().contains("explicit rebuild"));
-    assert!(!prior_v2.path().join(".native-index-v18").exists());
+    assert!(!prior_v2.path().join(".native-index-v19").exists());
 
     let prior_v3 = private_root()?;
     let prior_v3_marker = prior_v3.path().join(".native-index-v3");
@@ -3128,7 +3187,7 @@ fn native_format_refuses_unmarked_existing_data_and_symlink_marker() -> TestResu
         Err(error) => error,
     };
     assert!(prior_v3_error.to_string().contains("explicit rebuild"));
-    assert!(!prior_v3.path().join(".native-index-v18").exists());
+    assert!(!prior_v3.path().join(".native-index-v19").exists());
 
     let prior_v4 = private_root()?;
     let prior_v4_marker = prior_v4.path().join(".native-index-v4");
@@ -3148,7 +3207,7 @@ fn native_format_refuses_unmarked_existing_data_and_symlink_marker() -> TestResu
         std::fs::read(&prior_v4_marker)?,
         b"quanta-index-native-state-v4\n"
     );
-    assert!(!prior_v4.path().join(".native-index-v18").exists());
+    assert!(!prior_v4.path().join(".native-index-v19").exists());
     assert!(!prior_v4.path().join("catalog").exists());
 
     let prior_v5 = private_root()?;
@@ -3169,15 +3228,15 @@ fn native_format_refuses_unmarked_existing_data_and_symlink_marker() -> TestResu
         std::fs::read(&prior_v5_marker)?,
         b"quanta-index-native-state-v5\n"
     );
-    assert!(!prior_v5.path().join(".native-index-v18").exists());
+    assert!(!prior_v5.path().join(".native-index-v19").exists());
     assert!(!prior_v5.path().join("catalog").exists());
 
     let symlinked = private_root()?;
     std::fs::write(
         symlinked.path().join("target"),
-        b"quanta-index-native-state-v18\n",
+        b"quanta-index-native-state-v19\n",
     )?;
-    std::os::unix::fs::symlink("target", symlinked.path().join(".native-index-v18"))?;
+    std::os::unix::fs::symlink("target", symlinked.path().join(".native-index-v19"))?;
     assert!(
         bind_service(
             symlinked.path(),
@@ -3191,9 +3250,9 @@ fn native_format_refuses_unmarked_existing_data_and_symlink_marker() -> TestResu
     let linked = private_root()?;
     let outside = private_root()?;
     let target = outside.path().join("marker-target");
-    std::fs::write(&target, b"quanta-index-native-state-v18\n")?;
+    std::fs::write(&target, b"quanta-index-native-state-v19\n")?;
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))?;
-    std::fs::hard_link(&target, linked.path().join(".native-index-v18"))?;
+    std::fs::hard_link(&target, linked.path().join(".native-index-v19"))?;
     assert!(
         bind_service(
             linked.path(),
@@ -3227,7 +3286,7 @@ fn native_format_refuses_v10_before_reinterpreting_capture_claims() -> TestResul
     assert_eq!(std::fs::read(&marker)?, original_marker);
     assert_eq!(std::fs::read(&old_database)?, original_database);
     for entry in [
-        ".native-index-v18",
+        ".native-index-v19",
         "native-objects",
         "native-scratch-v1",
         "native.sock",
@@ -3258,7 +3317,7 @@ fn native_format_refuses_v11_before_reinterpreting_source_authority() -> TestRes
     assert_eq!(std::fs::read(&marker)?, original_marker);
     assert_eq!(std::fs::read(&old_database)?, original_database);
     for entry in [
-        ".native-index-v18",
+        ".native-index-v19",
         "native-objects",
         "native-scratch-v1",
         "native.sock",
@@ -3302,7 +3361,7 @@ fn native_format_refuses_v9_without_creating_retention_state() -> TestResult {
         std::fs::read(root.path().join(".native-index-v9"))?,
         original
     );
-    assert!(!root.path().join(".native-index-v18").exists());
+    assert!(!root.path().join(".native-index-v19").exists());
     assert!(!root.path().join("catalog").exists());
     assert!(!socket.exists());
     Ok(())
@@ -3325,7 +3384,7 @@ fn native_v12_root_refuses_without_marker_or_catalog_rewrite() -> TestResult {
     };
     assert!(error.to_string().contains("explicit rebuild"));
     assert_eq!(std::fs::read(&marker)?, b"quanta-index-native-state-v12\n");
-    assert!(!root.path().join(".native-index-v18").exists());
+    assert!(!root.path().join(".native-index-v19").exists());
     assert!(!root.path().join("catalog").exists());
     assert!(!root.path().join("native-objects").exists());
     Ok(())
@@ -3350,7 +3409,7 @@ fn native_v13_root_refuses_without_marker_or_catalog_rewrite() -> TestResult {
     };
     assert!(error.to_string().contains("explicit rebuild"));
     assert_eq!(std::fs::read(&marker)?, b"quanta-index-native-state-v13\n");
-    assert!(!root.path().join(".native-index-v18").exists());
+    assert!(!root.path().join(".native-index-v19").exists());
     assert!(!root.path().join("catalog").exists());
     assert!(!root.path().join("native-objects").exists());
     Ok(())
@@ -3375,7 +3434,7 @@ fn native_v14_root_refuses_without_marker_or_catalog_rewrite() -> TestResult {
     };
     assert!(error.to_string().contains("explicit rebuild"));
     assert_eq!(std::fs::read(&marker)?, b"quanta-index-native-state-v14\n");
-    assert!(!root.path().join(".native-index-v18").exists());
+    assert!(!root.path().join(".native-index-v19").exists());
     assert!(!root.path().join("catalog").exists());
     assert!(!root.path().join("native-objects").exists());
     Ok(())
@@ -3400,7 +3459,7 @@ fn native_v15_root_refuses_without_marker_or_catalog_rewrite() -> TestResult {
     };
     assert!(error.to_string().contains("explicit rebuild"));
     assert_eq!(std::fs::read(&marker)?, b"quanta-index-native-state-v15\n");
-    assert!(!root.path().join(".native-index-v18").exists());
+    assert!(!root.path().join(".native-index-v19").exists());
     assert!(!root.path().join("catalog").exists());
     assert!(!root.path().join("native-objects").exists());
     Ok(())
@@ -3425,7 +3484,7 @@ fn native_v16_root_refuses_without_marker_or_catalog_rewrite() -> TestResult {
     };
     assert!(error.to_string().contains("explicit rebuild"));
     assert_eq!(std::fs::read(&marker)?, b"quanta-index-native-state-v16\n");
-    assert!(!root.path().join(".native-index-v18").exists());
+    assert!(!root.path().join(".native-index-v19").exists());
     assert!(!root.path().join("catalog").exists());
     assert!(!root.path().join("native-objects").exists());
     Ok(())
@@ -3450,9 +3509,41 @@ fn native_v17_root_refuses_without_marker_or_catalog_rewrite() -> TestResult {
     };
     assert!(error.to_string().contains("explicit rebuild"));
     assert_eq!(std::fs::read(&marker)?, b"quanta-index-native-state-v17\n");
-    assert!(!root.path().join(".native-index-v18").exists());
+    assert!(!root.path().join(".native-index-v19").exists());
     assert!(!root.path().join("catalog").exists());
     assert!(!root.path().join("native-objects").exists());
+    Ok(())
+}
+
+#[test]
+fn native_v18_root_refuses_before_creating_v19_state() -> TestResult {
+    let root = private_root()?;
+    let marker = root.path().join(".native-index-v18");
+    let original_marker = b"quanta-index-native-state-v18\n";
+    std::fs::write(&marker, original_marker)?;
+    std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o600))?;
+    let old_catalog = root.path().join("catalog");
+    std::fs::create_dir(&old_catalog)?;
+    let old_database = old_catalog.join("catalog-v1.sqlite");
+    let original_database = b"v18 Catalog bytes must remain untouched";
+    std::fs::write(&old_database, original_database)?;
+    let socket = root.path().join("native.sock");
+
+    let error = match bind_service(root.path(), &socket, work_limits(), descriptors()) {
+        Ok(_service) => return Err("v18 state was accepted by the v19 reader".into()),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("explicit rebuild"));
+    assert_eq!(std::fs::read(&marker)?, original_marker);
+    assert_eq!(std::fs::read(&old_database)?, original_database);
+    for entry in [
+        ".native-index-v19",
+        "native-objects",
+        "native-scratch-v1",
+        "native.sock",
+    ] {
+        assert!(!root.path().join(entry).exists());
+    }
     Ok(())
 }
 
@@ -3490,6 +3581,7 @@ fn native_automatic_retention_advances_floor_releases_custody_and_preserves_pin_
         // custody phase; Catalog and the product fixture retain single-row
         // partial/restart coverage separately.
         page_limit: 8,
+        custody_page_limit: 8,
         interval: Duration::from_millis(20),
         round_timeout: Duration::from_secs(2),
         work_limits: work_limits(),
@@ -3879,7 +3971,7 @@ fn native_bind_rejects_unusable_read_lease_before_format_creation() -> TestResul
             },
         );
         assert!(error.is_err());
-        assert!(!root.path().join(".native-index-v18").exists());
+        assert!(!root.path().join(".native-index-v19").exists());
         assert!(!root.path().join("catalog").exists());
     }
     Ok(())
@@ -4387,7 +4479,7 @@ fn native_bind_rejects_overcommitted_class_floors_before_format_creation() -> Te
         &resources,
     );
     assert!(result.is_err());
-    assert!(!root.path().join(".native-index-v18").exists());
+    assert!(!root.path().join(".native-index-v19").exists());
     assert!(!root.path().join("catalog").exists());
     Ok(())
 }
@@ -4667,7 +4759,7 @@ fn native_bind_refuses_nested_socket_before_format_creation() -> TestResult {
             Err(error) => error,
         };
         assert!(error.to_string().contains("nested directory"));
-        assert!(!root.path().join(".native-index-v18").exists());
+        assert!(!root.path().join(".native-index-v19").exists());
         assert!(!root.path().join("catalog").exists());
         assert!(!root.path().join("native-objects").exists());
         assert!(!root.path().join("run").exists());
@@ -4681,7 +4773,7 @@ fn native_bind_refuses_nested_socket_before_format_creation() -> TestResult {
         Err(error) => error,
     };
     assert!(error.to_string().contains("unresolved parent traversal"));
-    assert!(!root.path().join(".native-index-v18").exists());
+    assert!(!root.path().join(".native-index-v19").exists());
     assert!(!root.path().join("missing").exists());
     Ok(())
 }
@@ -6019,7 +6111,7 @@ fn native_automatic_reclaim_invalid_config_and_missing_floor_refuse_before_state
         );
         assert!(result.is_err(), "{case} accepted");
         assert!(
-            !root.path().join(".native-index-v18").exists(),
+            !root.path().join(".native-index-v19").exists(),
             "{case} wrote format"
         );
         assert!(

@@ -418,7 +418,10 @@ fn real_vfs_capacity_refusal_keeps_sqlite_code_and_callback_detail() -> TestResu
             && row["callback_returned"] == "Capacity"
             && row["type_code"] == SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded.to_string()
             && row["detail"]
-                == "publication physical capacity: output exceeds held publication allowance"
+                == concat!(
+                    "publication physical capacity: output exceeds held publication allowance: ",
+                    "requested_bytes=1 free_bytes=0 free_files=3"
+                )
     });
     require(
         typed,

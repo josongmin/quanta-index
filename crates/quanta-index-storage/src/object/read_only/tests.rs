@@ -207,6 +207,62 @@ fn closure_reads_all_roots_shared_children_and_nonempty_leaf_bytes() -> TestResu
 }
 
 #[test]
+fn closure_selected_roots_reuse_authenticated_bodies_without_extra_reads() -> TestResult {
+    let root = private_root()?;
+    let store = FileObjectStore::open(root.path())?;
+    let mut work = budget(100)?;
+    let leaf = store.put(b"fixed leaf", &[], &mut work)?.reference;
+    let request = store.put(b"request body", &[leaf], &mut work)?.reference;
+    let profile = store.put(b"profile body", &[], &mut work)?.reference;
+    let independent = store.put(b"independent body", &[], &mut work)?.reference;
+    drop(store);
+    let reads = Arc::new(Reads::default());
+    let reader = reader(root.path(), Arc::clone(&reads))?;
+    let mut verify = budget(100)?;
+    let [stored_request, stored_profile] = reader.verify_closure_with_selected_roots(
+        &[request, profile, independent],
+        [request, profile],
+        3,
+        &mut verify,
+    )?;
+    require(stored_request.registration.reference == request)?;
+    require(stored_request.payload == b"request body")?;
+    require(stored_profile.registration.reference == profile)?;
+    require(stored_profile.payload == b"profile body")?;
+    // Request, leaf, profile, independent. The two returned bodies need no get.
+    require(verify.usage().reads == 4)?;
+    require(reads.0.lock().map_err(|_error| IndexError::Conflict)?.len() == 5)?;
+    Ok(())
+}
+
+#[test]
+fn closure_selected_roots_refuse_corrupt_transitive_child() -> TestResult {
+    let root = private_root()?;
+    let store = FileObjectStore::open(root.path())?;
+    let mut work = budget(100)?;
+    let leaf = store.put(b"fixed leaf", &[], &mut work)?.reference;
+    let request = store.put(b"request body", &[leaf], &mut work)?.reference;
+    let profile = store.put(b"profile body", &[], &mut work)?.reference;
+    drop(store);
+    let leaf_path = super::super::read_io::object_path(&root.path().join("objects"), leaf);
+    let mut wire = fs::read(&leaf_path)?;
+    let byte = wire.last_mut().ok_or(IndexError::Conflict)?;
+    *byte ^= 1;
+    fs::write(&leaf_path, wire)?;
+    let reader = reader(root.path(), Arc::new(Reads::default()))?;
+    require(matches!(
+        reader.verify_closure_with_selected_roots(
+            &[request, profile],
+            [request, profile],
+            2,
+            &mut budget(100)?,
+        ),
+        Err(IndexError::CorruptObject(_))
+    ))?;
+    Ok(())
+}
+
+#[test]
 fn closure_refuses_missing_or_corrupt_descendant_and_never_accepts_a_prefix() -> TestResult {
     for missing in [false, true] {
         let root = private_root()?;

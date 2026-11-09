@@ -89,6 +89,18 @@ pub struct OfferedRun<C> {
     pub drain_secs: f64,
 }
 
+/// Scheduler-thread accounting for an interrupted run. Queue admission does
+/// not imply worker dispatch or completion; those remain caller observations.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct OfferedProgress {
+    pub(crate) planned_arrivals: u64,
+    pub(crate) due_arrivals: u64,
+    pub(crate) enqueued: u64,
+    pub(crate) dropped_queue_full: u64,
+    pub(crate) dropped_scheduler_late: u64,
+    pub(crate) disconnected: u64,
+}
+
 pub fn scheduled_count(duration: Duration, rate: u32) -> Result<u128> {
     ensure!(rate > 0, "offered QPS must be positive");
     let scaled = duration
@@ -242,8 +254,43 @@ where
     C: Send + 'static,
     F: Fn(OfferedTask, Duration) -> C + Send + Sync + 'static,
 {
+    run_point_with_start(config, cancel, |_| Ok(()), dispatch)
+}
+
+/// Expose the actual offered-arrival origin after worker setup.
+pub(crate) fn run_point_with_start<C, F, S>(
+    config: &OfferedConfig,
+    cancel: &Arc<AtomicBool>,
+    on_start: S,
+    dispatch: F,
+) -> Result<OfferedRun<C>>
+where
+    C: Send + 'static,
+    F: Fn(OfferedTask, Duration) -> C + Send + Sync + 'static,
+    S: FnOnce(Instant) -> Result<()>,
+{
+    let mut progress = OfferedProgress::default();
+    run_point_with_start_observed(config, cancel, &mut progress, on_start, dispatch)
+}
+
+/// Leave exact bounded scheduler counts with the caller even when cancellation
+/// or a worker failure makes the returned run unusable as a measurement.
+pub(crate) fn run_point_with_start_observed<C, F, S>(
+    config: &OfferedConfig,
+    cancel: &Arc<AtomicBool>,
+    progress: &mut OfferedProgress,
+    on_start: S,
+    dispatch: F,
+) -> Result<OfferedRun<C>>
+where
+    C: Send + 'static,
+    F: Fn(OfferedTask, Duration) -> C + Send + Sync + 'static,
+    S: FnOnce(Instant) -> Result<()>,
+{
+    *progress = OfferedProgress::default();
     let offsets = scheduled_offsets(config)?;
     let offered = u64::try_from(offsets.len())?;
+    progress.planned_arrivals = offered;
     ensure!(offered > 0, "open-loop schedule offered no requests");
     ensure!(
         !cancel.load(Ordering::Acquire),
@@ -308,17 +355,17 @@ where
     drop(results_sender);
 
     let started = Instant::now();
-    let mut dropped_queue_full = 0_u64;
-    let mut dropped_scheduler_late = 0_u64;
+    on_start(started)?;
     for (index, offset) in offsets.into_iter().enumerate() {
         let scheduled = started
             .checked_add(offset)
             .context("scheduled arrival instant overflow")?;
         wait_until(scheduled, cancel)?;
+        // The validated schedule is capped at 100,000 arrivals, so these
+        // counters cannot overflow u64 during one run.
+        progress.due_arrivals = progress.due_arrivals.saturating_add(1);
         if Instant::now().saturating_duration_since(scheduled) >= config.request_timeout {
-            dropped_scheduler_late = dropped_scheduler_late
-                .checked_add(1)
-                .context("scheduler-late drop count overflow")?;
+            progress.dropped_scheduler_late = progress.dropped_scheduler_late.saturating_add(1);
             continue;
         }
         let task = OfferedTask {
@@ -333,13 +380,12 @@ where
             .context("offered-load sender closed before scheduling ended")?
             .try_send(task)
         {
-            Ok(()) => {}
+            Ok(()) => progress.enqueued = progress.enqueued.saturating_add(1),
             Err(mpsc::TrySendError::Full(_)) => {
-                dropped_queue_full = dropped_queue_full
-                    .checked_add(1)
-                    .context("full-queue drop count overflow")?;
+                progress.dropped_queue_full = progress.dropped_queue_full.saturating_add(1);
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
+                progress.disconnected = progress.disconnected.saturating_add(1);
                 bail!("all load workers disconnected during scheduling");
             }
         }
@@ -355,8 +401,8 @@ where
     );
     let drain_secs = started.elapsed().as_secs_f64();
     let accounted = u64::try_from(completions.len())?
-        .checked_add(dropped_queue_full)
-        .and_then(|count| count.checked_add(dropped_scheduler_late))
+        .checked_add(progress.dropped_queue_full)
+        .and_then(|count| count.checked_add(progress.dropped_scheduler_late))
         .context("offered request accounting overflow")?;
     ensure!(
         accounted == offered,
@@ -364,8 +410,8 @@ where
     );
     Ok(OfferedRun {
         offered,
-        dropped_queue_full,
-        dropped_scheduler_late,
+        dropped_queue_full: progress.dropped_queue_full,
+        dropped_scheduler_late: progress.dropped_scheduler_late,
         completions,
         drain_secs,
     })
@@ -424,6 +470,88 @@ mod tests {
     }
 
     #[test]
+    fn start_hook_receives_first_fixed_arrival_and_honors_cancellation() -> Result<()> {
+        let mut load = config(
+            ArrivalModel::DeterministicPeriodic,
+            10,
+            Duration::from_millis(100),
+        );
+        load.request_timeout = Duration::from_secs(30);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let origins = Arc::new(Mutex::new(Vec::new()));
+        let recorded_origins = Arc::clone(&origins);
+        let run = run_point_with_start(
+            &load,
+            &cancel,
+            move |origin| {
+                recorded_origins
+                    .lock()
+                    .map_err(|_poison| anyhow!("start-hook origin lock poisoned"))?
+                    .push(origin);
+                Ok(())
+            },
+            |task, _| task.scheduled,
+        )?;
+        let origins = origins
+            .lock()
+            .map_err(|_poison| anyhow!("start-hook origin lock poisoned"))?;
+        let origin = origins.first().context("start hook did not run")?;
+        let completion = run
+            .completions
+            .first()
+            .context("first arrival did not complete")?;
+        ensure!(origins.len() == 1, "start hook did not run exactly once");
+        ensure!(run.offered == 1, "fixed schedule offered another arrival");
+        ensure!(
+            run.completions.len() == 1
+                && completion.task.scheduled == *origin
+                && completion.value == *origin,
+            "first offered instant differs from the start hook"
+        );
+
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_in_hook = Arc::clone(&cancelled);
+        let dispatched = Arc::new(AtomicUsize::new(0));
+        let dispatched_in_worker = Arc::clone(&dispatched);
+        let result = run_point_with_start(
+            &load,
+            &cancelled,
+            move |_| {
+                cancel_in_hook.store(true, Ordering::Release);
+                Ok(())
+            },
+            move |_, _| {
+                let _previous = dispatched_in_worker.fetch_add(1, Ordering::AcqRel);
+            },
+        );
+        ensure!(result.is_err(), "cancelled schedule returned a partial run");
+        ensure!(
+            dispatched.load(Ordering::Acquire) == 0,
+            "cancelled task dispatched"
+        );
+
+        let mut progress = OfferedProgress::default();
+        let refused = run_point_with_start_observed(
+            &load,
+            &Arc::new(AtomicBool::new(false)),
+            &mut progress,
+            |_| Err(anyhow!("start hook refused")),
+            |_, _| (),
+        );
+        ensure!(refused.is_err(), "refused start returned a run");
+        ensure!(
+            progress.planned_arrivals == 1
+                && progress.due_arrivals == 0
+                && progress.enqueued == 0
+                && progress.dropped_queue_full == 0
+                && progress.dropped_scheduler_late == 0
+                && progress.disconnected == 0,
+            "refused start reported arrivals: {progress:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn request_cap_rejects_a_run_before_dispatch() {
         let oversized = config(
             ArrivalModel::DeterministicPeriodic,
@@ -456,12 +584,19 @@ mod tests {
             release_for_thread.store(true, Ordering::Release);
         });
         let cancel = Arc::new(AtomicBool::new(false));
-        let run_result = run_point(&load, &cancel, move |_, _| {
-            entered.store(true, Ordering::Release);
-            while !release.load(Ordering::Acquire) {
-                thread::sleep(Duration::from_millis(1));
-            }
-        });
+        let mut progress = OfferedProgress::default();
+        let run_result = run_point_with_start_observed(
+            &load,
+            &cancel,
+            &mut progress,
+            |_| Ok(()),
+            move |_, _| {
+                entered.store(true, Ordering::Release);
+                while !release.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(1));
+                }
+            },
+        );
         releaser
             .join()
             .map_err(|panic| anyhow!("releaser panicked: {panic:?}"))?;
@@ -478,6 +613,15 @@ mod tests {
             .context("offered request accounting overflow")?;
         ensure!(run.offered == accounted, "offered denominator mismatch");
         ensure!(
+            progress.planned_arrivals == run.offered
+                && progress.due_arrivals == run.offered
+                && progress.enqueued == u64::try_from(run.completions.len())?
+                && progress.dropped_queue_full == run.dropped_queue_full
+                && progress.dropped_scheduler_late == run.dropped_scheduler_late
+                && progress.disconnected == 0,
+            "successful scheduler progress differs: {progress:?}"
+        );
+        ensure!(
             run.completions.iter().all(|item| item.task.id > 0),
             "completion carried a zero request id"
         );
@@ -486,21 +630,35 @@ mod tests {
 
     #[test]
     fn cancellation_joins_callbacks_and_returns_no_partial_run() {
-        let load = config(
+        let mut load = config(
             ArrivalModel::DeterministicPeriodic,
-            2,
-            Duration::from_secs(1),
+            10,
+            Duration::from_millis(100),
         );
+        load.request_timeout = Duration::from_secs(30);
         let cancel = Arc::new(AtomicBool::new(false));
         let callback_cancel = Arc::clone(&cancel);
         let returned = Arc::new(AtomicBool::new(false));
         let callback_returned = Arc::clone(&returned);
-        let result = run_point(&load, &cancel, move |_, _| {
-            callback_cancel.store(true, Ordering::Release);
-            callback_returned.store(true, Ordering::Release);
-        });
+        let mut progress = OfferedProgress::default();
+        let result = run_point_with_start_observed(
+            &load,
+            &cancel,
+            &mut progress,
+            |_| Ok(()),
+            move |_, _| {
+                callback_cancel.store(true, Ordering::Release);
+                callback_returned.store(true, Ordering::Release);
+            },
+        );
         assert!(result.is_err());
         assert!(returned.load(Ordering::Acquire));
+        assert_eq!(progress.planned_arrivals, 1);
+        assert_eq!(progress.due_arrivals, 1);
+        assert_eq!(progress.enqueued, 1);
+        assert_eq!(progress.dropped_queue_full, 0);
+        assert_eq!(progress.dropped_scheduler_late, 0);
+        assert_eq!(progress.disconnected, 0);
     }
 
     #[test]

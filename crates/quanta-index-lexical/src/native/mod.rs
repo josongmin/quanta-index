@@ -1,9 +1,14 @@
 //! Native owner-local literal and token-only text indexes.
 
+#[cfg(test)]
 mod edit_spool;
 mod literal;
+mod literal_blocks;
 mod literal_contribution;
+mod literal_delta_runs;
 mod literal_grams;
+mod literal_memberships;
+mod literal_packed;
 mod literal_reader;
 mod metadata;
 mod text;

@@ -6,22 +6,28 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, TryLockError,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+        mpsc,
     },
-    thread,
+    thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 
 use anyhow::{Context as _, Result, anyhow, ensure};
 use quanta_index_contract::{
-    index::{ObjectRef, OwnerKey, OwnerMutation, SourceTextAdmission, ViewRef, ViewSelection},
+    index::{
+        CatalogView, ObjectRef, OwnerKey, OwnerMutation, SourceTextAdmission, ViewRef,
+        ViewSelection,
+    },
     native_protocol::NativeTextResult,
 };
 use quanta_index_core::RequestBudgetV1;
 use quanta_index_sdk::native_uds::NativeUdsClient;
 use serde_json::{Value, json};
 
-use crate::offered_load::{self, ArrivalModel, OfferedConfig, OfferedRun, OfferedTask};
+use crate::offered_load::{
+    self, ArrivalModel, OfferedConfig, OfferedProgress, OfferedRun, OfferedTask,
+};
 
 use super::super::{ScopedFile, repo_query_token};
 #[path = "mixed_snapshot.rs"]
@@ -32,21 +38,25 @@ use super::retained_read::{
     HeldRead, QUERY_DEADLINE, retained_witness, session_key, text_query, verify_witness,
 };
 use super::{
-    FIRST_PATH, PublicationAudit, PublicationLabel, ScaleTier, advance_staged, file_query_token,
-    operation, owner, params_for, text_spec,
+    FIRST_PATH, PublicationAudit, PublicationLabel, ScaleTier, file_query_token, operation, owner,
+    params_for, prepare_source_advance, publication, text_spec,
 };
 
 const WARMUP: Duration = Duration::from_secs(60);
 const MEASURE: Duration = Duration::from_secs(900);
+const TOTAL: Duration = Duration::from_secs(WARMUP.as_secs() + MEASURE.as_secs());
 const PUBLISH_PERIOD: Duration = Duration::from_secs(1);
 const SOURCE_BOUND: usize = 16 * 1024;
 const RATE_QPS: u32 = 50;
 const WORKERS: usize = 4;
 const QUEUE: usize = 64;
+const FAILURE_PUBLISHER: u8 = 1;
+const FAILURE_HELD: u8 = 2;
+const FAILURE_SCHEDULER: u8 = 3;
 
 #[derive(Clone)]
 pub(super) struct MixedStart {
-    pub(super) view: ViewRef,
+    pub(super) view: CatalogView,
     pub(super) first_ref: Option<ObjectRef>,
     pub(super) first_token: Option<String>,
     pub(super) next_operation_sequence: u64,
@@ -57,7 +67,7 @@ pub(super) struct MixedStart {
 impl MixedStart {
     fn advanced(
         &self,
-        view: ViewRef,
+        view: CatalogView,
         first_ref: Option<ObjectRef>,
         first_token: Option<String>,
     ) -> Result<Self> {
@@ -66,13 +76,15 @@ impl MixedStart {
             "mixed next owner binding is inconsistent"
         );
         ensure!(
-            view.workspace == self.view.workspace && view.epoch == self.view.epoch,
+            view.identity.workspace == self.view.identity.workspace
+                && view.identity.epoch == self.view.identity.epoch,
             "mixed next view scope differs"
         );
         ensure!(
-            view.sequence
+            view.identity.sequence
                 == self
                     .view
+                    .identity
                     .sequence
                     .checked_add(1)
                     .context("mixed view sequence overflow")?,
@@ -95,6 +107,24 @@ impl MixedStart {
                 .checked_add(1)
                 .context("mixed transition step overflow")?,
         })
+    }
+}
+
+#[cfg(test)]
+fn fixture_catalog_view(identity: ViewRef) -> CatalogView {
+    use quanta_index_contract::index::{Digest, MapRoot, SourceCut};
+
+    CatalogView {
+        identity,
+        profile: ObjectRef(Digest([11; 32])),
+        source: SourceCut {
+            owners: MapRoot(None),
+            paths: MapRoot(None),
+            frontiers: MapRoot(None),
+        },
+        projections: MapRoot(None),
+        members: MapRoot(None),
+        coverage: MapRoot(None),
     }
 }
 
@@ -147,6 +177,7 @@ struct QueryCompletion {
     class: QueryClass,
     latency_ms: f64,
     queue_ms: f64,
+    failure_stage: Option<&'static str>,
     result: Result<()>,
 }
 
@@ -155,20 +186,45 @@ struct QueryProgress {
     dispatched: AtomicU64,
     completed: AtomicU64,
     failed: AtomicU64,
+    first_failure: Mutex<Option<Value>>,
 }
 
 impl QueryProgress {
+    fn record_failure(&self, task: OfferedTask, completion: &QueryCompletion) {
+        let Some(error) = completion.result.as_ref().err() else {
+            return;
+        };
+        if let Ok(mut first) = self.first_failure.lock() {
+            if first.is_none() {
+                let message: String = format!("{error:#}").chars().take(512).collect();
+                *first = Some(json!({
+                    "task_id":task.id,
+                    "class":completion.class.name(),
+                    "stage":completion.failure_stage,
+                    "error":message,
+                    "queue_ms":completion.queue_ms,
+                    "latency_ms":completion.latency_ms,
+                }));
+            }
+        }
+    }
+
     fn detail(&self) -> Value {
+        let first_failure = self.first_failure.lock().map_or_else(
+            |_poison| json!({"capture_error":"mixed query progress poisoned"}),
+            |first| json!(&*first),
+        );
         json!({
             "dispatched":self.dispatched.load(Ordering::Acquire),
             "completed":self.completed.load(Ordering::Acquire),
             "failed":self.failed.load(Ordering::Acquire),
+            "first_failure":first_failure,
         })
     }
 }
 
 #[derive(Default)]
-struct PublisherProgress {
+struct PublisherWindowProgress {
     scheduled: u64,
     attempted: u64,
     acked: u64,
@@ -184,23 +240,38 @@ struct PublisherProgress {
 #[derive(Default)]
 struct TickTimings {
     input_ready: Option<f64>,
+    mutation_ready: Option<f64>,
     ack: Option<f64>,
     freshness: Option<f64>,
     old_witness: Option<f64>,
+    failure_stage: Option<&'static str>,
 }
 
 impl TickTimings {
     fn detail(&self) -> Value {
         json!({
             "input_ready_from_scheduled_ms":self.input_ready,
+            "mutation_ready_from_scheduled_ms":self.mutation_ready,
             "ack_from_scheduled_ms":self.ack,
             "current_gold_from_scheduled_ms":self.freshness,
             "old_view_witness_ms":self.old_witness,
+            "failure_stage":self.failure_stage,
         })
     }
 }
 
-impl PublisherProgress {
+impl PublisherWindowProgress {
+    fn skip_expired_tick(&mut self, now: Instant, deadline: Instant) -> Result<bool> {
+        if now < deadline {
+            return Ok(false);
+        }
+        self.missed_late = self
+            .missed_late
+            .checked_add(1)
+            .context("mixed late count overflow")?;
+        Ok(true)
+    }
+
     fn detail(&self) -> Value {
         let mut freshness = self.freshness_ms.clone();
         freshness.sort_by(f64::total_cmp);
@@ -223,7 +294,52 @@ impl PublisherProgress {
     }
 }
 
-fn validate_publisher_counts(progress: &PublisherProgress, duration: Duration) -> Result<()> {
+#[derive(Default)]
+struct PublisherProgress {
+    warmup: PublisherWindowProgress,
+    measure: PublisherWindowProgress,
+    failure_stage: Option<&'static str>,
+    failure_error: Option<String>,
+}
+
+impl PublisherProgress {
+    fn for_tick(&mut self, tick: u64) -> &mut PublisherWindowProgress {
+        if tick < WARMUP.as_secs() {
+            &mut self.warmup
+        } else {
+            &mut self.measure
+        }
+    }
+
+    fn record_reached_tick(&mut self, tick: u64) -> Result<()> {
+        let window = self.for_tick(tick);
+        window.scheduled = window
+            .scheduled
+            .checked_add(1)
+            .context("mixed scheduled count overflow")?;
+        Ok(())
+    }
+
+    fn detail(&self) -> Value {
+        json!({"warmup":self.warmup.detail(),"measure":self.measure.detail(),
+            "failure_stage":self.failure_stage,"failure_error":self.failure_error})
+    }
+}
+
+fn record_publisher_failure(
+    progress: &Mutex<PublisherProgress>,
+    stage: &'static str,
+    error: &anyhow::Error,
+) {
+    if let Ok(mut progress) = progress.lock() {
+        if progress.failure_stage.is_none() {
+            progress.failure_stage = Some(stage);
+            progress.failure_error = Some(format!("{error:#}").chars().take(512).collect());
+        }
+    }
+}
+
+fn validate_publisher_counts(progress: &PublisherWindowProgress, duration: Duration) -> Result<()> {
     ensure!(
         progress.scheduled == duration.as_secs(),
         "mixed publisher scheduled count incomplete"
@@ -586,6 +702,7 @@ fn execute_query(
     snapshot: &Mutex<SnapshotReads>,
 ) -> QueryCompletion {
     let class = QueryClass::for_id(task.id);
+    let mut stage = "deadline";
     let started = Instant::now();
     let queue_ms = started
         .saturating_duration_since(task.scheduled)
@@ -593,11 +710,13 @@ fn execute_query(
         * 1_000.0;
     let result = (|| {
         let budget = query_budget(task, timeout)?;
+        stage = "snapshot_capture";
         let captured = capture_query_snapshot(snapshot, &budget)?;
         let state = &captured.state;
         let client = NativeUdsClient::new(socket.to_path_buf());
         match class {
             QueryClass::Unique => {
+                stage = "unique_fixture";
                 let index = usize::try_from(
                     task.id
                         .checked_rem(u64::try_from(fixture.unique.len())?)
@@ -607,24 +726,31 @@ fn execute_query(
                     .unique
                     .get(index)
                     .context("mixed unique fixture absent")?;
+                stage = "unique_read_session_search";
                 let page = captured.search(&client, &expected.token, 1, &budget)?;
-                verify_unique(&page, state.view, expected)?;
+                stage = "unique_verify";
+                verify_unique(&page, state.view.identity, expected)?;
             }
             QueryClass::Broad => {
+                stage = "broad_fixture";
                 let repo = u32::try_from(
                     task.id
                         .checked_rem(u64::try_from(fixture.broad.len())?)
                         .context("mixed broad fixture count is zero")?,
                 )?;
                 let token = repo_query_token(repo);
+                stage = "broad_read_session_search";
                 let page = captured.search(&client, &token, 20, &budget)?;
-                verify_broad(&page, state.view, repo, state, fixture)?;
+                stage = "broad_verify";
+                verify_broad(&page, state.view.identity, repo, state, fixture)?;
             }
             QueryClass::Miss => {
                 let token = format!("{}{:016x}", fixture.missing_prefix, task.id);
+                stage = "miss_read_session_search";
                 let page = captured.search(&client, &token, 1, &budget)?;
+                stage = "miss_verify";
                 ensure!(
-                    page.view == state.view && page.exhaustive,
+                    page.view == state.view.identity && page.exhaustive,
                     "mixed miss coverage/view differs"
                 );
                 ensure!(
@@ -633,6 +759,7 @@ fn execute_query(
                 );
             }
         }
+        stage = "completion_deadline";
         ensure!(
             Instant::now()
                 <= task
@@ -650,6 +777,7 @@ fn execute_query(
             .as_secs_f64()
             * 1_000.0,
         queue_ms,
+        failure_stage: result.as_ref().err().map(|_| stage),
         result,
     }
 }
@@ -715,9 +843,12 @@ fn publish_tick(
     let sequence = current.next_operation_sequence;
     let event = current.next_event_sequence;
     let key = operation(sequence);
+    timings.failure_stage = Some("begin_input");
     let ingress = client.begin_input(key, &super::budget())?;
+    timings.failure_stage = Some("plan_source");
     let plan = planned_source(current.transition_step, sequence, original)?;
     let next_ref = if let Some(content) = &plan.content {
+        timings.failure_stage = Some("stage_source");
         let reference = client.stage_source(
             ingress,
             FIRST_PATH.into(),
@@ -739,16 +870,28 @@ fn publish_tick(
     );
     // This same snapshot session also protects concurrent offered queries.
     let prior = &captured.session;
-    let view = advance_staged(
+    timings.failure_stage = Some("prepare_source_advance");
+    let request = prepare_source_advance(
         client,
         ingress,
-        current.view,
+        &current.view,
         [OwnerMutation {
             owner: owner(0)?,
             expected: current.first_ref,
             next: next_ref,
         }],
         event,
+    )?;
+    timings.mutation_ready = Some(
+        Instant::now()
+            .saturating_duration_since(scheduled)
+            .as_secs_f64()
+            * 1_000.0,
+    );
+    timings.failure_stage = Some("submit_source_advance");
+    let view = publication::publish(
+        client,
+        request,
         PublicationLabel {
             phase: "mixed_load",
             cycle: None,
@@ -762,19 +905,23 @@ fn publish_tick(
             .as_secs_f64()
             * 1_000.0,
     );
+    timings.failure_stage = Some("ack_identity_validation");
     ensure!(
-        view.workspace == current.view.workspace && view.epoch == current.view.epoch,
+        view.workspace == current.view.identity.workspace
+            && view.epoch == current.view.identity.epoch,
         "mixed publication workspace/epoch differs"
     );
     ensure!(
         view.sequence
             == current
                 .view
+                .identity
                 .sequence
                 .checked_add(1)
                 .context("mixed view sequence overflow")?,
         "mixed publication sequence did not advance one"
     );
+    timings.failure_stage = Some("current_head_read");
     let latest = client.read_view(
         ViewSelection::Latest {
             workspace: view.workspace,
@@ -782,11 +929,13 @@ fn publish_tick(
         },
         &RequestBudgetV1::for_duration(QUERY_DEADLINE),
     )?;
+    timings.failure_stage = Some("current_head_verify");
     ensure!(latest.identity == view, "mixed ACK is not the current head");
-    let next = current.advanced(view, next_ref, plan.token)?;
+    timings.failure_stage = Some("current_witness");
+    let next = current.advanced(latest, next_ref, plan.token)?;
     witness(
         client,
-        next.view,
+        next.view.identity,
         next.first_token.as_deref(),
         next.first_ref,
     )?;
@@ -797,6 +946,7 @@ fn publish_tick(
             * 1_000.0,
     );
     let old_started = Instant::now();
+    timings.failure_stage = Some("old_view_witness");
     retained_witness(
         client,
         prior,
@@ -805,6 +955,7 @@ fn publish_tick(
         &RequestBudgetV1::for_duration(QUERY_DEADLINE),
     )?;
     timings.old_witness = Some(old_started.elapsed().as_secs_f64() * 1_000.0);
+    timings.failure_stage = None;
     Ok(next)
 }
 
@@ -813,8 +964,8 @@ fn open_snapshot(
     state: &MixedStart,
 ) -> Result<quanta_index_contract::native_protocol::NativeReadSessionStatus> {
     Ok(client.open_read_session(
-        ViewSelection::Exact(state.view),
-        session_key(state.view, b"queries"),
+        ViewSelection::Exact(state.view.identity),
+        session_key(state.view.identity, b"queries"),
         &RequestBudgetV1::for_duration(QUERY_DEADLINE),
     )?)
 }
@@ -841,55 +992,236 @@ fn wait_tick(deadline: Instant, cancel: &AtomicBool) -> Result<()> {
     Ok(())
 }
 
-fn publisher(
+fn tick_bounds(origin: Instant, tick: u64) -> Result<(Instant, Instant)> {
+    let scheduled = origin
+        .checked_add(
+            PUBLISH_PERIOD
+                .checked_mul(u32::try_from(tick)?)
+                .context("mixed tick offset overflow")?,
+        )
+        .context("mixed tick instant overflow")?;
+    let deadline = scheduled
+        .checked_add(PUBLISH_PERIOD)
+        .context("mixed tick deadline overflow")?;
+    Ok((scheduled, deadline))
+}
+
+#[derive(Default)]
+struct HeldWorkerProgress {
+    last_tick: Option<u64>,
+    attempted: u64,
+    missed_late: u64,
+    settled: bool,
+    current_stage: &'static str,
+    failure_stage: Option<&'static str>,
+    failure_error: Option<String>,
+}
+
+impl HeldWorkerProgress {
+    fn detail(&self) -> Value {
+        json!({
+            "last_tick":self.last_tick,
+            "attempted":self.attempted,
+            "missed_late":self.missed_late,
+            "settled":self.settled,
+            "failure_stage":self.failure_stage,
+            "failure_error":self.failure_error,
+        })
+    }
+}
+
+fn record_held_failure(progress: &Mutex<HeldWorkerProgress>, error: &anyhow::Error) {
+    if let Ok(mut progress) = progress.lock() {
+        progress.failure_stage = Some(progress.current_stage);
+        progress.failure_error = Some(format!("{error:#}").chars().take(512).collect());
+    }
+}
+
+fn held_worker(
     socket: PathBuf,
-    original: &str,
-    duration: Duration,
-    snapshot: &Mutex<SnapshotReads>,
-    progress: &Mutex<PublisherProgress>,
+    origin: Instant,
     held: &Mutex<HeldRead>,
+    progress: &Mutex<HeldWorkerProgress>,
     cancel: &AtomicBool,
 ) -> Result<()> {
     let client = NativeUdsClient::new(socket);
-    let origin = Instant::now();
-    for tick in 0..duration.as_secs() {
-        let scheduled = origin
-            .checked_add(
-                PUBLISH_PERIOD
-                    .checked_mul(u32::try_from(tick)?)
-                    .context("mixed publisher schedule overflow")?,
-            )
-            .context("mixed publisher instant overflow")?;
-        wait_tick(scheduled, cancel)?;
-        let tick_budget = RequestBudgetV1::until(
-            scheduled
-                .checked_add(PUBLISH_PERIOD)
-                .context("mixed tick deadline overflow")?,
-        );
-        let held_tick = held
-            .lock()
-            .map_err(|error| anyhow!("mixed held read poisoned: {error}"))?
-            .tick(&client, &tick_budget);
-        if let Err(error) = held_tick {
-            let mut progress_guard = lock_progress(progress)?;
-            progress_guard.last_error = Some(format!("held read: {error:#}"));
-            cancel.store(true, Ordering::Release);
-            return Err(error.context("mixed held read lifecycle"));
+    for tick in 0..TOTAL.as_secs() {
+        let (scheduled, deadline) = tick_bounds(origin, tick)?;
+        {
+            let mut progress = progress
+                .lock()
+                .map_err(|error| anyhow!("mixed held progress poisoned: {error}"))?;
+            progress.last_tick = Some(tick);
+            progress.current_stage = "wait_tick";
         }
-        SnapshotReads::reap_shared(snapshot, |session| release_snapshot(&client, session))?;
-        let captured = lock_snapshot(snapshot)?;
-        let state = &captured.state;
-        let mut progress_guard = lock_progress(progress)?;
-        progress_guard.scheduled = progress_guard
-            .scheduled
-            .checked_add(1)
-            .context("mixed scheduled count overflow")?;
-        if Instant::now().saturating_duration_since(scheduled) >= PUBLISH_PERIOD {
+        wait_tick(scheduled, cancel)?;
+        let mut progress_guard = progress
+            .lock()
+            .map_err(|error| anyhow!("mixed held progress poisoned: {error}"))?;
+        if Instant::now() >= deadline {
             progress_guard.missed_late = progress_guard
                 .missed_late
                 .checked_add(1)
-                .context("mixed late count overflow")?;
-            drop(progress_guard);
+                .context("mixed held late count overflow")?;
+            continue;
+        }
+        progress_guard.current_stage = "held_lock";
+        drop(progress_guard);
+        let mut retained = held
+            .lock()
+            .map_err(|error| anyhow!("mixed held read poisoned: {error}"))?;
+        let mut progress_guard = progress
+            .lock()
+            .map_err(|error| anyhow!("mixed held progress poisoned: {error}"))?;
+        if Instant::now() >= deadline {
+            progress_guard.missed_late = progress_guard
+                .missed_late
+                .checked_add(1)
+                .context("mixed held late count overflow")?;
+            continue;
+        }
+        progress_guard.attempted = progress_guard
+            .attempted
+            .checked_add(1)
+            .context("mixed held attempt count overflow")?;
+        progress_guard.current_stage = "held_tick";
+        drop(progress_guard);
+        // Renewal, its witness, and release/settlement all share this exact
+        // scheduled second. A delayed worker never receives a fresh budget.
+        retained.tick(&client, &RequestBudgetV1::until(deadline))?;
+        if retained.is_settled() {
+            retained.complete()?;
+            drop(retained);
+            progress
+                .lock()
+                .map_err(|error| anyhow!("mixed held progress poisoned: {error}"))?
+                .settled = true;
+            return Ok(());
+        }
+    }
+    held.lock()
+        .map_err(|error| anyhow!("mixed held read poisoned: {error}"))?
+        .complete()
+        .context("mixed held lifecycle did not settle by load end")
+}
+
+struct MixedWorkers {
+    publisher: Option<JoinHandle<Result<()>>>,
+    held: Option<JoinHandle<Result<()>>>,
+    publisher_start: Option<mpsc::Sender<Instant>>,
+    held_start: Option<mpsc::Sender<Instant>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl MixedWorkers {
+    fn start(&mut self, origin: Instant, held: &Mutex<HeldRead>) -> Result<()> {
+        held.lock()
+            .map_err(|error| anyhow!("mixed held read poisoned: {error}"))?
+            .bind_load_start(origin)?;
+        self.signal_start(origin)
+    }
+
+    fn signal_start(&mut self, origin: Instant) -> Result<()> {
+        self.publisher_start
+            .take()
+            .context("mixed publisher start sender absent")?
+            .send(origin)
+            .context("mixed publisher start receiver closed")?;
+        self.held_start
+            .take()
+            .context("mixed held start sender absent")?
+            .send(origin)
+            .context("mixed held start receiver closed")?;
+        Ok(())
+    }
+
+    fn join_all(&mut self) -> (Result<()>, Result<()>) {
+        drop(self.publisher_start.take());
+        drop(self.held_start.take());
+        let publisher = self
+            .publisher
+            .take()
+            .context("mixed publisher worker absent")
+            .and_then(|worker| {
+                worker
+                    .join()
+                    .map_err(|panic| anyhow!("mixed publisher panicked: {panic:?}"))?
+            });
+        let held = self
+            .held
+            .take()
+            .context("mixed held worker absent")
+            .and_then(|worker| {
+                worker
+                    .join()
+                    .map_err(|panic| anyhow!("mixed held worker panicked: {panic:?}"))?
+            });
+        (publisher, held)
+    }
+}
+
+impl Drop for MixedWorkers {
+    fn drop(&mut self) {
+        if self.publisher.is_some() || self.held.is_some() {
+            self.cancel.store(true, Ordering::Release);
+            drop(self.join_all());
+        }
+    }
+}
+
+fn mark_failure(owner: &AtomicU8, role: u8, cancel: &AtomicBool) {
+    // Offered-load worker panic cancels its siblings before the scheduler
+    // returns. A sibling observing that cancellation cannot claim first cause.
+    let observed_role = if role != FAILURE_SCHEDULER && cancel.load(Ordering::Acquire) {
+        FAILURE_SCHEDULER
+    } else {
+        role
+    };
+    let _first = owner.compare_exchange(0, observed_role, Ordering::AcqRel, Ordering::Acquire);
+    cancel.store(true, Ordering::Release);
+}
+
+fn publisher(
+    socket: PathBuf,
+    original: &str,
+    origin: Instant,
+    snapshot: &Mutex<SnapshotReads>,
+    progress: &Mutex<PublisherProgress>,
+    cancel: &AtomicBool,
+) -> Result<()> {
+    let client = NativeUdsClient::new(socket);
+    for tick in 0..TOTAL.as_secs() {
+        let (scheduled, tick_deadline) = tick_bounds(origin, tick)?;
+        wait_tick(scheduled, cancel)?;
+        // A reached tick remains in the denominator even if pre-publication
+        // maintenance fails before an attempt can start. Overdue ticks never
+        // dispatch maintenance with an already expired request budget.
+        {
+            let mut progress_lock = lock_progress(progress)?;
+            progress_lock.record_reached_tick(tick)?;
+            if progress_lock
+                .for_tick(tick)
+                .skip_expired_tick(Instant::now(), tick_deadline)?
+            {
+                continue;
+            }
+        }
+        SnapshotReads::reap_shared(snapshot, |session| {
+            release_snapshot(&client, session).context("retired snapshot release")
+        })
+        .map_err(|error| {
+            record_publisher_failure(progress, "retired_snapshot_reap", &error);
+            error
+        })?;
+        let captured = lock_snapshot(snapshot).map_err(|error| {
+            record_publisher_failure(progress, "snapshot_capture", &error);
+            error
+        })?;
+        let state = &captured.state;
+        let mut progress_lock = lock_progress(progress)?;
+        let progress_guard = progress_lock.for_tick(tick);
+        if progress_guard.skip_expired_tick(Instant::now(), tick_deadline)? {
+            drop(progress_lock);
             continue;
         }
         progress_guard.attempted = progress_guard
@@ -897,7 +1229,7 @@ fn publisher(
             .checked_add(1)
             .context("mixed attempted count overflow")?;
         progress_guard.last_operation_sequence = Some(state.next_operation_sequence);
-        drop(progress_guard);
+        drop(progress_lock);
         let mut audit = PublicationAudit::default();
         let mut timings = TickTimings::default();
         let outcome = publish_tick(
@@ -910,7 +1242,8 @@ fn publisher(
         );
         let audit_detail = audit.detail();
         let timing_detail = timings.detail();
-        let mut progress_guard = lock_progress(progress)?;
+        let mut progress_lock = lock_progress(progress)?;
+        let progress_guard = progress_lock.for_tick(tick);
         match outcome {
             Ok(next) => {
                 progress_guard.acked = progress_guard
@@ -928,8 +1261,11 @@ fn publisher(
                     progress_guard.old_witness_ms.push(sample);
                 }
                 progress_guard.records.push(json!({"operation_sequence":state.next_operation_sequence,"status":"published","audit":audit_detail,"timing":timing_detail}));
-                drop(progress_guard);
-                let session = open_snapshot(&client, &next)?;
+                drop(progress_lock);
+                let session = open_snapshot(&client, &next).map_err(|error| {
+                    record_publisher_failure(progress, "next_snapshot_open", &error);
+                    error
+                })?;
                 snapshot
                     .lock()
                     .map_err(|error| anyhow!("mixed snapshot poisoned: {error}"))?
@@ -945,9 +1281,11 @@ fn publisher(
                 }
                 let message = format!("{error:#}");
                 progress_guard.last_error = Some(message.clone());
+                let failure_error = message.chars().take(512).collect();
                 progress_guard.records.push(json!({"operation_sequence":state.next_operation_sequence,"status":"failed","error":message,"audit":audit_detail,"timing":timing_detail}));
-                drop(progress_guard);
-                cancel.store(true, Ordering::Release);
+                progress_lock.failure_stage = timings.failure_stage;
+                progress_lock.failure_error = Some(failure_error);
+                drop(progress_lock);
                 return Err(error);
             }
         }
@@ -1052,16 +1390,121 @@ fn summarize_queries(run: OfferedRun<QueryCompletion>, duration: Duration) -> Re
     }))
 }
 
-fn window(
-    name: &'static str,
+fn warmup_query_count() -> u64 {
+    WARMUP.as_secs() * u64::from(RATE_QPS)
+}
+
+fn is_warmup_query(id: u64) -> bool {
+    id <= warmup_query_count()
+}
+
+fn summarize_query_windows(run: OfferedRun<QueryCompletion>) -> Result<(Value, Value)> {
+    let warmup_offered = warmup_query_count();
+    let measure_offered = MEASURE.as_secs() * u64::from(RATE_QPS);
+    ensure!(
+        run.offered == warmup_offered + measure_offered,
+        "mixed combined offered count differs"
+    );
+    ensure!(
+        run.dropped_queue_full == 0 && run.dropped_scheduler_late == 0,
+        "mixed combined schedule dropped offered queries"
+    );
+    let origin = run
+        .completions
+        .iter()
+        .find(|completion| completion.task.id == 1)
+        .context("mixed first offered query is absent")?
+        .task
+        .scheduled;
+    let mut warmup_drain = WARMUP.as_secs_f64();
+    let mut warmup = Vec::new();
+    let mut measure = Vec::new();
+    for completion in run.completions {
+        ensure!(
+            (1..=run.offered).contains(&completion.task.id),
+            "mixed completion ID outside combined schedule"
+        );
+        if is_warmup_query(completion.task.id) {
+            let offset = completion
+                .task
+                .scheduled
+                .checked_duration_since(origin)
+                .context("mixed query scheduled before its origin")?;
+            warmup_drain =
+                warmup_drain.max(offset.as_secs_f64() + completion.value.latency_ms / 1_000.0);
+            warmup.push(completion);
+        } else {
+            measure.push(completion);
+        }
+    }
+    ensure!(
+        warmup.len() == usize::try_from(warmup_offered)?
+            && measure.len() == usize::try_from(measure_offered)?,
+        "mixed combined schedule has missing completions"
+    );
+    let warmup = summarize_queries(
+        OfferedRun {
+            offered: warmup_offered,
+            dropped_queue_full: 0,
+            dropped_scheduler_late: 0,
+            completions: warmup,
+            drain_secs: warmup_drain,
+        },
+        WARMUP,
+    )?;
+    let measure = summarize_queries(
+        OfferedRun {
+            offered: measure_offered,
+            dropped_queue_full: 0,
+            dropped_scheduler_late: 0,
+            completions: measure,
+            drain_secs: run.drain_secs - WARMUP.as_secs_f64(),
+        },
+        MEASURE,
+    )?;
+    Ok((warmup, measure))
+}
+
+fn offered_aggregate(run: &OfferedRun<QueryCompletion>) -> Value {
+    let first_query_error = run.completions.iter().find_map(|completion| {
+        completion.value.result.as_ref().err().map(|error| {
+            format!(
+                "task {} {}: {error:#}",
+                completion.task.id,
+                completion.value.class.name()
+            )
+        })
+    });
+    json!({
+        "offered":run.offered,
+        "dropped_queue_full":run.dropped_queue_full,
+        "dropped_scheduler_late":run.dropped_scheduler_late,
+        "completed":run.completions.len(),
+        "drain_secs":run.drain_secs,
+        "first_query_error":first_query_error,
+    })
+}
+
+fn interrupted_offered_detail(progress: &OfferedProgress) -> Value {
+    json!({
+        "status":"interrupted",
+        "planned_arrivals":progress.planned_arrivals,
+        "due_arrivals":progress.due_arrivals,
+        "enqueued":progress.enqueued,
+        "dropped_queue_full":progress.dropped_queue_full,
+        "dropped_scheduler_late":progress.dropped_scheduler_late,
+        "disconnected":progress.disconnected,
+    })
+}
+
+fn run_windows(
     socket: &Path,
     seed: u64,
     original: String,
     fixture: Arc<QueryFixture>,
     snapshot: &Arc<Mutex<SnapshotReads>>,
-    duration: Duration,
     held: &Arc<Mutex<HeldRead>>,
-) -> Result<(MixedStart, Value)> {
+) -> Result<(MixedStart, Value, Value)> {
     let progress = Arc::new(Mutex::new(PublisherProgress::default()));
     let cancel = Arc::new(AtomicBool::new(false));
     ensure!(
@@ -1072,36 +1515,71 @@ fn window(
     let pub_snapshot = Arc::clone(snapshot);
     let pub_progress = Arc::clone(&progress);
     let pub_cancel = Arc::clone(&cancel);
-    let pub_held = Arc::clone(held);
-    let panic_cancel = Arc::clone(&cancel);
+    let failure_owner = Arc::new(AtomicU8::new(0));
+    let pub_failure = Arc::clone(&failure_owner);
+    let (publisher_start, publisher_origin) = mpsc::channel::<Instant>();
     let publisher = thread::Builder::new()
-        .name(format!("native-mixed-{name}-publisher"))
+        .name("native-mixed-publisher".into())
         .spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let origin = publisher_origin
+                    .recv()
+                    .context("mixed publisher start unavailable")?;
                 publisher(
                     pub_socket,
                     &original,
-                    duration,
+                    origin,
                     &pub_snapshot,
                     &pub_progress,
-                    &pub_held,
                     &pub_cancel,
                 )
             }));
-            if !matches!(result, Ok(Ok(()))) {
-                panic_cancel.store(true, Ordering::Release);
+            let result =
+                result.unwrap_or_else(|panic| Err(anyhow!("mixed publisher panicked: {panic:?}")));
+            if let Err(error) = &result {
+                record_publisher_failure(&pub_progress, "publisher_worker", error);
+                mark_failure(&pub_failure, FAILURE_PUBLISHER, &pub_cancel);
             }
-            match result {
-                Ok(result) => result,
-                Err(panic) => std::panic::resume_unwind(panic),
-            }
+            result
         })
         .context("spawn mixed publisher")?;
+    let mut workers = MixedWorkers {
+        publisher: Some(publisher),
+        held: None,
+        publisher_start: Some(publisher_start),
+        held_start: None,
+        cancel: Arc::clone(&cancel),
+    };
+    let held_progress = Arc::new(Mutex::new(HeldWorkerProgress::default()));
+    let held_socket = socket.to_path_buf();
+    let held_read = Arc::clone(held);
+    let held_status = Arc::clone(&held_progress);
+    let held_cancel = Arc::clone(&cancel);
+    let held_failure = Arc::clone(&failure_owner);
+    let (held_start, held_origin) = mpsc::channel::<Instant>();
+    let held_worker = thread::Builder::new()
+        .name("native-mixed-held-read".into())
+        .spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let origin = held_origin.recv().context("mixed held start unavailable")?;
+                held_worker(held_socket, origin, &held_read, &held_status, &held_cancel)
+            }));
+            let result = result
+                .unwrap_or_else(|panic| Err(anyhow!("mixed held worker panicked: {panic:?}")));
+            if let Err(error) = &result {
+                record_held_failure(&held_status, error);
+                mark_failure(&held_failure, FAILURE_HELD, &held_cancel);
+            }
+            result
+        })
+        .context("spawn mixed held worker")?;
+    workers.held = Some(held_worker);
+    workers.held_start = Some(held_start);
     let config = OfferedConfig {
         seed,
         arrival_model: ArrivalModel::DeterministicPeriodic,
         rate_qps: RATE_QPS,
-        duration,
+        duration: TOTAL,
         workers: WORKERS,
         queue_capacity: QUEUE,
         request_timeout: QUERY_DEADLINE,
@@ -1110,90 +1588,150 @@ fn window(
     let query_snapshot = Arc::clone(snapshot);
     let query_progress = Arc::new(QueryProgress::default());
     let dispatched_progress = Arc::clone(&query_progress);
-    let scheduled = offered_load::run_point(&config, &cancel, move |task, timeout| {
-        let _previous = dispatched_progress
-            .dispatched
-            .fetch_add(1, Ordering::AcqRel);
-        let completion = execute_query(task, timeout, &query_socket, &fixture, &query_snapshot);
-        if completion.result.is_err() {
-            let _previous = dispatched_progress.failed.fetch_add(1, Ordering::AcqRel);
-        }
-        let _previous = dispatched_progress.completed.fetch_add(1, Ordering::AcqRel);
-        completion
-    });
+    let mut offered_progress = OfferedProgress::default();
+    let scheduled = offered_load::run_point_with_start_observed(
+        &config,
+        &cancel,
+        &mut offered_progress,
+        |origin| workers.start(origin, held),
+        move |task, timeout| {
+            let _previous = dispatched_progress
+                .dispatched
+                .fetch_add(1, Ordering::AcqRel);
+            let completion = execute_query(task, timeout, &query_socket, &fixture, &query_snapshot);
+            if completion.result.is_err() {
+                dispatched_progress.record_failure(task, &completion);
+                let _previous = dispatched_progress.failed.fetch_add(1, Ordering::AcqRel);
+            }
+            let _previous = dispatched_progress.completed.fetch_add(1, Ordering::AcqRel);
+            completion
+        },
+    );
     if scheduled.is_err() {
-        cancel.store(true, Ordering::Release);
+        mark_failure(&failure_owner, FAILURE_SCHEDULER, &cancel);
     }
-    let publication = publisher.join().map_err(|panic| {
-        let publisher_detail = lock_progress(&progress).map_or_else(
-            |error| json!({"progress_error":format!("{error:#}")}),
-            |progress| progress.detail(),
-        );
-        anyhow!("mixed publisher panicked: {panic:?}").context(MixedFailurePrefix {
-            detail: json!({"name":name,"publisher":publisher_detail,"queries":null,"query_progress":query_progress.detail()}),
-        })
-    })?;
-    let state = lock_snapshot(snapshot)?.state.clone();
-    let progress_guard = lock_progress(&progress)?;
-    let publisher_counts = validate_publisher_counts(&progress_guard, duration);
-    let publication_detail = progress_guard.detail();
-    drop(progress_guard);
-    let query_detail = scheduled.and_then(|run| summarize_queries(run, duration));
-    let (query_value, scheduler_error) = match &query_detail {
-        Ok(value) => (Some(value.clone()), None),
-        Err(error) => (None, Some(format!("{error:#}"))),
+    let offered_aggregate = scheduled.as_ref().ok().map(offered_aggregate);
+    let scheduler_partial = scheduled
+        .as_ref()
+        .err()
+        .map(|_| interrupted_offered_detail(&offered_progress));
+    let (publication, held_lifecycle) = workers.join_all();
+    let state = lock_snapshot(snapshot).map(|snapshot| snapshot.state.clone());
+    // A publisher panic can poison this diagnostic mutex. Both workers have
+    // joined; keep its partial counts for refusal attribution, never GREEN.
+    let (progress_guard, publisher_progress_poisoned) = match progress.lock() {
+        Ok(guard) => (guard, false),
+        Err(poisoned) => (poisoned.into_inner(), true),
     };
-    let detail = json!({
-        "name":name,
-        "queries":query_value,
-        "query_progress":query_progress.detail(),
-        "scheduler_error":scheduler_error,
-        "publisher":publication_detail,
+    let warmup_counts = validate_publisher_counts(&progress_guard.warmup, WARMUP);
+    let measure_counts = validate_publisher_counts(&progress_guard.measure, MEASURE);
+    let mut publication_detail = progress_guard.detail();
+    if let Some(object) = publication_detail.as_object_mut() {
+        let _previous = object.insert(
+            "progress_poisoned".into(),
+            json!(publisher_progress_poisoned),
+        );
+    }
+    let warmup_publisher = progress_guard.warmup.detail();
+    let measure_publisher = progress_guard.measure.detail();
+    drop(progress_guard);
+    let held_worker_detail = held_progress.lock().map_or_else(
+        |error| json!({"progress_error":format!("{error}")}),
+        |progress| progress.detail(),
+    );
+    let (query_values, mut query_failure) = match scheduled.and_then(summarize_query_windows) {
+        Ok(values) => (Some(values), None),
+        Err(error) => (None, Some(error)),
+    };
+    let (warmup_query, measure_query) = query_values
+        .as_ref()
+        .map_or((None, None), |(warmup, measure)| {
+            (Some(warmup.clone()), Some(measure.clone()))
+        });
+    let mut publisher_failure = publication.err().or_else(|| {
+        publisher_progress_poisoned.then(|| anyhow!("mixed publisher progress poisoned"))
     });
-    if let Err(error) = publication {
+    let mut held_failure = held_lifecycle.err();
+    let warmup_detail =
+        json!({"name":"warmup","queries":warmup_query,"publisher":warmup_publisher});
+    let measure_detail =
+        json!({"name":"measure","queries":measure_query,"publisher":measure_publisher});
+    let detail = json!({
+        "warmup":warmup_detail,
+        "measure":measure_detail,
+        "query_progress":query_progress.detail(),
+        "scheduler_error":query_failure.as_ref().map(|error| format!("{error:#}")),
+        "scheduler_partial":scheduler_partial,
+        "offered_aggregate":offered_aggregate,
+        "publisher_aggregate":publication_detail,
+        "publisher_error":publisher_failure.as_ref().map(|error| format!("{error:#}")),
+        "held_worker":held_worker_detail,
+        "held_worker_error":held_failure.as_ref().map(|error| format!("{error:#}")),
+        "first_failure_owner":match failure_owner.load(Ordering::Acquire) {
+            FAILURE_PUBLISHER => Some("publisher"),
+            FAILURE_HELD => Some("held_read"),
+            FAILURE_SCHEDULER => Some("offered_scheduler"),
+            _ => None,
+        },
+    });
+    let primary = match failure_owner.load(Ordering::Acquire) {
+        FAILURE_PUBLISHER => publisher_failure
+            .take()
+            .or_else(|| held_failure.take())
+            .or_else(|| query_failure.take()),
+        FAILURE_HELD => held_failure
+            .take()
+            .or_else(|| publisher_failure.take())
+            .or_else(|| query_failure.take()),
+        FAILURE_SCHEDULER => query_failure
+            .take()
+            .or_else(|| publisher_failure.take())
+            .or_else(|| held_failure.take()),
+        _ => publisher_failure
+            .take()
+            .or_else(|| held_failure.take())
+            .or_else(|| query_failure.take()),
+    };
+    if let Some(error) = primary {
         return Err(error.context(MixedFailurePrefix { detail }));
     }
-    let query_detail = query_detail.map_err(|error| {
+    let state = state.map_err(|error| {
         error.context(MixedFailurePrefix {
             detail: detail.clone(),
         })
     })?;
+    let (warmup_query, measure_query) = query_values.context("mixed query values absent")?;
     (|| -> Result<()> {
-        let first_error = json_field(&query_detail, "first_query_error")?;
-        ensure!(
-            first_error.is_null(),
-            "mixed {name} query failures: {first_error}"
-        );
-        ensure!(
-            json_u64(&query_detail, "dropped_queue_full")? == 0
-                && json_u64(&query_detail, "dropped_scheduler_late")? == 0,
-            "mixed {name} dropped offered queries"
-        );
-        if duration == MEASURE {
+        for (name, query) in [("warmup", &warmup_query), ("measure", &measure_query)] {
+            let first_error = json_field(query, "first_query_error")?;
             ensure!(
-                json_u64(&query_detail, "offered")? >= 10_000,
-                "mixed measure offered fewer than 10,000 queries"
-            );
-            let classes = json_field(&query_detail, "classes")?;
-            for class in ["unique", "broad_top20", "miss"] {
-                let row = json_field(classes, class)?;
-                ensure!(
-                    json_u64(row, "success")? >= 1_000,
-                    "mixed measure class {class} had fewer than 1,000 successes"
-                );
-                ensure!(
-                    json_f64(row, "p95_ms")? <= 100.0 && json_f64(row, "p99_ms")? <= 500.0,
-                    "mixed measure class {class} exceeded warm lexical latency target"
-                );
-            }
-            let publisher = json_field(&detail, "publisher")?;
-            ensure!(
-                json_f64(publisher, "current_gold_from_scheduled_p95_ms")? <= 1_000.0
-                    && json_f64(publisher, "current_gold_from_scheduled_p99_ms")? <= 5_000.0,
-                "mixed one-file freshness exceeded target"
+                first_error.is_null(),
+                "mixed {name} query failures: {first_error}"
             );
         }
-        publisher_counts?;
+        ensure!(
+            json_u64(&measure_query, "offered")? >= 10_000,
+            "mixed measure offered fewer than 10,000 queries"
+        );
+        let classes = json_field(&measure_query, "classes")?;
+        for class in ["unique", "broad_top20", "miss"] {
+            let row = json_field(classes, class)?;
+            ensure!(
+                json_u64(row, "success")? >= 1_000,
+                "mixed measure class {class} had fewer than 1,000 successes"
+            );
+            ensure!(
+                json_f64(row, "p95_ms")? <= 100.0 && json_f64(row, "p99_ms")? <= 500.0,
+                "mixed measure class {class} exceeded warm lexical latency target"
+            );
+        }
+        ensure!(
+            json_f64(&measure_publisher, "current_gold_from_scheduled_p95_ms")? <= 1_000.0
+                && json_f64(&measure_publisher, "current_gold_from_scheduled_p99_ms")? <= 5_000.0,
+            "mixed one-file freshness exceeded target"
+        );
+        warmup_counts?;
+        measure_counts?;
         Ok(())
     })()
     .map_err(|error| {
@@ -1201,10 +1739,7 @@ fn window(
             detail: detail.clone(),
         })
     })?;
-    Ok((
-        state,
-        json!({"name":name,"queries":query_detail,"publisher":publication_detail}),
-    ))
+    Ok((state, warmup_detail, measure_detail))
 }
 
 pub(super) fn run(
@@ -1230,7 +1765,7 @@ pub(super) fn run(
     let client = NativeUdsClient::new(socket.to_path_buf());
     let held = Arc::new(Mutex::new(HeldRead::open(
         &client,
-        start.view,
+        start.view.identity,
         start.first_token.as_deref(),
         start.first_ref,
     )?));
@@ -1241,27 +1776,11 @@ pub(super) fn run(
             .lock()
             .map_err(|error| anyhow!("mixed snapshot poisoned: {error}"))?
             .install(start, session);
-        let (_warm, warm_detail) = window(
-            "warmup",
-            socket,
-            seed,
-            original.clone(),
-            Arc::clone(&fixture),
-            &snapshot,
-            WARMUP,
-            &held,
-        )?;
-        let (measured, measure_detail) = window(
-            "measure", socket, seed, original, fixture, &snapshot, MEASURE, &held,
-        )
-        .map_err(|error| {
-            let measured = error
-                .downcast_ref::<MixedFailurePrefix>()
-                .map(|prefix| prefix.detail.clone());
-            error.context(MixedFailurePrefix {
-                detail: json!({"warmup":warm_detail,"measure":measured}),
-            })
-        })?;
+        let (measured, warm_detail, measure_detail) =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_windows(socket, seed, original, fixture, &snapshot, &held)
+            }))
+            .unwrap_or_else(|panic| Err(anyhow!("mixed windows panicked: {panic:?}")))?;
         let retained_detail = {
             let retained = held
                 .lock()
@@ -1270,15 +1789,15 @@ pub(super) fn run(
             retained.detail()
         };
         Ok(MixedOutcome {
-            final_view: measured.view,
+            final_view: measured.view.identity,
             first_ref: measured.first_ref,
             first_token: measured.first_token,
             detail: json!({"warmup":warm_detail,"measure":measure_detail,
                 "retained_read":retained_detail,
-                "scope":"Native UDS mixed offered load with product retained-read witness; sampled resource observations are not continuous peaks"}),
+                "scope":"Native UDS mixed offered load on one continuous 960-second epoch with product retained-read witness; sampled resource observations are not continuous peaks"}),
         })
     })();
-    // Both windows joined their publisher and workers before reaching this point.
+    // The combined run joined its publisher and workers before reaching this point.
     let cleanup = Arc::try_unwrap(snapshot)
         .map_err(|remaining| {
             anyhow!(
@@ -1289,6 +1808,7 @@ pub(super) fn run(
         .and_then(|snapshots| {
             SnapshotReads::drain_owned(snapshots, |session| release_snapshot(&client, session))
         });
+    let snapshot_cleanup_error = cleanup.as_ref().err().map(|error| format!("{error:#}"));
     let result = match (result, cleanup) {
         (Ok(outcome), Ok(())) => Ok(outcome),
         (Err(error), Ok(())) => Err(error),
@@ -1303,23 +1823,28 @@ pub(super) fn run(
             let mut detail = error
                 .downcast_ref::<MixedFailurePrefix>()
                 .map_or_else(|| json!({}), |prefix| prefix.detail.clone());
-            let (held_detail, cleanup_error) = match held.lock() {
-                Ok(mut retained) => {
-                    let cleanup = if retained.is_active() {
-                        retained.release(&client, &RequestBudgetV1::for_duration(QUERY_DEADLINE))
-                    } else {
-                        Ok(())
-                    };
-                    (
-                        retained.detail(),
-                        cleanup.err().map(|failure| format!("{failure:#}")),
-                    )
-                }
-                Err(failure) => (json!({"lock_error":format!("{failure}")}), None),
+            // The held worker has joined. A panic cannot invalidate the
+            // immutable session identity used by the idempotent Release.
+            let (mut retained, held_lock_poisoned) = match held.lock() {
+                Ok(retained) => (retained, false),
+                Err(error) => (error.into_inner(), true),
             };
+            let cleanup = if retained.is_active() {
+                retained.release(&client, &RequestBudgetV1::for_duration(QUERY_DEADLINE))
+            } else {
+                Ok(())
+            };
+            let held_detail = retained.detail();
+            let cleanup_error = cleanup.err().map(|failure| format!("{failure:#}"));
             if let Some(object) = detail.as_object_mut() {
                 let _previous = object.insert("retained_read".into(), held_detail);
+                let _previous =
+                    object.insert("held_lock_poisoned".into(), json!(held_lock_poisoned));
                 let _previous = object.insert("cleanup_error".into(), json!(cleanup_error));
+                let _previous = object.insert(
+                    "snapshot_cleanup_error".into(),
+                    json!(snapshot_cleanup_error),
+                );
             }
             Err(error.context(MixedFailurePrefix { detail }))
         }
@@ -1329,6 +1854,131 @@ pub(super) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn held_clock_and_worker_start_do_not_follow_publisher_backlog() -> Result<()> {
+        const HELD_TEST_TICK: u64 = 600;
+        let origin = Instant::now();
+        let (publisher_start, publisher_origin) = mpsc::channel();
+        let (held_start, held_origin) = mpsc::channel();
+        let (publisher_entered, entered) = mpsc::channel();
+        let (release_publisher, publisher_release) = mpsc::channel();
+        let (held_observed, observed) = mpsc::channel();
+        let publisher = thread::spawn(move || -> Result<()> {
+            let started = publisher_origin.recv()?;
+            publisher_entered.send(started)?;
+            publisher_release.recv_timeout(Duration::from_secs(3))?;
+            Ok(())
+        });
+        let held = thread::spawn(move || -> Result<()> {
+            let started = held_origin.recv()?;
+            held_observed.send(tick_bounds(started, HELD_TEST_TICK)?)?;
+            Ok(())
+        });
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut workers = MixedWorkers {
+            publisher: Some(publisher),
+            held: Some(held),
+            publisher_start: Some(publisher_start),
+            held_start: Some(held_start),
+            cancel: Arc::clone(&cancel),
+        };
+        workers.signal_start(origin)?;
+        let publisher_started = entered.recv_timeout(Duration::from_secs(1));
+        let held_bounds = observed.recv_timeout(Duration::from_secs(1));
+        release_publisher.send(())?;
+        let (publisher_result, held_result) = workers.join_all();
+        publisher_result?;
+        held_result?;
+        ensure!(publisher_started? == origin, "publisher origin differs");
+        let (scheduled, deadline) = held_bounds?;
+        ensure!(
+            scheduled == origin + Duration::from_secs(HELD_TEST_TICK)
+                && deadline == scheduled + PUBLISH_PERIOD,
+            "held deadline followed publisher backlog"
+        );
+        let owner = AtomicU8::new(0);
+        mark_failure(&owner, FAILURE_HELD, &cancel);
+        mark_failure(&owner, FAILURE_SCHEDULER, &cancel);
+        ensure!(
+            owner.load(Ordering::Acquire) == FAILURE_HELD && cancel.load(Ordering::Acquire),
+            "secondary cancellation replaced the first held failure"
+        );
+        let external_cancel = AtomicBool::new(true);
+        let external_owner = AtomicU8::new(0);
+        mark_failure(&external_owner, FAILURE_PUBLISHER, &external_cancel);
+        ensure!(
+            external_owner.load(Ordering::Acquire) == FAILURE_SCHEDULER,
+            "offered worker cancellation was attributed to a sibling"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn interrupted_scheduler_detail_separates_queue_outcomes() {
+        let detail = interrupted_offered_detail(&OfferedProgress {
+            planned_arrivals: 48_000,
+            due_arrivals: 7,
+            enqueued: 2,
+            dropped_queue_full: 3,
+            dropped_scheduler_late: 1,
+            disconnected: 1,
+        });
+        assert_eq!(
+            detail,
+            json!({
+                "status":"interrupted",
+                "planned_arrivals":48_000,
+                "due_arrivals":7,
+                "enqueued":2,
+                "dropped_queue_full":3,
+                "dropped_scheduler_late":1,
+                "disconnected":1,
+            })
+        );
+    }
+
+    #[test]
+    fn partial_failure_keeps_first_query_stage_and_bounded_error() -> Result<()> {
+        let progress = QueryProgress::default();
+        let scheduled = Instant::now();
+        progress.record_failure(
+            OfferedTask { id: 7, scheduled },
+            &QueryCompletion {
+                class: QueryClass::Broad,
+                latency_ms: 200.0,
+                queue_ms: 10.0,
+                failure_stage: Some("broad_read_session_search"),
+                result: Err(anyhow!("{}", "x".repeat(1_024))),
+            },
+        );
+        progress.record_failure(
+            OfferedTask { id: 8, scheduled },
+            &QueryCompletion {
+                class: QueryClass::Miss,
+                latency_ms: 210.0,
+                queue_ms: 20.0,
+                failure_stage: Some("miss_verify"),
+                result: Err(anyhow!("second failure")),
+            },
+        );
+        let first = progress.detail();
+        assert_eq!(first.pointer("/first_failure/task_id"), Some(&json!(7)));
+        assert_eq!(
+            first.pointer("/first_failure/stage"),
+            Some(&json!("broad_read_session_search"))
+        );
+        assert_eq!(
+            first
+                .pointer("/first_failure/error")
+                .and_then(Value::as_str)
+                .context("first query error absent")?
+                .chars()
+                .count(),
+            512
+        );
+        Ok(())
+    }
     use quanta_index_contract::{
         FiniteScore,
         index::Digest,
@@ -1355,12 +2005,12 @@ mod tests {
         let fixture = QueryFixture::from_source(&corpus, &refs, 1, 42)?;
         let first_ref = refs.first().copied().context("fixed first ref absent")?;
         let state = MixedStart {
-            view: ViewRef {
+            view: fixture_catalog_view(ViewRef {
                 workspace: operation(1).workspace,
                 epoch: 1,
                 sequence: 5,
                 digest: Digest([7; 32]),
-            },
+            }),
             first_ref: Some(first_ref),
             first_token: Some(file_query_token(0, 0)),
             next_operation_sequence: 6,
@@ -1426,36 +2076,37 @@ mod tests {
     #[test]
     fn broad_top20_gold_rejects_wrong_binding_rank_count_and_partial() -> Result<()> {
         let (corpus, refs, fixture, state) = fixed_fixture()?;
-        let page = fixed_page(&corpus, &refs, state.view)?;
-        verify_broad(&page, state.view, 0, &state, &fixture)?;
+        let view = state.view.identity;
+        let page = fixed_page(&corpus, &refs, view)?;
+        verify_broad(&page, view, 0, &state, &fixture)?;
         let mut changed = page.clone();
         changed.hits.get_mut(0).context("fixed hit absent")?.source = ObjectRef(Digest([90; 32]));
         ensure!(
-            verify_broad(&changed, state.view, 0, &state, &fixture).is_err(),
+            verify_broad(&changed, view, 0, &state, &fixture).is_err(),
             "wrong source passed broad gold"
         );
         let mut changed = page.clone();
         changed.hits.get_mut(0).context("fixed hit absent")?.path = "repo0/src/wrong.rs".into();
         ensure!(
-            verify_broad(&changed, state.view, 0, &state, &fixture).is_err(),
+            verify_broad(&changed, view, 0, &state, &fixture).is_err(),
             "wrong path passed broad gold"
         );
         let mut changed = page.clone();
         changed.hits.get_mut(0).context("fixed hit absent")?.owner = owner(21)?;
         ensure!(
-            verify_broad(&changed, state.view, 0, &state, &fixture).is_err(),
+            verify_broad(&changed, view, 0, &state, &fixture).is_err(),
             "wrong owner passed broad gold"
         );
         let mut changed = page.clone();
         changed.matched = 21;
         ensure!(
-            verify_broad(&changed, state.view, 0, &state, &fixture).is_err(),
+            verify_broad(&changed, view, 0, &state, &fixture).is_err(),
             "wrong matched count passed broad gold"
         );
         let mut changed = page.clone();
         changed.exhaustive = false;
         ensure!(
-            verify_broad(&changed, state.view, 0, &state, &fixture).is_err(),
+            verify_broad(&changed, view, 0, &state, &fixture).is_err(),
             "partial page passed broad gold"
         );
         let mut changed = page.clone();
@@ -1476,13 +2127,13 @@ mod tests {
             score: FiniteScore::new(1.0 / (1.0 + f64::from(u32::try_from(lower_tokens)?)))?,
         };
         ensure!(
-            verify_broad(&changed, state.view, 0, &state, &fixture).is_err(),
+            verify_broad(&changed, view, 0, &state, &fixture).is_err(),
             "lower-ranked replacement passed broad top20 gold"
         );
         let mut changed = page;
         changed.hits.swap(0, 1);
         ensure!(
-            verify_broad(&changed, state.view, 0, &state, &fixture).is_err(),
+            verify_broad(&changed, view, 0, &state, &fixture).is_err(),
             "tie-order reversal passed broad gold"
         );
         Ok(())
@@ -1560,20 +2211,24 @@ mod tests {
                     "restore differs from original"
                 ),
             }
-            let next_view = ViewRef {
-                sequence: state
-                    .view
-                    .sequence
-                    .checked_add(1)
-                    .context("test view overflow")?,
-                ..state.view
-            };
+            let mut next_view = state.view.clone();
+            next_view.identity.sequence = next_view
+                .identity
+                .sequence
+                .checked_add(1)
+                .context("test view overflow")?;
+            next_view.source.owners.0 = Some(ObjectRef(Digest([u8::try_from(step)?; 32])));
+            let expected_source = next_view.source;
             let reference = if step == 1 {
                 None
             } else {
                 Some(*refs.first().context("test ref absent")?)
             };
             state = state.advanced(next_view, reference, plan.token)?;
+            ensure!(
+                state.view.source == expected_source,
+                "mixed source cut drifted"
+            );
             ensure!(
                 state.next_operation_sequence
                     == 7_u64.checked_add(step).context("test operation overflow")?
@@ -1589,10 +2244,10 @@ mod tests {
 
     #[test]
     fn publisher_failure_and_late_tick_stay_in_denominator() -> Result<()> {
-        let mut progress = PublisherProgress {
+        let mut progress = PublisherWindowProgress {
             scheduled: 1,
             attempted: 1,
-            ..PublisherProgress::default()
+            ..PublisherWindowProgress::default()
         };
         ensure!(
             validate_publisher_counts(&progress, Duration::from_secs(1)).is_err(),
@@ -1613,6 +2268,81 @@ mod tests {
             validate_publisher_counts(&progress, Duration::from_secs(1)).is_err(),
             "late dropped publication passed"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn reached_tick_prepublication_failure_keeps_denominator_and_stage() -> Result<()> {
+        let progress = Mutex::new(PublisherProgress::default());
+        lock_progress(&progress)?.record_reached_tick(WARMUP.as_secs())?;
+        record_publisher_failure(&progress, "snapshot_capture", &anyhow!("snapshot failed"));
+        let recorded = lock_progress(&progress)?;
+        assert_eq!(recorded.warmup.scheduled, 0);
+        assert_eq!(recorded.measure.scheduled, 1);
+        assert_eq!(recorded.measure.attempted, 0);
+        assert_eq!(recorded.failure_stage, Some("snapshot_capture"));
+        assert!(validate_publisher_counts(&recorded.measure, Duration::from_secs(1)).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn expired_tick_is_counted_before_tick_budget_can_be_used() -> Result<()> {
+        let mut progress = PublisherProgress::default();
+        let tick = WARMUP.as_secs();
+        let scheduled = Instant::now();
+        let deadline = scheduled
+            .checked_add(PUBLISH_PERIOD)
+            .context("mixed test deadline overflow")?;
+        progress.record_reached_tick(tick)?;
+        let window = progress.for_tick(tick);
+        assert!(!window.skip_expired_tick(scheduled, deadline)?);
+        assert_eq!(window.missed_late, 0);
+        assert!(window.skip_expired_tick(deadline, deadline)?);
+        assert_eq!(window.scheduled, 1);
+        assert_eq!(window.missed_late, 1);
+        assert_eq!(window.attempted, 0);
+        assert!(validate_publisher_counts(window, PUBLISH_PERIOD).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn combined_schedule_split_has_exact_warmup_boundary() -> Result<()> {
+        let mut progress = PublisherProgress::default();
+        progress.for_tick(WARMUP.as_secs() - 1).scheduled += 1;
+        progress.for_tick(WARMUP.as_secs()).scheduled += 1;
+        assert_eq!(progress.warmup.scheduled, 1);
+        assert_eq!(progress.measure.scheduled, 1);
+        assert_eq!(warmup_query_count(), 3_000);
+        assert_eq!(TOTAL.as_secs(), 960);
+        assert!(is_warmup_query(3_000));
+        assert!(!is_warmup_query(3_001));
+        let origin = Instant::now();
+        let completions = (1_u64..=48_000)
+            .map(|id| offered_load::OfferedCompletion {
+                task: OfferedTask {
+                    id,
+                    scheduled: origin + Duration::from_millis((id - 1) * 20),
+                },
+                value: QueryCompletion {
+                    class: QueryClass::for_id(id),
+                    latency_ms: if id == 3_000 { 270.0 } else { 5.0 },
+                    queue_ms: 0.0,
+                    failure_stage: None,
+                    result: Ok(()),
+                },
+            })
+            .collect();
+        let (warmup, measure) = summarize_query_windows(OfferedRun {
+            offered: 48_000,
+            dropped_queue_full: 0,
+            dropped_scheduler_late: 0,
+            completions,
+            drain_secs: 960.5,
+        })?;
+        assert_eq!(json_u64(&warmup, "offered")?, 3_000);
+        assert_eq!(json_u64(&measure, "offered")?, 45_000);
+        assert!((json_f64(&warmup, "drain_secs")? - 60.25).abs() < 1e-9);
+        assert!((json_f64(&measure, "drain_secs")? - 900.5).abs() < 1e-9);
         Ok(())
     }
 }

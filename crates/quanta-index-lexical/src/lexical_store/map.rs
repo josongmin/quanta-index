@@ -1,6 +1,7 @@
 //! Bounded authenticated B+ pages. Edits visit only intersecting branches;
 //! bootstrap consumes sorted rows without retaining a corpus-sized map.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use quanta_index_core::{CoreError, RequestBudgetV1};
@@ -11,9 +12,17 @@ use super::store::{AttemptLease, ObjectStore, Page, corrupt, invalid, storage};
 const PAGE_MAGIC: &[u8; 8] = b"QLMAP003";
 const LEAF_INLINE: u8 = 0;
 const LEAF_DICTIONARY: u8 = 1;
+// Only the Native gram-route bootstrap writes this bounded fixed-key format.
+const LEAF_WIDE_GRAM_DICTIONARY: u8 = 2;
 const BLOB_REF_WIRE_BYTES: usize = 81;
 const MAX_KEY_BYTES: usize = 256;
-const LEAF_FANOUT: usize = 96;
+const LEAF_FANOUT: usize = 256;
+const WIDE_GRAM_FANOUT: usize = 1024;
+const GRAM_ROUTE_KEY_BYTES: usize = 12;
+// Keep a leaf within one 32 KiB payload even when all values use inline wire.
+// Dictionary mode can only reduce the encoded width from this bound.
+const LEAF_INLINE_BYTES: usize = 32 * 1024;
+pub(crate) const LEAF_DEPENDENCIES: usize = 128;
 const BRANCH_FANOUT: usize = 64;
 pub(crate) const MAX_MAP_HEIGHT: u8 = 12;
 
@@ -75,6 +84,79 @@ type EncodedPage = (Vec<u8>, Vec<ObjectRef>, Vec<u8>, Vec<u8>, u64, u8);
 type ChangeVisitor<'a> =
     dyn FnMut(&[u8], Option<&BlobRef>, Option<&BlobRef>) -> Result<(), CoreError> + 'a;
 type ScanVisitor<'a> = dyn FnMut(&[u8], &BlobRef) -> Result<(), CoreError> + 'a;
+
+#[derive(Default)]
+struct LeafBuilder {
+    rows: Vec<(Vec<u8>, BlobRef)>,
+    dependencies: BTreeSet<ObjectRef>,
+    inline_rows_bytes: usize,
+    wide_gram_routes: bool,
+    distinct_values: BTreeSet<BlobRef>,
+}
+
+impl LeafBuilder {
+    fn wide_gram_routes() -> Self {
+        Self {
+            wide_gram_routes: true,
+            ..Self::default()
+        }
+    }
+
+    fn would_overflow(&self, key: &[u8], value: &BlobRef) -> bool {
+        if self.rows.is_empty() {
+            return false;
+        }
+        if self.wide_gram_routes {
+            let rows = self.rows.len().saturating_add(1);
+            let values =
+                self.distinct_values.len() + usize::from(!self.distinct_values.contains(value));
+            let dependencies =
+                self.dependencies.len() + usize::from(!self.dependencies.contains(&value.root));
+            // Exact dictionary payload upper bound for fixed 12-byte keys.
+            let encoded = 50_usize
+                .saturating_add(81_usize.saturating_mul(values))
+                .saturating_add(16_usize.saturating_mul(rows));
+            return rows > WIDE_GRAM_FANOUT
+                || values > LEAF_DEPENDENCIES
+                || dependencies > LEAF_DEPENDENCIES
+                || encoded > LEAF_INLINE_BYTES;
+        }
+        let first_key_bytes = self.rows[0].0.len();
+        // Header, fences and mode consume 24 bytes before row bodies.
+        let inline_bytes = 24_usize
+            .saturating_add(first_key_bytes)
+            .saturating_add(key.len())
+            .saturating_add(self.inline_rows_bytes)
+            .saturating_add(2 + key.len() + BLOB_REF_WIRE_BYTES);
+        self.rows.len() == LEAF_FANOUT
+            || inline_bytes > LEAF_INLINE_BYTES
+            || (self.dependencies.len() == LEAF_DEPENDENCIES
+                && !self.dependencies.contains(&value.root))
+    }
+
+    fn push(&mut self, row: (Vec<u8>, BlobRef)) -> Result<(), CoreError> {
+        self.inline_rows_bytes = self
+            .inline_rows_bytes
+            .checked_add(2 + row.0.len() + BLOB_REF_WIRE_BYTES)
+            .ok_or_else(|| invalid("leaf inline width overflow"))?;
+        let _inserted = self.dependencies.insert(row.1.root.clone());
+        if self.wide_gram_routes {
+            let _inserted = self.distinct_values.insert(row.1.clone());
+        }
+        self.rows
+            .try_reserve(1)
+            .map_err(|error| storage("reserve map leaf", error))?;
+        self.rows.push(row);
+        Ok(())
+    }
+
+    fn take(&mut self) -> Vec<(Vec<u8>, BlobRef)> {
+        self.inline_rows_bytes = 0;
+        self.dependencies.clear();
+        self.distinct_values.clear();
+        std::mem::take(&mut self.rows)
+    }
+}
 
 enum DiffItem {
     Page(PageRef),
@@ -154,6 +236,10 @@ impl MapCursor<'_> {
                         drop(self.frames.pop());
                         continue;
                     };
+                    // Wide leaves retain the old cancellation granularity.
+                    if rows.len() > LEAF_FANOUT && frame.next % 64 == 0 {
+                        checkpoint(self.budget)?;
+                    }
                     frame.next = frame
                         .next
                         .checked_add(1)
@@ -258,7 +344,13 @@ fn dictionary_is_smaller(rows: usize, unique_values: usize) -> bool {
 fn page_extent(page: &Page) -> Result<PageExtent, CoreError> {
     match page {
         Page::Leaf(entries) => {
-            if entries.is_empty() || entries.len() > LEAF_FANOUT {
+            if entries.is_empty()
+                || entries.len() > WIDE_GRAM_FANOUT
+                || (entries.len() > LEAF_FANOUT
+                    && entries
+                        .iter()
+                        .any(|(key, _)| key.len() != GRAM_ROUTE_KEY_BYTES))
+            {
                 return Err(invalid("leaf page fanout"));
             }
             let first = entries
@@ -278,6 +370,11 @@ fn page_extent(page: &Page) -> Result<PageExtent, CoreError> {
                 .try_reserve_exact(entries.len())
                 .map_err(|error| storage("reserve leaf dependencies", error))?;
             dependencies.extend(entries.iter().map(|(_, blob)| blob.root.clone()));
+            dependencies.sort_unstable();
+            dependencies.dedup();
+            if dependencies.len() > LEAF_DEPENDENCIES {
+                return Err(invalid("leaf dependency bound"));
+            }
             Ok((first, last, count, 0, dependencies))
         }
         Page::Branch(children) => {
@@ -352,8 +449,20 @@ fn encode_page(page: &Page) -> Result<EncodedPage, CoreError> {
     match page {
         Page::Leaf(rows) => {
             let dictionary = distinct_leaf_values(rows)?;
+            if rows.len() > LEAF_FANOUT && !dictionary_is_smaller(rows.len(), dictionary.len()) {
+                return Err(invalid(
+                    "wide gram leaf dictionary does not reduce wire size",
+                ));
+            }
+            if rows.len() > LEAF_FANOUT && dictionary.len() > LEAF_DEPENDENCIES {
+                return Err(invalid("wide gram leaf dictionary exceeds 128 values"));
+            }
             if dictionary_is_smaller(rows.len(), dictionary.len()) {
-                bytes.push(LEAF_DICTIONARY);
+                bytes.push(if rows.len() > LEAF_FANOUT {
+                    LEAF_WIDE_GRAM_DICTIONARY
+                } else {
+                    LEAF_DICTIONARY
+                });
                 bytes.extend_from_slice(&u16_len(dictionary.len())?.to_be_bytes());
                 for value in &dictionary {
                     add_blob_ref(&mut bytes, value);
@@ -383,6 +492,11 @@ fn encode_page(page: &Page) -> Result<EncodedPage, CoreError> {
                 add_key(&mut bytes, &child.last)?;
             }
         }
+    }
+    if matches!(page, Page::Leaf(rows) if rows.len() > LEAF_FANOUT)
+        && bytes.len() > LEAF_INLINE_BYTES
+    {
+        return Err(invalid("wide gram leaf exceeds 32 KiB payload"));
     }
     if bytes.len() > 64 * 1024 {
         return Err(invalid("encoded map page exceeds physical bound"));
@@ -485,7 +599,7 @@ fn decode_page(
         return Err(corrupt("map page descriptor differs"));
     }
     let page = if height == 0 {
-        if count > LEAF_FANOUT
+        if count > WIDE_GRAM_FANOUT
             || entries
                 != u64::try_from(count).map_err(|_conversion_error| corrupt("leaf count width"))?
         {
@@ -495,14 +609,29 @@ fn decode_page(
         let mut dictionary = Vec::new();
         let mut used = Vec::new();
         match mode {
-            LEAF_INLINE => {}
-            LEAF_DICTIONARY => {
-                let unique_values = usize::from(cursor.u16()?);
-                if unique_values == 0 || unique_values > count {
-                    return Err(corrupt("leaf dictionary count differs"));
+            LEAF_INLINE if count <= LEAF_FANOUT => {}
+            LEAF_DICTIONARY | LEAF_WIDE_GRAM_DICTIONARY => {
+                let wide = mode == LEAF_WIDE_GRAM_DICTIONARY;
+                if wide {
+                    if count <= LEAF_FANOUT
+                        || count > WIDE_GRAM_FANOUT
+                        || payload.len() > LEAF_INLINE_BYTES
+                        || first.len() != GRAM_ROUTE_KEY_BYTES
+                        || last.len() != GRAM_ROUTE_KEY_BYTES
+                        || object_deps.len() > LEAF_DEPENDENCIES
+                    {
+                        return Err(corrupt("wide gram leaf bounds differ"));
+                    }
+                } else if count > LEAF_FANOUT {
+                    return Err(corrupt("ordinary leaf fanout differs"));
                 }
-                if !dictionary_is_smaller(count, unique_values) {
-                    return Err(corrupt("leaf dictionary mode is not minimal"));
+                let unique_values = usize::from(cursor.u16()?);
+                if unique_values == 0
+                    || unique_values > count
+                    || (wide && unique_values > LEAF_DEPENDENCIES)
+                    || !dictionary_is_smaller(count, unique_values)
+                {
+                    return Err(corrupt("leaf dictionary count differs"));
                 }
                 dictionary
                     .try_reserve_exact(unique_values)
@@ -538,9 +667,12 @@ fn decode_page(
                     .ok_or_else(|| corrupt("leaf dictionary value is absent"))?
                     .clone()
             };
+            if mode == LEAF_WIDE_GRAM_DICTIONARY && key.len() != GRAM_ROUTE_KEY_BYTES {
+                return Err(corrupt("wide gram leaf key width differs"));
+            }
             rows.push((key, value));
         }
-        if mode == LEAF_DICTIONARY && used.contains(&false) {
+        if (mode == LEAF_DICTIONARY || mode == LEAF_WIDE_GRAM_DICTIONARY) && used.contains(&false) {
             return Err(corrupt("leaf dictionary contains an unused value"));
         }
         if mode == LEAF_INLINE && dictionary_is_smaller(count, distinct_leaf_values(&rows)?.len()) {
@@ -924,6 +1056,94 @@ impl ObjectStore {
         }
     }
 
+    /// Look up ordered keys while authenticating each intersecting map page once.
+    /// Missing keys are omitted; the visitor sees present keys in input order.
+    pub(crate) fn map_lookup_sorted(
+        &self,
+        root: &MapRoot,
+        keys: &[Vec<u8>],
+        budget: Option<&RequestBudgetV1>,
+        visit: &mut ScanVisitor<'_>,
+    ) -> Result<(), CoreError> {
+        let mut previous: Option<&[u8]> = None;
+        for key in keys {
+            check_key(key)?;
+            if previous.is_some_and(|prior| prior >= key.as_slice()) {
+                return Err(invalid("map lookup keys are not strictly sorted"));
+            }
+            previous = Some(key);
+        }
+        Self::validate_root(root)?;
+        if keys.is_empty() {
+            return Ok(());
+        }
+        if let Some(page) = &root.page {
+            let mut next = 0;
+            self.lookup_sorted_page(page, keys, &mut next, budget, visit)?;
+            for _ in next..keys.len() {
+                checkpoint(budget)?;
+            }
+        } else {
+            for _ in keys {
+                checkpoint(budget)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn lookup_sorted_page(
+        &self,
+        reference: &PageRef,
+        keys: &[Vec<u8>],
+        next: &mut usize,
+        budget: Option<&RequestBudgetV1>,
+        visit: &mut ScanVisitor<'_>,
+    ) -> Result<(), CoreError> {
+        // Authenticate the root even when every requested key misses its fence,
+        // matching the ordinary map lookup's root check.
+        let page = self.load_page_shared(reference, budget)?;
+        match page.as_ref() {
+            Page::Leaf(rows) => {
+                while let Some(key) = keys.get(*next) {
+                    if key.as_slice() > reference.last.as_slice() {
+                        break;
+                    }
+                    checkpoint(budget)?;
+                    if let Ok(index) = rows.binary_search_by(|row| row.0.as_slice().cmp(key)) {
+                        let (found, value) = rows
+                            .get(index)
+                            .ok_or_else(|| invalid("map search returned absent row"))?;
+                        visit(found, value)?;
+                    }
+                    *next += 1;
+                }
+            }
+            Page::Branch(children) => {
+                for child in children {
+                    while let Some(key) = keys.get(*next) {
+                        if key.as_slice() >= child.first.as_slice() {
+                            break;
+                        }
+                        checkpoint(budget)?;
+                        *next += 1;
+                    }
+                    let Some(key) = keys.get(*next) else { break };
+                    if key.as_slice() <= child.last.as_slice() {
+                        self.lookup_sorted_page(child, keys, next, budget, visit)?;
+                    }
+                }
+                while let Some(key) = keys.get(*next) {
+                    if key.as_slice() > reference.last.as_slice() {
+                        break;
+                    }
+                    checkpoint(budget)?;
+                    *next += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn map_scan(
         &self,
         root: &MapRoot,
@@ -958,7 +1178,10 @@ impl ObjectStore {
         let page = self.load_page(reference, budget)?;
         match page {
             Page::Leaf(rows) => {
-                for (key, value) in &rows {
+                for (index, (key, value)) in rows.iter().enumerate() {
+                    if rows.len() > LEAF_FANOUT && index % 64 == 0 {
+                        checkpoint(budget)?;
+                    }
                     if key.as_slice() >= lower && upper.is_none_or(|upper| key.as_slice() < upper) {
                         visitor(key, value)?;
                     }
@@ -1000,7 +1223,7 @@ impl ObjectStore {
                 self.push_level(lease, &mut levels, usize::from(page.height), page_ref)
             })?;
         } else {
-            let mut leaf = Vec::new();
+            let mut leaf = LeafBuilder::default();
             while edits.peek()?.is_some() {
                 let edit = edits.take()?;
                 if let Some(value) = edit.value {
@@ -1033,7 +1256,7 @@ impl ObjectStore {
         }
         match self.load_page(reference, None)? {
             Page::Leaf(rows) => {
-                let mut leaf = Vec::new();
+                let mut leaf = LeafBuilder::default();
                 let mut old = rows.into_iter().peekable();
                 while old.peek().is_some() || edits.has_before(upper)? {
                     let ordering = match (old.peek(), edits.peek()?) {
@@ -1100,27 +1323,25 @@ impl ObjectStore {
     fn push_leaf_row(
         &self,
         lease: &AttemptLease,
-        leaf: &mut Vec<(Vec<u8>, BlobRef)>,
+        leaf: &mut LeafBuilder,
         row: (Vec<u8>, BlobRef),
         emit: &mut dyn FnMut(PageRef) -> Result<(), CoreError>,
     ) -> Result<(), CoreError> {
-        leaf.try_reserve(1)
-            .map_err(|error| storage("reserve map leaf", error))?;
-        leaf.push(row);
-        if leaf.len() == LEAF_FANOUT {
-            emit(self.save_page(lease, &Page::Leaf(std::mem::take(leaf)))?)?;
+        if leaf.would_overflow(&row.0, &row.1) {
+            emit(self.save_page(lease, &Page::Leaf(leaf.take()))?)?;
         }
+        leaf.push(row)?;
         Ok(())
     }
 
     fn flush_leaf(
         &self,
         lease: &AttemptLease,
-        leaf: &mut Vec<(Vec<u8>, BlobRef)>,
+        leaf: &mut LeafBuilder,
         emit: &mut dyn FnMut(PageRef) -> Result<(), CoreError>,
     ) -> Result<(), CoreError> {
-        if !leaf.is_empty() {
-            emit(self.save_page(lease, &Page::Leaf(std::mem::take(leaf)))?)?;
+        if !leaf.rows.is_empty() {
+            emit(self.save_page(lease, &Page::Leaf(leaf.take()))?)?;
         }
         Ok(())
     }
@@ -1186,32 +1407,57 @@ impl ObjectStore {
         rows: impl Iterator<Item = Result<MapEdit, CoreError>>,
     ) -> Result<MapRoot, CoreError> {
         lease.ensure_store(self)?;
-        let mut leaf = Vec::new();
+        self.map_bootstrap_with_leaf_mode(lease, rows, false)
+    }
+
+    /// Fixed 12-byte Native gram routes only. Old map pages remain readable.
+    pub(crate) fn map_bootstrap_wide_gram_routes(
+        &self,
+        lease: &AttemptLease,
+        rows: impl Iterator<Item = Result<MapEdit, CoreError>>,
+    ) -> Result<MapRoot, CoreError> {
+        self.map_bootstrap_with_leaf_mode(lease, rows, true)
+    }
+
+    fn map_bootstrap_with_leaf_mode(
+        &self,
+        lease: &AttemptLease,
+        rows: impl Iterator<Item = Result<MapEdit, CoreError>>,
+        wide_gram_routes: bool,
+    ) -> Result<MapRoot, CoreError> {
+        lease.ensure_store(self)?;
+        let mut leaf = if wide_gram_routes {
+            LeafBuilder::wide_gram_routes()
+        } else {
+            LeafBuilder::default()
+        };
         let mut levels: Vec<Vec<PageRef>> = Vec::new();
-        let mut previous: Option<Vec<u8>> = None;
         for row in rows {
             let row = row?;
             check_key(&row.key)?;
-            if previous
-                .as_ref()
-                .is_some_and(|key| key.as_slice() >= row.key.as_slice())
+            if wide_gram_routes && row.key.len() != GRAM_ROUTE_KEY_BYTES {
+                return Err(invalid("wide gram route key width differs"));
+            }
+            // The prior row stays in the leaf until this row's boundary
+            // check, including when this row starts the next leaf.
+            if leaf
+                .rows
+                .last()
+                .is_some_and(|(key, _)| key.as_slice() >= row.key.as_slice())
             {
                 return Err(invalid("bootstrap keys are not strictly sorted"));
             }
-            previous = Some(row.key.clone());
             let value = row
                 .value
                 .ok_or_else(|| invalid("bootstrap cannot contain deletion"))?;
-            leaf.try_reserve(1)
-                .map_err(|error| storage("reserve bootstrap leaf", error))?;
-            leaf.push((row.key, value));
-            if leaf.len() == LEAF_FANOUT {
-                let page = self.save_page(lease, &Page::Leaf(std::mem::take(&mut leaf)))?;
+            if leaf.would_overflow(&row.key, &value) {
+                let page = self.save_page(lease, &Page::Leaf(leaf.take()))?;
                 self.push_level(lease, &mut levels, 0, page)?;
             }
+            leaf.push((row.key, value))?;
         }
-        if !leaf.is_empty() {
-            let page = self.save_page(lease, &Page::Leaf(leaf))?;
+        if !leaf.rows.is_empty() {
+            let page = self.save_page(lease, &Page::Leaf(leaf.take()))?;
             self.push_level(lease, &mut levels, 0, page)?;
         }
         let result = self.root_from_levels(lease, &mut levels)?;
@@ -1263,8 +1509,8 @@ impl ObjectStore {
 #[cfg(test)]
 mod compact_leaf_wire_tests {
     use super::{
-        BLOB_REF_WIRE_BYTES, LEAF_DICTIONARY, LEAF_INLINE, Page, add_blob_ref, add_key,
-        decode_page, encode_page,
+        BLOB_REF_WIRE_BYTES, LEAF_DEPENDENCIES, LEAF_DICTIONARY, LEAF_INLINE, LEAF_INLINE_BYTES,
+        LeafBuilder, Page, add_blob_ref, add_key, decode_page, encode_page,
     };
     use crate::lexical_store::codec::PageRef;
     use crate::lexical_store::{BlobRef, ObjectKind, ObjectRef};
@@ -1330,6 +1576,48 @@ mod compact_leaf_wire_tests {
             Err(CoreError::Typed { code, .. })
                 if code == quanta_index_core::GENERATION_SIDECAR_CORRUPT_CODE
         ));
+    }
+
+    #[test]
+    fn adaptive_leaf_respects_payload_and_dependency_bounds() {
+        let mut shared = LeafBuilder::default();
+        for index in 0..256_u16 {
+            let key = index.to_be_bytes().to_vec();
+            let reference = value(7);
+            assert!(!shared.would_overflow(&key, &reference));
+            shared.push((key, reference)).expect("bounded row");
+        }
+        assert!(shared.would_overflow(&256_u16.to_be_bytes(), &value(7)));
+        let (bytes, dependencies, ..) = encode_page(&Page::Leaf(shared.take())).expect("page");
+        assert!(bytes.len() <= LEAF_INLINE_BYTES);
+        assert_eq!(dependencies.len(), 1);
+
+        let mut distinct = LeafBuilder::default();
+        for index in 0..LEAF_DEPENDENCIES {
+            let key = u16::try_from(index)
+                .expect("bounded key")
+                .to_be_bytes()
+                .to_vec();
+            let reference = value(u8::try_from(index).expect("bounded value"));
+            assert!(!distinct.would_overflow(&key, &reference));
+            distinct.push((key, reference)).expect("bounded row");
+        }
+        assert!(distinct.would_overflow(&128_u16.to_be_bytes(), &value(128)));
+        assert!(!distinct.would_overflow(&128_u16.to_be_bytes(), &value(0)));
+        let (_, dependencies, ..) = encode_page(&Page::Leaf(distinct.take())).expect("page");
+        assert_eq!(dependencies.len(), LEAF_DEPENDENCIES);
+
+        let mut long_keys = LeafBuilder::default();
+        for index in 0..95_u8 {
+            let mut key = vec![0; 256];
+            key[255] = index;
+            let reference = value(7);
+            assert!(!long_keys.would_overflow(&key, &reference));
+            long_keys.push((key, reference)).expect("bounded row");
+        }
+        let mut next = vec![0; 256];
+        next[255] = 95;
+        assert!(long_keys.would_overflow(&next, &value(7)));
     }
 
     #[test]
@@ -1450,6 +1738,47 @@ mod compact_leaf_wire_tests {
         drop(dictionary.splice(28..28, 78_u16.to_be_bytes()));
         refused(&dictionary, &descriptor, &deps);
     }
+
+    #[test]
+    fn forged_wide_gram_leaf_bounds_are_typed_refusals() {
+        let page = Page::Leaf(
+            (0..1024_u32)
+                .map(|number| {
+                    let mut key = vec![1, 0, 0, 0];
+                    key.extend_from_slice(&u64::from(number).to_be_bytes());
+                    (key, value(7))
+                })
+                .collect(),
+        );
+        let (bytes, descriptor, deps) = wire(&page);
+        const MODE_OFFSET: usize = 8 + 1 + 2 + 8 + 2 + 12 + 2 + 12;
+        assert_eq!(
+            bytes.get(MODE_OFFSET),
+            Some(&super::LEAF_WIDE_GRAM_DICTIONARY)
+        );
+        assert_eq!(
+            decode_page(&bytes, &descriptor, &deps).expect("valid wide page"),
+            page
+        );
+
+        let mut count = bytes.clone();
+        count[9..11].copy_from_slice(&1025_u16.to_be_bytes());
+        refused(&count, &descriptor, &deps);
+
+        let mut dictionary = bytes.clone();
+        dictionary[MODE_OFFSET + 1..MODE_OFFSET + 3].copy_from_slice(&129_u16.to_be_bytes());
+        refused(&dictionary, &descriptor, &deps);
+
+        let mut key_width = bytes.clone();
+        let first_row = MODE_OFFSET + 1 + 2 + BLOB_REF_WIRE_BYTES;
+        key_width[first_row..first_row + 2].copy_from_slice(&11_u16.to_be_bytes());
+        let _removed = key_width.remove(first_row + 2 + 11);
+        refused(&key_width, &descriptor, &deps);
+
+        let mut payload = bytes;
+        payload.resize(LEAF_INLINE_BYTES + 1, 0);
+        refused(&payload, &descriptor, &deps);
+    }
 }
 
 #[cfg(test)]
@@ -1476,6 +1805,223 @@ mod map_encoded_summary_tests {
         number.to_be_bytes().to_vec()
     }
 
+    #[test]
+    fn shared_route_pages_pack_256_rows_without_changing_lookup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = ObjectStore::open(dir.path()).expect("store");
+        let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+        let value = store
+            .put_blob(&lease, ObjectKind::Record, &[], b"shared-route")
+            .expect("record");
+        let before = lease
+            .write_cost_snapshot()
+            .expect("cost before")
+            .new_objects;
+        let root = store
+            .map_bootstrap(
+                &lease,
+                (0..600_u32).map(|number| {
+                    Ok(MapEdit {
+                        key: key(number),
+                        value: Some(value.clone()),
+                    })
+                }),
+            )
+            .expect("map bootstrap");
+        let after = lease.write_cost_snapshot().expect("cost after").new_objects;
+        assert_eq!(after - before, 4, "three leaves and one branch");
+        for number in [0, 95, 96, 255, 256, 511, 512, 599] {
+            assert_eq!(
+                store.map_get(&root, &key(number), None).expect("lookup"),
+                Some(value.clone())
+            );
+        }
+    }
+
+    fn gram_key(number: u32) -> Vec<u8> {
+        let mut key = vec![1, 0, 0, 0];
+        key.extend_from_slice(&u64::from(number).to_be_bytes());
+        key
+    }
+
+    #[test]
+    fn wide_gram_bootstrap_reads_old_and_new_pages_after_reopen_and_delta() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = ObjectStore::open(dir.path()).expect("store");
+        let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+        let value = store
+            .put_blob(&lease, ObjectKind::Record, &[], b"one")
+            .expect("first value");
+        let changed = store
+            .put_blob(&lease, ObjectKind::Record, &[], b"two")
+            .expect("second value");
+        let old = store
+            .map_bootstrap(
+                &lease,
+                (0..1200_u32).map(|number| {
+                    Ok(MapEdit {
+                        key: gram_key(number),
+                        value: Some(value.clone()),
+                    })
+                }),
+            )
+            .expect("old map");
+        let wide = store
+            .map_bootstrap_wide_gram_routes(
+                &lease,
+                (0..1200_u32).map(|number| {
+                    Ok(MapEdit {
+                        key: gram_key(number),
+                        value: Some(value.clone()),
+                    })
+                }),
+            )
+            .expect("wide map");
+        fn pages(store: &ObjectStore, page: &PageRef) -> u64 {
+            1 + match store.load_page(page, None).expect("authenticated page") {
+                Page::Leaf(_) => 0,
+                Page::Branch(children) => children.iter().map(|child| pages(store, child)).sum(),
+            }
+        }
+        assert!(
+            pages(&store, wide.page.as_ref().expect("wide root"))
+                < pages(&store, old.page.as_ref().expect("old root"))
+        );
+        let changed_root = store
+            .map_apply(
+                &lease,
+                &wide,
+                std::iter::once(Ok(MapEdit {
+                    key: gram_key(511),
+                    value: Some(changed.clone()),
+                })),
+            )
+            .expect("delta on wide map");
+        drop(lease);
+        drop(store);
+        let reopened = ObjectStore::open(dir.path()).expect("reopen");
+        for number in [0, 255, 256, 511, 512, 1023, 1024, 1199] {
+            let key = gram_key(number);
+            assert_eq!(
+                reopened.map_get(&old, &key, None).expect("old read"),
+                Some(value.clone())
+            );
+            assert_eq!(
+                reopened.map_get(&wide, &key, None).expect("wide read"),
+                Some(value.clone())
+            );
+            assert_eq!(
+                reopened
+                    .map_get(&changed_root, &key, None)
+                    .expect("delta read"),
+                Some(if number == 511 {
+                    changed.clone()
+                } else {
+                    value.clone()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn wide_gram_bootstrap_rejects_key_shape_and_order() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = ObjectStore::open(dir.path()).expect("store");
+        let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+        let value = store
+            .put_blob(&lease, ObjectKind::Record, &[], b"one")
+            .expect("value");
+        assert!(
+            store
+                .map_bootstrap_wide_gram_routes(
+                    &lease,
+                    std::iter::once(Ok(MapEdit {
+                        key: vec![1],
+                        value: Some(value.clone()),
+                    }))
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .map_bootstrap_wide_gram_routes(
+                    &lease,
+                    [1_u32, 0].into_iter().map(|number| Ok(MapEdit {
+                        key: gram_key(number),
+                        value: Some(value.clone()),
+                    }))
+                )
+                .is_err()
+        );
+        let mut leaf = super::LeafBuilder::wide_gram_routes();
+        for number in 0..1024_u32 {
+            let key = gram_key(number);
+            assert!(!leaf.would_overflow(&key, &value));
+            leaf.push((key, value.clone())).expect("bounded row");
+        }
+        assert!(leaf.would_overflow(&gram_key(1024), &value));
+        let (payload, deps, ..) =
+            super::encode_page(&super::Page::Leaf(leaf.take())).expect("bounded wide page");
+        assert!(payload.len() <= super::LEAF_INLINE_BYTES);
+        assert!(deps.len() <= super::LEAF_DEPENDENCIES);
+        let mut distinct = super::LeafBuilder::wide_gram_routes();
+        for ordinal in 0..super::LEAF_DEPENDENCIES {
+            let mut logical = value.clone();
+            logical.sha256 = [u8::try_from(ordinal).expect("bounded ordinal"); 32];
+            assert!(!distinct.would_overflow(&gram_key(ordinal as u32), &logical));
+            distinct
+                .push((gram_key(ordinal as u32), logical))
+                .expect("distinct value");
+        }
+        let mut overflow = value.clone();
+        overflow.sha256 = [255; 32];
+        assert!(
+            distinct.would_overflow(&gram_key(128), &overflow),
+            "logical BlobRef values cap the dictionary even when roots are shared"
+        );
+    }
+
+    #[test]
+    fn wide_gram_scan_observes_cancellation_within_one_leaf() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = ObjectStore::open(dir.path()).expect("store");
+        let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+        let value = store
+            .put_blob(&lease, ObjectKind::Record, &[], b"gram-route")
+            .expect("value");
+        let root = store
+            .map_bootstrap_wide_gram_routes(
+                &lease,
+                (0..1024_u32).map(|number| {
+                    Ok(MapEdit {
+                        key: gram_key(number),
+                        value: Some(value.clone()),
+                    })
+                }),
+            )
+            .expect("wide map");
+        let budget = quanta_index_core::RequestBudgetV1::until(
+            std::time::Instant::now() + std::time::Duration::from_secs(60),
+        );
+        let cancel = budget.cancel_handle();
+        let mut seen = 0_usize;
+        let result = store.map_scan(&root, b"", None, Some(&budget), &mut |_key, _value| {
+            seen += 1;
+            if seen == 1 {
+                cancel.cancel();
+            }
+            Ok(())
+        });
+        assert!(
+            result.is_err(),
+            "cancelled scan must stop inside the wide leaf"
+        );
+        assert!(
+            (1..=64).contains(&seen),
+            "observed {seen} rows before refusal"
+        );
+    }
+
     // Independent page enumeration; this deliberately does not use the
     // persisted subtree summaries to calculate the expected number.
     fn page_oracle(store: &ObjectStore, reference: &PageRef) -> u64 {
@@ -1497,6 +2043,82 @@ mod map_encoded_summary_tests {
         root.page
             .as_ref()
             .map_or(0, |page| page_oracle(store, page))
+    }
+
+    #[test]
+    fn sorted_lookup_matches_independent_get_and_rejects_invalid_or_corrupt_input() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = ObjectStore::open(dir.path()).expect("store");
+        let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+        let value = store
+            .put_blob(&lease, ObjectKind::Record, &[], b"sorted-lookup")
+            .expect("value");
+        let root = store
+            .map_bootstrap(
+                &lease,
+                (0..600_u32).map(|number| {
+                    Ok(MapEdit {
+                        key: key(number * 2),
+                        value: Some(value.clone()),
+                    })
+                }),
+            )
+            .expect("multi-page map");
+        let keys = [0, 1, 2, 190, 191, 192, 400, 401, 600, 601, 1198, 1199, 1200].map(key);
+        let mut observed = Vec::new();
+        store
+            .map_lookup_sorted(&root, &keys, None, &mut |found, value| {
+                observed.push((found.to_vec(), value.clone()));
+                Ok(())
+            })
+            .expect("sorted lookup");
+        let expected = keys
+            .iter()
+            .filter_map(|key| {
+                store
+                    .map_get(&root, key, None)
+                    .expect("independent lookup")
+                    .map(|value| (key.clone(), value))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(observed, expected);
+
+        let callbacks = std::cell::Cell::new(0);
+        let mut visit = |_key: &[u8], _value: &crate::lexical_store::BlobRef| {
+            callbacks.set(callbacks.get() + 1);
+            Ok(())
+        };
+        assert!(
+            store
+                .map_lookup_sorted(&root, &[key(2), key(2)], None, &mut visit)
+                .is_err()
+        );
+        assert!(
+            store
+                .map_lookup_sorted(&root, &[key(2), key(1)], None, &mut visit)
+                .is_err()
+        );
+        assert!(
+            store
+                .map_lookup_sorted(&root, &[key(2), vec![0; 257]], None, &mut visit)
+                .is_err()
+        );
+        assert_eq!(callbacks.get(), 0, "validation must precede callbacks");
+
+        let expired = quanta_index_core::RequestBudgetV1::until(std::time::Instant::now());
+        assert!(
+            store
+                .map_lookup_sorted(&root, &[key(2)], Some(&expired), &mut visit)
+                .is_err()
+        );
+        let mut forged = root.clone();
+        forged.page.as_mut().expect("root page").map_encoded_bytes += 1;
+        assert!(
+            store
+                .map_lookup_sorted(&forged, &[key(2)], None, &mut visit)
+                .is_err()
+        );
+        assert_eq!(callbacks.get(), 0, "refusal must precede callbacks");
     }
 
     #[test]

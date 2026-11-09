@@ -178,6 +178,72 @@ fn started_external_move_replays_original_ticket_without_second_rename() -> Test
 }
 
 #[test]
+fn sidecar_move_receipt_requires_maintenance_before_foreign_or_new_permit_replay() -> TestResult {
+    let fixture = fixture()?;
+    let source = fixture.root.join("source");
+    let moved = fixture.root.join("sidecar-moved");
+    let before = fixture.authority.snapshot()?;
+    let original = fs::metadata(&source)?;
+
+    let mut ticket = fixture.owner.begin_sidecar_move(&source, &moved)?;
+    ticket.perform_move()?;
+    drop(ticket);
+    require(!source.exists(), "started Sidecar rename left its source")?;
+    require(
+        matches!(
+            fixture.owner.begin_move(&source, &moved),
+            Err(CoreError::Typed { code, .. }) if code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE
+        ),
+        "generic move consumed the Sidecar receipt",
+    )?;
+    require(
+        matches!(
+            fixture.owner.begin_sidecar_move(&source, &moved),
+            Err(CoreError::Typed { code, .. }) if code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE
+        ),
+        "unbound new Sidecar permit consumed the original receipt",
+    )?;
+    require(
+        fixture.authority.snapshot()? == before && !fixture.binder.is_quiescent()?,
+        "foreign replay changed accounting or released the original ticket",
+    )?;
+    fixture.owner.reconcile_pending_namespace()?;
+    let moved_metadata = fs::metadata(&moved)?;
+    require(
+        (moved_metadata.dev(), moved_metadata.ino()) == (original.dev(), original.ino())
+            && fs::read(&moved)? == b"abc",
+        "maintenance changed the moved original inode",
+    )?;
+    require(
+        fixture.authority.snapshot()? == before && fixture.binder.is_quiescent()?,
+        "maintenance did not settle the original Sidecar ticket",
+    )?;
+
+    let generic_source = fixture.root.join("other");
+    let generic_target = fixture.root.join("generic-moved");
+    let mut generic = fixture.owner.begin_move(&generic_source, &generic_target)?;
+    generic.change_started()?;
+    fs::rename(&generic_source, &generic_target)?;
+    drop(generic);
+    require(
+        matches!(
+            fixture.owner.begin_sidecar_move(&generic_source, &generic_target),
+            Err(CoreError::Typed { code, .. }) if code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE
+        ),
+        "Sidecar move consumed the generic receipt",
+    )?;
+    let mut replay = fixture.owner.begin_move(&generic_source, &generic_target)?;
+    replay.perform_and_sync()?;
+    require(
+        fs::read(&generic_target)? == b"xyz"
+            && fixture.authority.snapshot()? == before
+            && fixture.binder.is_quiescent()?,
+        "generic replay did not preserve its original move and charge",
+    )?;
+    Ok(())
+}
+
+#[test]
 fn started_unchanged_external_move_returns_unreported_outcome_once() -> TestResult {
     let fixture = fixture()?;
     let source = fixture.root.join("source");

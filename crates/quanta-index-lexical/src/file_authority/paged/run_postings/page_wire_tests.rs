@@ -211,18 +211,29 @@ fn legacy_prior_delta_and_mixed_merge_keep_original_blob_bytes_after_cold_open()
     drop(lease);
     drop(store);
     let cold = ObjectStore::open(dir.path()).expect("cold store");
-    let merged_ref = cold
-        .map_get(&merged.pages, &key, None)
-        .expect("merged map")
-        .expect("merged ref");
+    assert!(merged.is_block_layout());
+    let merged_key = old.key().expect("merged page key");
+    let (merged_ref, merged_page) = merged
+        .page_at(&cold, &merged_key, None)
+        .expect("merged lookup")
+        .expect("merged page");
     let merged_bytes = cold
         .read_blob(&merged_ref, 32 * 1024, None)
-        .expect("merged bytes");
-    let merged_page = RunPostingPage::decode(&merged_bytes).expect("merged v2 page");
+        .expect("merged block bytes");
     assert_eq!(merged_page.rows, vec![row(1, 7), row(3, 9)]);
+    let mut canonical = immutable_block::ImmutableRunBlockBuilder::new();
+    assert!(matches!(
+        canonical
+            .try_push(
+                merged_key,
+                &merged_page.encode().expect("canonical v2 page")
+            )
+            .expect("canonical block entry"),
+        immutable_block::PushResult::Added
+    ));
     assert_eq!(
         merged_bytes,
-        merged_page.encode().expect("canonical new write")
+        canonical.finish().expect("canonical new block")
     );
     assert_eq!(
         cold.read_blob(&v1_ref, 32 * 1024, None).expect("cold v1"),

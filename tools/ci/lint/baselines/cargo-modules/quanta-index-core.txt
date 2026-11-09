@@ -612,7 +612,8 @@ crate quanta_index_core
 ├── mod publication_validation: pub(crate)
 │   ├── struct PublicationBodyBinding: pub(self)
 │   ├── struct PublicationResourceState: pub(self)
-│   └── struct PublicationValidationOwner: pub
+│   ├── struct PublicationValidationOwner: pub
+│   └── struct ScopedPublicationBatch: pub(self)
 ├── mod repomap_file_admission: pub(crate)
 │   ├── enum RepoMapImmutablePutOutcome: pub
 │   ├── enum RepoMapPhysicalFileClass: pub

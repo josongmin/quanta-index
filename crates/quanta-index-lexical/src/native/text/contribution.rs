@@ -7,11 +7,44 @@ use super::{
 };
 use quanta_index_core::index::{MAX_MAP_INLINE_BYTES, MAX_MAP_INLINE_CHILDREN, MapValue};
 
+/// Persisted inline contribution layout. Small keeps its original count byte;
+/// these tags are outside its valid 0..=INLINE_ENTRIES range.
+pub(super) const LAYOUT_POLICY: &[u8] =
+    b"contribution:inline-small-v1;inline-block-tree-occurrence-v1\0";
+const BLOCK_TAG: u8 = 0x80;
+const TREE_TAG: u8 = 0x81;
+const OCCURRENCE_TAG: u8 = 0x82;
+const ROOT_INLINE_BYTES: usize = 9;
+
 pub(super) fn inline(
     value: &Contribution,
     budget: &WorkBudget,
 ) -> Result<Option<MapValue>, IndexError> {
     budget.checkpoint()?;
+    let rooted = match value.inventory {
+        EntryMap::Block(reference) => Some((BLOCK_TAG, reference)),
+        EntryMap::Tree(reference) => Some((TREE_TAG, reference)),
+        EntryMap::OccurrenceBlock(reference) => Some((OCCURRENCE_TAG, reference)),
+        EntryMap::Small(_) => None,
+        EntryMap::PostingPages(_) => {
+            return Err(IndexError::CorruptObject(
+                "posting pages are not an owner contribution".into(),
+            ));
+        }
+    };
+    if let Some((tag, reference)) = rooted {
+        let children = contribution_children(value)?;
+        if children.as_slice() != &[value.record, reference] {
+            return Err(IndexError::CorruptObject(
+                "contribution root children differ".into(),
+            ));
+        }
+        let mut data = [tag; ROOT_INLINE_BYTES];
+        data.get_mut(1..)
+            .ok_or(IndexError::ResourceLimited)?
+            .copy_from_slice(&value.indexed_tokens.to_be_bytes());
+        return MapValue::inline(&data, children.as_slice().iter().copied()).map(Some);
+    }
     let Some(small) = value.inventory.inline_map() else {
         return Ok(None);
     };
@@ -85,59 +118,83 @@ pub(super) fn read(
         }
         MapValue::Inline(inline) => {
             let data = inline.data()?;
-            let count =
-                usize::from(*data.first().ok_or_else(|| {
-                    IndexError::CorruptObject("contribution count missing".into())
-                })?);
+            let tag = *data
+                .first()
+                .ok_or_else(|| IndexError::CorruptObject("contribution count missing".into()))?;
             let children = inline.children()?;
-            if count > entry_map::INLINE_ENTRIES
-                || children.len() != count.checked_add(1).ok_or(IndexError::ResourceLimited)?
-            {
-                return Err(IndexError::CorruptObject(
-                    "contribution child count differs".into(),
-                ));
-            }
-            let tokens = u64::from_be_bytes(
-                data.get(1..9)
-                    .ok_or_else(|| {
-                        IndexError::CorruptObject("contribution token count missing".into())
-                    })?
-                    .try_into()
-                    .map_err(|_error| {
-                        IndexError::CorruptObject("contribution token count width".into())
-                    })?,
-            );
-            let record = *children.first().ok_or_else(|| {
-                IndexError::CorruptObject("contribution source child missing".into())
-            })?;
-            let mut at = 9usize;
-            let mut small = entry_map::SmallMap::default();
-            for child in children.get(1..).ok_or(IndexError::ResourceLimited)? {
-                let length = usize::from(*data.get(at).ok_or_else(|| {
-                    IndexError::CorruptObject("contribution key length missing".into())
-                })?);
-                at = at.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-                let end = at.checked_add(length).ok_or(IndexError::ResourceLimited)?;
-                let key = data.get(at..end).ok_or_else(|| {
-                    IndexError::CorruptObject("contribution key truncated".into())
-                })?;
-                check_term_key(key)?;
-                if !small.push(key, *child)? {
+            if matches!(tag, BLOCK_TAG | TREE_TAG | OCCURRENCE_TAG) {
+                let [record, root] = children else {
                     return Err(IndexError::CorruptObject(
-                        "contribution inventory exceeds bound".into(),
+                        "contribution root inline children differ".into(),
+                    ));
+                };
+                let tokens = u64::from_be_bytes(
+                    data.get(1..)
+                        .and_then(|bytes| bytes.try_into().ok())
+                        .ok_or_else(|| {
+                            IndexError::CorruptObject("contribution root inline width".into())
+                        })?,
+                );
+                Contribution {
+                    record: *record,
+                    inventory: match tag {
+                        BLOCK_TAG => EntryMap::Block(*root),
+                        TREE_TAG => EntryMap::Tree(*root),
+                        _ => EntryMap::OccurrenceBlock(*root),
+                    },
+                    indexed_tokens: tokens,
+                }
+            } else {
+                let count = usize::from(tag);
+                if count > entry_map::INLINE_ENTRIES
+                    || children.len() != count.checked_add(1).ok_or(IndexError::ResourceLimited)?
+                {
+                    return Err(IndexError::CorruptObject(
+                        "contribution child count differs".into(),
                     ));
                 }
-                at = end;
-            }
-            if at != data.len() {
-                return Err(IndexError::CorruptObject(
-                    "contribution trailing data".into(),
-                ));
-            }
-            Contribution {
-                record,
-                inventory: EntryMap::inline(&small),
-                indexed_tokens: tokens,
+                let tokens = u64::from_be_bytes(
+                    data.get(1..9)
+                        .ok_or_else(|| {
+                            IndexError::CorruptObject("contribution token count missing".into())
+                        })?
+                        .try_into()
+                        .map_err(|_error| {
+                            IndexError::CorruptObject("contribution token count width".into())
+                        })?,
+                );
+                let record = *children.first().ok_or_else(|| {
+                    IndexError::CorruptObject("contribution source child missing".into())
+                })?;
+                let mut at = 9usize;
+                let mut small = entry_map::SmallMap::default();
+                for child in children.get(1..).ok_or(IndexError::ResourceLimited)? {
+                    let length = usize::from(*data.get(at).ok_or_else(|| {
+                        IndexError::CorruptObject("contribution key length missing".into())
+                    })?);
+                    at = at.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                    let end = at.checked_add(length).ok_or(IndexError::ResourceLimited)?;
+                    let key = data.get(at..end).ok_or_else(|| {
+                        IndexError::CorruptObject("contribution key truncated".into())
+                    })?;
+                    check_term_key(key)?;
+                    if !small.push(key, *child)? {
+                        return Err(IndexError::CorruptObject(
+                            "contribution inventory exceeds bound".into(),
+                        ));
+                    }
+                    at = end;
+                }
+                if at != data.len() {
+                    return Err(IndexError::CorruptObject(
+                        "contribution trailing data".into(),
+                    ));
+                }
+                Contribution {
+                    record,
+                    inventory: EntryMap::inline(&small),
+                    indexed_tokens: tokens,
+                }
             }
         }
     };

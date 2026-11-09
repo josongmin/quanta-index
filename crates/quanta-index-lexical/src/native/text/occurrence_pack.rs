@@ -11,10 +11,19 @@ use quanta_index_core::index::{
 use super::{
     ConfirmedOccurrences, InventoryEdits, InventoryPartition, OccurrenceEdit, OccurrenceWrites,
     PreparedKey, PreparedPositions, TextSpool, check_term_key,
+    cold_tokens::ColdTokens,
+    entry_patch::{
+        COLD_ALIAS_MAX_KEY_BYTES, COLD_ALIAS_MAX_TERMS, COLD_ALIAS_MIN_TERMS, ColdInventoryAlias,
+        ColdInventoryKeySeal,
+    },
 };
 use crate::native::{
     text_memory::{PreparedPayload, PreparedRows},
-    text_occurrence::block::{BlockDraft, BlockPush, BlockTerm, MAX_BLOCK_TERMS, SealedBlock},
+    text_occurrence::block::{
+        BlockDraft, BlockPush, BlockTerm, MAX_BLOCK_TERMS, PackedBlockView, SealedBlock,
+        encode_packed,
+    },
+    text_spool::MAX_INVENTORY_ROOTS,
 };
 
 struct PackTarget<'a> {
@@ -25,16 +34,37 @@ struct PackTarget<'a> {
     writes: &'a mut OccurrenceWrites,
 }
 
+enum PackedSelectors {
+    Terms {
+        terms: PreparedRows<BlockTerm>,
+        alias_only: bool,
+    },
+    AliasFirst {
+        first: PreparedKey,
+        term_count: usize,
+    },
+}
+
+impl PackedSelectors {
+    fn len(&self) -> usize {
+        match self {
+            Self::Terms { terms, .. } => terms.len(),
+            Self::AliasFirst { term_count, .. } => *term_count,
+        }
+    }
+}
+
 /// Prepare one new owner's sorted token inventory. The caller must establish
 /// an empty prior source and empty prior inventory before choosing this path.
 pub(super) fn prepare_owner_blocks(
     ordinal: u32,
     context: &mut AttemptContext<'_>,
     spool: &TextSpool,
+    cold_tokens: Option<&ColdTokens>,
     confirmed: &mut ConfirmedOccurrences,
     inventory_edits: &mut InventoryEdits,
     writes: &mut OccurrenceWrites,
-) -> Result<u64, IndexError> {
+) -> Result<(u64, Option<ColdInventoryAlias>), IndexError> {
     context.budget.checkpoint()?;
     if inventory_edits.ordinal != ordinal {
         return Err(IndexError::BackendViolation(
@@ -48,60 +78,130 @@ pub(super) fn prepare_owner_blocks(
         inventory_edits,
         writes,
     };
+    if let Some(tokens) = cold_tokens
+        && let Some(borrowed) = tokens.try_packed_alias(context.budget)?
+    {
+        let mut seal = ColdInventoryKeySeal::new();
+        for ordinal in 0..borrowed.term_count() {
+            let (key, _vector) = borrowed.term(ordinal)?;
+            seal.push(key, context.budget)?;
+        }
+        let first = PreparedKey::copy(borrowed.first_key()?, context.budget)?;
+        let payload = encode_packed(&borrowed, borrowed.encoded_len(), context.budget)?;
+        let term_count = borrowed.term_count();
+        let terms = u64::try_from(term_count).map_err(|_error| IndexError::ResourceLimited)?;
+        drop(borrowed);
+        let reference = target.stage_packed_selected(
+            PreparedPayload::from_staged(payload)?,
+            PackedSelectors::AliasFirst { first, term_count },
+            context,
+        )?;
+        return Ok((
+            terms,
+            Some(ColdInventoryAlias {
+                reference,
+                terms,
+                key_digest: seal.finish(),
+            }),
+        ));
+    }
     let mut draft = BlockDraft::new()?;
     let mut term_count = 0_u64;
+    // A cold alias is valid only for the entire ordered key stream of one
+    // packed block. Once a term cannot fit, no prefix witness is usable.
+    let mut key_seal = Some(ColdInventoryKeySeal::new());
     let attempt = context.attempt;
     let objects = context.objects;
     let maps = context.maps;
     let custody = context.custody;
     let scratch = context.scratch;
-    spool.visit_token_groups(
-        usize::try_from(super::MAX_POSITIONS_PER_TERM)
-            .map_err(|_error| IndexError::ResourceLimited)?,
-        context.budget,
-        |term, positions, budget| {
-            let mut group_context = AttemptContext {
-                attempt,
-                objects,
-                maps,
-                custody,
-                scratch,
-                budget,
-            };
-            term_count = term_count
-                .checked_add(1)
-                .ok_or(IndexError::ResourceLimited)?;
-            check_term_key(term.as_slice())?;
-            if positions.as_slice().is_empty() {
-                return Err(IndexError::BackendViolation(
-                    "native text token term has no positions".into(),
-                ));
+    let mut consume = |term: PreparedKey, positions: PreparedPositions, budget: &mut WorkBudget| {
+        let mut group_context = AttemptContext {
+            attempt,
+            objects,
+            maps,
+            custody,
+            scratch,
+            budget,
+        };
+        term_count = term_count
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        check_term_key(term.as_slice())?;
+        if positions.as_slice().is_empty() {
+            return Err(IndexError::BackendViolation(
+                "native text token term has no positions".into(),
+            ));
+        }
+        if let Some(seal) = key_seal.as_mut() {
+            if term.as_slice().len() <= COLD_ALIAS_MAX_KEY_BYTES
+                && term_count <= COLD_ALIAS_MAX_TERMS
+            {
+                seal.push(term.as_slice(), group_context.budget)?;
+            } else {
+                key_seal = None;
             }
-            match draft.try_push(term, positions, group_context.budget)? {
-                BlockPush::Added => Ok(()),
-                BlockPush::Full { term, positions } => {
-                    if draft.len() != 0 {
-                        let sealed = std::mem::replace(&mut draft, BlockDraft::new()?)
-                            .finish(group_context.budget)?;
-                        target.stage_sealed(sealed, &mut group_context)?;
-                    }
-                    // Full returns the original owned input. A term too large
-                    // for an empty block follows the canonical leaf path.
-                    match draft.try_push(term, positions, group_context.budget)? {
-                        BlockPush::Added => Ok(()),
-                        BlockPush::Full { term, positions } => {
-                            target.stage_leaf(term, positions, &mut group_context)
-                        }
+        }
+        match draft.try_push(term, positions, group_context.budget)? {
+            BlockPush::Added => Ok(()),
+            BlockPush::Full { term, positions } => {
+                key_seal = None;
+                if draft.len() != 0 {
+                    let sealed = std::mem::replace(&mut draft, BlockDraft::new()?)
+                        .finish(group_context.budget)?;
+                    target.stage_sealed(sealed, &mut group_context)?;
+                }
+                // Full returns the original owned input. A term too large
+                // for an empty block follows the canonical leaf path.
+                match draft.try_push(term, positions, group_context.budget)? {
+                    BlockPush::Added => Ok(()),
+                    BlockPush::Full { term, positions } => {
+                        target.stage_leaf(term, positions, &mut group_context)
                     }
                 }
             }
-        },
-    )?;
-    if draft.len() != 0 {
-        let sealed = draft.finish(context.budget)?;
-        target.stage_sealed(sealed, context)?;
+        }
+    };
+    let limit = usize::try_from(super::MAX_POSITIONS_PER_TERM)
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    if let Some(tokens) = cold_tokens {
+        tokens.visit_groups(limit, context.budget, &mut consume)?;
+    } else {
+        spool.visit_token_groups(limit, context.budget, &mut consume)?;
     }
-    Ok(term_count)
+    if draft.len() == 0 {
+        return Ok((term_count, None));
+    }
+    let sealed = draft.finish(context.budget)?;
+    match (key_seal, sealed) {
+        (Some(seal), SealedBlock::Packed { payload, terms }) => {
+            let count = u64::try_from(terms.len()).map_err(|_error| IndexError::ResourceLimited)?;
+            if count != term_count {
+                return Err(IndexError::BackendViolation(
+                    "cold inventory key seal term count differs from packed block".into(),
+                ));
+            }
+            if (COLD_ALIAS_MIN_TERMS..=COLD_ALIAS_MAX_TERMS).contains(&count) {
+                let reference = target.stage_packed(
+                    PreparedPayload::from_staged(payload)?,
+                    terms,
+                    context,
+                    true,
+                )?;
+                return Ok((
+                    term_count,
+                    Some(ColdInventoryAlias {
+                        reference,
+                        terms: term_count,
+                        key_digest: seal.finish(),
+                    }),
+                ));
+            }
+            target.stage_sealed(SealedBlock::Packed { payload, terms }, context)?;
+        }
+        (_, sealed) => target.stage_sealed(sealed, context)?,
+    }
+    Ok((term_count, None))
 }
 
 impl PackTarget<'_> {
@@ -112,9 +212,14 @@ impl PackTarget<'_> {
     ) -> Result<(), IndexError> {
         match sealed {
             SealedBlock::Leaf { term, positions } => self.stage_leaf(term, positions, context),
-            SealedBlock::Packed { payload, terms } => {
-                self.stage_packed(PreparedPayload::from_staged(payload)?, terms, context)
-            }
+            SealedBlock::Packed { payload, terms } => self
+                .stage_packed(
+                    PreparedPayload::from_staged(payload)?,
+                    terms,
+                    context,
+                    false,
+                )
+                .map(|_reference| ()),
         }
     }
 
@@ -183,11 +288,25 @@ impl PackTarget<'_> {
     fn stage_packed(
         &mut self,
         payload: PreparedPayload,
-        mut terms: PreparedRows<BlockTerm>,
+        terms: PreparedRows<BlockTerm>,
         context: &mut AttemptContext<'_>,
-    ) -> Result<(), IndexError> {
+        alias_only: bool,
+    ) -> Result<ObjectRef, IndexError> {
+        self.stage_packed_selected(
+            payload,
+            PackedSelectors::Terms { terms, alias_only },
+            context,
+        )
+    }
+
+    fn stage_packed_selected(
+        &mut self,
+        payload: PreparedPayload,
+        selectors: PackedSelectors,
+        context: &mut AttemptContext<'_>,
+    ) -> Result<ObjectRef, IndexError> {
         context.budget.checkpoint()?;
-        if !(2..=MAX_BLOCK_TERMS).contains(&terms.len()) {
+        if !(2..=MAX_BLOCK_TERMS).contains(&selectors.len()) {
             return Err(IndexError::BackendViolation(
                 "native packed occurrence has invalid term count".into(),
             ));
@@ -219,21 +338,39 @@ impl PackTarget<'_> {
             self.writes
                 .flush(context, self.spool, self.confirmed, self.inventory_edits)?;
         }
-        // PreparedRows owns its bounded backing. Reverse in place so consuming
-        // pop retains the spool's original sorted term order without another Vec.
-        terms.as_mut_slice().reverse();
-        let first = terms.pop().ok_or(IndexError::ResourceLimited)?;
-        if ready {
-            self.push_ready(first.key, reference, context.budget)?;
-            while let Some(term) = terms.pop() {
-                self.push_ready(term.key, reference, context.budget)?;
+        // Only the fallback emits the remaining selectors in original order.
+        let (first, mut remaining, alias_only) = match selectors {
+            PackedSelectors::Terms {
+                mut terms,
+                alias_only,
+            } => {
+                if alias_only {
+                    let last = terms
+                        .len()
+                        .checked_sub(1)
+                        .ok_or(IndexError::ResourceLimited)?;
+                    terms.as_mut_slice().swap(0, last);
+                } else {
+                    terms.as_mut_slice().reverse();
+                }
+                let first = terms.pop().ok_or(IndexError::ResourceLimited)?;
+                (first.key, Some(terms), alias_only)
             }
-            return Ok(());
+            PackedSelectors::AliasFirst { first, .. } => (first, None, true),
+        };
+        if ready {
+            self.push_ready(first, reference, context.budget)?;
+            if !alias_only && let Some(terms) = remaining.as_mut() {
+                while let Some(term) = terms.pop() {
+                    self.push_ready(term.key, reference, context.budget)?;
+                }
+            }
+            return Ok(reference);
         }
-        self.writes.push(
+        let slot = self.writes.push_with_slot(
             OccurrenceEdit {
                 ordinal: self.ordinal,
-                key: first.key,
+                key: first,
                 prior: None,
                 identified: reference,
             },
@@ -242,17 +379,20 @@ impl PackTarget<'_> {
             self.inventory_edits,
             context.budget,
         )?;
-        while let Some(term) = terms.pop() {
-            self.writes.push_block_alias(
-                self.ordinal,
-                term.key,
-                reference,
-                self.spool,
-                self.inventory_edits,
-                context.budget,
-            )?;
+        if !alias_only && let Some(terms) = remaining.as_mut() {
+            while let Some(term) = terms.pop() {
+                self.writes.push_block_alias(
+                    self.ordinal,
+                    term.key,
+                    slot,
+                    self.spool,
+                    self.inventory_edits,
+                    context.budget,
+                )?;
+            }
         }
-        self.flush_full(context)
+        self.flush_full(context)?;
+        Ok(reference)
     }
 
     fn push_ready(
@@ -281,18 +421,18 @@ impl PackTarget<'_> {
 impl OccurrenceWrites {
     /// Add another logical selector for a pending block without another
     /// physical object input. The first term was checked by `push` above.
-    fn push_block_alias(
+    pub(super) fn push_block_alias(
         &mut self,
         ordinal: u32,
         term: PreparedKey,
-        reference: ObjectRef,
+        slot: super::PendingOccurrenceSlot,
         spool: &TextSpool,
         inventory_edits: &mut InventoryEdits,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
         budget.checkpoint()?;
         if usize::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?
-            >= quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
+            >= MAX_INVENTORY_ROOTS
         {
             return Err(IndexError::BackendViolation(
                 "occurrence ordinal exceeds its inventory window".into(),
@@ -303,15 +443,16 @@ impl OccurrenceWrites {
             .fanout_rows
             .checked_add(1)
             .ok_or(IndexError::ResourceLimited)?;
-        let slot = self
+        let pending = self
             .pending
-            .iter()
-            .position(|row| row.identified == reference)
+            .get(slot.index)
+            .filter(|row| row.identified == slot.identified)
             .ok_or_else(|| {
                 IndexError::BackendViolation(
                     "packed occurrence alias has no pending physical input".into(),
                 )
             })?;
+        let reference = pending.identified;
         inventory_edits.push_partition(
             InventoryPartition::Planned(ordinal),
             term,
@@ -324,7 +465,7 @@ impl OccurrenceWrites {
         }
         let pending = self
             .pending
-            .get_mut(slot)
+            .get_mut(slot.index)
             .ok_or(IndexError::ResourceLimited)?;
         pending.ordinal = pending.ordinal.max(ordinal);
         self.fanout_rows = fanout_rows;

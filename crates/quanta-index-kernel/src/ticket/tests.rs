@@ -75,6 +75,16 @@ impl CatalogReadPort for CleanupCatalog {
             "not a ticket-renew fixture".into(),
         ))
     }
+    fn renew_ticket_for_request(
+        &self,
+        session: &dyn ReadSessionLease,
+        ticket: ReadTicketLease,
+        lease: Duration,
+        budget: &WorkBudget,
+    ) -> Result<ReadTicketLease, IndexError> {
+        budget.checkpoint()?;
+        self.renew_ticket(session, ticket, lease)
+    }
     fn validate_ticket(
         &self,
         _: &dyn ReadSessionLease,
@@ -83,6 +93,15 @@ impl CatalogReadPort for CleanupCatalog {
         Err(IndexError::BackendViolation(
             "not a ticket-validate fixture".into(),
         ))
+    }
+    fn validate_ticket_for_request(
+        &self,
+        session: &dyn ReadSessionLease,
+        ticket: ReadTicketLease,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        budget.checkpoint()?;
+        self.validate_ticket(session, ticket)
     }
     fn release_ticket(
         &self,
@@ -279,6 +298,19 @@ fn retained_release_retries_the_same_pin_and_acknowledges_only_once() {
     assert_eq!(ticket.renew(), Err(IndexError::SnapshotUnavailable));
     drop(ticket);
     assert_eq!(catalog.calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn refused_request_renew_keeps_original_ticket_lease() {
+    let (mut ticket, _catalog, budget) = fixture(false, false, None);
+    let original = ticket.record().lease;
+    budget.request().cancel_handle().cancel();
+    assert_eq!(
+        ticket.renew_for_request(&budget),
+        Err(IndexError::Cancelled)
+    );
+    assert_eq!(ticket.record().lease, original);
+    assert!(!ticket.released);
 }
 
 #[test]

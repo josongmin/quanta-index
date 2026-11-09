@@ -9,9 +9,11 @@
 //! leaf the stores can name without depending on the lifecycle service
 //! that depends on them.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 
-use quanta_index_contract::{GenerationSnapshot, ManifestGeneration, RepoId, RevisionId};
+use quanta_index_contract::{
+    GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneErrorCodeV2,
+};
 use quanta_index_core::{
     CoreError, DiagnosticContextV1, DiagnosticLaneV1, DiagnosticSpanGuardV1, DiagnosticStageV1,
     DiagnosticTerminalV1,
@@ -48,6 +50,25 @@ impl SearchCorpusPairMutationCoordinator {
         revision_id: &RevisionId,
         diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<SearchCorpusPairMutationGuard<'a>, CoreError> {
+        self.lock_pair_observed_inner(repo_id, revision_id, diagnostic, false)
+    }
+
+    pub(crate) fn try_lock_pair_observed<'a>(
+        &'a self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<SearchCorpusPairMutationGuard<'a>, CoreError> {
+        self.lock_pair_observed_inner(repo_id, revision_id, diagnostic, true)
+    }
+
+    fn lock_pair_observed_inner<'a>(
+        &'a self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        diagnostic: Option<&DiagnosticContextV1>,
+        nonblocking: bool,
+    ) -> Result<SearchCorpusPairMutationGuard<'a>, CoreError> {
         let stripe = search_corpus_lock_stripe_v1(repo_id, revision_id);
         let lock = self.pair_locks.get(stripe).ok_or_else(|| {
             CoreError::Storage(format!(
@@ -81,11 +102,23 @@ impl SearchCorpusPairMutationCoordinator {
                     Some,
                 )
         });
-        let guard = lock.lock().map_err(|error| {
-            CoreError::Storage(format!(
-                "search-corpus lifecycle: pair-lock stripe {stripe} poisoned: {error}"
-            ))
-        });
+        let guard = if nonblocking {
+            lock.try_lock().map_err(|error| match error {
+                TryLockError::WouldBlock => CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+                    message: format!("search-corpus lifecycle: pair-lock stripe {stripe} is busy"),
+                },
+                TryLockError::Poisoned(error) => CoreError::Storage(format!(
+                    "search-corpus lifecycle: pair-lock stripe {stripe} poisoned: {error}"
+                )),
+            })
+        } else {
+            lock.lock().map_err(|error| {
+                CoreError::Storage(format!(
+                    "search-corpus lifecycle: pair-lock stripe {stripe} poisoned: {error}"
+                ))
+            })
+        };
         if let Some(wait) = wait {
             let _trace_completion = wait.finish(DiagnosticTerminalV1::from_result(&guard));
         }

@@ -1,19 +1,13 @@
 //! Immutable file outputs reuse the common extent authority and original FD pin.
 
-use std::{
-    ffi::OsString,
-    fmt,
-    fs::File,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{fmt, fs::File, path::Path, sync::Arc};
 
 use quanta_index_contract::SearchPlaneErrorCodeV2;
 use quanta_index_core::{
     CoreError,
     index::{
-        IndexError, MemoryLease, MemoryLifetime, ObjectWriteIoPort, ObjectWriteTicket, WorkBudget,
-        WorkUsage,
+        IndexError, MemoryLease, MemoryLifetime, ObjectWriteIoPort, ObjectWriteSyncDirectories,
+        ObjectWriteTicket, WorkBudget, WorkUsage,
     },
 };
 
@@ -41,7 +35,6 @@ impl NativeObjectWriteIo {
 
 struct WriteTicket {
     mutation: FileMutation,
-    temporary: PathBuf,
     _memory: Option<MemoryLease>,
 }
 
@@ -128,34 +121,23 @@ impl ObjectWriteIoPort for NativeObjectWriteIo {
         if path_bytes > 4096 || target.as_os_str().len() > 4096 {
             return Err(IndexError::ResourceLimited);
         }
-        let owner_bytes = std::mem::size_of::<WriteTicket>()
-            .checked_add(path_bytes)
-            .ok_or(IndexError::ResourceLimited)?;
         let memory = budget.reserve_memory(
-            u64::try_from(owner_bytes).map_err(|_error| IndexError::ResourceLimited)?,
+            u64::try_from(std::mem::size_of::<WriteTicket>())
+                .map_err(|_error| IndexError::ResourceLimited)?,
             MemoryLifetime::Temporary,
         )?;
-        let mut path = OsString::new();
-        path.try_reserve_exact(path_bytes)
-            .map_err(|_error| IndexError::ResourceLimited)?;
-        path.push(temporary);
-        // The claim's fresh anchored observation enforces immutable output.
-        // A separate preflight would walk the namespace twice and could race
-        // with an existing target before the replacement-capable claim.
+        // The anchored claim checks absence before funding the entire output.
+        // Local admission already refreshed the maintenance reserve.
         let mut mutation = self
             .common
-            .begin_create_if_absent(target)
+            .begin_create_if_absent(target, max_bytes)
             .map_err(|error| index_error_at(&error, budget, "object_write.begin_create"))?
             .ok_or(IndexError::FenceLost)?;
         mutation
-            .reserve_end(max_bytes)
-            .map_err(|error| index_error_at(&error, budget, "object_write.reserve_end"))?;
-        mutation
-            .declare_temp_path(temporary)
+            .declare_temp_path_from_claimed_parent(temporary)
             .map_err(|error| index_error_at(&error, budget, "object_write.declare_temp_path"))?;
         Ok(Box::new(WriteTicket {
             mutation,
-            temporary: PathBuf::from(path),
             _memory: memory,
         }))
     }
@@ -167,9 +149,25 @@ impl ObjectWriteTicket for WriteTicket {
             .creation_started()
             .map_err(|error| index_error(&error))
     }
+    fn open_declared_temp(&mut self) -> Result<Option<File>, IndexError> {
+        self.mutation
+            .open_declared_temp()
+            .map(Some)
+            .map_err(|error| index_error(&error))
+    }
+    fn publish_declared_temp(
+        &mut self,
+        writer: &File,
+        final_path: &Path,
+    ) -> Result<Option<bool>, IndexError> {
+        self.mutation
+            .publish_declared_temp_no_replace(writer, final_path)
+            .map(Some)
+            .map_err(|error| index_error(&error))
+    }
     fn created(&mut self, writer: &File) -> Result<(), IndexError> {
         self.mutation
-            .created(writer, &self.temporary)
+            .created_declared_temp(writer)
             .map_err(|error| index_error(&error))
     }
     fn uncreated(&mut self) -> Result<(), IndexError> {
@@ -184,13 +182,16 @@ impl ObjectWriteTicket for WriteTicket {
     }
     fn cancel(&mut self, writer: File) -> Result<(), IndexError> {
         self.mutation
-            .cancel_declared_temp(writer)
+            .cancel_rejected_created_temp(writer)
             .map_err(|error| index_error(&error))
     }
-    fn synced(mut self: Box<Self>) -> Result<(), IndexError> {
+    fn synced(
+        mut self: Box<Self>,
+        directories: ObjectWriteSyncDirectories,
+    ) -> Result<(), IndexError> {
         let _retained = self
             .mutation
-            .settle_after_external_file_and_parent_sync()
+            .settle_after_external_object_sync(directories)
             .map_err(|error| index_error(&error))?;
         self.mutation
             .confirmed_safe_pin_retired()
@@ -224,6 +225,7 @@ mod tests {
         fs::{self, OpenOptions},
         io::{Read as _, Write as _},
         os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _},
+        path::PathBuf,
         sync::atomic::{AtomicBool, Ordering},
         time::{Duration, Instant},
     };
@@ -283,18 +285,111 @@ mod tests {
         let common = PublicationFileCapacity::new(lease, capacity.clone(), 16, 256, 256)?;
         Ok((directory, root, capacity, common))
     }
+    fn private_object_tree(root: &Path) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
+        let store = root.join("object-store");
+        let objects = store.join("objects");
+        let shard = objects.join("aa");
+        for path in [&store, &objects, &shard] {
+            fs::create_dir(path)?;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+        }
+        Ok((objects, shard))
+    }
+    fn fsynced_directory_identity(
+        path: &Path,
+    ) -> Result<quanta_index_core::publication_capacity::InodeKey, Box<dyn std::error::Error>> {
+        let directory = File::open(path)?;
+        directory.sync_all()?;
+        let metadata = directory.metadata()?;
+        Ok(quanta_index_core::publication_capacity::InodeKey {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
     fn born(
         ticket: &mut dyn ObjectWriteTicket,
         temporary: &Path,
     ) -> Result<File, Box<dyn std::error::Error>> {
         ticket.creation_started()?;
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(temporary)?;
+        let file = match ticket.open_declared_temp()? {
+            Some(file) => file,
+            None => OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(temporary)?,
+        };
         ticket.created(&file)?;
         Ok(file)
+    }
+
+    #[test]
+    fn retargeted_parent_refuses_before_create_and_refunds_reserved_output() -> TestResult {
+        let (_directory, root, capacity, common) = fixture(1024)?;
+        let shard = root.join("objects");
+        fs::create_dir(&shard)?;
+        fs::set_permissions(&shard, fs::Permissions::from_mode(0o700))?;
+        let held = root.join("objects-held");
+        let temporary = shard.join(".tmp-native");
+        let target = shard.join("object");
+        let original = capacity.snapshot()?;
+        let io = NativeObjectWriteIo::new(Arc::clone(&common));
+        let mut ticket = io.begin(&target, &temporary, 16, &mut budget()?)?;
+
+        fs::rename(&shard, &held)?;
+        fs::create_dir(&shard)?;
+        fs::set_permissions(&shard, fs::Permissions::from_mode(0o700))?;
+        ticket.creation_started()?;
+        require(
+            ticket.open_declared_temp().is_err(),
+            "retargeted parent accepted anchored create",
+        )?;
+        ticket.uncreated()?;
+        drop(ticket);
+        require(
+            !temporary.exists()
+                && !target.exists()
+                && !held.join(".tmp-native").exists()
+                && !held.join("object").exists()
+                && capacity.snapshot()? == original,
+            "refused anchored create changed either namespace or capacity",
+        )?;
+
+        fs::remove_dir(&shard)?;
+        fs::rename(&held, &shard)?;
+        let mut retry = io.begin(&target, &temporary, 16, &mut budget()?)?;
+        retry.creation_started()?;
+        let writer = retry
+            .open_declared_temp()?
+            .ok_or("native ticket did not open anchored temporary")?;
+        retry.created(&writer)?;
+        retry.cancel(writer)?;
+        drop(retry);
+        require(
+            !temporary.exists() && !target.exists() && capacity.snapshot()? == original,
+            "retry did not clean and refund anchored temporary",
+        )
+    }
+
+    #[test]
+    fn rejected_created_fd_cancels_exact_temp_and_refunds_reservation() -> TestResult {
+        let (_directory, root, capacity, common) = fixture(128)?;
+        let baseline = capacity.snapshot()?;
+        let target = root.join("object");
+        let temporary = root.join(".tmp-object");
+        let io = NativeObjectWriteIo::new(common);
+        let mut ticket = io.begin(&target, &temporary, 9, &mut budget()?)?;
+        ticket.creation_started()?;
+        let writer = ticket
+            .open_declared_temp()?
+            .ok_or("native ticket did not open anchored temporary")?;
+        // Model a refusal between O_EXCL success and created() witness.
+        ticket.cancel(writer)?;
+        drop(ticket);
+        require(
+            !temporary.exists() && !target.exists() && capacity.snapshot()? == baseline,
+            "unregistered born FD was not physically retired and refunded",
+        )
     }
 
     #[derive(Debug)]
@@ -336,6 +431,18 @@ mod tests {
             self.inner.creation_started()
         }
 
+        fn open_declared_temp(&mut self) -> Result<Option<File>, IndexError> {
+            self.inner.open_declared_temp()
+        }
+
+        fn publish_declared_temp(
+            &mut self,
+            writer: &File,
+            final_path: &Path,
+        ) -> Result<Option<bool>, IndexError> {
+            self.inner.publish_declared_temp(writer, final_path)
+        }
+
         fn created(&mut self, writer: &File) -> Result<(), IndexError> {
             self.inner.created(writer)
         }
@@ -352,13 +459,16 @@ mod tests {
             self.inner.cancel(writer)
         }
 
-        fn synced(self: Box<Self>) -> Result<(), IndexError> {
+        fn synced(
+            self: Box<Self>,
+            directories: ObjectWriteSyncDirectories,
+        ) -> Result<(), IndexError> {
             if self.armed.swap(false, Ordering::SeqCst) {
                 return Err(IndexError::Storage(
                     "injected post-retirement failure".into(),
                 ));
             }
-            self.inner.synced()
+            self.inner.synced(directories)
         }
     }
 
@@ -779,18 +889,25 @@ mod tests {
     #[test]
     fn actual_write_settles_after_store_sync_and_releases_original_and_pin() -> TestResult {
         let (_directory, root, capacity, common) = fixture(128)?;
+        let (objects, shard) = private_object_tree(&root)?;
         let baseline = capacity.snapshot()?;
-        let target = root.join("object");
-        let temporary = root.join(".tmp-object");
+        let target = shard.join("object");
+        let temporary = shard.join(".tmp-object");
         let io = NativeObjectWriteIo::new(Arc::clone(&common));
         let mut ticket = io.begin(&target, &temporary, 9, &mut budget()?)?;
         let mut file = born(ticket.as_mut(), &temporary)?;
         file.write_all(b"new-bytes")?;
         file.sync_all()?;
-        fs::rename(&temporary, &target)?;
-        File::open(&root)?.sync_all()?;
+        require(
+            ticket.publish_declared_temp(&file, &target)? == Some(true),
+            "anchored no-replace publication did not consume temporary",
+        )?;
+        let directories = ObjectWriteSyncDirectories {
+            shard: fsynced_directory_identity(&shard)?,
+            objects: fsynced_directory_identity(&objects)?,
+        };
         ticket.retire_writer(file)?;
-        ticket.synced()?;
+        ticket.synced(directories)?;
         require(
             fs::read(&target)? == b"new-bytes",
             "settlement changed fixed bytes",
@@ -808,6 +925,89 @@ mod tests {
             "original/pin close left an artificial reader",
         )?;
         Ok(())
+    }
+
+    #[test]
+    fn fsynced_replacement_shard_cannot_settle_restored_original() -> TestResult {
+        let (_directory, root, capacity, common) = fixture(128)?;
+        let (objects, shard) = private_object_tree(&root)?;
+        let baseline = capacity.snapshot()?;
+        let target = shard.join("object");
+        let temporary = shard.join(".tmp-object");
+        let io = NativeObjectWriteIo::new(common);
+        let mut ticket = io.begin(&target, &temporary, 9, &mut budget()?)?;
+        let mut writer = born(ticket.as_mut(), &temporary)?;
+        writer.write_all(b"new-bytes")?;
+        writer.sync_all()?;
+        require(
+            ticket.publish_declared_temp(&writer, &target)? == Some(true),
+            "anchored object publication failed",
+        )?;
+        let detached = objects.join("aa-held");
+        let replacement = objects.join("aa-replacement");
+        fs::rename(&shard, &detached)?;
+        fs::create_dir(&shard)?;
+        fs::set_permissions(&shard, fs::Permissions::from_mode(0o700))?;
+        let wrong_shard = fsynced_directory_identity(&shard)?;
+        fs::rename(&shard, &replacement)?;
+        fs::rename(&detached, &shard)?;
+        let actual_objects = fsynced_directory_identity(&objects)?;
+        ticket.retire_writer(writer)?;
+        require(
+            ticket
+                .synced(ObjectWriteSyncDirectories {
+                    objects: actual_objects,
+                    shard: wrong_shard,
+                })
+                .is_err(),
+            "replacement shard fsync settled restored original",
+        )?;
+        let after = capacity.snapshot()?;
+        require(
+            fs::read(&target)? == b"new-bytes"
+                && after.used_bytes == baseline.used_bytes + 9
+                && after.used_files == baseline.used_files + 1
+                && after.uncertain_pending > baseline.uncertain_pending,
+            "failed shard identity proof refunded or removed original output",
+        )
+    }
+
+    #[test]
+    fn fsynced_wrong_objects_directory_cannot_settle_object() -> TestResult {
+        let (_directory, root, capacity, common) = fixture(128)?;
+        let (_objects, shard) = private_object_tree(&root)?;
+        let baseline = capacity.snapshot()?;
+        let target = shard.join("object");
+        let temporary = shard.join(".tmp-object");
+        let io = NativeObjectWriteIo::new(common);
+        let mut ticket = io.begin(&target, &temporary, 9, &mut budget()?)?;
+        let mut writer = born(ticket.as_mut(), &temporary)?;
+        writer.write_all(b"new-bytes")?;
+        writer.sync_all()?;
+        require(
+            ticket.publish_declared_temp(&writer, &target)? == Some(true),
+            "anchored object publication failed",
+        )?;
+        let wrong_objects = root.join("wrong-objects");
+        fs::create_dir(&wrong_objects)?;
+        fs::set_permissions(&wrong_objects, fs::Permissions::from_mode(0o700))?;
+        let directories = ObjectWriteSyncDirectories {
+            objects: fsynced_directory_identity(&wrong_objects)?,
+            shard: fsynced_directory_identity(&shard)?,
+        };
+        ticket.retire_writer(writer)?;
+        require(
+            ticket.synced(directories).is_err(),
+            "unrelated objects directory fsync settled output",
+        )?;
+        let after = capacity.snapshot()?;
+        require(
+            fs::read(&target)? == b"new-bytes"
+                && after.used_bytes == baseline.used_bytes + 9
+                && after.used_files == baseline.used_files + 1
+                && after.uncertain_pending > baseline.uncertain_pending,
+            "failed objects identity proof refunded or removed output",
+        )
     }
 
     #[test]
@@ -1063,7 +1263,7 @@ mod tests {
         require(
             refused_budget.first_denial().is_none()
                 && refused_budget.usage() == before
-                && diagnostic.contains("object_write.reserve_end")
+                && diagnostic.contains("object_write.begin_create")
                 && diagnostic.contains("configured byte or unique-file ceiling exceeded"),
             "writer capacity refusal lost its original external boundary or changed work budget",
         )?;
@@ -1072,6 +1272,20 @@ mod tests {
             "refused output created bytes or retained reservation",
         )?;
         let mut ticket = io.begin(&target, &temporary, 9, &mut budget()?)?;
+        let admitted = capacity.snapshot()?;
+        require(
+            admitted.used_bytes == baseline.used_bytes.checked_add(9).ok_or("byte overflow")?
+                && admitted.used_files
+                    == baseline.used_files.checked_add(1).ok_or("file overflow")?
+                && admitted.active_tickets
+                    == baseline
+                        .active_tickets
+                        .checked_add(1)
+                        .ok_or("ticket overflow")?
+                && !target.exists()
+                && !temporary.exists(),
+            "writer did not hold its exact full bound before creating the file",
+        )?;
         let mut file = born(ticket.as_mut(), &temporary)?;
         file.write_all(b"new-bytes")?;
         ticket.cancel(file)?;
@@ -1132,6 +1346,10 @@ mod tests {
         // This is not a failing rename/fsync syscall injector.
         fs::rename(root.join("winner-source"), &target)?;
         File::open(&root)?.sync_all()?;
+        require(
+            ticket.publish_declared_temp(&file, &target)? == Some(false),
+            "anchored no-replace publication accepted a competing winner",
+        )?;
         ticket.cancel(file)?;
         drop(ticket);
         require(

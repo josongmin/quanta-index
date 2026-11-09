@@ -2,7 +2,7 @@
 
 use std::{
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -13,9 +13,10 @@ use quanta_index_core::{
     DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticLaneV1, DiagnosticRootKindV1,
     DiagnosticStageV1, DiagnosticTerminalV1, RequestBudgetV1,
     index::{
-        BootstrapRef, CollectionId, IngressRef, ObjectNamespaceBinding, OperationKey, ProducerId,
-        ReclaimCandidate, ReclaimDrainPage, ReclaimPermit, ReclaimTarget, ReclaimWorkPage,
-        RetiringRef, SlotId, StreamId, TenantId, WorkLimits, WorkspaceKey, WorktreeId,
+        AttemptId, AttemptRef, BootstrapRef, CollectionId, IngressRef, ObjectNamespaceBinding,
+        OperationKey, ProducerId, ReclaimCandidate, ReclaimDrainPage, ReclaimPermit, ReclaimTarget,
+        ReclaimWorkPage, RetiringRef, SlotId, StreamId, TenantId, WorkLimits, WorkspaceKey,
+        WorktreeId,
         ports::{CatalogReclaimPort, ManagedObjectInstallPort},
     },
 };
@@ -56,6 +57,43 @@ impl DiagnosticEventSinkV1 for Events {
 struct TraceAuthority {
     fail_confirmation: bool,
     inputs: usize,
+    pair: Option<Arc<PairProbe>>,
+}
+
+#[derive(Default)]
+struct PairProbe {
+    events: Mutex<Vec<&'static str>>,
+    fail_advance: bool,
+    fail_advance_at: Option<u64>,
+    advances: AtomicU64,
+    expected_gates: Mutex<Option<(Weak<FileObjectStore>, [bool; 256])>>,
+}
+
+impl PairProbe {
+    fn record(&self, event: &'static str) -> Result<(), IndexError> {
+        if let Some((store, expected)) = self
+            .expected_gates
+            .lock()
+            .map_err(|_error| IndexError::BackendViolation("gate probe poisoned".into()))?
+            .as_ref()
+        {
+            let store = store
+                .upgrade()
+                .ok_or_else(|| IndexError::BackendViolation("gate probe store dropped".into()))?;
+            for (index, held) in expected.iter().enumerate() {
+                if store.gates[index].try_lock().is_err() != *held {
+                    return Err(IndexError::BackendViolation(
+                        "prepared run did not hold exactly its gate union".into(),
+                    ));
+                }
+            }
+        }
+        self.events
+            .lock()
+            .map_err(|_error| IndexError::BackendViolation("pair probe poisoned".into()))?
+            .push(event);
+        Ok(())
+    }
 }
 
 fn catalog_child(
@@ -87,7 +125,7 @@ impl TraceAuthority {
                             .is_some_and(|object| bootstrap.profile == object.reference)
                 }
                 ObjectInstallScope::Ingress(stage) => self.inputs == 3 && stage.fence == 1,
-                ObjectInstallScope::Attempt(_) => false,
+                ObjectInstallScope::Attempt(_) => self.inputs == 1 && self.pair.is_some(),
             }
     }
 }
@@ -103,6 +141,9 @@ impl ManagedObjectInstallPort for TraceAuthority {
             return Err(IndexError::BackendViolation(
                 "unexpected managed batch".into(),
             ));
+        }
+        if let Some(probe) = self.pair.as_ref() {
+            probe.record("reserve")?;
         }
         catalog_child(budget, DiagnosticLaneV1(4), |budget| {
             budget.charge(WorkUsage {
@@ -123,6 +164,9 @@ impl ManagedObjectInstallPort for TraceAuthority {
                 "unexpected managed batch".into(),
             ));
         }
+        if let Some(probe) = self.pair.as_ref() {
+            probe.record("confirm")?;
+        }
         catalog_child(budget, DiagnosticLaneV1(6), |budget| {
             budget.charge(WorkUsage {
                 writes: 1,
@@ -136,6 +180,39 @@ impl ManagedObjectInstallPort for TraceAuthority {
                 Ok(())
             }
         })
+    }
+
+    fn supports_atomic_attempt_advance(&self) -> bool {
+        self.pair.is_some()
+    }
+
+    fn advance_attempt_managed(
+        &self,
+        attempt: AttemptRef,
+        confirmed: &[RegisteredObject],
+        next: &[RegisteredObject],
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        if !self.expected(ObjectInstallScope::Attempt(attempt), confirmed)
+            || !self.expected(ObjectInstallScope::Attempt(attempt), next)
+        {
+            return Err(IndexError::BackendViolation(
+                "paired attempt registration differs".into(),
+            ));
+        }
+        let probe = self
+            .pair
+            .as_ref()
+            .ok_or_else(|| IndexError::BackendViolation("pair probe absent".into()))?;
+        let advance = probe.advances.fetch_add(1, Ordering::Relaxed) + 1;
+        if probe.fail_advance || probe.fail_advance_at == Some(advance) {
+            probe.record("advance_failed")?;
+            return Err(IndexError::BackendViolation(
+                "injected atomic advance failure".into(),
+            ));
+        }
+        budget.checkpoint()?;
+        probe.record("advance")
     }
 }
 
@@ -248,6 +325,7 @@ fn run_managed(
     let authority: Arc<dyn ManagedObjectAuthority> = Arc::new(TraceAuthority {
         fail_confirmation,
         inputs,
+        pair: None,
     });
     let store = FileObjectStore::open_managed_with_scratch(
         directory.path().join("store"),
@@ -516,6 +594,324 @@ fn managed_reserve_confirm_trace_preserves_off_cost_and_closes_error()
 }
 
 #[test]
+fn managed_attempt_pair_holds_first_install_until_atomic_advance()
+-> Result<(), Box<dyn std::error::Error>> {
+    for fail_advance in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let scratch = Arc::new(FileScratchSpace::open_standalone(
+            directory.path().join("scratch"),
+            1024 * 1024,
+        )?);
+        let probe = Arc::new(PairProbe {
+            fail_advance,
+            ..PairProbe::default()
+        });
+        let authority: Arc<dyn ManagedObjectAuthority> = Arc::new(TraceAuthority {
+            fail_confirmation: false,
+            inputs: 1,
+            pair: Some(Arc::clone(&probe)),
+        });
+        let observer = Arc::new(ObjectIoObservation::default());
+        let store = FileObjectStore::open_managed_with_scratch(
+            directory.path().join("store"),
+            scratch,
+            authority,
+        )?
+        .with_io_observation(Arc::clone(&observer));
+        let clock = Arc::new(StepClock::default());
+        let events = Arc::new(Events::default());
+        let context = DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([82; 16]),
+            clock,
+            Arc::clone(&events) as Arc<dyn DiagnosticEventSinkV1>,
+        );
+        let root = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(3))?;
+        let mut budget = WorkBudget::with_request(
+            WorkLimits {
+                reads: 10_000,
+                writes: 10_000,
+                bytes: 10_000_000,
+                mutations: 10_000,
+            },
+            RequestBudgetV1::for_duration(Duration::from_secs(30))
+                .with_diagnostic_context(context.child_context(&root)),
+        );
+        let first = store.prepare_object(b"first pair child", &[], &mut budget)?;
+        let next = store.prepare_object(
+            b"second pair parent",
+            &[first.registration.reference],
+            &mut budget,
+        )?;
+        let attempt = AttemptRef {
+            operation: OperationKey {
+                workspace: WorkspaceKey {
+                    tenant: TenantId([1; 16]),
+                    collection: CollectionId([2; 16]),
+                    worktree: WorktreeId([3; 16]),
+                    slot: SlotId([4; 16]),
+                },
+                epoch: 1,
+                producer: ProducerId([5; 16]),
+                stream: StreamId([6; 16]),
+                stream_epoch: 1,
+                sequence: 1,
+            },
+            attempt: AttemptId([7; 16]),
+            fence: 1,
+        };
+        let sink = ManagedSink(ObjectInstallScope::Attempt(attempt));
+        if !store.can_run_prepared_installs(&sink) {
+            return Err("atomic managed pair was not selected".into());
+        }
+        let result = store.install_prepared_run(&[&[&first], &[&next]], &sink, &mut budget);
+        let expected_log = if fail_advance {
+            &["reserve", "advance_failed"][..]
+        } else {
+            &["reserve", "advance", "confirm"][..]
+        };
+        let log = probe
+            .events
+            .lock()
+            .map_err(|_error| "pair probe poisoned")?;
+        if log.as_slice() != expected_log
+            || !store.path_for(first.registration.reference).exists()
+            || store.path_for(next.registration.reference).exists() == fail_advance
+            || (result.is_err() != fail_advance)
+        {
+            return Err("paired install crossed a failed advance or changed its order".into());
+        }
+        drop(log);
+        let expected_packets = if fail_advance { 1 } else { 2 };
+        root.finish(DiagnosticTerminalV1::from_result(&result))?;
+        let trace = events.0.lock().map_err(|_error| "trace events poisoned")?;
+        let packets = trace
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    DiagnosticEventKindV1::SpanBegin {
+                        stage: DiagnosticStageV1::ManagedObjectInstall,
+                        ..
+                    }
+                )
+            })
+            .count();
+        let advances = trace
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    DiagnosticEventKindV1::SpanBegin {
+                        stage: DiagnosticStageV1::ManagedObjectAdvance,
+                        ..
+                    }
+                )
+            })
+            .count();
+        if packets != expected_packets || advances != 1 {
+            return Err("paired install trace lost a physical or advance boundary".into());
+        }
+        let writes = observer.snapshot()?.write_calls;
+        if writes != u64::try_from(expected_packets)? {
+            return Err("paired install wrote an object outside the reached group".into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn contended_install_gate_union_releases_its_prefix() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store = FileObjectStore::open(directory.path().join("store"))?;
+    let budget = WorkBudget::with_request(
+        WorkLimits {
+            reads: 0,
+            writes: 0,
+            bytes: 0,
+            mutations: 0,
+        },
+        RequestBudgetV1::for_duration(Duration::from_secs(30)),
+    );
+    let mut needed = [false; 256];
+    needed[1] = true;
+    needed[3] = true;
+
+    let busy = store.lock_gate(3, &budget)?;
+    if !matches!(store.try_lock_install_gate_union(&needed, &budget)?, Err(3))
+        || store.try_lock_gate(1)?.is_none()
+    {
+        return Err("contended install union retained an earlier gate".into());
+    }
+    drop(busy);
+
+    let guards = store
+        .try_lock_install_gate_union(&needed, &budget)?
+        .map_err(|_| "available install gates were not acquired")?;
+    if guards[1].is_none() || guards[3].is_none() || store.try_lock_gate(2)?.is_none() {
+        return Err("install gate union acquired the wrong gates".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn managed_attempt_run_holds_union_and_stops_at_failed_advance()
+-> Result<(), Box<dyn std::error::Error>> {
+    for fail_advance_at in [None, Some(2), Some(3)] {
+        let directory = tempfile::tempdir()?;
+        let scratch = Arc::new(FileScratchSpace::open_standalone(
+            directory.path().join("scratch"),
+            1024 * 1024,
+        )?);
+        let probe = Arc::new(PairProbe {
+            fail_advance_at,
+            ..PairProbe::default()
+        });
+        let authority: Arc<dyn ManagedObjectAuthority> = Arc::new(TraceAuthority {
+            fail_confirmation: false,
+            inputs: 1,
+            pair: Some(Arc::clone(&probe)),
+        });
+        let observer = Arc::new(ObjectIoObservation::default());
+        let store = Arc::new(
+            FileObjectStore::open_managed_with_scratch(
+                directory.path().join("store"),
+                scratch,
+                authority,
+            )?
+            .with_io_observation(Arc::clone(&observer)),
+        );
+        let mut budget = WorkBudget::with_request(
+            WorkLimits {
+                reads: 10_000,
+                writes: 10_000,
+                bytes: 10_000_000,
+                mutations: 10_000,
+            },
+            RequestBudgetV1::for_duration(Duration::from_secs(30)),
+        );
+        let first = store.prepare_object(b"run-1", &[], &mut budget)?;
+        let second =
+            store.prepare_object(b"run-2", &[first.registration.reference], &mut budget)?;
+        let third =
+            store.prepare_object(b"run-3", &[second.registration.reference], &mut budget)?;
+        let fourth =
+            store.prepare_object(b"run-4", &[third.registration.reference], &mut budget)?;
+        let objects = [&first, &second, &third, &fourth];
+        let groups: [&[&PreparedObject]; 4] = [
+            std::slice::from_ref(&objects[0]),
+            std::slice::from_ref(&objects[1]),
+            std::slice::from_ref(&objects[2]),
+            std::slice::from_ref(&objects[3]),
+        ];
+        let attempt = AttemptRef {
+            operation: OperationKey {
+                workspace: WorkspaceKey {
+                    tenant: TenantId([1; 16]),
+                    collection: CollectionId([2; 16]),
+                    worktree: WorktreeId([3; 16]),
+                    slot: SlotId([4; 16]),
+                },
+                epoch: 1,
+                producer: ProducerId([5; 16]),
+                stream: StreamId([6; 16]),
+                stream_epoch: 1,
+                sequence: 1,
+            },
+            attempt: AttemptId([7; 16]),
+            fence: 1,
+        };
+        let sink = ManagedSink(ObjectInstallScope::Attempt(attempt));
+        if fail_advance_at.is_none() {
+            let mut oversized_wire =
+                store.prepare_object(b"run aggregate bound", &[], &mut budget)?;
+            oversized_wire.registration = RegisteredObject::unscoped(
+                oversized_wire.registration.reference,
+                MAX_BATCH_BYTES,
+                Vec::new(),
+            );
+            if !matches!(
+                store.install_prepared_run(&[groups[0], &[&oversized_wire]], &sink, &mut budget),
+                Err(IndexError::ResourceLimited)
+            ) {
+                return Err("prepared run accepted an oversized aggregate".into());
+            }
+            let five = [groups[0], groups[1], groups[2], groups[3], groups[0]];
+            let empty: &[&PreparedObject] = &[];
+            let empty_group = [groups[0], empty];
+            let invalid_tail = [&fourth, &fourth];
+            let duplicate = [groups[0], groups[1], groups[2], &invalid_tail];
+            let oversized = [&first; MAX_INSTALL_BATCH_INPUTS + 1];
+            let too_many_inputs = [&oversized[..], groups[1]];
+            for invalid in [
+                &groups[..1],
+                &five[..],
+                &empty_group[..],
+                &duplicate[..],
+                &too_many_inputs[..],
+            ] {
+                if store
+                    .install_prepared_run(invalid, &sink, &mut budget)
+                    .is_ok()
+                {
+                    return Err("prepared run accepted an invalid packet bound".into());
+                }
+            }
+            if !probe
+                .events
+                .lock()
+                .map_err(|_error| "run probe poisoned")?
+                .is_empty()
+                || observer.snapshot()?.write_calls != 0
+            {
+                return Err("invalid prepared run crossed the first effect".into());
+            }
+        }
+        let mut expected_gates = [false; 256];
+        for object in objects {
+            expected_gates[FileObjectStore::gate_index(object.registration.reference)] = true;
+        }
+        *probe
+            .expected_gates
+            .lock()
+            .map_err(|_error| "gate probe poisoned")? =
+            Some((Arc::downgrade(&store), expected_gates));
+        let result = store.install_prepared_run(&groups, &sink, &mut budget);
+        let reached = usize::try_from(fail_advance_at.unwrap_or(4))?;
+        let expected_events: &[&str] = match fail_advance_at {
+            None => &["reserve", "advance", "advance", "advance", "confirm"],
+            Some(2) => &["reserve", "advance", "advance_failed"],
+            Some(3) => &["reserve", "advance", "advance", "advance_failed"],
+            _ => return Err("unexpected advance failure fixture".into()),
+        };
+        let events = probe.events.lock().map_err(|_error| "run probe poisoned")?;
+        let sample = observer.snapshot()?;
+        let reached_count = u64::try_from(reached)?;
+        let failed = u64::from(fail_advance_at.is_some());
+        let reserve_attempts = reached_count
+            .checked_add(failed)
+            .ok_or(IndexError::ResourceLimited)?;
+        if events.as_slice() != expected_events
+            || result.is_err() != fail_advance_at.is_some()
+            || sample.write_calls != reached_count
+            || sample.reserve_calls != reserve_attempts
+            || sample.reserve_objects != reserve_attempts
+            || sample.confirm_calls != reached_count
+            || sample.confirm_objects != reached_count
+            || sample.failed_reserves != failed
+            || sample.failed_confirms != failed
+            || objects.iter().enumerate().any(|(index, object)| {
+                store.path_for(object.registration.reference).exists() != (index < reached)
+            })
+        {
+            return Err(
+                "prepared run crossed an unreachable packet or changed Catalog order".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn managed_batch_physical_trace_is_one_packet_aggregate() -> Result<(), Box<dyn std::error::Error>>
 {
     let off = run_managed(false, false, 3)?;
@@ -547,7 +943,8 @@ fn managed_batch_physical_trace_is_one_packet_aggregate() -> Result<(), Box<dyn 
     };
     let expected = [
         quanta_index_core::DiagnosticObjectInstallPhaseV1::ChildValidation,
-        quanta_index_core::DiagnosticObjectInstallPhaseV1::NamespaceAndCreate,
+        quanta_index_core::DiagnosticObjectInstallPhaseV1::NamespaceValidation,
+        quanta_index_core::DiagnosticObjectInstallPhaseV1::WriterCreate,
         quanta_index_core::DiagnosticObjectInstallPhaseV1::Write,
         quanta_index_core::DiagnosticObjectInstallPhaseV1::FileSync,
         quanta_index_core::DiagnosticObjectInstallPhaseV1::PublishAndRetire,

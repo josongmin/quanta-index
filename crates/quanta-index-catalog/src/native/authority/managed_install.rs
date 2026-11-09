@@ -8,8 +8,8 @@ use super::{
     try_insert_object_intent,
 };
 use quanta_index_core::index::{
-    Digest, IndexError, MAX_RECLAIM_CHILDREN, ObjectInstallScope, ObjectRef, RegisteredObject,
-    WorkBudget, WorkUsage,
+    AttemptRef, Digest, IndexError, MAX_RECLAIM_CHILDREN, ObjectInstallScope, ObjectRef,
+    RegisteredObject, WorkBudget, WorkUsage,
 };
 use quanta_index_core::{
     DiagnosticHealthCodeV1, DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1,
@@ -203,22 +203,17 @@ struct ChildWindow {
 }
 impl ChildWindow {
     fn capacity(objects: &[RegisteredObject]) -> Result<ChildWindowCapacity, IndexError> {
-        let maximum = objects
-            .iter()
-            .map(|object| object.children.len())
-            .max()
-            .unwrap_or(0);
-        if maximum <= 64 {
-            return Ok(ChildWindowCapacity {
-                slots: 64,
-                limit: 64,
-            });
-        }
         let total = objects.iter().try_fold(0_usize, |total, object| {
             total
                 .checked_add(object.children.len())
                 .ok_or(IndexError::ResourceLimited)
         })?;
+        if total <= 64 {
+            return Ok(ChildWindowCapacity {
+                slots: 64,
+                limit: 64,
+            });
+        }
         let limit = total.clamp(64, MAX_RECLAIM_CHILDREN);
         let slots = limit
             .checked_mul(2)
@@ -597,16 +592,14 @@ fn reserve_charged<'tx, 'conn, 'input>(
     object: &'input RegisteredObject,
     budget: &mut WorkBudget,
 ) -> Result<ReservedInTransaction<'tx, 'conn, 'input>, IndexError> {
-    let payload = if let Some(payload) = object_install::try_reserve_new(transaction, object)? {
-        payload
-    } else {
+    let (write, payload) = object_install::try_reserve_new(transaction, object)?;
+    if matches!(write, object_install::ReservationWrite::Existing) {
         budget.charge(WorkUsage {
             reads: 2,
             ..WorkUsage::default()
         })?;
         object_install::require_reserved(transaction, object)?;
-        registration_codec::encode(object)?
-    };
+    }
     Ok(ReservedInTransaction {
         transaction,
         object,
@@ -912,12 +905,63 @@ pub(super) fn install(
     budget.checkpoint()?;
     let mut guard = observe_sqlite(budget, 9, |budget| catalog.lock_native_budget(budget))?;
     let tx = observe_sqlite(budget, 10, |_budget| begin(&mut guard))?;
+    install_in_transaction(&tx, scope, objects, budget, confirming)?;
+    budget.checkpoint()?;
+    // Retain the existing COMMIT-only scope and lane identity.
+    observe_sqlite(budget, 3, |_budget| {
+        tx.commit().map_err(|error| sql(&error))
+    })?;
+    drop(guard);
+    Ok(())
+}
+
+/// Keep each original bounded phase and its fees, with one durable transition
+/// between consecutive physical groups. Each `SQLite` transaction covers Catalog work.
+pub(super) fn advance_attempt(
+    catalog: &SqliteCatalog,
+    attempt: AttemptRef,
+    confirmed: &[RegisteredObject],
+    next: &[RegisteredObject],
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    if confirmed.is_empty()
+        || confirmed.len() > MAX_OBJECTS
+        || next.is_empty()
+        || next.len() > MAX_OBJECTS
+    {
+        return Err(IndexError::ResourceLimited);
+    }
+    budget.checkpoint()?;
+    let mut guard = observe_sqlite(budget, 9, |budget| catalog.lock_native_budget(budget))?;
+    let tx = observe_sqlite(budget, 10, |_budget| begin(&mut guard))?;
+    let scope = ObjectInstallScope::Attempt(attempt);
+    install_in_transaction(&tx, scope, confirmed, budget, true)?;
+    budget.checkpoint()?;
+    install_in_transaction(&tx, scope, next, budget, false)?;
+    budget.checkpoint()?;
+    observe_sqlite(budget, 3, |_budget| {
+        tx.commit().map_err(|error| sql(&error))
+    })?;
+    drop(guard);
+    Ok(())
+}
+
+fn install_in_transaction(
+    tx: &Transaction<'_>,
+    scope: ObjectInstallScope,
+    objects: &[RegisteredObject],
+    budget: &mut WorkBudget,
+    confirming: bool,
+) -> Result<(), IndexError> {
+    if objects.is_empty() || objects.len() > MAX_OBJECTS {
+        return Err(IndexError::ResourceLimited);
+    }
     budget.charge(WorkUsage {
         reads: 2,
         bytes: 256,
         ..WorkUsage::default()
     })?;
-    reclaim::require_bound(&tx)?;
+    reclaim::require_bound(tx)?;
     // Planning and actual child preflight must use one deterministic capacity
     // policy, or omitted-adoption work credits could exceed executed savings.
     let child_capacity = ChildWindow::capacity(objects)?;
@@ -975,16 +1019,16 @@ pub(super) fn install(
     drop(planned);
     match (scope, confirming) {
         (ObjectInstallScope::Ingress(stage), false) => {
-            reserve_ingress(&tx, stage, objects, budget)?;
+            reserve_ingress(tx, stage, objects, budget)?;
         }
         (ObjectInstallScope::Ingress(stage), true) => {
-            confirm_ingress(&tx, stage, objects, child_capacity, budget)?;
+            confirm_ingress(tx, stage, objects, child_capacity, budget)?;
         }
         (ObjectInstallScope::Attempt(attempt), false) => {
-            reserve_attempt(&tx, attempt, objects, child_capacity, budget)?;
+            reserve_attempt(tx, attempt, objects, child_capacity, budget)?;
         }
         (ObjectInstallScope::Attempt(attempt), true) => {
-            confirm_attempt(&tx, attempt, objects, child_capacity, budget)?;
+            confirm_attempt(tx, attempt, objects, child_capacity, budget)?;
         }
         (ObjectInstallScope::Bootstrap(stage), false) => {
             let [object] = objects else {
@@ -992,9 +1036,9 @@ pub(super) fn install(
                     "bootstrap object batch must contain one profile".into(),
                 ));
             };
-            bootstrap::reserve_bootstrap_tx(&tx, stage, object)?;
-            reclaim::reserve_object(&tx, object.reference)?;
-            let _queued = reclaim::enqueue(&tx, object.reference)?;
+            bootstrap::reserve_bootstrap_tx(tx, stage, object)?;
+            reclaim::reserve_object(tx, object.reference)?;
+            let _queued = reclaim::enqueue(tx, object.reference)?;
         }
         (ObjectInstallScope::Bootstrap(stage), true) => {
             let [object] = objects else {
@@ -1002,17 +1046,11 @@ pub(super) fn install(
                     "bootstrap object batch must contain one profile".into(),
                 ));
             };
-            bootstrap::confirm_bootstrap_tx(&tx, stage, object)?;
-            reclaim::confirm_object(&tx, object.reference)?;
-            let _queued = reclaim::enqueue(&tx, object.reference)?;
+            bootstrap::confirm_bootstrap_tx(tx, stage, object)?;
+            reclaim::confirm_object(tx, object.reference)?;
+            let _queued = reclaim::enqueue(tx, object.reference)?;
         }
     }
-    budget.checkpoint()?;
-    // Retain the existing COMMIT-only scope and lane identity.
-    observe_sqlite(budget, 3, |_budget| {
-        tx.commit().map_err(|error| sql(&error))
-    })?;
-    drop(guard);
     Ok(())
 }
 

@@ -1,27 +1,21 @@
 //! Owner-local byte-literal index for the native kernel. The query capability is
 //! explicitly case-sensitive byte literals; token/ranking/regex routes stay separate.
-use super::edit_spool::LiteralEditSpool;
-use super::literal_contribution::LoadedContribution;
+use super::literal_packed::{self, PackedRoot, SealInput};
 use quanta_index_core::index::{
     AttemptContext, BaseMember, DeltaInput, Digest, IndexError, InputBinding, MapRoot,
-    MemberBinding, MemoryLease, MemoryLifetime, ObjectBatchInput, ObjectChildren, ObjectRef,
-    OwnerKey, PlanContext, PlanDecision, SourceDelta, SourceInputCursor, SourceRecord,
-    SourceRecordOwner, StagedObjectReferences, StoredObject, TicketRecord, WorkBudget, WorkUsage,
-    member_map_key,
+    MemberBinding, MemoryLease, MemoryLifetime, ObjectChildren, ObjectRef, OwnerKey, PlanContext,
+    PlanDecision, SourceDelta, SourceInputCursor, SourceRecord, SourceRecordOwner, StoredObject,
+    TicketRecord, WorkBudget, WorkUsage, member_map_key, owner_from_map_key, owner_map_key,
     ports::{ImmutableObjectPort, IndexBuildPort, IndexFuture, PersistentMapPort},
 };
+#[cfg(test)]
+use quanta_index_core::index::{ObjectBatchInput, StagedObjectReferences};
 #[cfg(test)]
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NativeLiteralIndex;
-
-const POSTING_BATCH_ROOTS: usize = 64;
-const CONTRIBUTION_BATCH_OBJECTS: usize = 64;
-// The object port admits at most 64 MiB of encoded wire per call. Keep a
-// smaller exact-wire window to bound pending contribution memory.
-const CONTRIBUTION_BATCH_WIRE_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct Root {
@@ -93,7 +87,7 @@ fn load_literal_record(
     Ok(record)
 }
 
-fn load_literal_body(
+pub(super) fn load_literal_body(
     record: &SourceRecord,
     objects: &dyn ImmutableObjectPort,
     budget: &mut WorkBudget,
@@ -113,18 +107,21 @@ fn load_literal_body(
     Ok(body)
 }
 
+#[cfg(test)]
 struct PendingObject<K> {
-    key: K,
-    prior: Option<ObjectRef>,
+    _key: K,
+    _prior: Option<ObjectRef>,
     input: Option<ObjectBatchInput>,
     _payload_memory: Option<MemoryLease>,
     _children_memory: Option<MemoryLease>,
 }
 
+#[cfg(test)]
 struct LiteralBatch<K> {
     rows: super::text_memory::PreparedRows<PendingObject<K>>,
 }
 
+#[cfg(test)]
 impl<K: Copy> LiteralBatch<K> {
     fn new(maximum: usize) -> Result<Self, IndexError> {
         Ok(Self {
@@ -153,8 +150,8 @@ impl<K: Copy> LiteralBatch<K> {
         let (bytes, payload_memory) = payload.into_parts();
         self.rows.push(
             PendingObject {
-                key,
-                prior,
+                _key: key,
+                _prior: prior,
                 input: Some(ObjectBatchInput {
                     payload: bytes,
                     children,
@@ -215,13 +212,14 @@ pub struct LiteralPlan {
 #[derive(Clone, Debug)]
 pub struct LiteralCandidate {
     pub binding: MemberBinding,
+    seal: Option<SealInput>,
 }
 
 #[cfg(test)]
 fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, IndexError> {
     serde_json::to_vec(value).map_err(|error| IndexError::InvalidInput(error.to_string()))
 }
-fn owner_key(owner: OwnerKey) -> [u8; 32] {
+pub(super) fn owner_key(owner: OwnerKey) -> [u8; 32] {
     let mut key = [0; 32];
     for (target, byte) in key
         .iter_mut()
@@ -238,39 +236,6 @@ fn roots(root: Root) -> ObjectChildren {
         [Some(first), Some(second)] => ObjectChildren::Two([first, second]),
     }
 }
-fn flush_contributions(
-    context: &mut AttemptContext<'_>,
-    pending: &mut LiteralBatch<[u8; 32]>,
-    spool: &LiteralEditSpool,
-) -> Result<(), IndexError> {
-    if pending.rows.len() == 0 {
-        return Ok(());
-    }
-    context.budget.checkpoint()?;
-    let count = pending.rows.len();
-    context.budget.charge(WorkUsage {
-        bytes: u64::try_from(count)
-            .map_err(|_conversion_error| IndexError::ResourceLimited)?
-            .checked_mul(256)
-            .ok_or(IndexError::ResourceLimited)?,
-        ..WorkUsage::default()
-    })?;
-    let references = pending.install(context)?;
-    if references.len() != pending.rows.len() {
-        return Err(IndexError::BackendViolation(
-            "contribution batch lost ordinal output".into(),
-        ));
-    }
-    for (row, next) in pending.rows.as_slice().iter().zip(references) {
-        let prior = row.prior;
-        if prior != Some(next) {
-            spool.edit(1, &row.key, prior, Some(next), context.budget)?;
-        }
-    }
-    pending.rows.clear();
-    Ok(())
-}
-
 impl IndexBuildPort for NativeLiteralIndex {
     type Delta = SourceDelta;
     type Plan = LiteralPlan;
@@ -339,286 +304,99 @@ impl IndexBuildPort for NativeLiteralIndex {
         context: &'a mut AttemptContext<'_>,
     ) -> IndexFuture<'a, LiteralCandidate> {
         Box::pin(async move {
-            let mut root = match &plan.base {
-                Some(base) => {
-                    let stored = context.objects.get(base.artifact, context.budget)?;
-                    super::metadata::decode_fixed::<Root>(&stored.payload, context.budget)?
-                }
-                None => Root::default(),
-            };
-            if !matches!(&plan.input, DeltaInput::Bootstrap)
-                || plan.context.source.owners.0.is_some()
-            {
-                // Compile the bounded source cursor before installing map roots.
-                // Shared grams receive one posting edit batch, not an intermediate
-                // root per owner; initial indexing benefits from the same path.
-                let mut changes = SourceInputCursor::new(
-                    plan.context.source,
-                    plan.input.clone(),
-                    context.maps,
-                    context.objects,
-                )?;
-                let mut next_change = changes.next_change(context.budget)?;
-                if next_change.is_none()
-                    && let (Some(base), DeltaInput::Patch(delta)) = (&plan.base, &plan.input)
+            let mut prior = None;
+            if let Some(base) = &plan.base {
+                let stored = context.objects.get(base.artifact, context.budget)?;
+                let children = if let Some(root) = PackedRoot::decode(&stored.payload)? {
+                    if root.sources != base.input.root {
+                        return Err(IndexError::CorruptObject(
+                            "literal base source differs".into(),
+                        ));
+                    }
+                    prior = Some(root.blocks);
+                    root.children()
+                } else {
+                    roots(super::metadata::decode_fixed::<Root>(
+                        &stored.payload,
+                        context.budget,
+                    )?)
+                };
+                if stored.registration.reference != base.artifact
+                    || stored.registration.children.as_slice() != children.as_slice()
+                    || Digest(Sha256::digest(&stored.payload).into()) != base.logical_commitment
                 {
+                    return Err(IndexError::CorruptObject(
+                        "literal base commitment differs".into(),
+                    ));
+                }
+                if let DeltaInput::Patch(delta) = &plan.input
+                    && (delta.changed.count == 0 || delta.prior.owners == delta.next.owners)
+                {
+                    let mut cursor = SourceInputCursor::new(
+                        plan.context.source,
+                        plan.input.clone(),
+                        context.maps,
+                        context.objects,
+                    )?;
+                    while let Some(change) = cursor.next_change(context.budget)? {
+                        if change.prior.as_ref().map(|(reference, _)| reference)
+                            != change.next.as_ref().map(|(reference, _)| reference)
+                        {
+                            return Err(IndexError::CorruptObject(
+                                "unchanged literal cut contains a source edit".into(),
+                            ));
+                        }
+                    }
                     if delta.prior.owners != delta.next.owners {
                         return Err(IndexError::CorruptObject(
-                            "empty native literal patch changed owner root".into(),
+                            "empty literal patch changes source".into(),
                         ));
                     }
                     return Ok(LiteralCandidate {
                         binding: MemberBinding {
-                            instance: plan.context.instance.instance,
-                            format: plan.context.instance.format,
-                            artifact: base.artifact,
                             input: plan.context.input,
-                            logical_commitment: base.logical_commitment,
+                            ..base.clone()
                         },
+                        seal: None,
                     });
                 }
-                let spool = LiteralEditSpool::new(context.scratch, context.budget)?;
-                let mut pending_contributions = LiteralBatch::new(CONTRIBUTION_BATCH_OBJECTS)?;
-                let mut pending_contribution_wire_bytes = 0u64;
-                let marker = context.put(b"native-literal-owner-membership", &[])?;
-                while let Some(change) = next_change {
-                    context.budget.checkpoint()?;
-                    let owner = owner_key(change.owner);
-                    let prior_ref =
-                        context
-                            .maps
-                            .lookup_object(root.owners, &owner, context.budget)?;
-                    let prior = prior_ref
-                        .map(|reference| {
-                            super::literal_contribution::load(
-                                reference,
-                                context.objects,
-                                context.budget,
-                            )
-                        })
-                        .transpose()?;
-                    if prior.as_ref().map(|value| value.record)
-                        != change.prior.as_ref().map(|(reference, _)| *reference)
-                    {
-                        return Err(IndexError::Conflict);
-                    }
-                    let next = if let Some((reference, record)) = change.next {
-                        let grams = match (&change.prior, &prior) {
-                            (Some((_, old_record)), Some(old))
-                                if old_record.bytes == record.bytes =>
-                            {
-                                context.budget.charge(WorkUsage {
-                                    bytes: u64::try_from(old.grams.len())
-                                        .map_err(|_conversion_error| IndexError::ResourceLimited)?
-                                        .checked_mul(128)
-                                        .ok_or(IndexError::ResourceLimited)?,
-                                    ..WorkUsage::default()
-                                })?;
-                                super::literal_grams::PreparedGrams::copy(
-                                    &old.grams,
-                                    context.budget,
-                                )?
-                            }
-                            _ => super::literal_grams::build(
-                                &context.objects.get(record.bytes, context.budget)?.payload,
-                                context.budget,
-                            )?,
-                        };
-                        Some(LoadedContribution::new(reference, grams))
-                    } else {
-                        None
-                    };
-                    let prior_grams = prior.as_ref().map_or(&[][..], |value| &value.grams);
-                    let next_grams = next.as_ref().map_or(&[][..], |value| &value.grams);
-                    let mut prior_iter = prior_grams.iter().peekable();
-                    let mut next_iter = next_grams.iter().peekable();
-                    loop {
-                        let change = match (
-                            prior_iter.peek().copied().copied(),
-                            next_iter.peek().copied().copied(),
-                        ) {
-                            (None, None) => break,
-                            (Some(old), Some(new)) if old == new => {
-                                let _old = prior_iter.next();
-                                let _new = next_iter.next();
-                                continue;
-                            }
-                            (Some(old), Some(new)) if old < new => {
-                                let _old = prior_iter.next();
-                                (old, true, false)
-                            }
-                            (Some(_) | None, Some(new)) => {
-                                let _new = next_iter.next();
-                                (new, false, true)
-                            }
-                            (Some(old), None) => {
-                                let _old = prior_iter.next();
-                                (old, true, false)
-                            }
-                        };
-                        let (gram, was, now) = change;
-                        context.budget.charge(WorkUsage {
-                            mutations: 1,
-                            bytes: 128,
-                            ..WorkUsage::default()
-                        })?;
-                        spool.posting(
-                            gram,
-                            &owner,
-                            was.then_some(marker),
-                            now.then_some(marker),
-                            context.budget,
-                        )?;
-                    }
-                    match next {
-                        Some(value) if prior.as_deref() != Some(&*value) => {
-                            let estimated_bytes = u64::try_from(value.grams.len())
-                                .map_err(|_conversion_error| IndexError::ResourceLimited)?
-                                .checked_mul(16)
-                                .and_then(|bytes| bytes.checked_add(768))
-                                .ok_or(IndexError::ResourceLimited)?;
-                            context.budget.charge(WorkUsage {
-                                bytes: estimated_bytes,
-                                ..WorkUsage::default()
-                            })?;
-                            let payload = super::text_memory::encode(&*value, context.budget)?;
-                            let wire_bytes = u64::try_from(payload.as_slice().len())
-                                .map_err(|_conversion_error| IndexError::ResourceLimited)?
-                                .checked_add(16 + 32)
-                                .ok_or(IndexError::ResourceLimited)?;
-                            if wire_bytes > CONTRIBUTION_BATCH_WIRE_BYTES {
-                                return Err(IndexError::ResourceLimited);
-                            }
-                            if pending_contribution_wire_bytes
-                                .checked_add(wire_bytes)
-                                .ok_or(IndexError::ResourceLimited)?
-                                > CONTRIBUTION_BATCH_WIRE_BYTES
-                            {
-                                flush_contributions(context, &mut pending_contributions, &spool)?;
-                                pending_contribution_wire_bytes = 0;
-                            }
-                            pending_contributions.push(
-                                owner,
-                                prior_ref,
-                                payload,
-                                value.record,
-                                context.budget,
-                            )?;
-                            pending_contribution_wire_bytes = pending_contribution_wire_bytes
-                                .checked_add(wire_bytes)
-                                .ok_or(IndexError::ResourceLimited)?;
-                            if pending_contributions.rows.len() == CONTRIBUTION_BATCH_OBJECTS {
-                                flush_contributions(context, &mut pending_contributions, &spool)?;
-                                pending_contribution_wire_bytes = 0;
-                            }
-                        }
-                        None if prior_ref.is_some() => {
-                            spool.edit(1, &owner, prior_ref, None, context.budget)?;
-                        }
-                        Some(_) | None => {}
-                    }
-                    next_change = changes.next_change(context.budget)?;
-                }
-                flush_contributions(context, &mut pending_contributions, &spool)?;
-                let mut after_gram = None;
-                loop {
-                    let grams = spool.gram_page(after_gram, context.budget)?;
-                    if grams.len() == 0 {
-                        break;
-                    }
-                    after_gram = grams.as_slice().last().copied();
-                    context.budget.checkpoint()?;
-                    context.budget.charge(WorkUsage {
-                        bytes: u64::try_from(POSTING_BATCH_ROOTS)
-                            .map_err(|_conversion_error| IndexError::ResourceLimited)?
-                            .checked_mul(512)
-                            .ok_or(IndexError::ResourceLimited)?,
-                        ..WorkUsage::default()
-                    })?;
-                    let mut metadata = super::text_memory::PreparedRows::new(POSTING_BATCH_ROOTS)?;
-                    let mut bases = super::text_memory::PreparedRows::new(POSTING_BATCH_ROOTS)?;
-                    for gram in grams.as_slice() {
-                        let gram = *gram;
-                        let old_wrapper =
-                            context
-                                .maps
-                                .lookup_object(root.grams, &gram, context.budget)?;
-                        let posting = old_wrapper
-                            .map(|reference| {
-                                load_posting(reference, context.objects, context.budget)
-                            })
-                            .transpose()?
-                            .unwrap_or_default();
-                        let count = spool.cardinality(gram, posting.count, context.budget)?;
-                        metadata.push((gram, old_wrapper, count), context.budget)?;
-                        bases.push(posting.root, context.budget)?;
-                    }
-                    let roots = context.apply_stream(
-                        bases.as_slice(),
-                        &mut spool.posting_cursor(grams.as_slice()),
+                if prior.is_none() && matches!(&plan.input, DeltaInput::Patch(_)) {
+                    let mut cursor = SourceInputCursor::new(
+                        plan.context.source,
+                        plan.input.clone(),
+                        context.maps,
+                        context.objects,
                     )?;
-                    if roots.len() != metadata.len() {
-                        return Err(IndexError::BackendViolation(
-                            "map batch lost posting output".into(),
-                        ));
-                    }
-                    let mut wrappers = LiteralBatch::new(POSTING_BATCH_ROOTS)?;
-                    for ((gram, old_wrapper, count), new_root) in
-                        metadata.as_slice().iter().copied().zip(roots)
-                    {
-                        if new_root.0.is_none() != (count == 0) {
-                            return Err(IndexError::CorruptObject(
-                                "posting cardinality and root disagree".into(),
-                            ));
-                        }
-                        if let Some(reference) = new_root.0 {
-                            let payload = super::text_memory::encode(
-                                &Posting {
-                                    root: new_root,
-                                    count,
-                                },
-                                context.budget,
-                            )?;
-                            wrappers.push(gram, old_wrapper, payload, reference, context.budget)?;
-                        } else {
-                            spool.edit(0, &gram, old_wrapper, None, context.budget)?;
-                        }
-                    }
-                    let wrapper_refs = wrappers.install(context)?;
-                    if wrapper_refs.len() != wrappers.rows.len() {
-                        return Err(IndexError::BackendViolation(
-                            "object batch lost posting wrapper".into(),
-                        ));
-                    }
-                    for (row, next) in wrappers.rows.as_slice().iter().zip(wrapper_refs) {
-                        spool.edit(0, &row.key, row.prior, Some(next), context.budget)?;
-                    }
-                }
-                let roots =
-                    context.apply_stream(&[root.grams, root.owners], &mut spool.top_cursor())?;
-                let mut roots = roots.into_iter();
-                root.grams = roots.next().ok_or_else(|| {
-                    IndexError::BackendViolation("gram root batch missing".into())
-                })?;
-                root.owners = roots.next().ok_or_else(|| {
-                    IndexError::BackendViolation("owner root batch missing".into())
-                })?;
-                if roots.next().is_some() {
-                    return Err(IndexError::BackendViolation(
-                        "root batch returned extra output".into(),
-                    ));
+                    while cursor.next_change(context.budget)?.is_some() {}
                 }
             }
-            let payload = super::text_memory::encode(&root, context.budget)?;
-            let artifact = context.put(payload.as_slice(), roots(root).as_slice())?;
+
+            let input = SealInput {
+                source: plan.context.source,
+                input: if prior.is_some() {
+                    plan.input
+                } else {
+                    // A legacy artifact stays readable in its pinned view;
+                    // the next changed view is explicitly built from the source snapshot.
+                    DeltaInput::Bootstrap
+                },
+                prior: prior.unwrap_or_default(),
+            };
+            let blocks = literal_packed::publish(&input, context)?;
+            let (artifact, logical_commitment) = PackedRoot {
+                sources: plan.context.source.owners,
+                blocks,
+            }
+            .install(context)?;
             Ok(LiteralCandidate {
                 binding: MemberBinding {
                     instance: plan.context.instance.instance,
                     format: plan.context.instance.format,
                     artifact,
                     input: plan.context.input,
-                    logical_commitment: Digest(Sha256::digest(payload.as_slice()).into()),
+                    logical_commitment,
                 },
+                seal: Some(input),
             })
         })
     }
@@ -632,14 +410,34 @@ impl IndexBuildPort for NativeLiteralIndex {
             let stored = context
                 .objects
                 .get(candidate.binding.artifact, context.budget)?;
-            let root = super::metadata::decode_fixed::<Root>(&stored.payload, context.budget)?;
-            if stored.registration.children.as_slice() != roots(root).as_slice()
+            let packed = PackedRoot::decode(&stored.payload)?;
+            let children = if let Some(root) = packed {
+                if root.sources != candidate.binding.input.root {
+                    return Err(IndexError::CorruptObject(
+                        "literal root source differs".into(),
+                    ));
+                }
+                root.children()
+            } else {
+                roots(super::metadata::decode_fixed::<Root>(
+                    &stored.payload,
+                    context.budget,
+                )?)
+            };
+            if stored.registration.reference != candidate.binding.artifact
+                || stored.registration.children.as_slice() != children.as_slice()
                 || Digest(Sha256::digest(&stored.payload).into())
                     != candidate.binding.logical_commitment
             {
                 return Err(IndexError::BackendViolation(
                     "literal root commitment mismatch".into(),
                 ));
+            }
+            if let Some(input) = candidate.seal.as_ref() {
+                let root = packed.ok_or_else(|| {
+                    IndexError::BackendViolation("literal seal needs a block root".into())
+                })?;
+                literal_packed::seal(input, root, context)?;
             }
             Ok(candidate.binding)
         })
@@ -787,6 +585,28 @@ impl NativeLiteralIndex {
             ));
         }
         let artifact = objects.get(member.artifact, budget)?;
+        if let Some(root) = PackedRoot::decode(&artifact.payload)? {
+            if root.sources != input.root
+                || artifact.registration.reference != member.artifact
+                || artifact.registration.children.as_slice() != root.children().as_slice()
+                || Digest(Sha256::digest(&artifact.payload).into()) != member.logical_commitment
+            {
+                return Err(IndexError::CorruptObject(
+                    "literal block root commitment mismatch".into(),
+                ));
+            }
+            return search_packed(
+                root,
+                LiteralQuery {
+                    literal,
+                    after,
+                    limit,
+                },
+                objects,
+                maps,
+                budget,
+            );
+        }
         let root = super::metadata::decode_fixed::<Root>(&artifact.payload, budget)?;
         if !artifact
             .registration
@@ -921,6 +741,170 @@ impl NativeLiteralIndex {
             }
         }
     }
+}
+
+struct SourceOwners<'a> {
+    maps: &'a dyn PersistentMapPort,
+    root: MapRoot,
+    after: Option<[u8; 38]>,
+    page: quanta_index_core::index::MapPageCursor,
+    more: bool,
+}
+
+impl SourceOwners<'_> {
+    fn next(
+        &mut self,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<([u8; 32], ObjectRef)>, IndexError> {
+        loop {
+            if let Some(row) = self.page.next() {
+                let (key, reference) = row.object_parts()?;
+                let owner = owner_from_map_key(key)?;
+                let current = owner_map_key(owner);
+                if self.after.is_some_and(|after| after >= current) {
+                    return Err(IndexError::CorruptObject(
+                        "literal owner scan did not advance".into(),
+                    ));
+                }
+                self.after = Some(current);
+                return Ok(Some((owner_key(owner), *reference)));
+            }
+            if !self.more {
+                return Ok(None);
+            }
+            let page = self.maps.scan(
+                self.root,
+                self.after.as_ref().map(<[u8; 38]>::as_slice),
+                64,
+                budget,
+            )?;
+            if page.entries.is_empty() && page.has_more {
+                return Err(IndexError::CorruptObject(
+                    "literal owner scan has empty continuation".into(),
+                ));
+            }
+            self.more = page.has_more;
+            self.page = page.cursor();
+        }
+    }
+}
+
+fn search_packed(
+    root: PackedRoot,
+    query: LiteralQuery<'_>,
+    objects: &dyn ImmutableObjectPort,
+    maps: &dyn PersistentMapPort,
+    budget: &mut WorkBudget,
+) -> Result<LiteralPage, IndexError> {
+    use super::literal_blocks::{LiteralGramCursor, contains, literal_key};
+
+    let after = query.after.map(owner_cursor).transpose()?;
+    let gram_count = query.literal.len().saturating_sub(2);
+    let gram_bytes = gram_count
+        .checked_mul(3)
+        .ok_or(IndexError::ResourceLimited)?;
+    let _gram_memory = query_memory(gram_bytes, MemoryLifetime::Temporary, budget)?;
+    let mut grams = Vec::<[u8; 3]>::new();
+    grams
+        .try_reserve_exact(gram_count)
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    for gram in query.literal.windows(3) {
+        grams.push(
+            gram.try_into()
+                .map_err(|_error| IndexError::BackendViolation("literal gram width".into()))?,
+        );
+    }
+    grams.sort_unstable();
+    grams.dedup();
+    let mut smallest = None;
+    for gram in &grams {
+        let mut cursor = LiteralGramCursor::new(maps, objects, root.blocks, *gram, None);
+        let mut count = 0_usize;
+        while cursor.next(budget)?.is_some() {
+            count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+            if smallest.is_some_and(|(_, previous)| count >= previous) {
+                break;
+            }
+        }
+        if count == 0 {
+            return Ok(LiteralPage::from_parts(Vec::new(), None, false, None, None));
+        }
+        if smallest.is_none_or(|(_, previous)| count < previous) {
+            smallest = Some((*gram, count));
+        }
+    }
+    let mut postings =
+        smallest.map(|(gram, _)| LiteralGramCursor::new(maps, objects, root.blocks, gram, after));
+    let mut sources = SourceOwners {
+        maps,
+        root: root.sources,
+        after: after
+            .as_ref()
+            .map(|key| decode_owner(key).map(owner_map_key))
+            .transpose()?,
+        page: quanta_index_core::index::MapPageCursor::default(),
+        more: root.sources.0.is_some(),
+    };
+    let mut next = |budget: &mut WorkBudget| {
+        if let Some(postings) = &mut postings {
+            postings.next(budget).map(|row| row.map(|key| (key, None)))
+        } else {
+            sources
+                .next(budget)
+                .map(|row| row.map(|(key, reference)| (key, Some(reference))))
+        }
+    };
+
+    let limit = usize::try_from(query.limit).map_err(|_error| IndexError::ResourceLimited)?;
+    let hit_bytes = limit
+        .checked_mul(std::mem::size_of::<LiteralHit>())
+        .ok_or(IndexError::ResourceLimited)?;
+    let hit_memory = query_memory(hit_bytes, MemoryLifetime::Retained, budget)?;
+    let mut hits = Vec::new();
+    hits.try_reserve_exact(limit)
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    let mut result = LiteralPage::from_parts(hits, None, false, hit_memory, None);
+    'candidates: while let Some((key, record)) = next(budget)? {
+        for gram in &grams {
+            if smallest.is_some_and(|(chosen, _)| *gram == chosen) {
+                continue;
+            }
+            if !contains(maps, objects, root.blocks, literal_key(*gram, key), budget)? {
+                continue 'candidates;
+            }
+        }
+        let owner = decode_owner(&key)?;
+        let reference = match record {
+            Some(reference) => reference,
+            None => maps
+                .lookup_object(root.sources, &owner_map_key(owner), budget)?
+                .ok_or_else(|| {
+                    IndexError::CorruptObject("literal posting lacks a source owner".into())
+                })?,
+        };
+        let record = load_literal_record(reference, objects, budget)?;
+        let body = load_literal_body(&record, objects, budget)?;
+        if body
+            .payload
+            .windows(query.literal.len())
+            .any(|window| window == query.literal)
+        {
+            let (record, memory) = record.into_retained_parts(budget)?;
+            result
+                .hits
+                .push(LiteralHit::from_parts(owner, record, memory));
+            if result.hits.len() == limit {
+                result.has_more = next(budget)?.is_some();
+                if result.has_more {
+                    result.after_memory =
+                        query_memory(key.len(), MemoryLifetime::Retained, budget)?;
+                    result.after = Some(key.to_vec());
+                }
+                return Ok(result);
+            }
+        }
+    }
+    Ok(result)
 }
 
 fn owner_cursor(bytes: &[u8]) -> Result<[u8; 32], IndexError> {

@@ -84,10 +84,11 @@ impl FileObjectStore {
         bases: &[MapRoot],
         edits: [&MapEdit; 2],
         roots: MapRootBuilder,
+        packed_root: Option<usize>,
         sink: &dyn ObjectWriteSink,
         budget: &mut WorkBudget,
     ) -> Result<StagedMapRoots, IndexError> {
-        let staged = ResidentStage::pair();
+        let staged = ResidentStage::pair(packed_root);
         let roots = self.prepare_resident_roots(bases, &edits, roots, &staged, budget)?;
         self.install_reachable_map_nodes(roots.as_slice(), &staged, sink, budget)?;
         budget.checkpoint()?;
@@ -125,11 +126,14 @@ impl FileObjectStore {
             *keys.get_mut(slot).ok_or(IndexError::ResourceLimited)? = Some(key);
         }
         let mut built = [MapRoot(None); 2];
-        let shared = bases.first() == bases.get(1) && edits.first() == edits.get(1);
+        let shared = staged.shares_pair_layout()
+            && bases.first() == bases.get(1)
+            && edits.first() == edits.get(1);
         // Finish both bounded DAGs before the first physical reservation. A
         // failure in the second build cannot install a successful first prefix.
         for (slot, (base, edit)) in bases.iter().zip(edits.iter().copied()).enumerate() {
             budget.checkpoint()?;
+            staged.select_root(slot);
             let root = if slot == 1 && shared {
                 *built.first().ok_or(IndexError::ResourceLimited)?
             } else if edit.expected == edit.next {

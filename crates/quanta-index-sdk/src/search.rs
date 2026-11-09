@@ -2,10 +2,10 @@ use quanta_index_contract::{
     ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
     ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1, ExplainCandidateV1,
     GenerationPin, GenerationSelector, GoTestTraceFileQueryRequestV1,
-    GoTestTraceFileQueryResponseV1, HybridCandidateV1, HybridQueryRequest, HybridQueryResponse,
-    HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate, RepoId, RevisionId,
-    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse, SemanticCorpusKindV1,
-    TextQueryRequest,
+    GoTestTraceFileQueryResponseV1, GoTestTraceModuleContextV1, HybridCandidateV1,
+    HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse,
+    LexicalCandidate, RepoId, RevisionId, SearchPlaneExplainQueryRequest,
+    SearchPlaneExplainQueryResponse, SemanticCorpusKindV1, TextQueryRequest,
 };
 
 use crate::{QuantaIndexClientPayloadV1, SdkError, text_query_builder::VectorQueryBuilderState};
@@ -565,7 +565,7 @@ impl HybridQueryBuilder<'_, true, true, true, true> {
         failure_excerpt: impl Into<String>,
         file_top_k: u32,
     ) -> Result<GoTestTraceFileQueryResponseV1, SdkError> {
-        self.dispatch_go_test_trace_file(None, failure_excerpt.into(), file_top_k)
+        self.dispatch_go_test_trace_file(None, None, failure_excerpt.into(), file_top_k)
     }
 
     /// Bind parsed frame hints to the explicitly named source repository.
@@ -576,12 +576,36 @@ impl HybridQueryBuilder<'_, true, true, true, true> {
         failure_excerpt: impl Into<String>,
         file_top_k: u32,
     ) -> Result<GoTestTraceFileQueryResponseV1, SdkError> {
-        self.dispatch_go_test_trace_file(Some(source_repo_id), failure_excerpt.into(), file_top_k)
+        self.dispatch_go_test_trace_file(
+            Some(source_repo_id),
+            None,
+            failure_excerpt.into(),
+            file_top_k,
+        )
+    }
+
+    /// Bind a version-qualified Go module-cache panic frame to a source repo.
+    /// The caller must independently verify the module version against the
+    /// pinned source revision. The raw excerpt is retained on the wire.
+    pub fn go_test_trace_file_with_module_context(
+        self,
+        source_repo_id: RepoId,
+        module_context: GoTestTraceModuleContextV1,
+        failure_excerpt: impl Into<String>,
+        file_top_k: u32,
+    ) -> Result<GoTestTraceFileQueryResponseV1, SdkError> {
+        self.dispatch_go_test_trace_file(
+            Some(source_repo_id),
+            Some(module_context),
+            failure_excerpt.into(),
+            file_top_k,
+        )
     }
 
     fn dispatch_go_test_trace_file(
         self,
         failure_source_repo_id: Option<RepoId>,
+        failure_module_context: Option<GoTestTraceModuleContextV1>,
         failure_excerpt: String,
         file_top_k: u32,
     ) -> Result<GoTestTraceFileQueryResponseV1, SdkError> {
@@ -589,6 +613,7 @@ impl HybridQueryBuilder<'_, true, true, true, true> {
             query: self.state.build_hybrid_request()?,
             failure_excerpt,
             failure_source_repo_id,
+            failure_module_context,
             top_k: file_top_k,
         };
         dispatch_go_test_trace_file_request_v1(self.client, request)

@@ -26,6 +26,29 @@ impl<T> PreparedRows<T> {
         })
     }
 
+    pub(super) fn with_capacity(maximum: usize, budget: &WorkBudget) -> Result<Self, IndexError> {
+        let mut result = Self::new(maximum)?;
+        result.reserve(maximum, budget)?;
+        Ok(result)
+    }
+
+    fn reserve(&mut self, capacity: usize, budget: &WorkBudget) -> Result<(), IndexError> {
+        let bytes = capacity
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or(IndexError::ResourceLimited)?;
+        let memory = budget.reserve_memory(
+            u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+            MemoryLifetime::Temporary,
+        )?;
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(capacity)
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        rows.append(&mut self.rows);
+        self.rows = rows;
+        self.memory = memory;
+        Ok(())
+    }
+
     pub(super) fn len(&self) -> usize {
         self.rows.len()
     }
@@ -55,19 +78,7 @@ impl<T> PreparedRows<T> {
                 .ok_or(IndexError::ResourceLimited)?
                 .max(needed)
                 .clamp(self.maximum.min(8), self.maximum);
-            let bytes = capacity
-                .checked_mul(std::mem::size_of::<T>())
-                .ok_or(IndexError::ResourceLimited)?;
-            let memory = budget.reserve_memory(
-                u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
-                MemoryLifetime::Temporary,
-            )?;
-            let mut rows = Vec::new();
-            rows.try_reserve_exact(capacity)
-                .map_err(|_error| IndexError::ResourceLimited)?;
-            rows.append(&mut self.rows);
-            self.rows = rows;
-            self.memory = memory;
+            self.reserve(capacity, budget)?;
         } else {
             budget.checkpoint()?;
         }

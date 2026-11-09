@@ -73,16 +73,19 @@ fn add_planned(
 }
 
 fn count_roots(spool: &TextSpool, budget: &WorkBudget) -> Result<(i64, i64), IndexError> {
-    spool
+    let total: i64 = spool
         .db
         .scoped(budget)?
-        .query_row(
-            "SELECT COUNT(CASE WHEN root<64 THEN 1 END),\
-                    COUNT(CASE WHEN root>=64 THEN 1 END) FROM inventory",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|error| sql(&error))
+        .query_row("SELECT COUNT(*) FROM inventory", [], |row| row.get(0))
+        .map_err(|error| sql(&error))?;
+    let pending = i64::try_from(spool.inventory_packet.borrow().rows)
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    Ok((
+        total
+            .checked_sub(pending)
+            .ok_or(IndexError::ResourceLimited)?,
+        pending,
+    ))
 }
 
 #[test]
@@ -99,6 +102,14 @@ fn complete_envelopes_64_65_and_256_promote_every_row_and_memo() -> Result<(), I
             true,
             &mut work,
         )?;
+        spool
+            .db
+            .scoped(&work)?
+            .execute_batch(
+                "CREATE TRIGGER refuse_row_update BEFORE UPDATE ON inventory
+             BEGIN SELECT RAISE(ABORT, 'inventory row rewrite'); END;",
+            )
+            .map_err(|error| sql(&error))?;
         receipt.finish(&work)?;
         check_eq!(
             count_roots(&spool, &work)?,
@@ -118,6 +129,60 @@ fn complete_envelopes_64_65_and_256_promote_every_row_and_memo() -> Result<(), I
 }
 
 #[test]
+fn planned_ordinals_above_sql_page_promote_and_stream_in_root_order() -> Result<(), IndexError> {
+    let mut work = budget()?;
+    let spool = TextSpool::new(&TestScratch, &mut work)?;
+    let width = 130_usize;
+    let refs = references(width)?;
+    for (start, chunk) in refs.chunks(PAGE).enumerate() {
+        let edits: Vec<_> = chunk
+            .iter()
+            .enumerate()
+            .map(|(slot, reference)| {
+                let ordinal = start
+                    .checked_mul(PAGE)
+                    .and_then(|start| start.checked_add(slot))
+                    .ok_or(IndexError::ResourceLimited)?;
+                Ok((
+                    InventoryPartition::Planned(
+                        u32::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?,
+                    ),
+                    MapEdit {
+                        key: b"\0ordinal".to_vec(),
+                        expected: None,
+                        next: Some((*reference).into()),
+                    },
+                ))
+            })
+            .collect::<Result<_, IndexError>>()?;
+        spool.inventory_batch(&edits, &mut work)?;
+    }
+    let receipt = spool.admit_inventory_confirmation(
+        &refs,
+        u64::try_from(width).map_err(|_error| IndexError::ResourceLimited)?,
+        attempt(),
+        false,
+        &mut work,
+    )?;
+    receipt.finish(&work)?;
+    check_eq!(count_roots(&spool, &work)?, (130, 0));
+    let mut cursor = spool.inventory_cursor(width)?;
+    for (ordinal, reference) in refs.iter().enumerate() {
+        let row = cursor
+            .next_edit(&mut work)?
+            .ok_or(IndexError::ResourceLimited)?;
+        check_eq!(
+            row.root,
+            u32::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?
+        );
+        check_eq!(row.edit.key.as_slice(), b"\0ordinal");
+        check_eq!(row.edit.next, Some((*reference).into()));
+    }
+    check!(cursor.next_edit(&mut work)?.is_none());
+    Ok(())
+}
+
+#[test]
 fn wide_envelope_refuses_foreign_and_late_planned_rows() -> Result<(), IndexError> {
     let mut work = budget()?;
     let spool = TextSpool::new(&TestScratch, &mut work)?;
@@ -129,22 +194,23 @@ fn wide_envelope_refuses_foreign_and_late_planned_rows() -> Result<(), IndexErro
         Err(IndexError::InvalidInput(_))
     ));
     let receipt = spool.admit_inventory_confirmation(&refs, 256, attempt(), false, &mut work)?;
-    spool.inventory_batch(
-        &[(
-            InventoryPartition::Planned(0),
-            MapEdit {
-                key: b"\0wide-256".to_vec(),
-                expected: None,
-                next: Some((*too_many.get(256).ok_or(IndexError::ResourceLimited)?).into()),
-            },
-        )],
-        &mut work,
-    )?;
     check!(matches!(
-        receipt.finish(&work),
+        spool.inventory_batch(
+            &[(
+                InventoryPartition::Planned(0),
+                MapEdit {
+                    key: b"\0wide-256".to_vec(),
+                    expected: None,
+                    next: Some((*too_many.get(256).ok_or(IndexError::ResourceLimited)?).into()),
+                }
+            )],
+            &mut work,
+        ),
         Err(IndexError::BackendViolation(_))
     ));
-    check_eq!(count_roots(&spool, &work)?, (0, 257));
+    check_eq!(count_roots(&spool, &work)?, (0, 256));
+    receipt.finish(&work)?;
+    check_eq!(count_roots(&spool, &work)?, (256, 0));
     Ok(())
 }
 
@@ -182,22 +248,26 @@ fn wide_envelope_checks_last_ref_and_ready_pk_collision_before_promotion() -> Re
         let refs = references(65)?;
         add_planned(&spool, &refs, &mut work)?;
         if collision {
-            spool.inventory_batch(
-                &[(
-                    InventoryPartition::Ready(0),
-                    MapEdit {
-                        key: b"\0wide-064".to_vec(),
-                        expected: None,
-                        next: Some(reference(300)?.into()),
-                    },
-                )],
-                &mut work,
-            )?;
+            check!(
+                spool
+                    .inventory_batch(
+                        &[(
+                            InventoryPartition::Ready(0),
+                            MapEdit {
+                                key: b"\0wide-064".to_vec(),
+                                expected: None,
+                                next: Some(reference(300)?.into()),
+                            }
+                        )],
+                        &mut work,
+                    )
+                    .is_err()
+            );
+            check_eq!(count_roots(&spool, &work)?, (0, 65));
             check!(matches!(
                 spool.admit_inventory_confirmation(&refs, 65, attempt(), true, &mut work),
-                Err(IndexError::Conflict)
+                Err(IndexError::BackendViolation(_))
             ));
-            check_eq!(count_roots(&spool, &work)?, (1, 65));
         } else {
             let receipt =
                 spool.admit_inventory_confirmation(&refs, 65, attempt(), true, &mut work)?;
@@ -205,8 +275,8 @@ fn wide_envelope_checks_last_ref_and_ready_pk_collision_before_promotion() -> Re
                 .db
                 .scoped(&work)?
                 .execute(
-                    "UPDATE inventory SET n=x'00' WHERE root=64 AND k=x'00776964652d303634'",
-                    [],
+                    "UPDATE inventory SET n=x'00' WHERE root=?1 AND k=x'00776964652d303634'",
+                    [0_i64],
                 )
                 .map_err(|error| sql(&error))?;
             check_eq!(changed, 1);
@@ -221,7 +291,7 @@ fn wide_envelope_checks_last_ref_and_ready_pk_collision_before_promotion() -> Re
 }
 
 #[test]
-fn memo_failure_propagates_after_complete_pk_promotion() -> Result<(), IndexError> {
+fn memo_failure_keeps_packet_unconfirmed() -> Result<(), IndexError> {
     let mut work = budget()?;
     let spool = TextSpool::new(&TestScratch, &mut work)?;
     let refs = references(65)?;
@@ -236,7 +306,7 @@ fn memo_failure_propagates_after_complete_pk_promotion() -> Result<(), IndexErro
         )
         .map_err(|error| sql(&error))?;
     check!(matches!(receipt.finish(&work), Err(IndexError::Storage(_))));
-    check_eq!(count_roots(&spool, &work)?, (65, 0));
+    check_eq!(count_roots(&spool, &work)?, (0, 65));
     let memo_count: i64 = spool
         .db
         .scoped(&work)?

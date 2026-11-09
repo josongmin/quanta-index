@@ -5,6 +5,7 @@ mod branches;
 mod buffer;
 mod completed_group;
 mod diff;
+mod node_wire;
 mod object_batch;
 mod original_lookup;
 mod owner_scope;
@@ -16,21 +17,28 @@ mod value_codec;
 use branches::Branches;
 use buffer::MapBuffer;
 use completed_group::CompletedGroup;
+use quanta_index_core::{
+    DiagnosticContextV1, DiagnosticCounterV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
+    DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1, DiagnosticTraceErrorV1,
+};
 use resident::ResidentStage;
 use scratch::MapScratch;
 use sha2::{Digest as _, Sha256};
+use std::{cell::Cell, sync::Arc};
 
 use quanta_index_core::index::{
     IndexError, MapBatchRequest, MapBatchWrite, MapEdit, MapPage, MapRoot, MapValue, MapWrite,
-    MemoryLifetime, ObjectRef, OrdinalMapEdit, StagedMapRoots, StoredObject, WorkBudget, WorkUsage,
+    MemoryLease, MemoryLifetime, ObjectRef, OrdinalMapEdit, StagedMapRoots, StoredObject,
+    WorkBudget, WorkUsage,
     ports::{ImmutableObjectPort, MapEditCursor, ObjectWriteSink, PersistentMapPort},
 };
 
 use crate::{
     FileObjectStore,
-    object::{MAX_BATCH_BYTES, MAX_INSTALL_BATCH_INPUTS, PreparedObject},
+    object::{MAX_BATCH_BYTES, MAX_INSTALL_BATCH_INPUTS, MAX_PREPARED_INSTALL_GROUPS, PreparedObject},
 };
 
+#[cfg(test)]
 const NODE_MAGIC: &[u8; 8] = b"QIMAP004";
 const MAX_KEY_BYTES: usize = 4096;
 const MAX_NIBBLES: usize = MAX_KEY_BYTES * 2;
@@ -42,6 +50,7 @@ const MAX_NODE_PAYLOAD: usize = NODE_HEADER_BYTES
     + value_codec::MAX_VALUE_PAYLOAD;
 const MAX_SCAN_LIMIT: u32 = 4096;
 const MAX_BATCH_ROOTS: usize = 64;
+const MAX_EMPTY_STREAM_ROOTS: usize = MAX_INSTALL_BATCH_INPUTS;
 // Each of sixteen terminal slots and the own value carries at most five
 // explicit children. Indirect branches carry one. Bound the deepest admitted
 // node's complete physical children before depth validation on pop.
@@ -108,13 +117,28 @@ fn scratch_edit_fingerprint(
     Ok((digest.finalize().into(), count))
 }
 
-/// A terminal child has no immutable node of its own. Its value is a direct
-/// physical edge of the enclosing node when present; bounded key and value data are inline.
-#[derive(Clone, Copy, Eq, PartialEq)]
+/// Terminal and packed branches hold DATA whose physical edges belong to the
+/// enclosing object. Indirect branches hold a separately installed object.
+#[derive(Eq, PartialEq)]
 enum BranchValue {
     Indirect(ObjectRef),
     Terminal(MapValue),
+    Packed(Arc<PackedBranch>),
 }
+
+struct PackedBranch {
+    node: Node,
+    shape: node_wire::PackedShape,
+    _memory: Option<MemoryLease>,
+}
+
+impl PartialEq for PackedBranch {
+    fn eq(&self, other: &Self) -> bool {
+        self.node == other.node
+    }
+}
+impl Eq for PackedBranch {}
+
 struct Branch {
     prefix: MapBuffer<u8>,
     value: BranchValue,
@@ -138,26 +162,60 @@ impl Branch {
             value: BranchValue::Terminal(value),
         }
     }
+
+    fn packed(node: Node, budget: &mut WorkBudget) -> Result<Self, IndexError> {
+        let shape = node_wire::packed_shape(&node)?;
+        let header = std::alloc::Layout::new::<[std::sync::atomic::AtomicUsize; 2]>();
+        let (layout, _) = header
+            .extend(std::alloc::Layout::new::<PackedBranch>())
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        let bytes = u64::try_from(layout.pad_to_align().size())
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        budget.charge(WorkUsage {
+            bytes,
+            ..WorkUsage::default()
+        })?;
+        let memory = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
+        Ok(Self {
+            prefix: MapBuffer::new(0),
+            value: BranchValue::Packed(Arc::new(PackedBranch {
+                node,
+                shape,
+                _memory: memory,
+            })),
+        })
+    }
+
     fn copy(&self, budget: &WorkBudget) -> Result<Self, IndexError> {
-        match self.value {
-            BranchValue::Indirect(reference) => Ok(Self::indirect(reference)),
+        match &self.value {
+            BranchValue::Indirect(reference) => Ok(Self::indirect(*reference)),
             BranchValue::Terminal(value) => Ok(Self::terminal(
                 MapBuffer::copy(&self.prefix, MAX_INLINE_NIBBLES, budget)?,
-                value,
+                *value,
             )),
+            BranchValue::Packed(packed) => Ok(Self {
+                prefix: MapBuffer::new(0),
+                value: BranchValue::Packed(Arc::clone(packed)),
+            }),
         }
     }
+
     fn into_node(
         self,
-        read: impl FnOnce(ObjectRef) -> Result<Node, IndexError>,
+        budget: &mut WorkBudget,
+        read: impl FnOnce(ObjectRef, &mut WorkBudget) -> Result<Node, IndexError>,
     ) -> Result<Node, IndexError> {
         match self.value {
-            BranchValue::Indirect(reference) => read(reference),
+            BranchValue::Indirect(reference) => read(reference, budget),
             BranchValue::Terminal(value) => Ok(Node {
                 prefix: self.prefix,
                 value: Some(value),
                 branches: Branches::new(),
             }),
+            BranchValue::Packed(packed) => match Arc::try_unwrap(packed) {
+                Ok(packed) => Ok(packed.node),
+                Err(packed) => packed.node.copy(budget),
+            },
         }
     }
 }
@@ -172,6 +230,15 @@ pub(crate) struct Node {
     value: Option<MapValue>,
     branches: Branches,
 }
+
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        self.prefix.as_slice() == other.prefix.as_slice()
+            && self.value == other.value
+            && self.branches.iter().eq(other.branches.iter())
+    }
+}
+impl Eq for Node {}
 
 impl Node {
     fn leaf(prefix: &[u8], value: MapValue, budget: &WorkBudget) -> Result<Self, IndexError> {
@@ -193,17 +260,69 @@ impl Node {
             None
         }
     }
+
+    fn packable(&self) -> bool {
+        self.prefix.len() <= MAX_INLINE_NIBBLES
+            && self.branch_count() != 0
+            && self
+                .branches
+                .iter()
+                .all(|(_, branch)| matches!(branch.value, BranchValue::Terminal(_)))
+    }
+
+    fn copy(&self, budget: &mut WorkBudget) -> Result<Self, IndexError> {
+        let (mask, bytes) = self.branches.iter().try_fold(
+            (0u16, self.prefix.len()),
+            |(mask, bytes), (edge, branch)| {
+                let bytes = bytes
+                    .checked_add(std::mem::size_of::<Branch>())
+                    .and_then(|bytes| bytes.checked_add(branch.prefix.len()))
+                    .ok_or(IndexError::ResourceLimited)?;
+                Ok::<_, IndexError>((mask | (1u16 << edge), bytes))
+            },
+        )?;
+        budget.charge(WorkUsage {
+            bytes: u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        let mut branches = Branches::for_decode(mask, budget)?;
+        for (edge, branch) in self.branches.iter() {
+            branches.append_decoded(edge, branch.copy(budget)?, budget)?;
+        }
+        Ok(Self {
+            prefix: MapBuffer::copy(&self.prefix, MAX_NIBBLES, budget)?,
+            value: self.value,
+            branches,
+        })
+    }
 }
 
 /// DFS retains one path and one admitted frame per depth, never sibling path copies.
 struct ScanFrame {
-    node: Node,
+    node: ScanNode,
     entered: bool,
     path_end: usize,
     next_edge: usize,
 }
+
+enum ScanNode {
+    Owned(Node),
+    Packed(Arc<PackedBranch>),
+}
+
+impl std::ops::Deref for ScanNode {
+    type Target = Node;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(node) => node,
+            Self::Packed(packed) => &packed.node,
+        }
+    }
+}
+
 impl ScanFrame {
-    fn new(node: Node) -> Self {
+    fn new(node: ScanNode) -> Self {
         Self {
             node,
             entered: false,
@@ -248,6 +367,117 @@ impl ScanPageBuilder {
 
 struct StagedMap {
     scratch: MapScratch,
+    pack_terminal_subtrees: Cell<bool>,
+}
+
+/// One diagnostic packet for a scratch-backed map batch. All counters are
+/// attempts, including work reached before a failed batch returned.
+struct MapApplyObservation {
+    context: Option<DiagnosticContextV1>,
+    span: Option<DiagnosticSpanGuardV1>,
+    candidates: u64,
+    reuses: u64,
+    builds: u64,
+}
+
+impl MapApplyObservation {
+    fn new(budget: &WorkBudget) -> Self {
+        let context = budget.request().diagnostic_context().cloned();
+        let span = context.as_ref().and_then(|context| {
+            match context.enter(DiagnosticStageV1::MapApply, DiagnosticLaneV1(0)) {
+                Ok(span) => Some(span),
+                Err(error) => {
+                    context.health(match error {
+                        DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                            DiagnosticHealthCodeV1::CounterOverflow
+                        }
+                        DiagnosticTraceErrorV1::ClockRegressed => {
+                            DiagnosticHealthCodeV1::ClockRegressed
+                        }
+                        DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                            DiagnosticHealthCodeV1::ForeignCaptureSpan
+                        }
+                        DiagnosticTraceErrorV1::MissingParentSpan => {
+                            DiagnosticHealthCodeV1::MissingParentSpan
+                        }
+                    });
+                    None
+                }
+            }
+        });
+        Self {
+            context,
+            span,
+            candidates: 0,
+            reuses: 0,
+            builds: 0,
+        }
+    }
+
+    fn child_context(&self) -> Option<DiagnosticContextV1> {
+        self.context
+            .as_ref()
+            .zip(self.span.as_ref())
+            .map(|(context, span)| context.child_context(span))
+    }
+
+    fn finish<T>(&mut self, result: &Result<T, IndexError>) {
+        if let (Some(context), Some(span)) = (self.context.as_ref(), self.span.as_ref()) {
+            for (key, value) in [
+                (DiagnosticCounterV1::MapRootReuseCandidates, self.candidates),
+                (DiagnosticCounterV1::MapRootReuses, self.reuses),
+                (DiagnosticCounterV1::MapRootBuilds, self.builds),
+            ] {
+                context.counter(span, key, value);
+            }
+        }
+        if let Some(span) = self.span.take() {
+            let _finished = span.finish(DiagnosticTerminalV1::from_result(result));
+        }
+    }
+}
+
+/// Attribute one map batch phase beneath the existing MapApply packet. The
+/// request's diagnostic context is absent in Off, so product work is unchanged.
+fn observe_map_phase<T>(
+    budget: &mut WorkBudget,
+    lane: u16,
+    operation: impl FnOnce(&mut WorkBudget) -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    let Some(context) = budget.request().diagnostic_context().cloned() else {
+        return operation(budget);
+    };
+    let Some(span) = begin_map_phase(&context, lane) else {
+        return operation(budget);
+    };
+    let result = {
+        let mut scoped_budget =
+            budget.scoped_diagnostic_context(Some(context.child_context(&span)));
+        operation(&mut scoped_budget)
+    };
+    let _finished = span.finish(DiagnosticTerminalV1::from_result(&result));
+    result
+}
+
+fn begin_map_phase(context: &DiagnosticContextV1, lane: u16) -> Option<DiagnosticSpanGuardV1> {
+    match context.enter(DiagnosticStageV1::MapApply, DiagnosticLaneV1(lane)) {
+        Ok(span) => Some(span),
+        Err(error) => {
+            context.health(match error {
+                DiagnosticTraceErrorV1::SpanIdentityExhausted => {
+                    DiagnosticHealthCodeV1::CounterOverflow
+                }
+                DiagnosticTraceErrorV1::ClockRegressed => DiagnosticHealthCodeV1::ClockRegressed,
+                DiagnosticTraceErrorV1::ForeignCaptureSpan => {
+                    DiagnosticHealthCodeV1::ForeignCaptureSpan
+                }
+                DiagnosticTraceErrorV1::MissingParentSpan => {
+                    DiagnosticHealthCodeV1::MissingParentSpan
+                }
+            });
+            None
+        }
+    }
 }
 
 /// One open path in a sorted, empty-root radix build. Completed siblings are
@@ -318,6 +548,7 @@ impl StagedMap {
     fn open(store: &FileObjectStore, budget: &mut WorkBudget) -> Result<Self, IndexError> {
         Ok(Self {
             scratch: MapScratch::open(store, budget)?,
+            pack_terminal_subtrees: Cell::new(false),
         })
     }
 }
@@ -326,6 +557,10 @@ impl StagedMap {
 /// encoding with either disposable `SQLite` or bounded, request-owned staging.
 trait MapStage {
     const DEFERRED_COMPLETION: bool = false;
+
+    fn pack_terminal_subtrees(&self) -> bool {
+        false
+    }
 
     fn read_node(
         &self,
@@ -367,6 +602,10 @@ trait MapStage {
 
 impl MapStage for StagedMap {
     const DEFERRED_COMPLETION: bool = true;
+
+    fn pack_terminal_subtrees(&self) -> bool {
+        self.pack_terminal_subtrees.get()
+    }
 
     fn read_node(
         &self,
@@ -431,16 +670,10 @@ impl MapStage for StagedMap {
     }
 }
 
-fn flush_reachable_chunk(
-    store: &FileObjectStore,
-    chunk: &mut MapBuffer<PreparedObject>,
-    sink: &dyn ObjectWriteSink,
+fn reachable_chunk_references<'a>(
+    chunk: &'a [PreparedObject],
     budget: &mut WorkBudget,
-    before_install: impl FnOnce(&[&PreparedObject], &mut WorkBudget) -> Result<(), IndexError>,
-) -> Result<(), IndexError> {
-    if chunk.is_empty() {
-        return Ok(());
-    }
+) -> Result<MapBuffer<&'a PreparedObject>, IndexError> {
     budget.charge(WorkUsage {
         bytes: u64::try_from(chunk.len())
             .map_err(|_conversion_error| IndexError::ResourceLimited)?
@@ -452,9 +685,23 @@ fn flush_reachable_chunk(
         ..WorkUsage::default()
     })?;
     let mut references = MapBuffer::new(MAX_INSTALL_BATCH_INPUTS);
-    for object in chunk.iter() {
+    for object in chunk {
         references.push(object, budget)?;
     }
+    Ok(references)
+}
+
+fn flush_reachable_chunk(
+    store: &FileObjectStore,
+    chunk: &mut MapBuffer<PreparedObject>,
+    sink: &dyn ObjectWriteSink,
+    budget: &mut WorkBudget,
+    before_install: impl FnOnce(&[&PreparedObject], &mut WorkBudget) -> Result<(), IndexError>,
+) -> Result<(), IndexError> {
+    if chunk.is_empty() {
+        return Ok(());
+    }
+    let references = reachable_chunk_references(chunk, budget)?;
     // Keep the original reference-array refusal ahead of the commit boundary.
     before_install(&references, budget)?;
     store.install_prepared_batch(&references, sink, budget)?;
@@ -462,6 +709,50 @@ fn flush_reachable_chunk(
     // admitted chunk backing for the next bounded installation group.
     drop(references);
     chunk.truncate(0);
+    Ok(())
+}
+
+fn flush_reachable_run(
+    store: &FileObjectStore,
+    ready: &mut [MapBuffer<PreparedObject>; MAX_PREPARED_INSTALL_GROUPS - 1],
+    ready_count: usize,
+    current: &mut MapBuffer<PreparedObject>,
+    sink: &dyn ObjectWriteSink,
+    budget: &mut WorkBudget,
+    complete_current: impl FnOnce(&[&PreparedObject], &mut WorkBudget) -> Result<(), IndexError>,
+) -> Result<(), IndexError> {
+    let group_count = ready_count
+        .checked_add(usize::from(!current.is_empty()))
+        .ok_or(IndexError::ResourceLimited)?;
+    if ready_count > ready.len() || group_count > MAX_PREPARED_INSTALL_GROUPS {
+        return Err(IndexError::ResourceLimited);
+    }
+    if group_count == 0 {
+        return Ok(());
+    }
+    let mut references: [MapBuffer<&PreparedObject>; MAX_PREPARED_INSTALL_GROUPS] =
+        std::array::from_fn(|_| MapBuffer::new(MAX_INSTALL_BATCH_INPUTS));
+    for (index, group) in ready.iter().take(ready_count).enumerate() {
+        references[index] = reachable_chunk_references(group, budget)?;
+    }
+    if !current.is_empty() {
+        references[ready_count] = reachable_chunk_references(current, budget)?;
+        complete_current(&references[ready_count], budget)?;
+    }
+    {
+        let groups: [&[&PreparedObject]; MAX_PREPARED_INSTALL_GROUPS] =
+            std::array::from_fn(|index| references[index].as_slice());
+        if group_count == 1 {
+            store.install_prepared_batch(groups[0], sink, budget)?;
+        } else {
+            store.install_prepared_run(&groups[..group_count], sink, budget)?;
+        }
+    }
+    drop(references);
+    for group in ready.iter_mut().take(ready_count) {
+        group.truncate(0);
+    }
+    current.truncate(0);
     Ok(())
 }
 
@@ -487,18 +778,65 @@ impl FileObjectStore {
         sink: &dyn ObjectWriteSink,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
+        // The two logical roots keep their original ordinals even if one is
+        // empty. A staged object reached by both roots belongs to the first
+        // traversal that queues it. Physical batches can cross that boundary.
+        if roots.len() == 2
+            && objects.is_empty()
+            && let Some(context) = budget.request().diagnostic_context().cloned()
+        {
+            let mut counts = [0, 0];
+            let result = self.install_reachable_objects_inner(
+                roots,
+                objects,
+                staged,
+                sink,
+                budget,
+                Some(&mut counts),
+            );
+            for (lane, count) in [6, 7].into_iter().zip(counts) {
+                if let Some(span) = begin_map_phase(&context, lane) {
+                    context.counter(&span, DiagnosticCounterV1::NewObjects, count);
+                    let _finished = span.finish(DiagnosticTerminalV1::from_result(&result));
+                }
+            }
+            return result;
+        }
+        self.install_reachable_objects_inner(roots, objects, staged, sink, budget, None)
+    }
+
+    fn install_reachable_objects_inner<S: MapStage>(
+        &self,
+        roots: &[MapRoot],
+        objects: &[ObjectRef],
+        staged: &S,
+        sink: &dyn ObjectWriteSink,
+        budget: &mut WorkBudget,
+        mut counts: Option<&mut [u64; 2]>,
+    ) -> Result<(), IndexError> {
         let mut pending = MapBuffer::<(ObjectRef, bool, usize)>::new(MAX_INSTALL_PENDING);
         // One already-verified, owned wire per active depth. Its original
         // allocation grant stays attached until child-first installation.
         let mut active = MapBuffer::<PreparedObject>::new(MAX_NIBBLES + 1);
         let mut chunk = MapBuffer::<PreparedObject>::new(MAX_INSTALL_BATCH_INPUTS);
+        let mut ready: [MapBuffer<PreparedObject>; MAX_PREPARED_INSTALL_GROUPS - 1] =
+            std::array::from_fn(|_| MapBuffer::new(MAX_INSTALL_BATCH_INPUTS));
+        let mut ready_count = 0usize;
+        let mut ready_bytes = 0u64;
+        let run_enabled = S::DEFERRED_COMPLETION && self.can_run_prepared_installs(sink);
         let mut completed = CompletedGroup::new();
         let mut chunk_bytes = 0u64;
-        for reference in roots
+        let complete_chunk = |objects: &[&PreparedObject], budget: &mut WorkBudget| {
+            staged.complete_batch(objects, budget)?;
+            staged.commit_batch(budget)
+        };
+        for (ordinal, reference) in roots
             .iter()
-            .filter_map(|root| root.0)
-            .chain(objects.iter().copied())
+            .map(|root| root.0)
+            .chain(objects.iter().copied().map(Some))
+            .enumerate()
         {
+            let Some(reference) = reference else { continue };
             budget.charge(WorkUsage {
                 bytes: u64::try_from(std::mem::size_of::<(ObjectRef, bool, usize)>())
                     .map_err(|_conversion_error| IndexError::ResourceLimited)?,
@@ -542,17 +880,45 @@ impl FileObjectStore {
                     let next_bytes = chunk_bytes
                         .checked_add(object.registration.bytes)
                         .ok_or(IndexError::ResourceLimited)?;
-                    if chunk.len() == MAX_INSTALL_BATCH_INPUTS || next_bytes > MAX_BATCH_BYTES {
-                        flush_reachable_chunk(
-                            self,
-                            &mut chunk,
-                            sink,
-                            budget,
-                            |objects, budget| {
-                                staged.complete_batch(objects, budget)?;
-                                staged.commit_batch(budget)
-                            },
-                        )?;
+                    let run_bytes = ready_bytes
+                        .checked_add(next_bytes)
+                        .ok_or(IndexError::ResourceLimited)?;
+                    if chunk.len() == MAX_INSTALL_BATCH_INPUTS || run_bytes > MAX_BATCH_BYTES {
+                        if run_enabled && ready_count < ready.len() && run_bytes <= MAX_BATCH_BYTES
+                        {
+                            // Scratch completion is private until the bounded
+                            // physical run has custody of every group.
+                            let references = reachable_chunk_references(&chunk, budget)?;
+                            complete_chunk(&references, budget)?;
+                            drop(references);
+                            std::mem::swap(&mut ready[ready_count], &mut chunk);
+                            ready_count += 1;
+                            ready_bytes = ready_bytes
+                                .checked_add(chunk_bytes)
+                                .ok_or(IndexError::ResourceLimited)?;
+                        } else {
+                            if ready_count == 0 {
+                                flush_reachable_chunk(
+                                    self,
+                                    &mut chunk,
+                                    sink,
+                                    budget,
+                                    complete_chunk,
+                                )?;
+                            } else {
+                                flush_reachable_run(
+                                    self,
+                                    &mut ready,
+                                    ready_count,
+                                    &mut chunk,
+                                    sink,
+                                    budget,
+                                    complete_chunk,
+                                )?;
+                            }
+                            ready_count = 0;
+                            ready_bytes = 0;
+                        }
                         if S::DEFERRED_COMPLETION {
                             completed.clear(budget)?;
                         }
@@ -569,6 +935,12 @@ impl FileObjectStore {
                         ..WorkUsage::default()
                     })?;
                     chunk.push(object, budget)?;
+                    if let Some(count) = counts
+                        .as_deref_mut()
+                        .and_then(|counts| counts.get_mut(ordinal))
+                    {
+                        *count += 1;
+                    }
                     if S::DEFERRED_COMPLETION {
                         completed.insert(
                             reference,
@@ -626,10 +998,19 @@ impl FileObjectStore {
                 active.push(object, budget)?;
             }
         }
-        flush_reachable_chunk(self, &mut chunk, sink, budget, |objects, budget| {
-            staged.complete_batch(objects, budget)?;
-            staged.commit_batch(budget)
-        })
+        if ready_count == 0 {
+            flush_reachable_chunk(self, &mut chunk, sink, budget, complete_chunk)
+        } else {
+            flush_reachable_run(
+                self,
+                &mut ready,
+                ready_count,
+                &mut chunk,
+                sink,
+                budget,
+                complete_chunk,
+            )
+        }
     }
 
     pub(crate) fn read_node(
@@ -641,115 +1022,11 @@ impl FileObjectStore {
     }
 }
 
-pub(crate) fn decode_node(stored: &StoredObject, budget: &WorkBudget) -> Result<Node, IndexError> {
-    let payload = &stored.payload;
-    if matches!(payload.get(..8), Some(magic) if magic == b"QIMAP001" || magic == b"QIMAP002" || magic == b"QIMAP003")
-    {
-        return Err(IndexError::RebuildRequired);
-    }
-    if payload.get(..8) != Some(NODE_MAGIC.as_slice()) || payload.len() > MAX_NODE_PAYLOAD {
-        return Err(IndexError::CorruptObject(
-            "invalid map node format or bound".into(),
-        ));
-    }
-    let read_length = |at: usize| -> Result<usize, IndexError> {
-        let raw: [u8; 2] = payload
-            .get(at..at.checked_add(2).ok_or(IndexError::ResourceLimited)?)
-            .ok_or_else(|| IndexError::CorruptObject("truncated map length or mask".into()))?
-            .try_into()
-            .map_err(|_error| IndexError::CorruptObject("map length shape".into()))?;
-        Ok(usize::from(u16::from_be_bytes(raw)))
-    };
-    let prefix_len = read_length(8)?;
-    if prefix_len > MAX_NIBBLES {
-        return Err(IndexError::CorruptObject(
-            "map prefix exceeds key limit".into(),
-        ));
-    }
-    let flag_at = 10usize
-        .checked_add(prefix_len)
-        .ok_or(IndexError::ResourceLimited)?;
-    let flag = *payload
-        .get(flag_at)
-        .ok_or_else(|| IndexError::CorruptObject("truncated map value flag".into()))?;
-    if flag > 1 {
-        return Err(IndexError::CorruptObject("invalid map value flag".into()));
-    }
-    let mask_at = flag_at.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-    let mask =
-        u16::try_from(read_length(mask_at)?).map_err(|_error| IndexError::ResourceLimited)?;
-    let inline_at = mask_at.checked_add(2).ok_or(IndexError::ResourceLimited)?;
-    let inline =
-        u16::try_from(read_length(inline_at)?).map_err(|_error| IndexError::ResourceLimited)?;
-    if inline & !mask != 0 {
-        return Err(IndexError::CorruptObject(
-            "inline map mask exceeds branch mask".into(),
-        ));
-    }
-    let prefix = payload
-        .get(10..flag_at)
-        .ok_or_else(|| IndexError::CorruptObject("truncated map prefix".into()))?;
-    if prefix.iter().any(|nibble| *nibble > 15) {
-        return Err(IndexError::CorruptObject(
-            "map prefix contains a non-nibble".into(),
-        ));
-    }
-    if flag == 0 && mask == 0 {
-        return Err(IndexError::CorruptObject("empty map node".into()));
-    }
-    if flag == 0 && mask.is_power_of_two() {
-        return Err(IndexError::CorruptObject(
-            "uncompressed unary map node".into(),
-        ));
-    }
-    let mut references = stored.registration.children.iter().copied();
-    let mut at = inline_at
-        .checked_add(2)
-        .ok_or(IndexError::ResourceLimited)?;
-    let value = if flag == 1 {
-        Some(value_codec::read(payload, &mut at, &mut references)?)
-    } else {
-        None
-    };
-    let mut branches = Branches::for_decode(mask, budget)?;
-    for index in 0..16 {
-        if mask & (1u16 << index) == 0 {
-            continue;
-        }
-        let branch = if inline & (1u16 << index) == 0 {
-            Branch::indirect(
-                references
-                    .next()
-                    .ok_or_else(|| IndexError::CorruptObject("missing map edge".into()))?,
-            )
-        } else {
-            let length = read_length(at)?;
-            at = at.checked_add(2).ok_or(IndexError::ResourceLimited)?;
-            let end = at.checked_add(length).ok_or(IndexError::ResourceLimited)?;
-            let tail = payload
-                .get(at..end)
-                .ok_or_else(|| IndexError::CorruptObject("truncated inline map tail".into()))?;
-            if length > MAX_INLINE_NIBBLES || tail.iter().any(|nibble| *nibble > 15) {
-                return Err(IndexError::CorruptObject("invalid inline map tail".into()));
-            }
-            at = end;
-            Branch::terminal(
-                MapBuffer::copy(tail, MAX_INLINE_NIBBLES, budget)?,
-                value_codec::read(payload, &mut at, &mut references)?,
-            )
-        };
-        branches.append_decoded(index, branch, budget)?;
-    }
-    if at != payload.len() || references.next().is_some() {
-        return Err(IndexError::CorruptObject(
-            "map node has trailing bytes".into(),
-        ));
-    }
-    Ok(Node {
-        prefix: MapBuffer::copy(prefix, MAX_NIBBLES, budget)?,
-        value,
-        branches,
-    })
+pub(crate) fn decode_node(
+    stored: &StoredObject,
+    budget: &mut WorkBudget,
+) -> Result<Node, IndexError> {
+    node_wire::decode(stored, budget)
 }
 
 impl FileObjectStore {
@@ -777,6 +1054,10 @@ impl FileObjectStore {
                 staged,
                 budget,
             )?),
+            Some(Branch {
+                value: BranchValue::Packed(packed),
+                ..
+            }) => Some(self.write_encoded(&packed.node, staged, budget)?),
         };
         Ok(MapRoot(reference))
     }
@@ -813,7 +1094,7 @@ impl FileObjectStore {
         })?;
         let reference = self
             .write_node(
-                &Node {
+                Node {
                     prefix: MapBuffer::copy(prefix, MAX_NIBBLES, budget)?,
                     value: frame.value,
                     branches: frame.branches,
@@ -853,12 +1134,21 @@ impl FileObjectStore {
         ordinal: u32,
         staged: &StagedMap,
         budget: &mut WorkBudget,
+        verify: Option<([u8; 32], u64)>,
     ) -> Result<MapRoot, IndexError> {
         let mut frames = MapBuffer::<BootstrapFrame>::new(MAX_NIBBLES + 1);
         let mut edits = staged.scratch.edits(ordinal);
+        let mut fingerprint = verify.map(|_| Sha256::new());
+        let mut edit_count = 0u64;
         while let Some(position) = edits.next_edit(budget)? {
             let edit = &position.edit;
             budget.checkpoint()?;
+            if let Some(fingerprint) = fingerprint.as_mut() {
+                fingerprint_edit(fingerprint, edit, budget)?;
+                edit_count = edit_count
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+            }
             budget.charge(WorkUsage {
                 bytes: u64::try_from(edit.key.len())
                     .map_err(|_conversion_error| IndexError::ResourceLimited)?,
@@ -916,6 +1206,17 @@ impl FileObjectStore {
             charge_bootstrap_frame(budget, nibbles.len())?;
             frames.push(BootstrapFrame::new(nibbles, Some(value)), budget)?;
         }
+        if let Some((expected_fingerprint, expected_count)) = verify {
+            let actual_fingerprint: [u8; 32] = fingerprint
+                .ok_or(IndexError::ResourceLimited)?
+                .finalize()
+                .into();
+            if (actual_fingerprint, edit_count) != (expected_fingerprint, expected_count) {
+                return Err(IndexError::CorruptObject(
+                    "scratch map edits changed after validation".into(),
+                ));
+            }
+        }
         let mut root = None;
         while !frames.is_empty() {
             if let Some(reference) = self.seal_bootstrap_frame(&mut frames, staged, budget)? {
@@ -927,7 +1228,7 @@ impl FileObjectStore {
 
     fn write_node(
         &self,
-        node: &Node,
+        node: Node,
         staged: &impl MapStage,
         budget: &mut WorkBudget,
     ) -> Result<Option<Branch>, IndexError> {
@@ -935,12 +1236,15 @@ impl FileObjectStore {
             match node.branch_count() {
                 0 => return Ok(None),
                 1 => {
-                    let (edge, reference) = node.sole_branch().ok_or_else(|| {
+                    let edge = node.sole_branch().map(|(edge, _)| edge).ok_or_else(|| {
                         IndexError::BackendViolation("unary map branch missing".into())
                     })?;
-                    let child = reference
-                        .copy(budget)?
-                        .into_node(|reference| staged.read_node(self, reference, budget))?;
+                    let child = node.branches.into_child(edge)?.ok_or_else(|| {
+                        IndexError::BackendViolation("unary map branch missing".into())
+                    })?;
+                    let child = child.into_node(budget, |reference, budget| {
+                        staged.read_node(self, reference, budget)
+                    })?;
                     let capacity = node
                         .prefix
                         .len()
@@ -966,7 +1270,7 @@ impl FileObjectStore {
                     )?;
                     prefix.extend_from_slice(&child.prefix, budget)?;
                     return self.write_node(
-                        &Node {
+                        Node {
                             prefix,
                             value: child.value,
                             branches: child.branches,
@@ -987,7 +1291,10 @@ impl FileObjectStore {
                 value,
             )));
         }
-        self.write_encoded(node, staged, budget)
+        if staged.pack_terminal_subtrees() && node.packable() {
+            return Branch::packed(node, budget).map(Some);
+        }
+        self.write_encoded(&node, staged, budget)
             .map(Branch::indirect)
             .map(Some)
     }
@@ -998,140 +1305,24 @@ impl FileObjectStore {
         staged: &impl MapStage,
         budget: &mut WorkBudget,
     ) -> Result<ObjectRef, IndexError> {
-        if node.prefix.len() > MAX_NIBBLES || node.prefix.iter().any(|nibble| *nibble > 15) {
-            return Err(IndexError::BackendViolation(
-                "invalid map node prefix".into(),
-            ));
-        }
-        let mut payload_capacity = NODE_HEADER_BYTES
-            .checked_add(node.prefix.len())
-            .ok_or(IndexError::ResourceLimited)?;
-        if let Some(value) = node.value {
-            payload_capacity = payload_capacity
-                .checked_add(value_codec::payload_len(value)?)
-                .ok_or(IndexError::ResourceLimited)?;
-        }
-        for (_, branch) in node.branches.iter() {
-            if let Branch {
-                prefix,
-                value: BranchValue::Terminal(value),
-            } = branch
-            {
-                if prefix.len() > MAX_INLINE_NIBBLES || prefix.iter().any(|nibble| *nibble > 15) {
-                    return Err(IndexError::BackendViolation(
-                        "invalid inline map tail".into(),
-                    ));
-                }
-                let value_bytes = value_codec::payload_len(*value)?;
-                payload_capacity = payload_capacity
-                    .checked_add(2)
-                    .and_then(|len| len.checked_add(prefix.len()))
-                    .and_then(|len| len.checked_add(value_bytes))
-                    .ok_or(IndexError::ResourceLimited)?;
-            }
-        }
-        let child_count = node.branches.iter().try_fold(
-            node.value
-                .as_ref()
-                .map(MapValue::children)
-                .transpose()?
-                .map_or(0, <[ObjectRef]>::len),
-            |count, (_, branch)| {
-                let added = match branch {
-                    Branch {
-                        value: BranchValue::Indirect(_),
-                        ..
-                    } => 1,
-                    Branch {
-                        value: BranchValue::Terminal(value),
-                        ..
-                    } => value.children()?.len(),
-                };
-                count.checked_add(added).ok_or(IndexError::ResourceLimited)
-            },
-        )?;
-        if child_count > MAX_NODE_CHILDREN {
-            return Err(IndexError::ResourceLimited);
-        }
-        let children_capacity = child_count
-            .checked_mul(std::mem::size_of::<ObjectRef>())
-            .ok_or(IndexError::ResourceLimited)?;
-        budget.charge(WorkUsage {
-            bytes: u64::try_from(
-                payload_capacity
-                    .checked_add(children_capacity)
-                    .ok_or(IndexError::ResourceLimited)?,
-            )
-            .map_err(|_conversion_error| IndexError::ResourceLimited)?,
-            ..WorkUsage::default()
-        })?;
-        let _encoding_memory = budget.reserve_memory(
-            u64::try_from(
-                payload_capacity
-                    .checked_add(children_capacity)
-                    .ok_or(IndexError::ResourceLimited)?,
-            )
-            .map_err(|_error| IndexError::ResourceLimited)?,
-            MemoryLifetime::Temporary,
-        )?;
-        let mut mask = 0u16;
-        let mut inline = 0u16;
-        let mut children = Vec::new();
-        children
-            .try_reserve_exact(child_count)
-            .map_err(|_error| IndexError::ResourceLimited)?;
-        if let Some(value) = node.value {
-            children.extend_from_slice(value.children()?);
-        }
-        for (index, branch) in node.branches.iter() {
-            mask |= 1u16 << index;
-            match branch {
-                Branch {
-                    value: BranchValue::Indirect(reference),
-                    ..
-                } => children.push(*reference),
-                Branch {
-                    value: BranchValue::Terminal(value),
-                    ..
-                } => {
-                    inline |= 1u16 << index;
-                    children.extend_from_slice(value.children()?);
+        let layout = node_wire::layout(node)?;
+        let mut spills = [None; 16];
+        if layout.spill_mask != 0 {
+            for (edge, branch) in node.branches.iter() {
+                if layout.spill_mask & (1u16 << edge) != 0 {
+                    let BranchValue::Packed(packed) = &branch.value else {
+                        return Err(IndexError::BackendViolation(
+                            "map layout spilled a non-packed branch".into(),
+                        ));
+                    };
+                    // The codec permits only terminal children inside a packed
+                    // branch, so spill encoding cannot recurse a second time.
+                    spills[edge] = Some(self.write_encoded(&packed.node, staged, budget)?);
                 }
             }
         }
-        let mut payload = Vec::new();
-        payload
-            .try_reserve_exact(payload_capacity)
-            .map_err(|_error| IndexError::ResourceLimited)?;
-        payload.extend_from_slice(NODE_MAGIC);
-        payload.extend_from_slice(
-            &u16::try_from(node.prefix.len())
-                .map_err(|_conversion_error| IndexError::ResourceLimited)?
-                .to_be_bytes(),
-        );
-        payload.extend_from_slice(&node.prefix);
-        payload.push(u8::from(node.value.is_some()));
-        payload.extend_from_slice(&mask.to_be_bytes());
-        payload.extend_from_slice(&inline.to_be_bytes());
-        if let Some(value) = node.value {
-            value_codec::write(value, &mut payload)?;
-        }
-        for (_, branch) in node.branches.iter() {
-            if let Branch {
-                prefix,
-                value: BranchValue::Terminal(value),
-            } = branch
-            {
-                payload.extend_from_slice(
-                    &u16::try_from(prefix.len())
-                        .map_err(|_error| IndexError::ResourceLimited)?
-                        .to_be_bytes(),
-                );
-                payload.extend_from_slice(prefix);
-                value_codec::write(*value, &mut payload)?;
-            }
-        }
-        let object = self.prepare_object(&payload, &children, budget)?;
+        let encoded = node_wire::encode(layout, &spills, budget)?;
+        let object = self.prepare_object(&encoded.payload, &encoded.children, budget)?;
         staged.insert(object, budget)
     }
 
@@ -1161,7 +1352,10 @@ impl FileObjectStore {
         let mut path = MapBuffer::new(MAX_NIBBLES);
         let mut stack = MapBuffer::new(MAX_NIBBLES + 1);
         if let Some(reference) = root.0 {
-            stack.push(ScanFrame::new(read_node(reference, budget)?), budget)?;
+            stack.push(
+                ScanFrame::new(ScanNode::Owned(read_node(reference, budget)?)),
+                budget,
+            )?;
         }
         while let Some(frame) = stack.last_mut() {
             budget.checkpoint()?;
@@ -1250,10 +1444,14 @@ impl FileObjectStore {
                 budget,
             )?;
             if subtree_can_follow(&path, after_nibbles.as_deref()) {
-                stack.push(
-                    ScanFrame::new(reference.into_node(|reference| read_node(reference, budget))?),
-                    budget,
-                )?;
+                let node = match reference {
+                    Branch {
+                        value: BranchValue::Packed(packed),
+                        ..
+                    } => ScanNode::Packed(packed),
+                    branch => ScanNode::Owned(branch.into_node(budget, &mut read_node)?),
+                };
+                stack.push(ScanFrame::new(node), budget)?;
             }
         }
         Ok(page.finish(false))
@@ -1280,7 +1478,7 @@ impl FileObjectStore {
         let mut cursor = root.0.map(Branch::indirect);
         let mut at = 0usize;
         while let Some(branch) = cursor {
-            let node = branch.into_node(|reference| read_node(reference, budget))?;
+            let node = branch.into_node(budget, &mut read_node)?;
             if !nibbles
                 .get(at..)
                 .is_some_and(|remaining| remaining.starts_with(&node.prefix))
@@ -1372,14 +1570,15 @@ impl FileObjectStore {
                                     .map_err(|_conversion_error| IndexError::ResourceLimited)?,
                                 ..WorkUsage::default()
                             })?;
-                            self.write_node(&Node::leaf(suffix, value, budget)?, staged, budget)?
+                            self.write_node(Node::leaf(suffix, value, budget)?, staged, budget)?
                         }
                         None => None,
                     };
                     break new_leaf;
                 };
-                let mut node =
-                    branch.into_node(|reference| staged.read_node(self, reference, budget))?;
+                let mut node = branch.into_node(budget, |reference, budget| {
+                    staged.read_node(self, reference, budget)
+                })?;
                 let remaining = nibbles.get(at..).ok_or_else(|| {
                     IndexError::CorruptObject("map traversal passed key end".into())
                 })?;
@@ -1392,7 +1591,7 @@ impl FileObjectStore {
                 if shared < node.prefix.len() {
                     expected.require(None)?;
                     let Some(value) = next else {
-                        break self.write_node(&node, staged, budget)?;
+                        break self.write_node(node, staged, budget)?;
                     };
                     let old_edge = usize::from(*node.prefix.get(shared).ok_or_else(|| {
                         IndexError::CorruptObject("missing map split edge".into())
@@ -1417,7 +1616,7 @@ impl FileObjectStore {
                         MAX_NIBBLES,
                         budget,
                     )?;
-                    let old_reference = self.write_node(&node, staged, budget)?;
+                    let old_reference = self.write_node(node, staged, budget)?;
                     let mut parent = Node {
                         prefix: common,
                         value: None,
@@ -1441,10 +1640,10 @@ impl FileObjectStore {
                             ..WorkUsage::default()
                         })?;
                         let child =
-                            self.write_node(&Node::leaf(suffix, value, budget)?, staged, budget)?;
+                            self.write_node(Node::leaf(suffix, value, budget)?, staged, budget)?;
                         let _old = parent.branches.replace(edge, child, budget)?;
                     }
-                    break self.write_node(&parent, staged, budget)?;
+                    break self.write_node(parent, staged, budget)?;
                 }
                 at = at
                     .checked_add(node.prefix.len())
@@ -1452,7 +1651,7 @@ impl FileObjectStore {
                 if at == nibbles.len() {
                     expected.require(node.value)?;
                     node.value = next;
-                    break self.write_node(&node, staged, budget)?;
+                    break self.write_node(node, staged, budget)?;
                 }
                 let edge =
                     usize::from(*nibbles.get(at).ok_or_else(|| {
@@ -1463,7 +1662,7 @@ impl FileObjectStore {
                 if child.is_none() {
                     expected.require(None)?;
                     let Some(value) = next else {
-                        break self.write_node(&node, staged, budget)?;
+                        break self.write_node(node, staged, budget)?;
                     };
                     let suffix = nibbles.get(at..).ok_or_else(|| {
                         IndexError::CorruptObject("missing map child suffix".into())
@@ -1474,9 +1673,9 @@ impl FileObjectStore {
                         ..WorkUsage::default()
                     })?;
                     let child =
-                        self.write_node(&Node::leaf(suffix, value, budget)?, staged, budget)?;
+                        self.write_node(Node::leaf(suffix, value, budget)?, staged, budget)?;
                     let _old = node.branches.replace(edge, child, budget)?;
-                    break self.write_node(&node, staged, budget)?;
+                    break self.write_node(node, staged, budget)?;
                 }
                 budget.charge(WorkUsage {
                     bytes: u64::try_from(
@@ -1492,7 +1691,7 @@ impl FileObjectStore {
             };
         while let Some((mut parent, edge)) = trail.pop() {
             let _old = parent.branches.replace(edge, replacement, budget)?;
-            replacement = self.write_node(&parent, staged, budget)?;
+            replacement = self.write_node(parent, staged, budget)?;
         }
         Ok(replacement)
     }
@@ -1509,7 +1708,7 @@ impl FileObjectStore {
             .pop()
             .ok_or_else(|| IndexError::BackendViolation("open map edit path is empty".into()))?;
         let replacement = if frame.dirty {
-            self.write_node(&frame.node, staged, budget)?
+            self.write_node(frame.node, staged, budget)?
         } else {
             Some(Branch::indirect(frame.reference.ok_or_else(|| {
                 IndexError::BackendViolation("unchanged map frame lacks physical identity".into())
@@ -1558,11 +1757,13 @@ impl FileObjectStore {
                     ..
                 } => Some(*reference),
                 Branch {
-                    value: BranchValue::Terminal(_),
+                    value: BranchValue::Terminal(_) | BranchValue::Packed(_),
                     ..
                 } => None,
             };
-            let node = branch.into_node(|reference| staged.read_node(self, reference, budget))?;
+            let node = branch.into_node(budget, |reference, budget| {
+                staged.read_node(self, reference, budget)
+            })?;
             let remaining = nibbles.get(offset..).ok_or_else(|| {
                 IndexError::CorruptObject("open map edit path passed key end".into())
             })?;
@@ -1765,29 +1966,9 @@ impl PersistentMapPort for FileObjectStore {
         values: &mut [Option<MapValue>],
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
-        if keys.len() > quanta_index_core::index::ports::MAX_MAP_LOOKUP_BATCH
-            || keys.len() != values.len()
-        {
-            return Err(IndexError::InvalidInput(
-                "map lookup batch shape exceeds bound".into(),
-            ));
-        }
-        budget.charge(WorkUsage {
-            bytes: u64::try_from(
-                keys.len()
-                    .checked_mul(std::mem::size_of::<Option<MapValue>>())
-                    .ok_or(IndexError::ResourceLimited)?,
-            )
-            .map_err(|_error| IndexError::ResourceLimited)?,
-            ..WorkUsage::default()
-        })?;
-        let mut lookup = original_lookup::OriginalLookup::new();
-        for (key, value) in keys.iter().zip(values) {
-            charge_key_allocation(key, budget)?;
-            let nibbles = key_nibbles(key, budget)?;
-            *value = lookup.lookup(self, root, &nibbles, budget)?;
-        }
-        Ok(())
+        original_lookup::lookup_batch_with(root, keys, values, budget, |reference, budget| {
+            self.read_node(reference, budget)
+        })
     }
 
     fn scan(
@@ -1884,213 +2065,297 @@ impl PersistentMapPort for FileObjectStore {
         sink: &dyn ObjectWriteSink,
         budget: &mut WorkBudget,
     ) -> Result<quanta_index_core::index::StagedMapRoots, IndexError> {
-        if bases.is_empty() || bases.len() > MAX_BATCH_ROOTS {
+        if bases.is_empty()
+            || bases.len() > MAX_EMPTY_STREAM_ROOTS
+            || (bases.len() > MAX_BATCH_ROOTS && bases.iter().any(|base| base.0.is_some()))
+        {
             return Err(IndexError::ResourceLimited);
+        }
+        let packed_root = edits
+            .pack_terminal_subtrees_for_root()
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        if packed_root.is_some_and(|index| index >= bases.len()) {
+            return Err(IndexError::InvalidInput(
+                "packed map root ordinal is out of bounds".into(),
+            ));
         }
         let mut roots = StagedMapRoots::prepare(bases.len(), budget)?;
         let mut buffered = scalar_pair::Input::new(edits, bases.len() == 2, budget)?;
         if let Some(pair) = buffered.pair() {
-            return self.apply_resident_pair(bases, pair, roots, sink, budget);
+            return self.apply_resident_pair(bases, pair, roots, packed_root, sink, budget);
         }
-        let edits: &mut dyn MapEditCursor = &mut buffered;
-        let staged = StagedMap::open(self, budget)?;
-        staged.scratch.begin_batch(budget)?;
-        let mut candidate_roots = [false; MAX_BATCH_ROOTS];
-        for (index, base) in bases.iter().enumerate() {
-            let has_peer = bases
-                .iter()
-                .enumerate()
-                .any(|(other, candidate)| other != index && candidate == base);
-            *candidate_roots
-                .get_mut(index)
-                .ok_or(IndexError::ResourceLimited)? = has_peer;
-        }
-        let reuse_possible = candidate_roots.iter().any(|candidate| *candidate);
-        let mut previous: Option<OrdinalMapEdit> = None;
-        let mut edit_batch = MapBuffer::new(quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS);
-        // The fixed root bound keeps identity state on the stack. Fingerprints
-        // select candidates only; the original cursor still reaches EOF with
-        // every ordinal's ordering and original-base CAS checked below.
-        let mut identities = [[0u8; 32]; MAX_BATCH_ROOTS];
-        let mut edit_counts = [0u64; MAX_BATCH_ROOTS];
-        let mut identity = Sha256::new();
-        let mut identity_root = 0usize;
-        let mut original_lookup = original_lookup::OriginalLookup::new();
-        while let Some(ordinal) = edits.next_edit(budget)? {
-            budget.checkpoint()?;
-            let root_index = usize::try_from(ordinal.root)
-                .map_err(|_conversion_error| IndexError::ResourceLimited)?;
-            let base = *bases.get(root_index).ok_or_else(|| {
-                IndexError::InvalidInput("map edit root ordinal is out of bounds".into())
-            })?;
-            if ordinal.edit.key.len() > MAX_KEY_BYTES
-                || previous.as_ref().is_some_and(|prior| {
-                    prior.root > ordinal.root
-                        || (prior.root == ordinal.root
-                            && prior.edit.key.as_slice() >= ordinal.edit.key.as_slice())
-                })
-            {
-                return Err(IndexError::InvalidInput(
-                    "map edits must be globally sorted and unique".into(),
-                ));
-            }
-            budget.charge(WorkUsage {
-                mutations: 1,
-                bytes: u64::try_from(ordinal.edit.key.len())
+        let mut observation = MapApplyObservation::new(budget);
+        let result = {
+            let mut scoped_budget = budget.scoped_diagnostic_context(observation.child_context());
+            let budget = &mut *scoped_budget;
+            (|| {
+                let edits: &mut dyn MapEditCursor = &mut buffered;
+                let staged = StagedMap::open(self, budget)?;
+                staged.scratch.begin_batch(budget)?;
+                let mut candidate_roots = [false; MAX_EMPTY_STREAM_ROOTS];
+                for (index, base) in bases.iter().enumerate() {
+                    let has_peer = bases.iter().enumerate().any(|(other, candidate)| {
+                        other != index
+                            && candidate == base
+                            && (packed_root == Some(index)) == (packed_root == Some(other))
+                    });
+                    *candidate_roots
+                        .get_mut(index)
+                        .ok_or(IndexError::ResourceLimited)? = has_peer;
+                }
+                let reuse_possible = candidate_roots.iter().any(|candidate| *candidate);
+                let mut previous: Option<OrdinalMapEdit> = None;
+                let mut edit_batch =
+                    MapBuffer::new(quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS);
+                // The fixed root bound keeps identity state on the stack. Fingerprints
+                // select candidates only; the original cursor still reaches EOF with
+                // every ordinal's ordering and original-base CAS checked below.
+                let mut identities = [[0u8; 32]; MAX_EMPTY_STREAM_ROOTS];
+                let mut edit_counts = [0u64; MAX_EMPTY_STREAM_ROOTS];
+                let mut identity = Sha256::new();
+                let mut identity_root = 0usize;
+                let mut original_lookup = original_lookup::OriginalLookup::new();
+                // Lane 1 includes cursor reads, original-base validation and
+                // restaging. Lane 2 isolates the edit scratch writes within it.
+                observe_map_phase(budget, 1, |budget| {
+                    while let Some(ordinal) = edits.next_edit(budget)? {
+                        budget.checkpoint()?;
+                        let root_index = usize::try_from(ordinal.root)
+                            .map_err(|_conversion_error| IndexError::ResourceLimited)?;
+                        let base = *bases.get(root_index).ok_or_else(|| {
+                            IndexError::InvalidInput(
+                                "map edit root ordinal is out of bounds".into(),
+                            )
+                        })?;
+                        if ordinal.edit.key.len() > MAX_KEY_BYTES
+                            || previous.as_ref().is_some_and(|prior| {
+                                prior.root > ordinal.root
+                                    || (prior.root == ordinal.root
+                                        && prior.edit.key.as_slice() >= ordinal.edit.key.as_slice())
+                            })
+                        {
+                            return Err(IndexError::InvalidInput(
+                                "map edits must be globally sorted and unique".into(),
+                            ));
+                        }
+                        budget.charge(WorkUsage {
+                            mutations: 1,
+                            bytes: u64::try_from(ordinal.edit.key.len())
+                                .map_err(|_conversion_error| IndexError::ResourceLimited)?,
+                            ..WorkUsage::default()
+                        })?;
+                        let original = if base.0.is_none() {
+                            None
+                        } else {
+                            charge_key_allocation(&ordinal.edit.key, budget)?;
+                            let nibbles = key_nibbles(&ordinal.edit.key, budget)?;
+                            original_lookup.lookup(self, base, &nibbles, budget)?
+                        };
+                        if original != ordinal.edit.expected {
+                            return Err(IndexError::Conflict);
+                        }
+                        if reuse_possible {
+                            while identity_root < root_index {
+                                let finished: [u8; 32] =
+                                    std::mem::take(&mut identity).finalize().into();
+                                if *candidate_roots
+                                    .get(identity_root)
+                                    .ok_or(IndexError::ResourceLimited)?
+                                {
+                                    *identities
+                                        .get_mut(identity_root)
+                                        .ok_or(IndexError::ResourceLimited)? = finished;
+                                }
+                                identity_root = identity_root
+                                    .checked_add(1)
+                                    .ok_or(IndexError::ResourceLimited)?;
+                            }
+                            if *candidate_roots
+                                .get(root_index)
+                                .ok_or(IndexError::ResourceLimited)?
+                            {
+                                fingerprint_edit(&mut identity, &ordinal.edit, budget)?;
+                                let count = edit_counts
+                                    .get_mut(root_index)
+                                    .ok_or(IndexError::ResourceLimited)?;
+                                *count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                            }
+                        }
+                        previous = Some(ordinal.clone());
+                        budget.charge(WorkUsage {
+                            bytes: u64::try_from(
+                                edit_batch
+                                    .growth_work_bytes()?
+                                    .checked_add(std::mem::size_of::<OrdinalMapEdit>())
+                                    .ok_or(IndexError::ResourceLimited)?,
+                            )
+                            .map_err(|_error| IndexError::ResourceLimited)?,
+                            ..WorkUsage::default()
+                        })?;
+                        edit_batch.push(ordinal, budget)?;
+                        if edit_batch.len() == quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
+                            observe_map_phase(budget, 2, |budget| {
+                                staged.scratch.insert_edits(&edit_batch, budget)
+                            })?;
+                            edit_batch.truncate(0);
+                        }
+                    }
+                    // Validation retains only an authenticated original path. Release its
+                    // admitted backing before constructing any replacement DAG.
+                    drop(original_lookup);
+                    if reuse_possible {
+                        while identity_root < bases.len() {
+                            let finished: [u8; 32] =
+                                std::mem::take(&mut identity).finalize().into();
+                            if *candidate_roots
+                                .get(identity_root)
+                                .ok_or(IndexError::ResourceLimited)?
+                            {
+                                *identities
+                                    .get_mut(identity_root)
+                                    .ok_or(IndexError::ResourceLimited)? = finished;
+                            }
+                            identity_root = identity_root
+                                .checked_add(1)
+                                .ok_or(IndexError::ResourceLimited)?;
+                        }
+                    }
+                    if !edit_batch.is_empty() {
+                        observe_map_phase(budget, 2, |budget| {
+                            staged.scratch.insert_edits(&edit_batch, budget)
+                        })?;
+                    }
+                    drop(edit_batch);
+                    Ok(())
+                })?;
+                budget.charge(WorkUsage {
+                    bytes: u64::try_from(
+                        bases
+                            .len()
+                            .checked_mul(std::mem::size_of::<MapRoot>())
+                            .ok_or(IndexError::ResourceLimited)?,
+                    )
                     .map_err(|_conversion_error| IndexError::ResourceLimited)?,
-                ..WorkUsage::default()
-            })?;
-            charge_key_allocation(&ordinal.edit.key, budget)?;
-            let nibbles = key_nibbles(&ordinal.edit.key, budget)?;
-            if original_lookup.lookup(self, base, &nibbles, budget)? != ordinal.edit.expected {
-                return Err(IndexError::Conflict);
-            }
-            if reuse_possible {
-                while identity_root < root_index {
-                    let finished: [u8; 32] = std::mem::take(&mut identity).finalize().into();
-                    if *candidate_roots
-                        .get(identity_root)
-                        .ok_or(IndexError::ResourceLimited)?
-                    {
-                        *identities
-                            .get_mut(identity_root)
-                            .ok_or(IndexError::ResourceLimited)? = finished;
+                    ..WorkUsage::default()
+                })?;
+                let mut built_roots = [MapRoot(None); MAX_EMPTY_STREAM_ROOTS];
+                let mut verified_scratch = [false; MAX_EMPTY_STREAM_ROOTS];
+                // Lane 3 is scratch edit replay plus radix construction.
+                observe_map_phase(budget, 3, |budget| {
+                    for (index, base) in bases.iter().enumerate() {
+                        budget.checkpoint()?;
+                        let ordinal = u32::try_from(index)
+                            .map_err(|_conversion_error| IndexError::ResourceLimited)?;
+                        let pack = packed_root == Some(index);
+                        staged.pack_terminal_subtrees.set(pack);
+                        let has_peer = *candidate_roots
+                            .get(index)
+                            .ok_or(IndexError::ResourceLimited)?;
+                        let matches_identity = |other| {
+                            bases.get(other) == Some(base)
+                                && pack == (packed_root == Some(other))
+                                && edit_counts.get(other) == edit_counts.get(index)
+                                && identities.get(other) == identities.get(index)
+                        };
+                        let prior = if has_peer {
+                            (0..index).find(|&prior| matches_identity(prior))
+                        } else {
+                            None
+                        };
+                        let root = if let Some(prior) = prior {
+                            observation.candidates += 1;
+                            // A matching input digest alone does not authorize skipping a
+                            // scratch cursor. Decode both actual rows through EOF, including
+                            // all shape and wire checks, before sharing a built root.
+                            if !*verified_scratch
+                                .get(prior)
+                                .ok_or(IndexError::ResourceLimited)?
+                            {
+                                let prior_ordinal = u32::try_from(prior)
+                                    .map_err(|_error| IndexError::ResourceLimited)?;
+                                let prior_identity =
+                                    *identities.get(prior).ok_or(IndexError::ResourceLimited)?;
+                                let prior_count =
+                                    *edit_counts.get(prior).ok_or(IndexError::ResourceLimited)?;
+                                if scratch_edit_fingerprint(&staged.scratch, prior_ordinal, budget)?
+                                    != (prior_identity, prior_count)
+                                {
+                                    return Err(IndexError::CorruptObject(
+                                        "scratch map edits changed after validation".into(),
+                                    ));
+                                }
+                                *verified_scratch
+                                    .get_mut(prior)
+                                    .ok_or(IndexError::ResourceLimited)? = true;
+                            }
+                            let current_identity =
+                                *identities.get(index).ok_or(IndexError::ResourceLimited)?;
+                            let current_count =
+                                *edit_counts.get(index).ok_or(IndexError::ResourceLimited)?;
+                            if scratch_edit_fingerprint(&staged.scratch, ordinal, budget)?
+                                != (current_identity, current_count)
+                            {
+                                return Err(IndexError::CorruptObject(
+                                    "scratch map edits changed after validation".into(),
+                                ));
+                            }
+                            *verified_scratch
+                                .get_mut(index)
+                                .ok_or(IndexError::ResourceLimited)? = true;
+                            let reused =
+                                *built_roots.get(prior).ok_or(IndexError::ResourceLimited)?;
+                            observation.reuses += 1;
+                            reused
+                        } else {
+                            observation.builds += 1;
+                            if base.0.is_none() {
+                                let has_later_alias =
+                                    has_peer && (index + 1..bases.len()).any(matches_identity);
+                                let verify = if has_later_alias {
+                                    Some((
+                                        *identities
+                                            .get(index)
+                                            .ok_or(IndexError::ResourceLimited)?,
+                                        *edit_counts
+                                            .get(index)
+                                            .ok_or(IndexError::ResourceLimited)?,
+                                    ))
+                                } else {
+                                    None
+                                };
+                                let root =
+                                    self.build_empty_root(ordinal, &staged, budget, verify)?;
+                                if verify.is_some() {
+                                    *verified_scratch
+                                        .get_mut(index)
+                                        .ok_or(IndexError::ResourceLimited)? = true;
+                                }
+                                root
+                            } else {
+                                self.apply_sorted_existing_root(ordinal, *base, &staged, budget)?
+                            }
+                        };
+                        *built_roots
+                            .get_mut(index)
+                            .ok_or(IndexError::ResourceLimited)? = root;
+                        roots.push(root)?;
                     }
-                    identity_root = identity_root
-                        .checked_add(1)
-                        .ok_or(IndexError::ResourceLimited)?;
-                }
-                if *candidate_roots
-                    .get(root_index)
-                    .ok_or(IndexError::ResourceLimited)?
-                {
-                    fingerprint_edit(&mut identity, &ordinal.edit, budget)?;
-                    let count = edit_counts
-                        .get_mut(root_index)
-                        .ok_or(IndexError::ResourceLimited)?;
-                    *count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-                }
-            }
-            previous = Some(ordinal.clone());
-            budget.charge(WorkUsage {
-                bytes: u64::try_from(
-                    edit_batch
-                        .growth_work_bytes()?
-                        .checked_add(std::mem::size_of::<OrdinalMapEdit>())
-                        .ok_or(IndexError::ResourceLimited)?,
-                )
-                .map_err(|_error| IndexError::ResourceLimited)?,
-                ..WorkUsage::default()
-            })?;
-            edit_batch.push(ordinal, budget)?;
-            if edit_batch.len() == quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
-                staged.scratch.insert_edits(&edit_batch, budget)?;
-                edit_batch.truncate(0);
-            }
-        }
-        // Validation retains only an authenticated original path. Release its
-        // admitted backing before constructing any replacement DAG.
-        drop(original_lookup);
-        if reuse_possible {
-            while identity_root < bases.len() {
-                let finished: [u8; 32] = std::mem::take(&mut identity).finalize().into();
-                if *candidate_roots
-                    .get(identity_root)
-                    .ok_or(IndexError::ResourceLimited)?
-                {
-                    *identities
-                        .get_mut(identity_root)
-                        .ok_or(IndexError::ResourceLimited)? = finished;
-                }
-                identity_root = identity_root
-                    .checked_add(1)
-                    .ok_or(IndexError::ResourceLimited)?;
-            }
-        }
-        if !edit_batch.is_empty() {
-            staged.scratch.insert_edits(&edit_batch, budget)?;
-        }
-        drop(edit_batch);
-        budget.charge(WorkUsage {
-            bytes: u64::try_from(
-                bases
-                    .len()
-                    .checked_mul(std::mem::size_of::<MapRoot>())
-                    .ok_or(IndexError::ResourceLimited)?,
-            )
-            .map_err(|_conversion_error| IndexError::ResourceLimited)?,
-            ..WorkUsage::default()
-        })?;
-        let mut built_roots = [MapRoot(None); MAX_BATCH_ROOTS];
-        let mut verified_scratch = [false; MAX_BATCH_ROOTS];
-        for (index, base) in bases.iter().enumerate() {
-            budget.checkpoint()?;
-            let ordinal =
-                u32::try_from(index).map_err(|_conversion_error| IndexError::ResourceLimited)?;
-            let prior = if *candidate_roots
-                .get(index)
-                .ok_or(IndexError::ResourceLimited)?
-            {
-                (0..index).find(|&prior| {
-                    bases.get(prior) == Some(base)
-                        && edit_counts.get(prior) == edit_counts.get(index)
-                        && identities.get(prior) == identities.get(index)
-                })
-            } else {
-                None
-            };
-            let root = if let Some(prior) = prior {
-                // A matching input digest alone does not authorize skipping a
-                // scratch cursor. Decode both actual rows through EOF, including
-                // all shape and wire checks, before sharing a built root.
-                if !*verified_scratch
-                    .get(prior)
-                    .ok_or(IndexError::ResourceLimited)?
-                {
-                    let prior_ordinal =
-                        u32::try_from(prior).map_err(|_error| IndexError::ResourceLimited)?;
-                    let prior_identity =
-                        *identities.get(prior).ok_or(IndexError::ResourceLimited)?;
-                    let prior_count = *edit_counts.get(prior).ok_or(IndexError::ResourceLimited)?;
-                    if scratch_edit_fingerprint(&staged.scratch, prior_ordinal, budget)?
-                        != (prior_identity, prior_count)
-                    {
-                        return Err(IndexError::CorruptObject(
-                            "scratch map edits changed after validation".into(),
-                        ));
-                    }
-                    *verified_scratch
-                        .get_mut(prior)
-                        .ok_or(IndexError::ResourceLimited)? = true;
-                }
-                let current_identity = *identities.get(index).ok_or(IndexError::ResourceLimited)?;
-                let current_count = *edit_counts.get(index).ok_or(IndexError::ResourceLimited)?;
-                if scratch_edit_fingerprint(&staged.scratch, ordinal, budget)?
-                    != (current_identity, current_count)
-                {
-                    return Err(IndexError::CorruptObject(
-                        "scratch map edits changed after validation".into(),
-                    ));
-                }
-                *verified_scratch
-                    .get_mut(index)
-                    .ok_or(IndexError::ResourceLimited)? = true;
-                *built_roots.get(prior).ok_or(IndexError::ResourceLimited)?
-            } else if base.0.is_none() {
-                self.build_empty_root(ordinal, &staged, budget)?
-            } else {
-                self.apply_sorted_existing_root(ordinal, *base, &staged, budget)?
-            };
-            *built_roots
-                .get_mut(index)
-                .ok_or(IndexError::ResourceLimited)? = root;
-            roots.push(root)?;
-        }
-        let roots = roots.finish()?;
-        staged.scratch.commit_batch(budget)?;
-        self.install_reachable_map_nodes(&roots, &staged, sink, budget)?;
-        budget.checkpoint()?;
-        Ok(roots)
+                    Ok(())
+                })?;
+                let roots = roots.finish()?;
+                observe_map_phase(budget, 4, |budget| staged.scratch.commit_batch(budget))?;
+                // Lane 5 includes reachable installation and its physical children.
+                observe_map_phase(budget, 5, |budget| {
+                    self.install_reachable_map_nodes(&roots, &staged, sink, budget)
+                })?;
+                budget.checkpoint()?;
+                Ok(roots)
+            })()
+        };
+        observation.finish(&result);
+        result
     }
 }
 
@@ -2181,7 +2446,7 @@ fn key_nibbles(key: &[u8], budget: &WorkBudget) -> Result<MapBuffer<u8>, IndexEr
         .len()
         .checked_mul(2)
         .ok_or(IndexError::ResourceLimited)?;
-    let mut nibbles = MapBuffer::new(capacity);
+    let mut nibbles = MapBuffer::with_capacity(capacity, capacity, budget)?;
     for byte in key {
         nibbles.push(byte >> 4, budget)?;
         nibbles.push(byte & 0x0f, budget)?;
@@ -2281,6 +2546,7 @@ mod tests {
     mod completed_group;
     mod inline_terminals;
     mod original_lookup;
+    mod packed_subtrees;
     mod resident_single;
     mod scoped_reads;
     mod sparse_branches;
@@ -2487,6 +2753,42 @@ mod tests {
             budget.checkpoint()?;
             Ok(self.0.next())
         }
+    }
+
+    #[test]
+    fn wide_empty_stream_preserves_ordinals_and_refuses_nonempty_base()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let sink = RecordingSink::default();
+        let mut work = budget()?;
+        let value = store.put(b"wide empty stream value", &[], &mut work)?.reference;
+        let mut bases = [MapRoot(None); MAX_BATCH_ROOTS + 1];
+        let edits = (0..bases.len())
+            .map(|ordinal| {
+                Ok(OrdinalMapEdit::unscoped(
+                    u32::try_from(ordinal)?,
+                    MapEdit::objects(vec![u8::try_from(ordinal)?], None, Some(value)),
+                ))
+            })
+            .collect::<Result<Vec<_>, std::num::TryFromIntError>>()?;
+        let mut cursor = TestEditCursor(edits.into_iter());
+        let roots = store.apply_stream(&bases, &mut cursor, &sink, &mut work)?;
+        check_eq!(roots.len(), bases.len());
+        for (ordinal, root) in roots.iter().enumerate() {
+            check_eq!(
+                store.lookup(*root, &[u8::try_from(ordinal)?], &mut work)?,
+                Some(value.into())
+            );
+        }
+
+        bases[0] = *roots.first().ok_or("wide empty stream returned no roots")?;
+        let mut cursor = TestEditCursor(Vec::new().into_iter());
+        check!(matches!(
+            store.apply_stream(&bases, &mut cursor, &sink, &mut work),
+            Err(IndexError::ResourceLimited)
+        ));
+        Ok(())
     }
 
     impl ObjectWriteSink for RejectingSink {
@@ -3379,6 +3681,41 @@ mod tests {
                 check_eq!(store.lookup_object(root, &key, &mut work)?, Some(expected));
             }
         }
+        assert_clean_scratch(&directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn verified_empty_root_refuses_changed_scratch_before_physical_install()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let mut work = budget()?;
+        let target = value(&store, b"target", &mut work)?;
+        let physical_before = physical_file_count(&directory)?;
+        let staged = StagedMap::open(&store, &mut work)?;
+        staged.scratch.begin_batch(&work)?;
+        let edits = [b"a".as_slice(), b"z".as_slice()]
+            .into_iter()
+            .map(|key| {
+                OrdinalMapEdit::unscoped(
+                    0,
+                    MapEdit {
+                        key: key.to_vec(),
+                        expected: None,
+                        next: Some(target.into()),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        staged.scratch.insert_edits(&edits, &mut work)?;
+        let failure = store.build_empty_root(0, &staged, &mut work, Some(([0; 32], 2)));
+        check!(matches!(failure, Err(IndexError::CorruptObject(_))));
+        check_eq!(physical_file_count(&directory)?, physical_before);
+        let empty_fingerprint: [u8; 32] = Sha256::new().finalize().into();
+        let empty = store.build_empty_root(1, &staged, &mut work, Some((empty_fingerprint, 0)))?;
+        check_eq!(empty, MapRoot(None));
+        drop(staged);
         assert_clean_scratch(&directory)?;
         Ok(())
     }

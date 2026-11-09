@@ -14,14 +14,14 @@
 //! `scrub_corruptions_total`, `scrub_errors_total` and
 //! `scrub_last_completed_unix`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use quanta_index_contract::{GenerationSnapshot, SearchPlaneTrackKind};
+use quanta_index_contract::{GenerationSnapshot, SearchPlaneErrorCodeV2, SearchPlaneTrackKind};
 use quanta_index_core::{
     CoreError, IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPolicyV1,
     IntegrityScrubPort, IntegrityScrubReportV1, MetricPointV1, MetricSourcePort,
@@ -105,6 +105,7 @@ pub struct ScrubSchedulerV1 {
     snapshots: SnapshotRegistries,
     tallies: Arc<ScrubTalliesV1>,
     in_flight: Option<InFlightScrubV1>,
+    deferred_paused: BTreeMap<usize, (ScrubCandidateKeyV1, IntegrityScrubCursorV1)>,
     attempted_cycle: BTreeSet<ScrubCandidateKeyV1>,
     next_collection_port: usize,
 }
@@ -121,6 +122,9 @@ pub enum ScrubTickV1 {
     },
     /// Every port failed to list candidates, or the healthy ports had none.
     ListingFailed { error: String },
+    /// A background scrub yielded to a concurrent retention measurement.
+    /// A paused cursor remains available for its next scheduled attempt.
+    Deferred { generation: GenerationSnapshot },
     /// The port refused or failed the step; other listed candidates get an
     /// attempt before this generation is retried in the next cycle.
     Failed {
@@ -143,24 +147,26 @@ impl ScrubSchedulerV1 {
             snapshots,
             tallies,
             in_flight: None,
+            deferred_paused: BTreeMap::new(),
             attempted_cycle: BTreeSet::new(),
             next_collection_port: 0,
         }
     }
 
-    /// The generation to scrub next: a paused one first, else across every
-    /// port the candidate never scrubbed to completion, else the one whose
-    /// completion is oldest. Each listed candidate gets one attempt per
-    /// cycle: a permanent I/O failure cannot monopolize every tick.
+    /// The generation to scrub next: a newly paused one first, then each
+    /// unattempted candidate, including previously deferred paused scrubs.
+    /// A permanent failure or busy port cannot monopolize every tick.
     fn next(&mut self) -> (Option<InFlightScrubV1>, Vec<String>) {
         if let Some(in_flight) = self.in_flight.take() {
             return (Some(in_flight), Vec::new());
         }
         let mut candidates = BTreeMap::new();
         let mut listing_errors = Vec::new();
+        let mut listed_ports = BTreeSet::new();
         for (port_index, port) in self.ports.iter().enumerate() {
             match port.scrub_candidates() {
                 Ok(listed) => {
+                    let _inserted = listed_ports.insert(port_index);
                     for candidate in listed {
                         let key = candidate_key(port_index, &candidate.identity);
                         let _prior = candidates.insert(key, candidate);
@@ -171,8 +177,17 @@ impl ScrubSchedulerV1 {
                 }
             }
         }
+        self.deferred_paused
+            .retain(|port, (key, _)| !listed_ports.contains(port) || candidates.contains_key(key));
+        // Each adapter owns one paused pass. A fresh generation on that port
+        // would replace its progress, so only the parked identity is eligible.
+        candidates.retain(|key, _| {
+            self.deferred_paused
+                .get(&key.0)
+                .map_or(true, |(parked, _)| parked == key)
+        });
         self.attempted_cycle
-            .retain(|key| candidates.contains_key(key));
+            .retain(|key| !listed_ports.contains(&key.0) || candidates.contains_key(key));
         if candidates.is_empty() {
             return (None, listing_errors);
         }
@@ -192,7 +207,10 @@ impl ScrubSchedulerV1 {
             best.map(|(key, candidate)| InFlightScrubV1 {
                 port: key.0,
                 generation: candidate.identity,
-                cursor: None,
+                cursor: self
+                    .deferred_paused
+                    .remove(&key.0)
+                    .map(|(_, cursor)| cursor),
             }),
             listing_errors,
         )
@@ -245,7 +263,9 @@ impl ScrubSchedulerV1 {
             in_flight.generation.manifest_generation,
         );
         let fenced = RefCell::new(BTreeMap::<SnapshotKey, GenerationSnapshot>::new());
+        let quarantine_callback_invoked = Cell::new(false);
         let before_quarantine = |affected: &GenerationSnapshot| -> Result<(), CoreError> {
+            quarantine_callback_invoked.set(true);
             if affected.track != in_flight.generation.track {
                 return Err(CoreError::InvalidContract(
                     "integrity scrub: quarantine fence crossed storage tracks".into(),
@@ -309,6 +329,18 @@ impl ScrubSchedulerV1 {
         }
         let report = match scrubbed {
             Ok(report) => report,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+                ..
+            }) if !quarantine_callback_invoked.get() => {
+                if let Some(cursor) = in_flight.cursor {
+                    let key = candidate_key(in_flight.port, &in_flight.generation);
+                    let _prior = self.deferred_paused.insert(in_flight.port, (key, cursor));
+                }
+                return ScrubTickV1::Deferred {
+                    generation: in_flight.generation,
+                };
+            }
             Err(error) => {
                 self.tallies.record_error();
                 return ScrubTickV1::Failed {
@@ -722,6 +754,298 @@ mod tests {
             value("scrub_last_completed_unix"),
             Some(quanta_index_core::MetricValueV1::Gauge(unix)) if unix > 0.0
         ));
+    }
+
+    #[test]
+    fn retention_busy_defers_scrub_without_invalidating_proof_or_losing_cursor() {
+        let busy = || CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+            message: "retention measurement owns the lifecycle".into(),
+        };
+        let deferred = Arc::new(ScriptedPort {
+            candidates: vec![IntegrityScrubCandidateV1 {
+                identity: identity(1),
+                last_completed_unix: None,
+            }],
+            outcomes: Mutex::new(vec![Err(busy())]),
+            calls: Mutex::new(Vec::new()),
+        });
+        let other = Arc::new(ScriptedPort {
+            candidates: vec![IntegrityScrubCandidateV1 {
+                identity: identity(2),
+                last_completed_unix: None,
+            }],
+            outcomes: Mutex::new(vec![Ok(IntegrityScrubOutcomeV1::Completed)]),
+            calls: Mutex::new(Vec::new()),
+        });
+        let tallies = Arc::new(ScrubTalliesV1::default());
+        let mut fresh_scheduler = ScrubSchedulerV1::new(
+            vec![deferred.clone(), other.clone()],
+            IntegrityScrubPolicyV1::DEFAULT,
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
+            Arc::clone(&tallies),
+        );
+        assert!(
+            matches!(fresh_scheduler.tick(), ScrubTickV1::Deferred { generation }
+            if generation == identity(1))
+        );
+        assert_eq!(tallies.proof_invalidation_epoch(), (0, 0));
+        assert!(matches!(fresh_scheduler.tick(), ScrubTickV1::Stepped {
+            generation, outcome: IntegrityScrubOutcomeV1::Completed
+        } if generation == identity(2)));
+        assert_eq!(deferred.calls.lock().expect("calls").len(), 1);
+        assert_eq!(other.calls.lock().expect("calls").len(), 1);
+
+        let paused = Arc::new(ScriptedPort {
+            candidates: vec![IntegrityScrubCandidateV1 {
+                identity: identity(3),
+                last_completed_unix: None,
+            }],
+            outcomes: Mutex::new(vec![
+                Ok(IntegrityScrubOutcomeV1::Paused {
+                    cursor: IntegrityScrubCursorV1 { next_artifact: 4 },
+                }),
+                Err(busy()),
+                Ok(IntegrityScrubOutcomeV1::Completed),
+            ]),
+            calls: Mutex::new(Vec::new()),
+        });
+        let (mut scheduler, tallies, _snapshots) = scheduler(paused.clone());
+        assert!(matches!(
+            scheduler.tick(),
+            ScrubTickV1::Stepped {
+                outcome: IntegrityScrubOutcomeV1::Paused { .. },
+                ..
+            }
+        ));
+        assert!(
+            matches!(scheduler.tick(), ScrubTickV1::Deferred { generation }
+            if generation == identity(3))
+        );
+        assert_eq!(tallies.proof_invalidation_epoch(), (0, 0));
+        assert!(matches!(scheduler.tick(), ScrubTickV1::Stepped {
+            generation, outcome: IntegrityScrubOutcomeV1::Completed
+        } if generation == identity(3)));
+        assert_eq!(
+            *paused.calls.lock().expect("calls"),
+            vec![(3, None, 7), (3, Some(4), 7), (3, Some(4), 7)]
+        );
+        assert_eq!(tallies.runs.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn paused_busy_yields_to_healthy_port_without_restarting_its_cursor() {
+        let busy = || CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+            message: "retention measurement owns the lifecycle".into(),
+        };
+        let paused = Arc::new(ScriptedPort {
+            candidates: vec![IntegrityScrubCandidateV1 {
+                identity: identity(1),
+                last_completed_unix: None,
+            }],
+            outcomes: Mutex::new(vec![
+                Ok(IntegrityScrubOutcomeV1::Paused {
+                    cursor: IntegrityScrubCursorV1 { next_artifact: 4 },
+                }),
+                Err(busy()),
+                Err(busy()),
+                Ok(IntegrityScrubOutcomeV1::Completed),
+            ]),
+            calls: Mutex::new(Vec::new()),
+        });
+        let healthy = Arc::new(ScriptedPort {
+            candidates: vec![IntegrityScrubCandidateV1 {
+                identity: identity(2),
+                last_completed_unix: None,
+            }],
+            outcomes: Mutex::new(vec![
+                Ok(IntegrityScrubOutcomeV1::Completed),
+                Ok(IntegrityScrubOutcomeV1::Completed),
+            ]),
+            calls: Mutex::new(Vec::new()),
+        });
+        let tallies = Arc::new(ScrubTalliesV1::default());
+        let mut scheduler = ScrubSchedulerV1::new(
+            vec![paused.clone(), healthy.clone()],
+            IntegrityScrubPolicyV1 {
+                interval_millis: 1,
+                max_bytes_per_step: 7,
+            },
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
+            Arc::clone(&tallies),
+        );
+        assert!(matches!(scheduler.tick(), ScrubTickV1::Stepped {
+            generation, outcome: IntegrityScrubOutcomeV1::Paused { .. }
+        } if generation == identity(1)));
+        for _cycle in 0..2 {
+            assert!(
+                matches!(scheduler.tick(), ScrubTickV1::Deferred { generation }
+                if generation == identity(1))
+            );
+            assert!(matches!(scheduler.tick(), ScrubTickV1::Stepped {
+                generation, outcome: IntegrityScrubOutcomeV1::Completed
+            } if generation == identity(2)));
+        }
+        assert!(matches!(scheduler.tick(), ScrubTickV1::Stepped {
+            generation, outcome: IntegrityScrubOutcomeV1::Completed
+        } if generation == identity(1)));
+        assert_eq!(
+            *paused.calls.lock().expect("calls"),
+            vec![
+                (1, None, 7),
+                (1, Some(4), 7),
+                (1, Some(4), 7),
+                (1, Some(4), 7),
+            ]
+        );
+        assert_eq!(
+            *healthy.calls.lock().expect("calls"),
+            vec![(2, None, 7), (2, None, 7)]
+        );
+        assert_eq!(tallies.proof_invalidation_epoch(), (0, 0));
+        assert_eq!(tallies.runs.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn deferred_paused_positions_are_independent_and_stale_positions_are_pruned() {
+        let busy = || CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+            message: "retention measurement owns the lifecycle".into(),
+        };
+        let first = Arc::new(ScriptedPort {
+            candidates: vec![IntegrityScrubCandidateV1 {
+                identity: identity(1),
+                last_completed_unix: None,
+            }],
+            outcomes: Mutex::new(vec![
+                Ok(IntegrityScrubOutcomeV1::Paused {
+                    cursor: IntegrityScrubCursorV1 { next_artifact: 4 },
+                }),
+                Err(busy()),
+                Err(busy()),
+                Ok(IntegrityScrubOutcomeV1::Completed),
+            ]),
+            calls: Mutex::new(Vec::new()),
+        });
+        let second = Arc::new(ScriptedPort {
+            candidates: vec![IntegrityScrubCandidateV1 {
+                identity: identity(2),
+                last_completed_unix: None,
+            }],
+            outcomes: Mutex::new(vec![
+                Ok(IntegrityScrubOutcomeV1::Paused {
+                    cursor: IntegrityScrubCursorV1 { next_artifact: 9 },
+                }),
+                Err(busy()),
+                Ok(IntegrityScrubOutcomeV1::Completed),
+            ]),
+            calls: Mutex::new(Vec::new()),
+        });
+        let mut scheduler = ScrubSchedulerV1::new(
+            vec![first.clone(), second.clone()],
+            IntegrityScrubPolicyV1::DEFAULT,
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
+            Arc::new(ScrubTalliesV1::default()),
+        );
+        for _tick in 0..7 {
+            let _outcome = scheduler.tick();
+        }
+        assert_eq!(
+            first
+                .calls
+                .lock()
+                .expect("calls")
+                .iter()
+                .map(|call| call.1)
+                .collect::<Vec<_>>(),
+            vec![None, Some(4), Some(4), Some(4)]
+        );
+        assert_eq!(
+            second
+                .calls
+                .lock()
+                .expect("calls")
+                .iter()
+                .map(|call| call.1)
+                .collect::<Vec<_>>(),
+            vec![None, Some(9), Some(9)]
+        );
+        let stale_key = candidate_key(0, &identity(99));
+        let _prior = scheduler
+            .deferred_paused
+            .insert(0, (stale_key, IntegrityScrubCursorV1 { next_artifact: 42 }));
+        let _candidate = scheduler.next();
+        assert!(!scheduler.deferred_paused.contains_key(&0));
+    }
+
+    #[test]
+    fn parked_cursor_blocks_fresh_same_port_pass_while_other_port_advances() {
+        let paused = Arc::new(ScriptedPort {
+            candidates: vec![
+                IntegrityScrubCandidateV1 {
+                    identity: identity(1),
+                    last_completed_unix: None,
+                },
+                IntegrityScrubCandidateV1 {
+                    identity: identity(3),
+                    last_completed_unix: None,
+                },
+            ],
+            outcomes: Mutex::new(vec![
+                Ok(IntegrityScrubOutcomeV1::Paused {
+                    cursor: IntegrityScrubCursorV1 { next_artifact: 4 },
+                }),
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+                    message: "retention measurement owns the lifecycle".into(),
+                }),
+                Ok(IntegrityScrubOutcomeV1::Completed),
+                Ok(IntegrityScrubOutcomeV1::Completed),
+            ]),
+            calls: Mutex::new(Vec::new()),
+        });
+        let healthy = Arc::new(ScriptedPort {
+            candidates: vec![IntegrityScrubCandidateV1 {
+                identity: identity(2),
+                last_completed_unix: None,
+            }],
+            outcomes: Mutex::new(vec![Ok(IntegrityScrubOutcomeV1::Completed)]),
+            calls: Mutex::new(Vec::new()),
+        });
+        let mut scheduler = ScrubSchedulerV1::new(
+            vec![paused.clone(), healthy.clone()],
+            IntegrityScrubPolicyV1::DEFAULT,
+            SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
+            Arc::new(ScrubTalliesV1::default()),
+        );
+        assert!(matches!(scheduler.tick(), ScrubTickV1::Stepped {
+            generation, outcome: IntegrityScrubOutcomeV1::Paused { .. }
+        } if generation == identity(1)));
+        assert!(
+            matches!(scheduler.tick(), ScrubTickV1::Deferred { generation }
+            if generation == identity(1))
+        );
+        assert!(matches!(scheduler.tick(), ScrubTickV1::Stepped {
+            generation, outcome: IntegrityScrubOutcomeV1::Completed
+        } if generation == identity(2)));
+        assert!(matches!(scheduler.tick(), ScrubTickV1::Stepped {
+            generation, outcome: IntegrityScrubOutcomeV1::Completed
+        } if generation == identity(1)));
+        assert!(matches!(scheduler.tick(), ScrubTickV1::Stepped {
+            generation, outcome: IntegrityScrubOutcomeV1::Completed
+        } if generation == identity(3)));
+        assert_eq!(
+            paused
+                .calls
+                .lock()
+                .expect("calls")
+                .iter()
+                .map(|call| (call.0, call.1))
+                .collect::<Vec<_>>(),
+            vec![(1, None), (1, Some(4)), (1, Some(4)), (3, None)]
+        );
+        assert_eq!(healthy.calls.lock().expect("calls").len(), 1);
     }
 
     #[test]

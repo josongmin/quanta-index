@@ -136,7 +136,11 @@ fn two_owner_inventory(
             budget: &mut work,
         };
         let reads_before = context.budget.usage().reads;
-        let (_changed, indexed_tokens, term_count) = prepare_inventory(
+        let PreparedInventory {
+            indexed_tokens,
+            term_count,
+            ..
+        } = prepare_inventory(
             &body,
             &EntryMap::default(),
             ordinal,
@@ -286,6 +290,11 @@ fn refused_partial_or_malformed_install_cannot_publish_a_confirmed_prefix() -> R
         drop(inventory_edits);
         drop(confirmed);
         drop(writes);
+        check_eq!(
+            memory.live.load(Ordering::Relaxed),
+            inventory_packet_grant_bytes()
+        );
+        drop(spool);
         check_eq!(memory.live.load(Ordering::Relaxed), 0);
         check!(!memory.invalid_release.load(Ordering::Relaxed));
     }

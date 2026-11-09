@@ -12,5 +12,5 @@ workspace = true
 [dependencies]
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
-rusqlite = { workspace = true, features = ["cache"] }
+rusqlite = { workspace = true, features = ["cache", "limits"] }
 tempfile.workspace = true

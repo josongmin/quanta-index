@@ -296,6 +296,7 @@ fn mixed_retention() -> NativeRetentionConfig {
         }],
         sequence_window: 1,
         page_limit: 8,
+        custody_page_limit: 8,
         interval: Duration::from_millis(20),
         round_timeout: Duration::from_secs(2),
         work_limits: work_limits(),

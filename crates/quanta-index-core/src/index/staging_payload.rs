@@ -57,7 +57,16 @@ pub struct StagedObjectBatch {
 
 impl StagedObjectBatch {
     pub fn new(limit: usize, budget: &WorkBudget) -> Result<Self, IndexError> {
-        if limit > MAX_BATCH_OBJECTS {
+        Self::with_limit(limit, MAX_BATCH_OBJECTS, budget)
+    }
+
+    /// Stage one full immutable-object install packet under the caller's budget.
+    pub fn for_install_packet(limit: usize, budget: &WorkBudget) -> Result<Self, IndexError> {
+        Self::with_limit(limit, super::ports::MAX_OBJECT_INSTALL_BATCH, budget)
+    }
+
+    fn with_limit(limit: usize, maximum: usize, budget: &WorkBudget) -> Result<Self, IndexError> {
+        if limit > maximum {
             return Err(IndexError::ResourceLimited);
         }
         let bytes = limit

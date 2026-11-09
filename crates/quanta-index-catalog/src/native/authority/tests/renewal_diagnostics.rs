@@ -43,6 +43,113 @@ impl DiagnosticEventSinkV1 for TraceEvents {
     }
 }
 
+#[test]
+fn read_ticket_validation_trace_preserves_phase_order_and_off_clock() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let clock = Arc::new(ManualClock::new(2_000));
+    let (catalog, genesis) = setup_with_clock(directory.path(), clock.clone())?;
+    let session = catalog.open_read_session()?;
+    let ticket = acquire_ticket_with_test_budget(
+        &catalog,
+        session.as_ref(),
+        ViewSelection::Exact(genesis.identity),
+        Duration::from_secs(30),
+    )?;
+    for observe in [false, true] {
+        let events = Arc::new(TraceEvents::default());
+        let trace_clock = Arc::new(TraceClock(AtomicU64::new(0)));
+        let context = DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([12; 16]),
+            trace_clock.clone(),
+            events.clone(),
+        );
+        let root = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))?;
+        let child = context.child_context(&root);
+        let mut request = quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(30));
+        if observe {
+            request = request.with_diagnostic_context(child);
+        }
+        let work = WorkBudget::with_request(
+            WorkLimits {
+                reads: 1_000_000,
+                writes: 1_000_000,
+                bytes: 100_000_000,
+                mutations: 1_000_000,
+            },
+            request,
+        );
+        for regressed in [false, true] {
+            clock.set(if regressed { 1_999 } else { 2_000 });
+            events
+                .0
+                .lock()
+                .map_err(|error| std::io::Error::other(error.to_string()))?
+                .clear();
+            let before = trace_clock.0.load(Ordering::Relaxed);
+            let result = catalog.validate_ticket_for_request(session.as_ref(), ticket.lease, &work);
+            if regressed {
+                check_eq!(
+                    result,
+                    Err(IndexError::Storage("catalog clock regressed".into()))
+                );
+            } else {
+                result?;
+            }
+            let rows = events
+                .0
+                .lock()
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            let phases: Vec<_> = rows
+                .iter()
+                .filter_map(|row| match row.kind {
+                    DiagnosticEventKindV1::SpanBegin {
+                        stage: DiagnosticStageV1::SqliteWork,
+                        lane: DiagnosticLaneV1(lane),
+                        ..
+                    } => Some(lane),
+                    _ => None,
+                })
+                .collect();
+            if observe {
+                let expected: &[u16] = if regressed {
+                    &[200, 201, 202, 203, 204]
+                } else {
+                    &[200, 201, 202, 203, 204, 205]
+                };
+                check_eq!(phases.as_slice(), expected);
+                let clock_span = rows.iter().find_map(|row| match row.kind {
+                    DiagnosticEventKindV1::SpanBegin {
+                        span_id,
+                        stage: DiagnosticStageV1::SqliteWork,
+                        lane: DiagnosticLaneV1(204),
+                        ..
+                    } => Some(span_id),
+                    _ => None,
+                });
+                let terminal = if regressed {
+                    DiagnosticTerminalV1::Error { code: 1 }
+                } else {
+                    DiagnosticTerminalV1::Ok
+                };
+                check!(rows.iter().any(|row| matches!(
+                    row.kind,
+                    DiagnosticEventKindV1::SpanEnd { span_id, outcome }
+                        if Some(span_id) == clock_span && outcome == terminal
+                )));
+                check!(trace_clock.0.load(Ordering::Relaxed) > before);
+            } else {
+                check!(phases.is_empty());
+                check_eq!(trace_clock.0.load(Ordering::Relaxed), before);
+            }
+        }
+        root.finish(DiagnosticTerminalV1::Ok)?;
+    }
+    check_eq!(fixture_pin_count(&catalog)?, 1);
+    clock.set(2_001);
+    catalog.release_ticket(session.as_ref(), ticket.lease)?;
+    Ok(())
+}
+
 fn captured_renewal(
     catalog: &SqliteCatalog,
     grant: &OwnedWorkGrant,

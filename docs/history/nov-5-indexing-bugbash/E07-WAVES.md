@@ -976,4 +976,3 @@ C의 정책 코드·영향 회귀·Large/XL/mixed와 E07의 정식 성능/자원
 판정한다. C만 끝나도 E01–E08 전체 완료가 아니다. 종료 시 README E07·VALIDATION을
 최종 source와 맞추고 기존 E08에 결과를 인계한다. 필수 FAILED/BLOCKED/NOT_RUN을
 감춘 완료 선언이나 새 미구현 후보의 반복 발급은 하지 않는다.
-

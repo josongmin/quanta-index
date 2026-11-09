@@ -1,6 +1,5 @@
 //! One changed Native segment, split into independently readable bodies and postings.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use quanta_index_contract::ManifestGeneration;
@@ -72,7 +71,29 @@ impl BuiltSegment {
         let proved = builder.finish()?;
         // This verifier derives exact gram and position relations from raw
         // normalized bodies, without using the posting builder as an oracle.
-        proved.verify_semantics(0, Path::new("text-authority-segment"), "changed-segment")?;
+        let mut terms = Vec::new();
+        proved.verify_semantics_with_verified_terms(
+            0,
+            Path::new("text-authority-segment"),
+            "changed-segment",
+            |mode, term, entries| {
+                let (surface, index) = match mode {
+                    CaseMode::Sensitive => (TERM_RAW, &proved.positions),
+                    CaseMode::Folded => (TERM_FOLDED, &proved.positions_folded),
+                };
+                let locals =
+                    posting_locals(entries.iter().map(|(id, _positions)| *id), docs.len())?;
+                let raw = index.raw_postings(term).ok_or_else(|| {
+                    CoreError::InvalidContract("lexical: Native term lacks positions".into())
+                })?;
+                terms.push(BuiltPosting {
+                    surface,
+                    key: term.as_bytes().to_vec(),
+                    bytes: encode_posting(segment_key, surface, &locals, Some(raw))?,
+                });
+                Ok(())
+            },
+        )?;
         let descriptor = SegmentDescriptor {
             id: segment_key,
             logical_ids: docs.iter().map(|doc| doc.doc_id).collect(),
@@ -128,32 +149,85 @@ impl BuiltSegment {
                 });
             }
         }
-        let mut terms = Vec::new();
-        for (surface, index, mode) in [
-            (TERM_RAW, &proved.positions, CaseMode::Sensitive),
-            (TERM_FOLDED, &proved.positions_folded, CaseMode::Folded),
-        ] {
-            let expected = independent_term_members(&proved.docs_by_id, mode)?;
-            for term in index.terms() {
-                let locals = expected.get(term).ok_or_else(|| {
-                    CoreError::InvalidContract("lexical: Native term lacks source members".into())
-                })?;
-                let raw = index.raw_postings(term).ok_or_else(|| {
-                    CoreError::InvalidContract("lexical: Native term lacks positions".into())
-                })?;
-                terms.push(BuiltPosting {
-                    surface,
-                    key: term.as_bytes().to_vec(),
-                    bytes: encode_posting(segment_key, surface, locals, Some(raw))?,
-                });
-            }
-        }
         Ok(Self {
             descriptor,
             bodies,
             grams,
             terms,
         })
+    }
+}
+
+#[cfg(test)]
+mod verified_term_tests {
+    use quanta_index_contract::{ManifestGeneration, RepoId, RepoRelativePath, SourceFileKey};
+
+    use super::{BuiltPosting, BuiltSegment, TERM_FOLDED, TERM_RAW};
+    use crate::text_authority::types::AddedTextDoc;
+
+    fn posting<'a>(segment: &'a BuiltSegment, surface: u8, term: &str) -> &'a BuiltPosting {
+        segment
+            .terms
+            .iter()
+            .find(|row| row.surface == surface && row.key == term.as_bytes())
+            .expect("verified term posting")
+    }
+
+    #[test]
+    fn verified_raw_and_folded_members_keep_fixed_position_bytes() {
+        let source_file = SourceFileKey {
+            source_repo_id: RepoId::new("source-repo").expect("repo"),
+            repo_relative_path: RepoRelativePath::new("src/terms.rs"),
+        };
+        let docs = [
+            AddedTextDoc {
+                doc_id: 1,
+                source_file: source_file.clone(),
+                candidate_id: "first".into(),
+                text: "CAFÉ cafe\u{301} red red".into(),
+            },
+            AddedTextDoc {
+                doc_id: 2,
+                source_file,
+                candidate_id: "second".into(),
+                text: "café RED".into(),
+            },
+        ];
+        let segment =
+            BuiltSegment::build(7, ManifestGeneration::new(1), &docs).expect("verified segment");
+        assert!(segment.terms.windows(2).all(|rows| {
+            (rows[0].surface, rows[0].key.as_slice()) < (rows[1].surface, rows[1].key.as_slice())
+        }));
+        for (surface, term, locals, raw) in [
+            (TERM_RAW, "CAFÉ", vec![0], vec![1, 0, 1, 0]),
+            (TERM_RAW, "café", vec![0, 1], vec![2, 0, 1, 1, 1, 1, 0]),
+            (
+                TERM_FOLDED,
+                "café",
+                vec![0, 1],
+                vec![2, 0, 2, 0, 1, 1, 1, 0],
+            ),
+            (TERM_FOLDED, "red", vec![0, 1], vec![2, 0, 2, 2, 1, 1, 1, 1]),
+        ] {
+            let row = posting(&segment, surface, term);
+            let (version, id, actual_surface, actual_locals, actual_raw): (
+                u16,
+                u64,
+                u8,
+                Vec<u32>,
+                Option<Vec<u8>>,
+            ) = crate::channel_payloads::decode_cbor_exact(&row.bytes)
+                .expect("canonical posting tuple");
+            assert_eq!((version, id, actual_surface), (1, 7, surface));
+            assert_eq!(actual_locals, locals);
+            assert_eq!(actual_raw, Some(raw));
+        }
+        assert!(
+            !segment
+                .terms
+                .iter()
+                .any(|row| row.surface == TERM_FOLDED && row.key == "CAFÉ".as_bytes())
+        );
     }
 }
 
@@ -176,26 +250,6 @@ fn posting_locals(
         locals.push(local);
     }
     Ok(locals)
-}
-
-fn independent_term_members(
-    docs: &BTreeMap<u64, crate::text_authority::shard::TextAuthorityDoc>,
-    mode: CaseMode,
-) -> Result<BTreeMap<String, Vec<u32>>, CoreError> {
-    let mut terms = BTreeMap::<String, Vec<u32>>::new();
-    for (id, doc) in docs {
-        let local = u32::try_from(*id).map_err(|error| {
-            CoreError::InvalidContract(format!("lexical: Native term local ID width: {error}"))
-        })?;
-        let mut unique = BTreeSet::new();
-        for token in normalize::tokenize(&doc.indexed_text, mode).indexable() {
-            let _inserted = unique.insert(token.text.clone());
-        }
-        for term in unique {
-            terms.entry(term).or_default().push(local);
-        }
-    }
-    Ok(terms)
 }
 
 fn encode_posting(

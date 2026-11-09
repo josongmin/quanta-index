@@ -225,5 +225,3 @@ def test_successor_config_failure_does_not_accept_old_epoch() -> None:
         sampler.sample()
     assert sampler.report()["custody"] == "FAILED"
     assert len(sampler.report()["daemon_epochs"]) == 1
-
-

@@ -180,8 +180,8 @@ impl CallbackTiming {
         };
         let initial = claim();
         let claimed = if needs_writes.get() {
-            // Only lazy scratch pays a second TLS claim. Eager Catalog and
-            // Off keep the original single-claim callback path.
+            // A pending Scratch or top-level Catalog scope pays a second TLS
+            // claim. Nested eager Catalog and Off keep the single-claim path.
             needs_writes.set(false);
             ensure_writes(owner);
             claim()

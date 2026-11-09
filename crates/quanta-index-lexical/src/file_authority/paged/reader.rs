@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::lexical_store::{BlobRef, ObjectKind, ObjectStore};
 
 use super::run_postings::{
-    RunGramCount, RunPostingPage, RunPostingRoot, run_page_key, run_page_prefix, run_route_key,
+    RunGramCount, RunPostingRoot, run_page_key, run_page_prefix, run_route_key,
 };
 use super::{AuthorityRoot, LiveDoc, SourceHead, doc_key, policy_digest, source_key_digest};
 use crate::file_authority::query::PostingSurface;
@@ -449,48 +449,39 @@ impl PagedFileAuthority {
                     return Err(corrupt("run route differs from posting root"));
                 }
                 let mut observed = 0_u64;
-                self.store.map_scan(
-                    &run.pages,
-                    &lower,
-                    upper.as_deref(),
-                    Some(budget),
-                    &mut |page_key, page_ref| {
+                let mut pages =
+                    run.page_cursor(&self.store, &lower, upper.as_deref(), Some(budget))?;
+                while let Some((page_key, page_ref, page)) = pages.next_with(&mut || {
+                    self.charge_query_io_since(work, &mut io_before)?;
+                    work.charge_paged_probe(super::super::policy())
+                })? {
+                    self.charge_query_io_since(work, &mut io_before)?;
+                    if page_ref.root.kind != ObjectKind::Record {
+                        return Err(corrupt("run posting page kind differs"));
+                    }
+                    if page.key()?.as_slice() != page_key.as_slice() {
+                        return Err(corrupt("run posting map key differs"));
+                    }
+                    let rows = size_u64(page.rows.len())?;
+                    observed = observed
+                        .checked_add(rows)
+                        .ok_or_else(|| corrupt("run route row count overflow"))?;
+                    work.charge_paged_ids(super::super::policy(), rows)?;
+                    for row in page.rows {
+                        let current =
+                            live_doc(&self.store, &self.root, row.logical_id, Some(budget))?;
                         self.charge_query_io_since(work, &mut io_before)?;
-                        work.charge_paged_probe(super::super::policy())?;
-                        if page_ref.root.kind != ObjectKind::Record {
-                            return Err(corrupt("run posting page kind differs"));
+                        if current
+                            .is_some_and(|locator| locator.segment_sha256 == row.segment_sha256)
+                        {
+                            ids.try_reserve(1).map_err(|error| {
+                                CoreError::Storage(format!("reserve run candidate ID: {error}"))
+                            })?;
+                            ids.push(row.logical_id);
                         }
-                        let page = RunPostingPage::decode(&self.store.read_blob(
-                            page_ref,
-                            size_u64(super::MAX_POSTING_PAGE_BYTES)?,
-                            Some(budget),
-                        )?)?;
-                        self.charge_query_io_since(work, &mut io_before)?;
-                        if page.key()?.as_slice() != page_key {
-                            return Err(corrupt("run posting map key differs"));
-                        }
-                        let rows = size_u64(page.rows.len())?;
-                        observed = observed
-                            .checked_add(rows)
-                            .ok_or_else(|| corrupt("run route row count overflow"))?;
-                        work.charge_paged_ids(super::super::policy(), rows)?;
-                        for row in page.rows {
-                            let current =
-                                live_doc(&self.store, &self.root, row.logical_id, Some(budget))?;
-                            self.charge_query_io_since(work, &mut io_before)?;
-                            if current
-                                .is_some_and(|locator| locator.segment_sha256 == row.segment_sha256)
-                            {
-                                ids.try_reserve(1).map_err(|error| {
-                                    CoreError::Storage(format!("reserve run candidate ID: {error}"))
-                                })?;
-                                ids.push(row.logical_id);
-                            }
-                        }
-                        self.charge_query_io_since(work, &mut io_before)?;
-                        Ok(())
-                    },
-                )?;
+                    }
+                    self.charge_query_io_since(work, &mut io_before)?;
+                }
                 if observed != count.count {
                     return Err(corrupt("run route count differs from posting pages"));
                 }
@@ -556,20 +547,14 @@ impl PagedFileAuthority {
             if run.run_id != run_id {
                 return Err(corrupt("candidate run posting ID differs"));
             }
-            let Some(page_ref) = self.store.map_get(&run.pages, &page_key, Some(budget))? else {
-                self.charge_query_io_since(work, &mut io_before)?;
+            let page = run.page_at(&self.store, &page_key, Some(budget))?;
+            self.charge_query_io_since(work, &mut io_before)?;
+            let Some((page_ref, page)) = page else {
                 continue;
             };
-            self.charge_query_io_since(work, &mut io_before)?;
             if page_ref.root.kind != ObjectKind::Record {
                 return Err(corrupt("filtered run page kind differs"));
             }
-            let page = RunPostingPage::decode(&self.store.read_blob(
-                &page_ref,
-                size_u64(super::MAX_POSTING_PAGE_BYTES)?,
-                Some(budget),
-            )?)?;
-            self.charge_query_io_since(work, &mut io_before)?;
             if page.key()? != page_key {
                 return Err(corrupt("filtered run page key differs"));
             }
@@ -936,7 +921,7 @@ mod tests {
     use crate::file_authority::{QueryWork, policy, query_physical_read_limit};
     use crate::lexical_allocation::DocVersionReservation;
     use crate::lexical_runs::RunRegistry;
-    use crate::lexical_store::{AttemptBinding, MapEdit, MapRoot};
+    use crate::lexical_store::{AttemptBinding, MAP_LEAF_MAX_DEPENDENCIES, MapEdit, MapRoot};
     use quanta_index_contract::{
         RepoId, RepoRelativePath, RevisionId, SourceFileCoverage, SymbolCoverage,
         SymbolNameSourcePolicyV1,
@@ -957,7 +942,7 @@ mod tests {
             format: 17,
         };
         let lease = store.begin_attempt(&binding, &[]).expect("attempt");
-        let edits = (0..128)
+        let mut edits: Vec<_> = (0..2)
             .map(|index| {
                 let bytes = if index == 0 {
                     b"rare alpha beta file000".to_vec()
@@ -985,25 +970,51 @@ mod tests {
                 }
             })
             .collect();
+        let unrelated_edit = edits.pop().expect("unrelated edit");
         let mutation = FileAuthorityMutation {
             edits,
             clear_all: false,
             operations_sha256: binding.operations_sha256,
         };
         let reservation = DocVersionReservation {
-            first: 129,
-            count: 128,
+            first: 255,
+            count: 1,
             scope_sha256: [5; 32],
         };
-        let built = build_for_seal(&store, &lease, None, &reservation, &mutation).expect("build");
-        let selected = live_doc(&store, &built.root, 129, None)
+        let first = build_for_seal(&store, &lease, None, &reservation, &mutation)
+            .expect("build selected run");
+        let second_lease = store
+            .begin_attempt(
+                &AttemptBinding {
+                    target_generation: 2,
+                    source_event_sha256: [4; 32],
+                    ..binding
+                },
+                &first.root.object_roots(),
+            )
+            .expect("second attempt");
+        let built = build_for_seal(
+            &store,
+            &second_lease,
+            Some(&first.root),
+            &DocVersionReservation {
+                first: 256,
+                ..reservation
+            },
+            &FileAuthorityMutation {
+                edits: vec![unrelated_edit],
+                ..mutation
+            },
+        )
+        .expect("build unrelated run");
+        let selected = live_doc(&store, &built.root, 255, None)
             .expect("selected")
             .expect("selected row");
         let unrelated = live_doc(&store, &built.root, 256, None)
             .expect("unrelated")
             .expect("unrelated row");
         assert_ne!(selected.segment_sha256, unrelated.segment_sha256);
-        let selected_page = run_page_key(2, *b"alp", 129).expect("selected bucket");
+        let selected_page = run_page_key(2, *b"alp", 255).expect("selected bucket");
         let unrelated_page = run_page_key(2, *b"alp", 256).expect("unrelated bucket");
         assert_ne!(selected_page, unrelated_page);
         let run_id = built
@@ -1016,20 +1027,33 @@ mod tests {
             .expect("run lookup")
             .expect("run posting root");
         let run = RunPostingRoot::load(&store, &run_ref, None).expect("run posting root read");
-        let posting = store
-            .map_get(&run.pages, &unrelated_page, None)
+        let (posting, page) = run
+            .page_at(&store, &unrelated_page, None)
             .expect("posting lookup")
             .expect("posting");
-        let page = RunPostingPage::decode(
-            &store
-                .read_blob(
-                    &posting,
-                    size_u64(super::super::MAX_POSTING_PAGE_BYTES).expect("page bound"),
-                    None,
-                )
-                .expect("posting read"),
-        )
-        .expect("posting decode");
+        let selected_run_id = built
+            .root
+            .run_registry
+            .owner_run_id(&store, selected.segment_sha256, None)
+            .expect("selected owner run");
+        let selected_run_ref = store
+            .map_get(
+                &built.root.run_postings,
+                &selected_run_id.to_be_bytes(),
+                None,
+            )
+            .expect("selected run lookup")
+            .expect("selected run posting root");
+        let selected_run =
+            RunPostingRoot::load(&store, &selected_run_ref, None).expect("selected posting root");
+        let (selected_posting, _) = selected_run
+            .page_at(&store, &selected_page, None)
+            .expect("selected posting lookup")
+            .expect("selected posting");
+        assert_ne!(
+            selected_posting.root, posting.root,
+            "selected and unrelated pages share one physical block"
+        );
         assert!(page.rows.iter().any(|row| row.logical_id == 256));
         let mut hex = String::with_capacity(64);
         for byte in &posting.root.sha256 {
@@ -1062,7 +1086,7 @@ mod tests {
                     &RequestBudgetV1::unbounded()
                 )
                 .expect("restricted query"),
-            Some(vec![129])
+            Some(vec![255])
         );
         assert!(matches!(
             authority.necessary_candidates(
@@ -1093,8 +1117,9 @@ mod tests {
             format: 17,
         };
         let lease = store.begin_attempt(&binding, &[]).expect("attempt");
+        let route_count = MAP_LEAF_MAX_DEPENDENCIES + 1;
         let mut edits = Vec::new();
-        for count in 1_u64..=97 {
+        for count in 1..=u64::try_from(route_count).expect("fixture route count") {
             let record = RunGramCount {
                 surface: 2,
                 gram: *b"alp",
@@ -1118,7 +1143,10 @@ mod tests {
         let routes = store
             .map_apply(&lease, &MapRoot::default(), edits.into_iter().map(Ok))
             .expect("route map");
-        assert_eq!(routes.entries, 97);
+        assert_eq!(
+            routes.entries,
+            u64::try_from(route_count).expect("fixture route count")
+        );
         assert!(routes.page.as_ref().is_some_and(|page| page.height > 0));
 
         // Calibrate the leaf boundary through the map reader, independently
@@ -1139,7 +1167,7 @@ mod tests {
                 },
             )
             .expect("calibrate route pages");
-        assert_eq!(route_page_reads.len(), 97);
+        assert_eq!(route_page_reads.len(), route_count);
         let first_leaf_rows = route_page_reads
             .windows(2)
             .position(|pair| matches!(pair, [previous, next] if next > previous))

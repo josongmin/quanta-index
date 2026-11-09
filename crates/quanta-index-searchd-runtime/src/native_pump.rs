@@ -729,6 +729,7 @@ fn run_retention_due(
         Arc::clone(&dispatcher.maintenance_scheduler),
         dispatcher.control_need,
     ) else {
+        driver.record_admission_refusal();
         let denial = dispatcher.maintenance_scheduler.denial();
         return if denial == IndexError::ResourceLimited {
             Ok(())

@@ -1,6 +1,8 @@
 //! Bounded preflight and exact array custody for the canonical Literal record.
 
-use std::{fmt, ops::Deref};
+use std::fmt;
+#[cfg(test)]
+use std::ops::Deref;
 
 use quanta_index_core::index::{
     IndexError, MemoryLease, MemoryLifetime, ObjectRef, StoredObject, WorkBudget,
@@ -13,22 +15,26 @@ use serde::{
 
 use super::literal_grams::{MAX_GRAMS, PreparedGrams};
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Contribution {
     pub(super) record: ObjectRef,
     pub(super) grams: Vec<[u8; 3]>,
 }
+#[cfg(test)]
 quanta_index_contract::native_serde_struct!(Contribution {
     record: ObjectRef,
     grams: Vec<[u8; 3]>,
 });
 
+#[cfg(test)]
 pub(super) struct LoadedContribution {
     value: Contribution,
     // Data is destroyed before its live charge, including parse/error unwind.
     _memory: Option<MemoryLease>,
 }
 
+#[cfg(test)]
 impl LoadedContribution {
     pub(super) fn new(record: ObjectRef, data: PreparedGrams) -> Self {
         let (grams, memory) = data.into_parts();
@@ -39,6 +45,7 @@ impl LoadedContribution {
     }
 }
 
+#[cfg(test)]
 impl Deref for LoadedContribution {
     type Target = Contribution;
     fn deref(&self) -> &Self::Target {
@@ -229,6 +236,7 @@ fn parse(
 
 /// Validate the object envelope and its exact source dependency before creating
 /// the gram array. Raw payload decoding is not a production read boundary.
+#[cfg(test)]
 pub(super) fn load(
     reference: ObjectRef,
     objects: &dyn ImmutableObjectPort,
@@ -284,6 +292,7 @@ fn decode_payload(bytes: &[u8], budget: &WorkBudget) -> Result<LoadedContributio
     materialize(bytes, budget, &layout)
 }
 
+#[cfg(test)]
 fn materialize(
     bytes: &[u8],
     budget: &WorkBudget,
@@ -306,7 +315,13 @@ fn materialize(
 /// complete record under the same bounded preflight without materializing it.
 fn record(bytes: &[u8], budget: &WorkBudget) -> Result<ObjectRef, IndexError> {
     let _parser_memory = reserve_parser(bytes, budget)?;
-    Ok(parse(bytes, budget, None, None)?.record)
+    let layout = parse(bytes, budget, None, None)?;
+    if layout.grams.count > MAX_GRAMS || layout.grams.data.is_some() {
+        return Err(IndexError::BackendViolation(
+            "literal contribution preflight returned invalid layout".into(),
+        ));
+    }
+    Ok(layout.record)
 }
 
 fn reserve_parser(bytes: &[u8], budget: &WorkBudget) -> Result<Option<MemoryLease>, IndexError> {

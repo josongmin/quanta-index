@@ -84,6 +84,7 @@ closed_names!(DiagnosticStageV1, known_stage_name, is_known_stage;
     DiagnosticStageV1::ManagedObjectReserve => "managed_object_reserve",
     DiagnosticStageV1::ManagedObjectInstall => "managed_object_install",
     DiagnosticStageV1::ManagedObjectConfirm => "managed_object_confirm",
+    DiagnosticStageV1::ManagedObjectAdvance => "managed_object_advance",
     DiagnosticStageV1::NativePublish => "native_publish",
     DiagnosticStageV1::FilePublish => "file_publish",
     DiagnosticStageV1::LexicalSeal => "lexical_seal",
@@ -121,6 +122,7 @@ closed_names!(DiagnosticStageV1, known_stage_name, is_known_stage;
     DiagnosticStageV1::NativeTextInventoryRead => "native_text_inventory_read",
     DiagnosticStageV1::NativeTextOccurrenceRead => "native_text_occurrence_read",
     DiagnosticStageV1::NativeTextPostingEdit => "native_text_posting_edit",
+    DiagnosticStageV1::MapApply => "map_apply",
 );
 
 closed_names!(DiagnosticCounterV1, known_counter_name, is_known_counter;
@@ -188,6 +190,9 @@ closed_names!(DiagnosticCounterV1, known_counter_name, is_known_counter;
     DiagnosticCounterV1::PostingMutations => "posting_mutations",
     DiagnosticCounterV1::MapPageMutations => "map_page_mutations",
     DiagnosticCounterV1::ManagedObjectInputs => "managed_object_inputs",
+    DiagnosticCounterV1::MapRootReuseCandidates => "map_root_reuse_candidates",
+    DiagnosticCounterV1::MapRootReuses => "map_root_reuses",
+    DiagnosticCounterV1::MapRootBuilds => "map_root_builds",
     DiagnosticCounterV1::TextOccurrencePriorValidationAttempts => "text_occurrence_prior_validation_attempts",
     DiagnosticCounterV1::TextOccurrenceNextValidationAttempts => "text_occurrence_next_validation_attempts",
     DiagnosticCounterV1::TextOccurrenceRamReuses => "text_occurrence_ram_reuses",
@@ -477,6 +482,10 @@ mod tests {
         assert_eq!(
             known_stage_name(DiagnosticStageV1::ManagedObjectInstall),
             Some("managed_object_install")
+        );
+        assert_eq!(
+            known_stage_name(DiagnosticStageV1::ManagedObjectAdvance),
+            Some("managed_object_advance")
         );
         let stage = json!([
             "e",

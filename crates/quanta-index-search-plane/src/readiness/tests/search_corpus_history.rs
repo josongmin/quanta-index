@@ -372,7 +372,7 @@ fn integrity_fault_restore_preserves_history_under_proven_physical_upper_bound()
         let (_directory, store, repo, revision) =
             history_for_faulted_restore(fault, Some(300), 400, 800)?;
         let mut ledger = Ledger::new();
-        store.restore_search_corpus_history_into(&mut ledger)?;
+        store.restore_into(&mut ledger)?;
         for number in 1..=2 {
             let generation = ManifestGeneration::new(number);
             assert!(
@@ -438,7 +438,7 @@ fn integrity_fault_restore_refuses_unproved_or_over_limit_physical_bound() -> Te
             pair_max,
             total_max,
         )?;
-        let result = store.restore_search_corpus_history_into(&mut Ledger::new());
+        let result = store.restore_into(&mut Ledger::new());
         assert!(
             matches!(&result, Err(CoreError::Typed { code, .. }) if *code == expected_code),
             "invalid physical upper bound was accepted: {result:?}"
@@ -458,7 +458,7 @@ fn integrity_fault_restore_refuses_unproved_or_over_limit_physical_bound() -> Te
 fn restore_never_converts_storage_failure_to_content_fallback() -> TestResult {
     let (_directory, store, repo, revision) =
         history_for_faulted_restore(RestoreMeasurementFault::Storage, Some(300), 400, 800)?;
-    let result = store.restore_search_corpus_history_into(&mut Ledger::new());
+    let result = store.restore_into(&mut Ledger::new());
     assert!(matches!(&result, Err(CoreError::Storage(_))), "{result:?}");
     for number in 1..=2 {
         assert!(
@@ -478,7 +478,7 @@ fn restore_does_not_convert_unsupported_persisted_format_to_content_fallback() -
         400,
         800,
     )?;
-    let result = store.restore_search_corpus_history_into(&mut Ledger::new());
+    let result = store.restore_into(&mut Ledger::new());
     assert!(matches!(
         &result,
         Err(CoreError::Typed {
@@ -663,7 +663,7 @@ fn restore_reuses_complete_single_candidate_measurement() -> TestResult {
         }),
     )?;
     let mut restored = Ledger::new();
-    reader.restore_search_corpus_history_into(&mut restored)?;
+    reader.restore_into(&mut restored)?;
     assert_eq!(measurements.load(Ordering::SeqCst), 1);
     restored.validate_historically_sealed_track_identity(
         &GenerationSnapshot {
@@ -705,7 +705,7 @@ fn restore_over_pair_count_limit_still_plans_and_reaps() -> TestResult {
         }),
     )?;
     let mut restored = Ledger::new();
-    reader.restore_search_corpus_history_into(&mut restored)?;
+    reader.restore_into(&mut restored)?;
     assert_eq!(
         *measured_sets.lock().map_err(|error| error.to_string())?,
         vec![
@@ -796,7 +796,7 @@ fn absent_retained_generation_cannot_displace_a_healthy_rollback_record() -> Tes
         })
     ));
     let mut restored = Ledger::new();
-    store.restore_search_corpus_history_into(&mut restored)?;
+    store.restore_into(&mut restored)?;
     for number in 1..=2 {
         assert!(
             store
@@ -2633,6 +2633,77 @@ fn persistent_measurement_busy_uses_one_original_deadline() -> TestResult {
     assert!(original_expired);
     assert!(bytes.root_probes.load(Ordering::SeqCst) >= 1);
     assert_candidate_absent_nofollow_v1(&path)?;
+    Ok(())
+}
+
+#[test]
+fn held_retention_locks_expire_before_snapshot_and_allow_later_retry() -> TestResult {
+    for hold_pair in [true, false] {
+        let directory = tempdir()?;
+        let bytes = Arc::new(AdmissionRetryIndexBytesV1::new(
+            AdmissionMeasurementFaultV1::Success,
+            Duration::from_millis(200),
+        )?);
+        let store = open_retry_authority_v1(directory.path(), Arc::clone(&bytes))?;
+        let repo = RepoId::new(if hold_pair {
+            "held-retention-pair"
+        } else {
+            "held-retention-root"
+        })?;
+        let revision = RevisionId::new("revision")?;
+        let generation = ManifestGeneration::new(1);
+        let path = store.search_corpus_authority_path(&repo, &revision, generation);
+        bytes.bind_candidate_path(path.clone())?;
+        let pair_guard = hold_pair
+            .then(|| store.lifecycle_coordinator.lock_pair(&repo, &revision))
+            .transpose()?;
+        let root_guard = (!hold_pair)
+            .then(|| {
+                store
+                    .search_corpus_root_lock
+                    .lock()
+                    .map_err(|_error| "root lock poisoned")
+            })
+            .transpose()?;
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker_store = Arc::clone(&store);
+        let worker_repo = repo.clone();
+        let worker_revision = revision.clone();
+        let worker = thread::spawn(move || {
+            let _sent = started_tx.send(());
+            let result = worker_store.record_sealed_search_corpus(
+                &worker_repo,
+                &worker_revision,
+                generation,
+                "digest-1",
+            );
+            let _sent = result_tx.send(result);
+        });
+        started_rx.recv_timeout(Duration::from_secs(1))?;
+        let timed_result = result_rx.recv_timeout(Duration::from_secs(1));
+        drop(root_guard);
+        drop(pair_guard);
+        worker
+            .join()
+            .map_err(|_panic| "retention worker panicked")?;
+        let result = timed_result?;
+        assert!(matches!(
+            result,
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                ..
+            })
+        ));
+        assert_eq!(bytes.pair_probes.load(Ordering::SeqCst), 0);
+        assert_eq!(bytes.root_probes.load(Ordering::SeqCst), 0);
+        assert_candidate_absent_nofollow_v1(&path)?;
+
+        let receipt =
+            store.record_sealed_search_corpus(&repo, &revision, generation, "digest-1")?;
+        assert!(receipt.retains(generation));
+        assert!(std::fs::symlink_metadata(&path)?.is_file());
+    }
     Ok(())
 }
 

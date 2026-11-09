@@ -911,6 +911,7 @@ fn parse_go_test_trace_file(
         failure_excerpt: failure_excerpt
             .ok_or_else(|| CliError::usage("missing --failure-excerpt".to_string()))?,
         failure_source_repo_id,
+        failure_module_context: None,
         top_k: file_top_k.ok_or_else(|| CliError::usage("missing --file-top-k".to_string()))?,
     };
     request

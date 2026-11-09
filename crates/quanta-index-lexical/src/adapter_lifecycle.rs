@@ -13,7 +13,7 @@ use crate::sealed_generation::{
 use crate::{GenKey, LexicalAdapter};
 use quanta_index_contract::{
     GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchCorpusIngestBatch,
-    SearchPlaneTrackKind,
+    SearchPlaneErrorCodeV2, SearchPlaneTrackKind,
 };
 use quanta_index_core::domains::generation::{
     GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
@@ -30,6 +30,7 @@ use quanta_index_core::{
 };
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
+use std::sync::{MutexGuard, RwLockReadGuard, TryLockError};
 
 impl GenerationNamespaceReadPort for LexicalAdapter {
     fn generation_namespace_is_empty(
@@ -172,20 +173,61 @@ impl SealedGenerationIdentityProbePort for LexicalAdapter {
 }
 
 impl LexicalAdapter {
+    fn try_maintenance_mutation(
+        &self,
+        key: &GenKey,
+    ) -> Result<Option<MutexGuard<'_, ()>>, CoreError> {
+        let stripe = self.generation_mutation_stripe(key)?;
+        let mutex = self
+            .generation_mutations
+            .get(stripe)
+            .ok_or_else(|| CoreError::Storage("lexical mutation stripe outside table".into()))?;
+        match mutex.try_lock() {
+            Ok(guard) => Ok(Some(guard)),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Poisoned(error)) => Err(CoreError::Storage(format!(
+                "lexical mutation lock poisoned: {error}"
+            ))),
+        }
+    }
+
+    fn try_maintenance_lifecycle(&self) -> Result<Option<RwLockReadGuard<'_, ()>>, CoreError> {
+        match self.directory_lifecycle.try_read() {
+            Ok(guard) => Ok(Some(guard)),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Poisoned(error)) => Err(CoreError::Storage(format!(
+                "lexical directory lifecycle lock poisoned: {error}"
+            ))),
+        }
+    }
+
     fn scrub_with_fence(
         &self,
         generation: &GenerationSnapshot,
         cursor: Option<IntegrityScrubCursorV1>,
         budget: IntegrityScrubBudgetV1,
         before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
+        defer_if_busy: bool,
     ) -> Result<IntegrityScrubReportV1, CoreError> {
         let key = GenKey {
             repo_id: generation.repo_id.clone(),
             revision_id: generation.revision_id.clone(),
             generation: generation.manifest_generation,
         };
-        let _mutation = self.generation_mutation_guard(&key)?;
-        let lifecycle = self.directory_lifecycle_read_guard()?;
+        let busy = || CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+            message: "lexical background scrub: generation custody is busy".into(),
+        };
+        let (_mutation, lifecycle) = if defer_if_busy {
+            let mutation = self.try_maintenance_mutation(&key)?.ok_or_else(busy)?;
+            let lifecycle = self.try_maintenance_lifecycle()?.ok_or_else(busy)?;
+            (mutation, lifecycle)
+        } else {
+            (
+                self.generation_mutation_guard(&key)?,
+                self.directory_lifecycle_read_guard()?,
+            )
+        };
         let (generation_dir, observed) = self.sealed_generation_dir_for(generation, "scrub")?;
         let mut progress = self.scrub_progress.lock().map_err(|error| {
             CoreError::Storage(format!("lexical scrub progress poisoned: {error}"))
@@ -409,8 +451,9 @@ impl LexicalAdapter {
         key: &GenKey,
         candidate: &GenerationSnapshot,
         batch: &SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
     ) -> Result<(), CoreError> {
-        batch.validate_v1().map_err(|error| {
+        owner.validate_batch_shape(batch).map_err(|error| {
             CoreError::InvalidContract(format!("pending lexical discard batch: {error}"))
         })?;
         if candidate.track != SearchPlaneTrackKind::Lexical
@@ -460,15 +503,9 @@ impl LexicalAdapter {
             "lexical source event",
         )?)
         .into();
-        let operations_sha256 =
-            quanta_index_contract::source_event_payload_sha256(batch).map_err(|error| {
-                CoreError::InvalidContract(format!("pending lexical discard body: {error}"))
-            })?;
-        let format =
-            u16::try_from(crate::lexical_root_names::LEXICAL_SEALED_MANIFEST_FORMAT_VERSION)
-                .map_err(|_width| {
-                    CoreError::InvalidContract("lexical format exceeds u16".into())
-                })?;
+        // Shape validation proved this commitment over this exact batch.
+        let operations_sha256 = batch.source_event.payload_sha256;
+        let format = crate::lexical_root_names::LEXICAL_PUBLICATION_ATTEMPT_FORMAT_VERSION;
         let _preserved = store.preserve_target_attempt_for_pending_batch(
             (
                 Sha256::digest(key.repo_id.as_str().as_bytes()).into(),
@@ -513,7 +550,9 @@ impl IntegrityScrubPort for LexicalAdapter {
                 };
             if !pending.is_empty() {
                 let candidates = {
-                    let _inventory_fence = self.directory_lifecycle_read_guard()?;
+                    let Some(_inventory_fence) = self.try_maintenance_lifecycle()? else {
+                        return Ok(SharedObjectCollectionStepV1::Paused);
+                    };
                     inventory_sealed_generations(&self.state_root)?.sealed
                 };
                 for candidate in candidates {
@@ -531,15 +570,23 @@ impl IntegrityScrubPort for LexicalAdapter {
                         revision_id: identity.revision_id.clone(),
                         generation: identity.manifest_generation,
                     };
-                    let _mutation = self.generation_mutation_guard(&key)?;
-                    let _namespace = self.directory_lifecycle_read_guard()?;
+                    // A queued background claim can acquire these guards just
+                    // as retention releases its pair proof for the root census.
+                    let Some(_mutation) = self.try_maintenance_mutation(&key)? else {
+                        return Ok(SharedObjectCollectionStepV1::Paused);
+                    };
+                    let Some(_namespace) = self.try_maintenance_lifecycle()? else {
+                        return Ok(SharedObjectCollectionStepV1::Paused);
+                    };
                     if sealed_identity_entry_present(&candidate.path)? {
                         self.settle_published_adoptions(identity)?;
                         return Ok(quanta_index_core::SharedObjectCollectionStepV1::Paused);
                     }
                 }
             }
-            let lifecycle = self.directory_lifecycle_read_guard()?;
+            let Some(lifecycle) = self.try_maintenance_lifecycle()? else {
+                return Ok(SharedObjectCollectionStepV1::Paused);
+            };
             match std::fs::symlink_metadata(self.state_root.join("lexical-object-pool")) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     let inventory = inventory_sealed_generations(&self.state_root)?;
@@ -627,7 +674,7 @@ impl IntegrityScrubPort for LexicalAdapter {
         cursor: Option<IntegrityScrubCursorV1>,
         budget: IntegrityScrubBudgetV1,
     ) -> Result<IntegrityScrubReportV1, CoreError> {
-        self.scrub_with_fence(generation, cursor, budget, &|_| Ok(()))
+        self.scrub_with_fence(generation, cursor, budget, &|_| Ok(()), false)
     }
 
     fn scrub_with_quarantine_fence(
@@ -637,7 +684,7 @@ impl IntegrityScrubPort for LexicalAdapter {
         budget: IntegrityScrubBudgetV1,
         before_quarantine: &dyn Fn(&GenerationSnapshot) -> Result<(), CoreError>,
     ) -> Result<IntegrityScrubReportV1, CoreError> {
-        self.scrub_with_fence(generation, cursor, budget, before_quarantine)
+        self.scrub_with_fence(generation, cursor, budget, before_quarantine, true)
     }
 }
 
@@ -790,6 +837,31 @@ impl IncompleteGenerationDiscardPort for LexicalAdapter {
         candidate: &GenerationSnapshot,
         pending_batch: Option<&SearchCorpusIngestBatch>,
     ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError> {
+        self.discard_incomplete_with_owner(
+            candidate,
+            pending_batch,
+            &mut quanta_index_core::PublicationValidationOwner::default(),
+        )
+    }
+
+    fn discard_pending_generation_with_owner(
+        &self,
+        candidate: &GenerationSnapshot,
+        batch: &SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+    ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError> {
+        owner.bind_batch(batch)?;
+        self.discard_incomplete_with_owner(candidate, Some(batch), owner)
+    }
+}
+
+impl LexicalAdapter {
+    fn discard_incomplete_with_owner(
+        &self,
+        candidate: &GenerationSnapshot,
+        pending_batch: Option<&SearchCorpusIngestBatch>,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+    ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError> {
         if candidate.track != SearchPlaneTrackKind::Lexical {
             return Err(CoreError::InvalidContract(format!(
                 "lexical incomplete-generation discard received {:?} track",
@@ -805,7 +877,7 @@ impl IncompleteGenerationDiscardPort for LexicalAdapter {
             .generation_build_guards(&key, pending_batch.and_then(|batch| batch.base_generation))?;
         let _lifecycle = self.directory_lifecycle_guard()?;
         if let Some(batch) = pending_batch {
-            self.preserve_pending_target_adoptions(&key, candidate, batch)?;
+            self.preserve_pending_target_adoptions(&key, candidate, batch, owner)?;
         }
         let generation_dir = self.index_path(&key);
         let mut writers = self
@@ -1174,10 +1246,7 @@ mod pending_discard_tests {
             target_generation: batch.generation.get(),
             base_root_sha256: None,
             operations_sha256: source_event_payload_sha256(batch).expect("body digest"),
-            format: u16::try_from(
-                crate::lexical_root_names::LEXICAL_SEALED_MANIFEST_FORMAT_VERSION,
-            )
-            .expect("format width"),
+            format: crate::lexical_root_names::LEXICAL_PUBLICATION_ATTEMPT_FORMAT_VERSION,
         }
     }
 

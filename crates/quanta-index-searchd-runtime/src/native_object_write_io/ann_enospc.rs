@@ -7,6 +7,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{Read as _, Write as _},
     os::unix::fs::MetadataExt as _,
+    path::PathBuf,
     sync::{
         Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -573,6 +574,16 @@ impl ObjectWriteTicket for FaultTicket {
     fn creation_started(&mut self) -> Result<(), IndexError> {
         self.inner.creation_started()
     }
+    fn open_declared_temp(&mut self) -> Result<Option<File>, IndexError> {
+        self.inner.open_declared_temp()
+    }
+    fn publish_declared_temp(
+        &mut self,
+        writer: &File,
+        final_path: &Path,
+    ) -> Result<Option<bool>, IndexError> {
+        self.inner.publish_declared_temp(writer, final_path)
+    }
     fn created(&mut self, writer: &File) -> Result<(), IndexError> {
         self.inner.created(writer)?;
         match &self.mode {
@@ -644,8 +655,11 @@ impl ObjectWriteTicket for FaultTicket {
         }
         result
     }
-    fn synced(self: Box<Self>) -> Result<(), IndexError> {
-        self.inner.synced()
+    fn synced(
+        self: Box<Self>,
+        directories: quanta_index_core::index::ObjectWriteSyncDirectories,
+    ) -> Result<(), IndexError> {
+        self.inner.synced(directories)
     }
 }
 

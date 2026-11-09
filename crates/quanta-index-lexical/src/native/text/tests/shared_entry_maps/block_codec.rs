@@ -6,14 +6,27 @@ use super::*;
 use quanta_index_core::index::StagedObjectBatch;
 
 // Nine one-byte keys make Block canonical: Small can hold at most eight.
-const NINE_KEYS: &[u8] = b"QITXEM01\x00\x09\x00\x00\x00\x01a\x00\x01b\x00\x01c\x00\x01d\x00\x01e\x00\x01f\x00\x01g\x00\x01h\x00\x01i";
-const EMPTY_FIRST: &[u8] = b"QITXEM01\x00\x09\x00\x00\x00\x00\x00\x01a\x00\x01b\x00\x01c\x00\x01d\x00\x01e\x00\x01f\x00\x01g\x00\x01h";
+const NINE_KEYS: &[u8] = b"QITXEM02\x00\x09\x00\x08\x00\x01a\x00\x00\x00\x01b\x00\x01\x00\x01c\x00\x01\x00\x01d\x00\x02\x00\x01e\x00\x03\x00\x01f\x00\x04\x00\x01g\x00\x05\x00\x01h\x00\x06\x00\x01i\x00\x07";
+const EMPTY_FIRST: &[u8] = b"QITXEM02\x00\x09\x00\x08\x00\x00\x00\x00\x00\x01a\x00\x01\x00\x01b\x00\x01\x00\x01c\x00\x02\x00\x01d\x00\x03\x00\x01e\x00\x04\x00\x01f\x00\x05\x00\x01g\x00\x06\x00\x01h\x00\x07";
+
+fn nine_values() -> Vec<ObjectRef> {
+    vec![
+        reference(1),
+        reference(2),
+        reference(2), // The third row aliases the second child's slot.
+        reference(4),
+        reference(5),
+        reference(6),
+        reference(7),
+        reference(8),
+        reference(9),
+    ]
+}
 
 fn nine_children() -> Vec<ObjectRef> {
     vec![
         reference(1),
         reference(2),
-        reference(2), // Repeated child edges retain both ordinals.
         reference(4),
         reference(5),
         reference(6),
@@ -25,16 +38,16 @@ fn nine_children() -> Vec<ObjectRef> {
 
 fn gold_rows() -> BTreeMap<Vec<u8>, ObjectRef> {
     (b'a'..=b'i')
-        .zip(nine_children())
+        .zip(nine_values())
         .map(|(key, value)| (vec![key], value))
         .collect()
 }
 
 #[test]
-fn staged_writer_matches_handwritten_wire_and_repeated_edges() -> Result<(), IndexError> {
+fn staged_writer_matches_handwritten_wire_and_unique_children() -> Result<(), IndexError> {
     let mut work = budget()?;
     let mut draft = BlockDraft::new(&work)?;
-    for (key, value) in (b'a'..=b'i').zip(nine_children()) {
+    for (key, value) in (b'a'..=b'i').zip(nine_values()) {
         check!(draft.push(&[key], value, &mut work)?);
     }
     let mut batch = StagedObjectBatch::new(1, &work)?;
@@ -75,7 +88,7 @@ fn draft_row_and_payload_limits_return_overflow_without_extra_input() -> Result<
             .ok_or(IndexError::ResourceLimited)?
             .children
             .len(),
-        512
+        1
     );
 
     let mut bytes = BlockDraft::new(&work)?;
@@ -91,6 +104,53 @@ fn draft_row_and_payload_limits_return_overflow_without_extra_input() -> Result<
 }
 
 #[test]
+fn five_hundred_twelve_rows_can_use_five_hundred_twelve_unique_children() -> Result<(), IndexError>
+{
+    let mut work = entry_budget()?;
+    let mut draft = BlockDraft::new(&work)?;
+    let mut expected = b"QITXEM02\x02\x00\x02\x00".to_vec();
+    let mut children = Vec::new();
+    for ordinal in 0_u16..512 {
+        let key = ordinal.to_be_bytes();
+        let mut digest = [0_u8; 32];
+        digest
+            .get_mut(..2)
+            .ok_or(IndexError::ResourceLimited)?
+            .copy_from_slice(
+                &ordinal
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?
+                    .to_be_bytes(),
+            );
+        let child = ObjectRef(Digest(digest));
+        check!(draft.push(&key, child, &mut work)?);
+        children.push(child);
+        expected.extend_from_slice(b"\x00\x02");
+        expected.extend_from_slice(&key);
+        expected.extend_from_slice(&ordinal.to_be_bytes());
+    }
+    check_eq!(expected.len(), 3_084);
+    let mut batch = StagedObjectBatch::new(1, &work)?;
+    let slot = draft.stage(&mut batch, &work)?;
+    let input = batch
+        .inputs()
+        .get(slot)
+        .ok_or(IndexError::ResourceLimited)?;
+    check_eq!(input.payload.as_slice(), expected.as_slice());
+    check_eq!(input.children.as_slice(), children.as_slice());
+    let objects = CanonicalObjects::default();
+    let maps = ModelMaps::default();
+    let root = objects.insert_wire(&expected, &children, &mut work)?;
+    for ordinal in [0_u16, 255, 256, 511] {
+        check_eq!(
+            EntryMap::Block(root).lookup(&objects, &maps, &ordinal.to_be_bytes(), &mut work)?,
+            children.get(usize::from(ordinal)).copied()
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn handwritten_wire_has_exact_child_ordinals_and_full_read_behavior() -> Result<(), IndexError> {
     let objects = CanonicalObjects::default();
     let maps = ModelMaps::default();
@@ -102,9 +162,9 @@ fn handwritten_wire_has_exact_child_ordinals_and_full_read_behavior() -> Result<
     check_eq!(
         root,
         ObjectRef(Digest([
-            0xb2, 0xd1, 0xb1, 0x6d, 0xc0, 0xa5, 0x1e, 0x2a, 0x60, 0x2d, 0x88, 0xe9, 0xe3, 0x5b,
-            0x6c, 0x7c, 0x7b, 0x63, 0x4c, 0x18, 0x05, 0x65, 0x7a, 0xe2, 0xc0, 0x9a, 0xeb, 0x3f,
-            0x58, 0xed, 0x4b, 0x2e,
+            0x38, 0x44, 0x60, 0xf4, 0x8c, 0xde, 0x0f, 0x58, 0xe3, 0x1e, 0x76, 0x3c, 0x21, 0x44,
+            0xe9, 0x11, 0x9f, 0x91, 0x52, 0x59, 0x46, 0xef, 0x9d, 0xfc, 0x15, 0x80, 0x26, 0xfe,
+            0xd5, 0x65, 0x71, 0x71,
         ]))
     );
     let map = EntryMap::Block(root);
@@ -189,11 +249,16 @@ fn malformed_or_noncanonical_block_is_rejected_before_first_hit_or_page() -> Res
         .ok_or(IndexError::ResourceLimited)?
         .copy_from_slice(&0_u16.to_be_bytes());
     failures.push((zero_rows, children.clone()));
-    let mut bad_reserved = NINE_KEYS.to_vec();
-    *bad_reserved
+    let mut zero_children = NINE_KEYS.to_vec();
+    *zero_children
         .get_mut(11)
-        .ok_or(IndexError::ResourceLimited)? = 1;
-    failures.push((bad_reserved, children.clone()));
+        .ok_or(IndexError::ResourceLimited)? = 0;
+    failures.push((zero_children, children.clone()));
+    let mut too_many_children = NINE_KEYS.to_vec();
+    *too_many_children
+        .get_mut(11)
+        .ok_or(IndexError::ResourceLimited)? = 9;
+    failures.push((too_many_children, children.clone()));
     let mut declared_ten = NINE_KEYS.to_vec();
     declared_ten
         .get_mut(8..10)
@@ -201,8 +266,35 @@ fn malformed_or_noncanonical_block_is_rejected_before_first_hit_or_page() -> Res
         .copy_from_slice(&10_u16.to_be_bytes());
     failures.push((declared_ten, children.clone()));
     let mut late_order = NINE_KEYS.to_vec();
-    *late_order.last_mut().ok_or(IndexError::ResourceLimited)? = b'a';
+    let last_key = late_order
+        .len()
+        .checked_sub(3)
+        .ok_or(IndexError::ResourceLimited)?;
+    *late_order
+        .get_mut(last_key)
+        .ok_or(IndexError::ResourceLimited)? = b'a';
     failures.push((late_order, children.clone()));
+    let mut out_of_range = NINE_KEYS.to_vec();
+    *out_of_range.last_mut().ok_or(IndexError::ResourceLimited)? = 8;
+    failures.push((out_of_range, children.clone()));
+    let mut noncanonical_first_use = NINE_KEYS.to_vec();
+    // Row b is the first use after slot zero. Slot two skips slot one.
+    *noncanonical_first_use
+        .get_mut(21)
+        .ok_or(IndexError::ResourceLimited)? = 2;
+    failures.push((noncanonical_first_use, children.clone()));
+    let mut unused_child = NINE_KEYS.to_vec();
+    *unused_child
+        .get_mut(11)
+        .ok_or(IndexError::ResourceLimited)? = 9;
+    let mut extra_child = children.clone();
+    extra_child.push(reference(10));
+    failures.push((unused_child, extra_child));
+    let mut duplicate_children = children.clone();
+    *duplicate_children
+        .get_mut(7)
+        .ok_or(IndexError::ResourceLimited)? = reference(8);
+    failures.push((NINE_KEYS.to_vec(), duplicate_children));
     let mut trailing = NINE_KEYS.to_vec();
     trailing.push(0);
     failures.push((trailing, children.clone()));
@@ -220,13 +312,13 @@ fn malformed_or_noncanonical_block_is_rejected_before_first_hit_or_page() -> Res
     failures.push((
         NINE_KEYS.to_vec(),
         children
-            .get(..8)
+            .get(..7)
             .ok_or(IndexError::ResourceLimited)?
             .to_vec(),
     ));
     let mut swapped_children = children.clone();
-    swapped_children.swap(7, 8);
-    // A valid permutation changes content identity and positional values; it
+    swapped_children.swap(6, 7);
+    // A valid permutation changes content identity and selected values; it
     // cannot silently decode as the gold map or borrow its old root identity.
     let mut work = budget()?;
     let gold = objects.insert_wire(NINE_KEYS, &children, &mut work)?;
@@ -242,11 +334,11 @@ fn malformed_or_noncanonical_block_is_rejected_before_first_hit_or_page() -> Res
     );
     // One short key must use Small, even if the wire is otherwise well formed.
     failures.push((
-        b"QITXEM01\x00\x01\x00\x00\x00\x01a".to_vec(),
+        b"QITXEM02\x00\x01\x00\x01\x00\x01a\x00\x00".to_vec(),
         vec![reference(1)],
     ));
     failures.push((
-        b"QITXEM01\x00\x01\x00\x00\x00\x00".to_vec(),
+        b"QITXEM02\x00\x01\x00\x01\x00\x00\x00\x00".to_vec(),
         vec![reference(1)],
     ));
     for (payload, children) in failures {

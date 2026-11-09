@@ -201,6 +201,34 @@ fn one_block_ref_has_two_independent_term_counts_and_positions() -> Result<(), I
 }
 
 #[test]
+fn packed_load_requires_a_checked_block() -> Result<(), IndexError> {
+    let (mut budget, tracker) = funded(100_000, None, None)?;
+    let block_ref = reference(21);
+    let leaf_ref = reference(22);
+    let port = ProbePort::new(
+        vec![
+            (block_ref, object(block_ref, DISTINCT_TF, &budget)?),
+            (leaf_ref, object(leaf_ref, LEAF, &budget)?),
+        ],
+        RetainedReply::Same,
+    );
+    let mut reader = OccurrenceReader::new(1)?;
+    let packed = reader.load_packed(block_ref, b"\0beta", &port, &mut budget)?;
+    require(packed.positions.0.as_slice() == [7], "packed beta differs")?;
+    require(
+        matches!(
+            reader.load_packed(leaf_ref, b"\0beta", &port, &mut budget),
+            Err(IndexError::CorruptObject(_))
+        ),
+        "packed inventory accepted scalar leaf",
+    )?;
+    drop(packed);
+    drop(reader);
+    drop(port);
+    cleaned(&tracker)
+}
+
+#[test]
 fn leaf_reads_remain_uncached_and_typed_as_leaf() -> Result<(), IndexError> {
     let (mut budget, tracker) = funded(100_000, None, None)?;
     let key = reference(2);

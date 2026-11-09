@@ -236,6 +236,17 @@ fn map_bootstrap_delta_absence_cursor_and_changed_key_oracle() {
     });
     let base = store.map_bootstrap(&lease, rows).expect("bootstrap");
     assert_eq!(base.entries, 500);
+    let duplicate_at_split = (0..256_u32).chain(std::iter::once(255)).map(|number| {
+        Ok(MapEdit {
+            key: key(number),
+            value: Some(value.clone()),
+        })
+    });
+    assert!(matches!(
+        store.map_bootstrap(&lease, duplicate_at_split),
+        Err(quanta_index_core::CoreError::InvalidContract(message))
+            if message.ends_with("bootstrap keys are not strictly sorted")
+    ));
     assert_eq!(
         store.map_get(&base, &key(150), None).expect("present"),
         Some(value.clone())

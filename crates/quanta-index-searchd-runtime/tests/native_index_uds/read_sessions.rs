@@ -50,6 +50,7 @@ fn read_session_service(
         }],
         sequence_window: 1,
         page_limit: 8,
+        custody_page_limit: 8,
         interval: Duration::from_millis(20),
         round_timeout: Duration::from_secs(2),
         work_limits: work_limits(),
@@ -207,6 +208,10 @@ fn retained_text_session_survives_floor_and_releases_original_catalog_pin() -> T
         assert_eq!(renewed.revision, 2);
         assert_eq!(client.renew_read_session(&opened, &budget())?, renewed);
         assert_eq!(client.read_session_status(&opened, &budget())?, renewed);
+        assert_eq!(
+            client.open_read_session(ViewSelection::Exact(held_view), [9; 32], &budget())?,
+            renewed
+        );
         let other =
             client.open_read_session(ViewSelection::Exact(held_view), [10; 32], &budget())?;
 
@@ -286,6 +291,10 @@ fn retained_text_session_survives_floor_and_releases_original_catalog_pin() -> T
         let (released, remaining) = client.release_read_session(&renewed, &budget())?;
         assert_eq!(released.state, NativeReadSessionState::Released);
         assert!(remaining);
+        assert_eq!(
+            client.open_read_session(ViewSelection::Exact(held_view), [9; 32], &budget())?,
+            released
+        );
         let waiting = client.read_session_settlement(&released, &budget())?;
         assert_eq!(waiting.state, NativeReadSettlementState::Pending);
         assert!(waiting.has_remaining_target_pins);
@@ -380,6 +389,10 @@ fn expired_and_shutdown_read_sessions_release_real_pins() -> TestResult {
             }
             std::thread::sleep(Duration::from_millis(20));
         };
+        assert_eq!(
+            client.open_read_session(ViewSelection::Exact(configured), [1; 32], &budget())?,
+            swept
+        );
         // Expiry cleanup removed the pin, but it did not commit this client's
         // Release. Neither an ACK replay nor settlement may invent that event.
         match client.release_read_session(&expired, &budget()) {

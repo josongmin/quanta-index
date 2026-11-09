@@ -6,8 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use quanta_index_contract::{
-    ExactRepoRelativePathV1, GenerationPin, GoTestTraceSourceFramesV1, LexicalCandidate, RepoId,
-    SourceFileKey,
+    ExactRepoRelativePathV1, GenerationPin, GoTestTraceModuleContextV1, GoTestTraceSourceFramesV1,
+    LexicalCandidate, RepoId, SourceFileKey,
 };
 
 use crate::{domains::semantic::SemanticPolicy, error::CoreError};
@@ -60,6 +60,23 @@ impl TraceFileEvidenceV1 {
         }
     }
 
+    /// Use an exact module-cache frame from the raw panic stack. The caller
+    /// must have checked the module version against the frozen source pin.
+    #[must_use]
+    pub fn from_go_test_module_cache_panic(
+        text: &str,
+        failure_source_repo_id: RepoId,
+        module: &GoTestTraceModuleContextV1,
+    ) -> Self {
+        let source_frames = GoTestTraceSourceFramesV1::from_module_cache_panic(text, module)
+            .paths()
+            .clone();
+        Self {
+            source_frames,
+            failure_source_repo_id: Some(failure_source_repo_id),
+        }
+    }
+
     #[must_use]
     pub fn frame_class(&self) -> TraceSourceFrameClassV1 {
         match self.source_frames.len() {
@@ -106,10 +123,12 @@ pub struct TraceFileRankPolicyV1;
 
 impl TraceFileRankPolicyV1 {
     /// Rank distinct files from two complete, individually ranked SDK lanes.
-    /// Go production source files precede tests/docs; a query-bound parsed
-    /// source-frame hint precedes other source files; file RRF breaks remaining
-    /// ties, followed by lexical presence and path. No label or lane raw-score
-    /// threshold participates. The original chunk RRF endpoint is unchanged.
+    /// An exact, owner-bound frame hint precedes file RRF. Without that hint,
+    /// files rank only by file RRF, lexical presence, and file identity. The
+    /// Go production-source flag is reported as metadata and never changes
+    /// rank. A parsed frame is a query hint, not verified stack authority.
+    /// No label or lane raw-score threshold participates. The original chunk
+    /// RRF endpoint is unchanged.
     pub fn rank_go_test_failure(
         pin: &GenerationPin,
         lexical: &[LexicalCandidate],
@@ -167,9 +186,8 @@ impl TraceFileRankPolicyV1 {
             .collect::<Vec<_>>();
         files.sort_by(|left, right| {
             right
-                .production_source
-                .cmp(&left.production_source)
-                .then(right.source_frame.cmp(&left.source_frame))
+                .source_frame
+                .cmp(&left.source_frame)
                 .then(right.file_rrf_score.total_cmp(&left.file_rrf_score))
                 .then(right.lexical.is_some().cmp(&left.lexical.is_some()))
                 .then(left.key.file.cmp(&right.key.file))
@@ -338,7 +356,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             paths,
-            ["tree.go", "render/data.go", "README.md", "tree_test.go"]
+            ["tree.go", "README.md", "render/data.go", "tree_test.go"]
         );
         let tree = &hits[0];
         assert_eq!(tree.lexical.as_ref().map(|w| w.file_rank), Some(2));
@@ -349,9 +367,9 @@ mod tests {
             tree.file_rrf_score,
             HybridOrchestratorPolicy::rrf_score([2, 2])
         );
-        assert_eq!(hits[1].lexical, None);
-        assert_eq!(hits[1].representative().candidate_id, "dense-1");
-        assert_eq!(hits[1].key.pin, pin());
+        assert_eq!(hits[2].lexical, None);
+        assert_eq!(hits[2].representative().candidate_id, "dense-1");
+        assert_eq!(hits[2].key.pin, pin());
     }
 
     #[test]
@@ -365,6 +383,94 @@ mod tests {
                 .expect("ranked files");
         assert_eq!(hits[0].key.file.repo_relative_path.as_str(), "src/lex.go");
         assert_eq!(hits[1].key.file.repo_relative_path.as_str(), "src/dense.go");
+    }
+
+    #[test]
+    fn unanchored_test_and_document_files_follow_file_rrf_above_go_source() {
+        let lexical = [
+            candidate("test", "src/main_test.go", 3.0),
+            candidate("readme", "README.md", 2.0),
+            candidate("source", "src/main.go", 1.0),
+        ];
+        let dense = [
+            candidate("test-dense", "src/main_test.go", 0.9),
+            candidate("readme-dense", "README.md", 0.8),
+        ];
+        let evidence = TraceFileEvidenceV1::from_go_test_failure_text("panic", None);
+        let hits =
+            TraceFileRankPolicyV1::rank_go_test_failure(&pin(), &lexical, &dense, &evidence, 3)
+                .expect("file RRF");
+        assert_eq!(
+            hits.iter()
+                .map(|hit| hit.key.file.repo_relative_path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/main_test.go", "README.md", "src/main.go"]
+        );
+        assert_eq!(hits[0].file_rrf_score, 2.0 / 61.0);
+        assert_eq!(hits[1].file_rrf_score, 2.0 / 62.0);
+        assert_eq!(hits[2].file_rrf_score, 1.0 / 63.0);
+        assert!(!hits[0].production_source);
+        assert!(hits[2].production_source);
+    }
+
+    #[test]
+    fn unanchored_file_rrf_does_not_prioritize_go_or_path_classes() {
+        let lexical = vec![
+            candidate("example-a", "_examples/a.go", 7.0),
+            candidate("doc", "doc.go", 6.0),
+            candidate("example-b", "examples/b.go", 5.0),
+            candidate("ordinary", "src/main.go", 4.0),
+            candidate("similar-name", "internal_examples/main.go", 3.0),
+            candidate("readme", "README.md", 2.0),
+            candidate("test", "src/main_test.go", 1.0),
+        ];
+        let dense = vec![
+            candidate("dense-example-a", "_examples/a.go", 0.9),
+            candidate("dense-doc", "doc.go", 0.8),
+            candidate("dense-example-b", "examples/b.go", 0.7),
+        ];
+        let unanchored =
+            TraceFileEvidenceV1::from_go_test_failure_text("src/main_test.go:8: failure", None);
+        let hits =
+            TraceFileRankPolicyV1::rank_go_test_failure(&pin(), &lexical, &dense, &unanchored, 7)
+                .expect("ranked files");
+        let paths = hits
+            .iter()
+            .map(|hit| hit.key.file.repo_relative_path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            [
+                "_examples/a.go",
+                "doc.go",
+                "examples/b.go",
+                "src/main.go",
+                "internal_examples/main.go",
+                "README.md",
+                "src/main_test.go",
+            ]
+        );
+        assert_eq!(hits[0].file_rrf_score, 2.0 / 61.0);
+        assert_eq!(hits[1].file_rrf_score, 2.0 / 62.0);
+        assert_eq!(hits[2].file_rrf_score, 2.0 / 63.0);
+        assert!(hits[0].production_source);
+        assert!(!hits[5].production_source);
+        assert!(!hits[6].production_source);
+
+        let anchored = TraceFileEvidenceV1::from_go_test_failure_text(
+            "examples/b.go:12: failure",
+            Some(pin().repo_id),
+        );
+        let anchored_hits =
+            TraceFileRankPolicyV1::rank_go_test_failure(&pin(), &lexical, &dense, &anchored, 7)
+                .expect("owner-bound frame");
+        assert_eq!(
+            anchored_hits[0].key.file.repo_relative_path.as_str(),
+            "examples/b.go"
+        );
+        assert!(anchored_hits[0].source_frame);
+        assert!(anchored_hits[0].production_source);
+        assert_eq!(anchored_hits[0].file_rrf_score, 2.0 / 63.0);
     }
 
     #[test]

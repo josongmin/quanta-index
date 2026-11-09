@@ -228,10 +228,9 @@ fn off_and_foreign_write_callbacks_do_not_sample_or_bleed_into_record() -> TestR
     }
     let _finished = root.finish(DiagnosticTerminalV1::Ok);
     let rows = rows(&events)?;
-    let span = write_span(&rows)?;
     require(
-        counter(&rows, span, DiagnosticCounterV1::SqliteWriteAdmissionCalls) == Some(0),
-        "foreign or Off callback bled into Record denominator",
+        write_span(&rows).is_err(),
+        "foreign or Off callback opened a Record write aggregate",
     )?;
     require(
         !health(&rows, DiagnosticHealthCodeV1::ForeignCaptureSpan),

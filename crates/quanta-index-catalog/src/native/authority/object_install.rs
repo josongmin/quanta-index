@@ -138,18 +138,6 @@ pub(super) fn checked_object(object: &RegisteredObject) -> Result<RegisteredObje
     canonical_object(object)
 }
 
-/// Retain the exact metadata bytes used to enforce the canonical size bound.
-///
-/// This is local encoding data, not a reservation or registration proof.
-fn checked_payload(object: &RegisteredObject) -> Result<(RegisteredObject, Vec<u8>), IndexError> {
-    let canonical = canonical_object(object)?;
-    let payload = encode_registration(&canonical)?;
-    if payload.len() > MAX_METADATA_BYTES {
-        return Err(IndexError::ResourceLimited);
-    }
-    Ok((canonical, payload))
-}
-
 /// Metadata and checksum share one guarded `SQLite` row.
 ///
 /// The caller admits owned decoding before it occurs; no payload/checksum copy or shape probe is
@@ -284,7 +272,8 @@ pub(super) fn reserve(
     connection: &Transaction<'_>,
     object: &RegisteredObject,
 ) -> Result<(), IndexError> {
-    if try_reserve_new(connection, object)?.is_none() {
+    let (write, _) = try_reserve_new(connection, object)?;
+    if matches!(write, ReservationWrite::Existing) {
         require_reserved(connection, object)?;
     }
     Ok(())
@@ -295,35 +284,37 @@ pub(super) const RESERVE_NEW_SQL: &str =
      SELECT ?1,?2,?3 WHERE NOT EXISTS(SELECT 1 FROM native_object_v1 WHERE object=?1)
      ON CONFLICT(object) DO NOTHING";
 
+pub(super) enum ReservationWrite {
+    Inserted,
+    Existing,
+}
+
 /// The conditional insert preserves the permanent-row probe, but replaces a
 /// separate provisional-absence probe with the primary-key insertion itself.
 ///
-/// Returns the exact canonical payload only for a newly inserted reservation.
-/// None never authenticates an existing row; callers must fully validate it.
+/// Returns the input encoding for intent binding even when a row already exists.
+/// The encoding carries no custody proof. Callers must authenticate existing rows.
 /// Callers return on any error and drop the whole transaction. For constraints
 /// governed by this conflict policy, ROLLBACK makes that refusal immediate;
 /// the named primary-key DO NOTHING remains the idempotent replay path.
 pub(super) fn try_reserve_new(
     connection: &Transaction<'_>,
     object: &RegisteredObject,
-) -> Result<Option<Vec<u8>>, IndexError> {
-    let (canonical, payload) = checked_payload(object)?;
-    let key = object_key(canonical.reference);
+) -> Result<(ReservationWrite, Vec<u8>), IndexError> {
+    let payload = encode_registration(object)?;
+    let key = object_key(object.reference);
+    let checksum = digest(b"qidx.native.install.v1", &payload);
     let inserted = cached_execute(
         connection,
         RESERVE_NEW_SQL,
-        params![
-            &key,
-            &payload,
-            digest(b"qidx.native.install.v1", &payload).to_vec()
-        ],
+        params![&key, &payload, checksum.as_slice()],
     )
     .map_err(|error| sql(&error))?;
     super::at_most_one(inserted, "reserve provisional object")?;
     if inserted == 0 {
-        return Ok(None);
+        return Ok((ReservationWrite::Existing, payload));
     }
-    let mut children = canonical.children.clone();
+    let mut children = object.children.clone();
     children.sort_unstable();
     children.dedup();
     for child in children {
@@ -340,7 +331,7 @@ pub(super) fn try_reserve_new(
         .map_err(|error| sql(&error))?;
         exactly_one(inserted, "reserve provisional child")?;
     }
-    Ok(Some(payload))
+    Ok((ReservationWrite::Inserted, payload))
 }
 
 /// Authenticate every existing permanent/provisional payload and edge on retry.

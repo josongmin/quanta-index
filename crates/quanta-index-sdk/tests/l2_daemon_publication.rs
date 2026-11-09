@@ -164,6 +164,37 @@ impl Daemon {
             .args(["serve", "--state-root"])
             .arg(root)
             .env("QUANTA_INDEX_EMBEDDER", "hash-dev")
+            // Fixed process-fixture inputs matching the daemon's
+            // TEST_STATE_ROOT_PHYSICAL_POLICY. This SDK test exercises the
+            // separately built executable without linking its runtime.
+            .envs(
+                [
+                    ("MAX_BYTES", "17179869184"),
+                    ("MAX_FILES", "200000"),
+                    ("MAX_PENDING", "100000"),
+                    ("MAX_ENTRIES", "400000"),
+                    ("MAX_DEPTH", "64"),
+                    ("MAX_PENDING_FRAMES", "4096"),
+                    ("MAX_READER_HANDLES", "4096"),
+                    ("MAX_TRACKED_ENTRIES", "100000"),
+                    ("MAX_PROCESS_ROOTS", "256"),
+                    ("GLOBAL_MAX_SQLITE_HANDLES", "8192"),
+                    ("MAINTENANCE_RESERVED_BYTES", "1073741824"),
+                    ("MAINTENANCE_RESERVED_FILES", "1000"),
+                    ("CONTROL_RESERVED_BYTES", "1073741824"),
+                    ("CONTROL_RESERVED_FILES", "10000"),
+                    ("WORK_RESERVED_BYTES", "4294967296"),
+                    ("WORK_RESERVED_FILES", "30000"),
+                    ("HISTORY_RESERVED_BYTES", "1073741824"),
+                    ("HISTORY_RESERVED_FILES", "10000"),
+                    ("DURABLE_CONTROL_FILE_MAX_BYTES", "1048576"),
+                    ("REPOMAP_CONTROL_FILE_MAX_BYTES", "67108864"),
+                    ("REPOMAP_CANDIDATE_FILE_MAX_BYTES", "536870912"),
+                    ("CATALOG_PARENT_RESERVED_BYTES", "2147483648"),
+                    ("CATALOG_PARENT_RESERVED_FILES", "10000"),
+                ]
+                .map(|(name, value)| (format!("QUANTA_INDEX_LEGACY_PHYSICAL_{name}"), value)),
+            )
             .env(
                 "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS",
                 retained_generations.to_string(),

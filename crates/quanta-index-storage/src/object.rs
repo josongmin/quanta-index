@@ -13,10 +13,12 @@ use std::{
 };
 
 use quanta_index_core::index::{
-    Digest, IndexError, MAX_RECLAIM_CHILDREN, ObjectBatchInput, ObjectInstallScope, ObjectRef,
-    RegisteredObject, ScratchSpacePort, StoredObject, WorkBudget, WorkUsage,
+    AttemptRef, Digest, IndexError, MAX_RECLAIM_CHILDREN, ObjectBatchInput, ObjectInstallScope,
+    ObjectRef, ObjectWriteSyncDirectories, RegisteredObject, ScratchSpacePort, StoredObject,
+    WorkBudget, WorkUsage,
     ports::{ImmutableObjectPort, ManagedObjectAuthority, ObjectWriteSink},
 };
+use quanta_index_core::publication_capacity::InodeKey;
 use quanta_index_core::{
     DiagnosticCounterV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
     DiagnosticObjectInstallPhaseV1 as InstallPhase, DiagnosticSpanGuardV1, DiagnosticStageV1,
@@ -54,6 +56,11 @@ use read_io::ObjectIoFile;
 use read_io::ReadWire;
 use write_io::ObjectWriter;
 
+struct SyncedDirectory {
+    _file: File,
+    identity: InodeKey,
+}
+
 const MAGIC: &[u8; 8] = b"QIOBJ001";
 const HASH_DOMAIN: &[u8] = b"quanta-index-immutable-object-v1\0";
 const HEADER_LEN: usize = 16;
@@ -68,8 +75,38 @@ pub(crate) const MAX_BATCH_INPUTS: usize =
 pub(crate) const MAX_INSTALL_BATCH_INPUTS: usize =
     quanta_index_core::index::ports::MAX_OBJECT_INSTALL_BATCH;
 pub(crate) const MAX_BATCH_BYTES: u64 = 64 * 1024 * 1024;
+// Bound live packet backing and the number of installs under one gate union.
+pub(crate) const MAX_PREPARED_INSTALL_GROUPS: usize = 4;
+type InstallGateGuards<'a> = [Option<MutexGuard<'a, ()>>; 256];
+
+#[cfg(target_os = "macos")]
+fn batch_barrier(file: &File) -> Result<(), IndexError> {
+    rustix::fs::fcntl_fullfsync(file)
+        .map_err(|error| IndexError::Storage(format!("full sync immutable object batch: {error}")))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn batch_barrier(_file: &File) -> Result<(), IndexError> {
+    Ok(())
+}
 
 pub(crate) use write_preparation::{AdmittedWire, PreparedObject};
+
+#[derive(Clone, Copy)]
+enum BatchInstallPlan<'a> {
+    Single,
+    Run {
+        attempt: AttemptRef,
+        group: &'a PreparedInstallGroup,
+        reserve: bool,
+        confirm: bool,
+    },
+}
+
+struct PreparedInstallGroup {
+    references: BatchReferences,
+    metadata: RegistrationBatch,
+}
 
 /// A content-addressed object store. Every installed object is immutable and
 /// synced before its reference is returned to a caller.
@@ -180,6 +217,36 @@ impl FileObjectStore {
         }
     }
 
+    fn sync_observed_witness(
+        &self,
+        operation: impl FnOnce() -> Result<SyncedDirectory, IndexError>,
+    ) -> Result<SyncedDirectory, IndexError> {
+        let mut witness = None;
+        self.sync_observed(SyncKind::Directory, || {
+            witness = Some(operation()?);
+            Ok(())
+        })?;
+        witness.ok_or_else(|| {
+            IndexError::BackendViolation("directory sync returned without an FD witness".into())
+        })
+    }
+
+    fn sync_batch_directory_witness(
+        &self,
+        path: &Path,
+        expected_device: Option<u64>,
+    ) -> Result<SyncedDirectory, IndexError> {
+        self.sync_observed_witness(|| {
+            #[cfg(target_os = "macos")]
+            if let Some(device) = expected_device {
+                return sync_directory_plain_witness(path, device);
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = expected_device;
+            sync_directory_witness(path)
+        })
+    }
+
     fn custody_observed(
         &self,
         kind: CustodyKind,
@@ -245,6 +312,7 @@ impl FileObjectStore {
         operation: impl FnOnce(&mut WorkBudget) -> Result<(), IndexError>,
     ) -> Result<(), IndexError> {
         let span = Self::begin_managed_custody_span(budget, stage, inputs);
+        let before = budget.usage();
         let child = span.as_ref().and_then(|span| {
             budget
                 .request()
@@ -255,6 +323,9 @@ impl FileObjectStore {
             let mut scoped = budget.scoped_diagnostic_context(child);
             operation(&mut scoped)
         };
+        if let Some(span) = span.as_ref() {
+            budget.record_diagnostic_usage_delta(before, span);
+        }
         Self::finish_managed_custody_span(span, result)
     }
 
@@ -412,19 +483,24 @@ impl FileObjectStore {
     ) -> Result<MutexGuard<'_, ()>, IndexError> {
         loop {
             budget.checkpoint()?;
-            let gate = self.gates.get(index).ok_or_else(|| {
-                IndexError::BackendViolation("object gate index out of range".into())
-            })?;
-            let lock_result = gate.try_lock();
-            match lock_result {
-                Ok(guard) => return Ok(guard),
-                Err(TryLockError::Poisoned(_)) => {
-                    return Err(IndexError::BackendViolation(
-                        "object mutation gate poisoned".into(),
-                    ));
-                }
-                Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(1)),
+            if let Some(guard) = self.try_lock_gate(index)? {
+                return Ok(guard);
             }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn try_lock_gate(&self, index: usize) -> Result<Option<MutexGuard<'_, ()>>, IndexError> {
+        let gate = self
+            .gates
+            .get(index)
+            .ok_or_else(|| IndexError::BackendViolation("object gate index out of range".into()))?;
+        match gate.try_lock() {
+            Ok(guard) => Ok(Some(guard)),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Poisoned(_)) => Err(IndexError::BackendViolation(
+                "object mutation gate poisoned".into(),
+            )),
         }
     }
 
@@ -507,15 +583,147 @@ impl FileObjectStore {
         sink: &dyn ObjectWriteSink,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
-        #[cfg(target_os = "macos")]
-        let barrier = |file: &File| {
-            rustix::fs::fcntl_fullfsync(file).map_err(|error| {
-                IndexError::Storage(format!("full sync immutable object batch: {error}"))
-            })
+        self.install_prepared_batch_with_barrier(objects, sink, budget, batch_barrier)
+    }
+
+    pub(crate) fn can_run_prepared_installs(&self, sink: &dyn ObjectWriteSink) -> bool {
+        self.authority
+            .as_ref()
+            .is_some_and(|authority| authority.supports_atomic_attempt_advance())
+            && matches!(sink.managed_scope(), Some(ObjectInstallScope::Attempt(_)))
+    }
+
+    pub(crate) fn install_prepared_run(
+        &self,
+        groups: &[&[&PreparedObject]],
+        sink: &dyn ObjectWriteSink,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        if !(2..=MAX_PREPARED_INSTALL_GROUPS).contains(&groups.len()) {
+            return Err(IndexError::ResourceLimited);
+        }
+        let (authority, attempt) = match (self.authority.as_ref(), sink.managed_scope()) {
+            (Some(authority), Some(ObjectInstallScope::Attempt(attempt)))
+                if authority.supports_atomic_attempt_advance() =>
+            {
+                (authority, attempt)
+            }
+            _ => {
+                return Err(IndexError::BackendViolation(
+                    "prepared install run requires atomic attempt advance".into(),
+                ));
+            }
         };
-        #[cfg(not(target_os = "macos"))]
-        let barrier = |_: &File| Ok(());
-        self.install_prepared_batch_with_barrier(objects, sink, budget, barrier)
+        let mut total_bytes = 0u64;
+        for group in groups {
+            if group.is_empty() || group.len() > MAX_INSTALL_BATCH_INPUTS {
+                return Err(IndexError::ResourceLimited);
+            }
+            for object in *group {
+                total_bytes = total_bytes
+                    .checked_add(object.registration.bytes)
+                    .ok_or(IndexError::ResourceLimited)?;
+            }
+        }
+        if total_bytes > MAX_BATCH_BYTES {
+            return Err(IndexError::ResourceLimited);
+        }
+        let mut prepared: [Option<PreparedInstallGroup>; MAX_PREPARED_INSTALL_GROUPS] =
+            std::array::from_fn(|_| None);
+        for (index, group) in groups.iter().enumerate() {
+            // Validate every packet before the first Catalog or filesystem effect.
+            prepared[index] = Some(PreparedInstallGroup {
+                references: BatchReferences::new(group, budget)?,
+                metadata: RegistrationBatch::new(group, budget)?,
+            });
+        }
+        let _gates = self.lock_install_gates(groups, budget)?;
+        for (index, group) in groups.iter().enumerate() {
+            let current = prepared[index].as_ref().ok_or_else(|| {
+                IndexError::BackendViolation("prepared run metadata absent".into())
+            })?;
+            if index > 0 {
+                let previous = prepared[index - 1].as_ref().ok_or_else(|| {
+                    IndexError::BackendViolation("prepared run predecessor absent".into())
+                })?;
+                let confirmed = previous.metadata.as_slice();
+                let next = current.metadata.as_slice();
+                let transition_inputs = confirmed
+                    .len()
+                    .checked_add(next.len())
+                    .ok_or(IndexError::ResourceLimited)?;
+                let mut advance = || {
+                    Self::with_managed_custody_span(
+                        budget,
+                        DiagnosticStageV1::ManagedObjectAdvance,
+                        transition_inputs,
+                        |budget| {
+                            authority.advance_attempt_managed(attempt, confirmed, next, budget)
+                        },
+                    )
+                };
+                match &self.io_observer {
+                    Some(observer) => observer.advance(confirmed.len(), next.len(), advance),
+                    None => advance(),
+                }?;
+            }
+            self.install_prepared_batch_with_barrier_plan(
+                group,
+                sink,
+                budget,
+                batch_barrier,
+                BatchInstallPlan::Run {
+                    attempt,
+                    group: current,
+                    reserve: index == 0,
+                    confirm: index + 1 == groups.len(),
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    fn lock_install_gates<'a>(
+        &'a self,
+        groups: &[&[&PreparedObject]],
+        budget: &WorkBudget,
+    ) -> Result<InstallGateGuards<'a>, IndexError> {
+        let mut needed = [false; 256];
+        for group in groups {
+            for object in *group {
+                needed[Self::gate_index(object.registration.reference)] = true;
+            }
+        }
+        loop {
+            budget.checkpoint()?;
+            match self.try_lock_install_gate_union(&needed, budget)? {
+                Ok(guards) => return Ok(guards),
+                Err(contended) => {
+                    // The failed attempt dropped its entire prefix. Wait for
+                    // only the contended gate before rebuilding the union.
+                    drop(self.lock_gate(contended, budget)?);
+                }
+            }
+        }
+    }
+
+    /// Return the blocked gate index after releasing the acquired prefix.
+    fn try_lock_install_gate_union<'a>(
+        &'a self,
+        needed: &[bool; 256],
+        budget: &WorkBudget,
+    ) -> Result<Result<InstallGateGuards<'a>, usize>, IndexError> {
+        let mut guards = std::array::from_fn(|_| None);
+        for (index, &required) in needed.iter().enumerate() {
+            if required {
+                budget.checkpoint()?;
+                let Some(guard) = self.try_lock_gate(index)? else {
+                    return Ok(Err(index));
+                };
+                guards[index] = Some(guard);
+            }
+        }
+        Ok(Ok(guards))
     }
 
     fn install_prepared_batch_with_barrier(
@@ -524,6 +732,23 @@ impl FileObjectStore {
         sink: &dyn ObjectWriteSink,
         budget: &mut WorkBudget,
         barrier: impl FnOnce(&File) -> Result<(), IndexError>,
+    ) -> Result<(), IndexError> {
+        self.install_prepared_batch_with_barrier_plan(
+            objects,
+            sink,
+            budget,
+            barrier,
+            BatchInstallPlan::Single,
+        )
+    }
+
+    fn install_prepared_batch_with_barrier_plan(
+        &self,
+        objects: &[&PreparedObject],
+        sink: &dyn ObjectWriteSink,
+        budget: &mut WorkBudget,
+        barrier: impl FnOnce(&File) -> Result<(), IndexError>,
+        plan: BatchInstallPlan<'_>,
     ) -> Result<(), IndexError> {
         if objects.is_empty() {
             return Ok(());
@@ -549,37 +774,44 @@ impl FileObjectStore {
                 .ok_or(IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
-        let all_refs = BatchReferences::new(objects, budget)?;
-        let metadata = RegistrationBatch::new(objects, budget)?;
-        let registrations = metadata.as_slice();
-        let referenced_shards = BatchShards::new(&self.objects, registrations, budget)?;
-        let mut gate_indexes = [0; MAX_INSTALL_BATCH_INPUTS];
-        for (slot, object) in gate_indexes.iter_mut().zip(registrations) {
-            *slot = Self::gate_index(object.reference);
-        }
-        let used_indexes = gate_indexes.get_mut(..objects.len()).ok_or_else(|| {
-            IndexError::BackendViolation("batch gate table bounds invalid".into())
-        })?;
-        used_indexes.sort_unstable();
-        let mut gate_guards: [Option<MutexGuard<'_, ()>>; MAX_INSTALL_BATCH_INPUTS] =
-            std::array::from_fn(|_| None);
-        let mut previous_gate = None;
-        for (slot, index) in used_indexes.iter().enumerate() {
-            if previous_gate != Some(*index) {
-                *gate_guards.get_mut(slot).ok_or_else(|| {
-                    IndexError::BackendViolation("batch gate slot bounds invalid".into())
-                })? = Some(self.lock_gate(*index, budget)?);
-                previous_gate = Some(*index);
-            }
-        }
-        let scope = if self.authority.is_some() {
-            Some(sink.managed_scope().ok_or_else(|| {
-                IndexError::BackendViolation("managed installation lacks catalog scope".into())
-            })?)
+        let owned_group = if matches!(plan, BatchInstallPlan::Single) {
+            Some(PreparedInstallGroup {
+                references: BatchReferences::new(objects, budget)?,
+                metadata: RegistrationBatch::new(objects, budget)?,
+            })
         } else {
             None
         };
-        self.reserve_install(sink, scope, registrations, budget, true)?;
+        let group = match plan {
+            BatchInstallPlan::Single => owned_group.as_ref().ok_or_else(|| {
+                IndexError::BackendViolation("batch registration metadata absent".into())
+            })?,
+            BatchInstallPlan::Run { group, .. } => group,
+        };
+        let all_refs = &group.references;
+        let registrations = group.metadata.as_slice();
+        let referenced_shards = BatchShards::new(&self.objects, registrations, budget)?;
+        let _gate_guards = if matches!(plan, BatchInstallPlan::Single) {
+            Some(self.lock_install_gates(&[objects], budget)?)
+        } else {
+            None
+        };
+        let scope = if self.authority.is_some() {
+            Some(match plan {
+                BatchInstallPlan::Single => sink.managed_scope().ok_or_else(|| {
+                    IndexError::BackendViolation("managed installation lacks catalog scope".into())
+                })?,
+                BatchInstallPlan::Run { attempt, .. } => ObjectInstallScope::Attempt(attempt),
+            })
+        } else {
+            None
+        };
+        if matches!(
+            plan,
+            BatchInstallPlan::Single | BatchInstallPlan::Run { reserve: true, .. }
+        ) {
+            self.reserve_install(sink, scope, registrations, budget, true)?;
+        }
         let mut physical =
             PhysicalObservation::new(budget, self.authority.is_some(), objects.len());
         let result: Result<(), IndexError> = {
@@ -607,7 +839,7 @@ impl FileObjectStore {
 
                 #[cfg(target_os = "macos")]
                 let batch_device =
-                    measure_physical(&mut physical, InstallPhase::NamespaceAndCreate, || {
+                    measure_physical(&mut physical, InstallPhase::NamespaceValidation, || {
                         self.validate_store_root()?;
                         Ok::<u64, IndexError>(
                             fs::symlink_metadata(&self.objects)
@@ -616,14 +848,20 @@ impl FileObjectStore {
                         )
                     })?;
                 #[cfg(target_os = "macos")]
+                let expected_writer_device = Some(batch_device);
+                #[cfg(not(target_os = "macos"))]
+                let expected_writer_device = None;
+                #[cfg(target_os = "macos")]
                 let mut barrier_file: Option<ObjectIoFile> = None;
+                #[cfg(target_os = "macos")]
+                let mut barrier_position: Option<usize> = None;
                 let mut pending_writes: [Option<
                     Box<dyn quanta_index_core::index::ObjectWriteTicket>,
                 >; MAX_INSTALL_BATCH_INPUTS] = std::array::from_fn(|_| None);
                 for (position, object) in objects.iter().enumerate() {
                     let (final_path, existing) = measure_physical(
                         &mut physical,
-                        InstallPhase::NamespaceAndCreate,
+                        InstallPhase::NamespaceValidation,
                         || -> Result<_, IndexError> {
                             budget.checkpoint()?;
                             self.validate_store_root()?;
@@ -674,27 +912,13 @@ impl FileObjectStore {
                         })?;
                         continue;
                     }
-                    let mut writer = measure_physical(
+                    let mut writer = self.create_writer_observed(
+                        shard,
+                        &final_path,
+                        object.registration.bytes,
+                        expected_writer_device,
+                        budget,
                         &mut physical,
-                        InstallPhase::NamespaceAndCreate,
-                        || -> Result<_, IndexError> {
-                            let writer = self.create_writer(
-                                shard,
-                                &final_path,
-                                object.registration.bytes,
-                                budget,
-                            )?;
-                            #[cfg(target_os = "macos")]
-                            ensure_same_device(
-                                batch_device,
-                                writer
-                                    .file()?
-                                    .metadata()
-                                    .map_err(|error| storage_error(&error))?
-                                    .dev(),
-                            )?;
-                            Ok(writer)
-                        },
                     )?;
                     measure_physical(&mut physical, InstallPhase::Write, || {
                         self.write_observed(writer.file_mut()?, &object.wire)
@@ -734,16 +958,13 @@ impl FileObjectStore {
                                 &mut physical,
                                 InstallPhase::PublishAndRetire,
                                 || {
-                                    validate_private_file(
-                                        &writer
-                                            .file()?
-                                            .metadata()
-                                            .map_err(|error| storage_error(&error))?,
-                                    )?;
+                                    // Publish already checked that the canonical name
+                                    // is this writer's private, single-link inode.
                                     #[cfg(target_os = "macos")]
                                     {
                                         if barrier_file.is_none() {
                                             barrier_file = Some(ObjectIoFile::Writer(writer));
+                                            barrier_position = Some(position);
                                         } else {
                                             *pending_writes
                                                 .get_mut(position)
@@ -807,19 +1028,22 @@ impl FileObjectStore {
                 // A concurrently installed matching object may not have had its directory
                 // entry synced yet. Every referenced shard must be durable before custody
                 // confirmation, including already-existing objects.
+                let mut shard_witnesses = [None; 256];
+                let objects_witness =
+                    measure_physical(&mut physical, InstallPhase::DirectorySync, || {
+                        let objects = self
+                            .sync_batch_directory_witness(&self.objects, expected_writer_device)?;
+                        for (prefix, shard) in referenced_shards.indexed_iter() {
+                            let witnessed =
+                                self.sync_batch_directory_witness(shard, expected_writer_device)?;
+                            *shard_witnesses
+                                .get_mut(prefix)
+                                .ok_or(IndexError::ResourceLimited)? = Some(witnessed.identity);
+                        }
+                        Ok::<SyncedDirectory, IndexError>(objects)
+                    })?;
                 #[cfg(target_os = "macos")]
                 {
-                    measure_physical(&mut physical, InstallPhase::DirectorySync, || {
-                        self.sync_observed(SyncKind::Directory, || {
-                            sync_directory_plain(&self.objects, batch_device)
-                        })?;
-                        for shard in referenced_shards.iter() {
-                            self.sync_observed(SyncKind::Directory, || {
-                                sync_directory_plain(shard, batch_device)
-                            })?;
-                        }
-                        Ok::<(), IndexError>(())
-                    })?;
                     let file = measure_physical(&mut physical, InstallPhase::Barrier, || {
                         budget.checkpoint()?;
                         let file = barrier_file.ok_or_else(|| {
@@ -840,29 +1064,42 @@ impl FileObjectStore {
                         })?;
                     measure_physical(&mut physical, InstallPhase::Settlement, || {
                         if let Some(ticket) = barrier_ticket {
-                            ticket.synced()?;
+                            let position = barrier_position.ok_or_else(|| {
+                                IndexError::BackendViolation(
+                                    "barrier writer position absent".into(),
+                                )
+                            })?;
+                            let registration = registrations
+                                .get(position)
+                                .ok_or(IndexError::ResourceLimited)?;
+                            ticket.synced(object_sync_directories(
+                                registration,
+                                objects_witness.identity,
+                                &shard_witnesses,
+                            )?)?;
                         }
                         Ok::<(), IndexError>(())
                     })?;
                 }
                 #[cfg(not(target_os = "macos"))]
-                {
-                    let _unused_barrier = barrier;
-                    measure_physical(&mut physical, InstallPhase::DirectorySync, || {
-                        self.sync_observed(SyncKind::Directory, || sync_directory(&self.objects))?;
-                        for shard in referenced_shards.iter() {
-                            self.sync_observed(SyncKind::Directory, || sync_directory(shard))?;
-                        }
-                        Ok::<(), IndexError>(())
-                    })?;
-                }
+                let _unused_barrier = barrier;
                 measure_physical(&mut physical, InstallPhase::Settlement, || {
-                    for ticket in pending_writes.into_iter().flatten() {
-                        ticket.synced()?;
+                    for (position, ticket) in pending_writes.into_iter().enumerate() {
+                        if let Some(ticket) = ticket {
+                            let registration = registrations
+                                .get(position)
+                                .ok_or(IndexError::ResourceLimited)?;
+                            ticket.synced(object_sync_directories(
+                                registration,
+                                objects_witness.identity,
+                                &shard_witnesses,
+                            )?)?;
+                        }
                     }
                     budget.checkpoint()?;
                     Ok::<(), IndexError>(())
                 })?;
+                drop(objects_witness);
                 Ok(())
             })()
         };
@@ -870,7 +1107,14 @@ impl FileObjectStore {
             physical.finish(&result);
         }
         result?;
-        self.confirm_install(sink, scope, registrations, budget, true)
+        if matches!(
+            plan,
+            BatchInstallPlan::Single | BatchInstallPlan::Run { confirm: true, .. }
+        ) {
+            self.confirm_install(sink, scope, registrations, budget, true)
+        } else {
+            Ok(())
+        }
     }
 
     pub(crate) fn put_inner(
@@ -964,9 +1208,10 @@ impl FileObjectStore {
             return Ok((prepared.registration, false));
         }
         let mut sync = ScalarSync::new(self, shard)?;
-        sync.sync_objects(self)?;
-        let mut writer = self.create_writer(shard, &final_path, registration.bytes, budget)?;
-        sync.writer_ready(self, &writer)?;
+        let mut objects_witness = sync.sync_objects(self)?;
+        let mut writer =
+            self.create_writer(shard, &final_path, registration.bytes, None, budget)?;
+        sync.writer_ready(self, &writer, &mut objects_witness)?;
         self.write_observed(writer.file_mut()?, wire)?;
         sync.sync_file(self, &writer)?;
         let written = writer
@@ -976,7 +1221,7 @@ impl FileObjectStore {
         validate_private_file(&written)?;
         match writer.publish(&final_path, &written) {
             Ok(true) => {
-                sync.sync_shard(self, shard)?;
+                let shard_witness = sync.sync_shard(self, shard)?;
                 validate_private_file(
                     &writer
                         .file()?
@@ -985,8 +1230,12 @@ impl FileObjectStore {
                 )?;
                 sync.finish_barrier(self, &writer, barrier)?;
                 if let Some(ticket) = writer.retire()? {
-                    ticket.synced()?;
+                    ticket.synced(ObjectWriteSyncDirectories {
+                        objects: objects_witness.identity,
+                        shard: shard_witness,
+                    })?;
                 }
+                drop(objects_witness);
                 if let Some(sink) = sink {
                     self.confirm_install(
                         sink,
@@ -1032,37 +1281,87 @@ impl FileObjectStore {
         shard: &Path,
         target: &Path,
         max_bytes: u64,
+        expected_device: Option<u64>,
         budget: &mut WorkBudget,
     ) -> Result<ObjectWriter, IndexError> {
+        self.create_writer_observed(shard, target, max_bytes, expected_device, budget, &mut None)
+    }
+
+    fn create_writer_observed(
+        &self,
+        shard: &Path,
+        target: &Path,
+        max_bytes: u64,
+        expected_device: Option<u64>,
+        budget: &mut WorkBudget,
+        physical: &mut Option<PhysicalObservation>,
+    ) -> Result<ObjectWriter, IndexError> {
         let Some(io) = &self.write_io else {
-            let (file, path) = self.create_temp(shard)?;
-            return Ok(ObjectWriter::new(file, path, None));
+            return measure_physical(physical, InstallPhase::WriterCreate, || {
+                let (file, path) = self.create_temp(shard)?;
+                let writer = ObjectWriter::new(file, path, None);
+                #[cfg(target_os = "macos")]
+                if let Some(device) = expected_device {
+                    ensure_same_device(
+                        device,
+                        writer
+                            .file()?
+                            .metadata()
+                            .map_err(|error| storage_error(&error))?
+                            .dev(),
+                    )?;
+                }
+                #[cfg(not(target_os = "macos"))]
+                let _ = expected_device;
+                Ok(writer)
+            });
         };
-        validate_private_directory(shard)?;
-        let path = self.next_temp_path(shard)?;
-        let mut ticket = io.begin(target, &path, max_bytes, budget)?;
-        ticket.creation_started()?;
-        let file = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(nofollow_flag()?)
-            .open(&path)
-        {
-            Ok(file) => file,
-            Err(error) => {
-                ticket.uncreated()?;
-                return Err(storage_error(&error));
+        let (path, mut ticket) =
+            measure_physical(physical, InstallPhase::WriterTicketPrepare, || {
+                validate_private_directory(shard)?;
+                let path = self.next_temp_path(shard)?;
+                let mut ticket = io.begin(target, &path, max_bytes, budget)?;
+                ticket.creation_started()?;
+                Ok::<_, IndexError>((path, ticket))
+            })?;
+        let file = measure_physical(physical, InstallPhase::WriterOpen, || {
+            let opened = match ticket.open_declared_temp() {
+                Ok(Some(file)) => Ok(file),
+                Ok(None) => nofollow_flag().and_then(|flag| {
+                    OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .custom_flags(flag)
+                        .open(&path)
+                        .map_err(|error| storage_error(&error))
+                }),
+                Err(error) => Err(error),
+            };
+            match opened {
+                Ok(file) => Ok(file),
+                Err(primary) => {
+                    ticket.uncreated()?;
+                    Err(primary)
+                }
             }
-        };
+        })?;
         let mut writer = ObjectWriter::new(file, path, Some(ticket));
-        writer.created()?;
-        validate_private_file(
-            &writer
+        measure_physical(physical, InstallPhase::WriterCreatedWitness, || {
+            writer.created()?;
+            let born = writer
                 .file()?
                 .metadata()
-                .map_err(|error| storage_error(&error))?,
-        )?;
+                .map_err(|error| storage_error(&error))?;
+            validate_private_file(&born)?;
+            #[cfg(target_os = "macos")]
+            if let Some(device) = expected_device {
+                ensure_same_device(device, born.dev())?;
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = expected_device;
+            Ok::<(), IndexError>(())
+        })?;
         Ok(writer)
     }
 
@@ -1586,6 +1885,16 @@ fn ensure_private_directory(path: &Path) -> Result<(), IndexError> {
 }
 
 fn ensure_private_directory_metadata(path: &Path) -> Result<fs::Metadata, IndexError> {
+    // Most installs target an existing shard. Validate its live name without
+    // asking the filesystem to create an entry that is already present.
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            validate_private_directory_metadata(path, &metadata)?;
+            return Ok(metadata);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(storage_error(&error)),
+    }
     match fs::DirBuilder::new().mode(0o700).create(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -1657,6 +1966,35 @@ fn validate_installed_link(path: &Path, source: &fs::Metadata) -> Result<(), Ind
 }
 
 fn sync_directory(path: &Path) -> Result<(), IndexError> {
+    sync_directory_witness(path).map(|_| ())
+}
+
+fn directory_key(metadata: &fs::Metadata) -> InodeKey {
+    InodeKey {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }
+}
+
+fn object_sync_directories(
+    registration: &RegisteredObject,
+    objects: InodeKey,
+    shards: &[Option<InodeKey>; 256],
+) -> Result<ObjectWriteSyncDirectories, IndexError> {
+    let prefix = (registration.reference.0)
+        .0
+        .first()
+        .copied()
+        .ok_or_else(|| IndexError::BackendViolation("empty object digest".into()))?;
+    let shard = shards
+        .get(usize::from(prefix))
+        .copied()
+        .flatten()
+        .ok_or_else(|| IndexError::BackendViolation("shard sync FD witness absent".into()))?;
+    Ok(ObjectWriteSyncDirectories { objects, shard })
+}
+
+fn sync_directory_witness(path: &Path) -> Result<SyncedDirectory, IndexError> {
     validate_private_directory(path)?;
     let file = File::open(path).map_err(|error| storage_error(&error))?;
     let metadata = file.metadata().map_err(|error| storage_error(&error))?;
@@ -1668,7 +2006,11 @@ fn sync_directory(path: &Path) -> Result<(), IndexError> {
             "storage directory changed during sync".into(),
         ));
     }
-    file.sync_all().map_err(|error| storage_error(&error))
+    file.sync_all().map_err(|error| storage_error(&error))?;
+    Ok(SyncedDirectory {
+        _file: file,
+        identity: directory_key(&metadata),
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -1681,10 +2023,29 @@ fn ensure_same_device(expected: u64, actual: u64) -> Result<(), IndexError> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(test, target_os = "macos"))]
 fn sync_directory_plain(path: &Path, expected_device: u64) -> Result<(), IndexError> {
-    validate_private_directory(path)?;
-    let file = File::open(path).map_err(|error| storage_error(&error))?;
+    sync_directory_plain_witness(path, expected_device).map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+fn sync_directory_plain_witness(
+    path: &Path,
+    expected_device: u64,
+) -> Result<SyncedDirectory, IndexError> {
+    let file = File::from(
+        rustix::fs::open(
+            path,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|error| {
+            IndexError::Storage(format!("open immutable object directory: {error}"))
+        })?,
+    );
     let metadata = file.metadata().map_err(|error| storage_error(&error))?;
     if !metadata.is_dir()
         || metadata.uid() != rustix::process::geteuid().as_raw()
@@ -1695,8 +2056,13 @@ fn sync_directory_plain(path: &Path, expected_device: u64) -> Result<(), IndexEr
         ));
     }
     ensure_same_device(expected_device, metadata.dev())?;
-    rustix::fs::fsync(&file)
-        .map_err(|error| IndexError::Storage(format!("sync immutable object directory: {error}")))
+    rustix::fs::fsync(&file).map_err(|error| {
+        IndexError::Storage(format!("sync immutable object directory: {error}"))
+    })?;
+    Ok(SyncedDirectory {
+        _file: file,
+        identity: directory_key(&metadata),
+    })
 }
 
 fn sync_parent_directory(path: &Path) -> Result<(), IndexError> {
@@ -2482,6 +2848,23 @@ mod tests {
             ),
             (0, 0, 0)
         );
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn batch_directory_sync_rejects_symlink_before_fsync() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let link = directory.0.join("objects-link");
+        std::os::unix::fs::symlink(&store.objects, &link)?;
+        let device = fs::symlink_metadata(&store.objects)?.dev();
+        check!(matches!(
+            sync_directory_plain(&link, device),
+            Err(IndexError::Storage(_))
+        ));
+        check!(fs::symlink_metadata(&store.objects)?.is_dir());
         Ok(())
     }
 

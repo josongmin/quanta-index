@@ -374,6 +374,32 @@ impl WorkBudget {
         Ok(lease)
     }
 
+    /// Fund an optional faster implementation before it starts any effects.
+    ///
+    /// Missing or insufficient live memory selects the original implementation
+    /// without recording a terminal memory denial. That implementation must
+    /// fund all of its own allocations. Cancellation and hard scope errors
+    /// still refuse the original request.
+    #[track_caller]
+    pub fn try_reserve_memory_for_optimization(
+        &self,
+        bytes: u64,
+        lifetime: super::MemoryLifetime,
+    ) -> Result<Option<super::MemoryLease>, IndexError> {
+        self.checkpoint()?;
+        let lease = match self
+            .memory
+            .as_ref()
+            .map(|scope| scope.reserve(bytes, lifetime))
+        {
+            Some(Ok(lease)) => Some(lease),
+            Some(Err(IndexError::ResourceLimited)) | None => None,
+            Some(Err(error)) => return Err(error),
+        };
+        self.checkpoint()?;
+        Ok(lease)
+    }
+
     #[must_use]
     pub const fn usage(&self) -> WorkUsage {
         self.usage
@@ -1322,6 +1348,12 @@ mod tests {
         budget.bind_memory_scope(Some(super::super::MemoryScope::new(Arc::new(
             RefusingMemoryScope,
         ))));
+        check!(
+            budget
+                .try_reserve_memory_for_optimization(7, super::super::MemoryLifetime::Temporary)?
+                .is_none()
+        );
+        check!(budget.first_denial().is_none());
         let before_call = line!();
         let result = budget.reserve_memory(7, super::super::MemoryLifetime::Temporary);
         let after_call = line!();

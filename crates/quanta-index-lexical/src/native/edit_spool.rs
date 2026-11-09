@@ -1,24 +1,29 @@
 //! Private bounded disk sort for one native literal preparation. The catalog
 //! owns installed objects; this disposable database never publishes a root.
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use quanta_index_core::index::{
-    IndexError, ObjectRef, OrdinalMapEdit, ScratchAllocation, ScratchRequest, ScratchSpacePort,
-    WorkBudget, WorkUsage, ports::MapEditCursor,
+    IndexError, MapEdit, ObjectRef, OrdinalMapEdit, ScratchAllocation, ScratchRequest,
+    ScratchSpacePort, WorkBudget, WorkUsage, ports::MapEditCursor,
 };
 use quanta_index_scratch_sqlite::ScratchConnection;
 #[cfg(test)]
 use rusqlite::Connection;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 
 pub(super) struct LiteralEditSpool {
     db: ScratchConnection,
     allocation: Box<dyn ScratchAllocation>,
+    poisoned: AtomicBool,
 }
 
 const SCRATCH_MAX_BYTES: u64 = 4_294_967_296;
 const SCRATCH_INITIAL_BYTES: u64 = 256 * 1024;
 const GRAM_AFTER_SQL: &str = "SELECT g FROM posting WHERE g>?1 GROUP BY g ORDER BY g LIMIT 64";
-const POSTING_AFTER_SQL: &str = "SELECT k,p,n FROM posting WHERE g=?1 AND k>?2 ORDER BY k LIMIT 1";
-const TOP_AFTER_SQL: &str = "SELECT k,p,n FROM edits WHERE surface=?1 AND k>?2 ORDER BY k LIMIT 1";
+const POSTING_FIRST_SQL: &str = "SELECT k,p,n FROM posting WHERE g=?1 ORDER BY k LIMIT 64";
+const POSTING_AFTER_SQL: &str = "SELECT k,p,n FROM posting WHERE g=?1 AND k>?2 ORDER BY k LIMIT 64";
+const TOP_FIRST_SQL: &str = "SELECT k,p,n FROM edits WHERE surface=?1 ORDER BY k LIMIT 64";
+const TOP_AFTER_SQL: &str = "SELECT k,p,n FROM edits WHERE surface=?1 AND k>?2 ORDER BY k LIMIT 64";
 
 fn sql(error: &rusqlite::Error) -> IndexError {
     quanta_index_scratch_sqlite::storage_error(error, "literal scratch")
@@ -83,7 +88,17 @@ impl LiteralEditSpool {
         Ok(Self {
             db: owned_db,
             allocation,
+            poisoned: AtomicBool::new(false),
         })
+    }
+
+    fn ensure_healthy(&self) -> Result<(), IndexError> {
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(IndexError::BackendViolation(
+                "literal scratch attempt was poisoned by a failed batch".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub(super) fn edit(
@@ -94,6 +109,7 @@ impl LiteralEditSpool {
         next: Option<ObjectRef>,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
+        self.ensure_healthy()?;
         budget.charge(WorkUsage {
             writes: 1,
             bytes: 4096,
@@ -137,6 +153,7 @@ impl LiteralEditSpool {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn posting(
         &self,
         gram: [u8; 3],
@@ -145,6 +162,7 @@ impl LiteralEditSpool {
         next: Option<ObjectRef>,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
+        self.ensure_healthy()?;
         if expected.is_some() == next.is_some() {
             return Err(IndexError::InvalidInput(
                 "posting delta must add or remove membership".into(),
@@ -193,11 +211,63 @@ impl LiteralEditSpool {
         Ok(())
     }
 
+    /// One SQLite statement for at most 64 posting edits. The shared writer
+    /// retains per-row writes, actual field fees and summed file reservation.
+    pub(super) fn posting_batch(
+        &self,
+        rows: &[([u8; 3], MapEdit)],
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        self.ensure_healthy()?;
+        let result = (|| {
+            if rows.is_empty() {
+                return Ok(());
+            }
+            if rows.len() > quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS {
+                return Err(IndexError::ResourceLimited);
+            }
+            let mut reservations = [0_u64; quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS];
+            for (slot, (_gram, edit)) in rows.iter().enumerate() {
+                if edit.expected.is_some() == edit.next.is_some() {
+                    return Err(IndexError::InvalidInput(
+                        "posting delta must add or remove membership".into(),
+                    ));
+                }
+                *reservations
+                    .get_mut(slot)
+                    .ok_or(IndexError::ResourceLimited)? = u64::try_from(edit.key.len())
+                    .map_err(|_error| IndexError::ResourceLimited)?
+                    .checked_add(3 + 128)
+                    .ok_or(IndexError::ResourceLimited)?;
+            }
+            let db = self.db.scoped(budget)?;
+            quanta_index_scratch_sqlite::write_map_edit_batch(
+                &db,
+                self.allocation.as_ref(),
+                "INSERT INTO posting(g,k,p,n) VALUES ",
+                4096,
+                reservations
+                    .get(..rows.len())
+                    .ok_or(IndexError::ResourceLimited)?,
+                |slot| {
+                    let (gram, edit) = rows.get(slot).ok_or(IndexError::ResourceLimited)?;
+                    Ok((rusqlite::types::ValueRef::Blob(gram), edit, 0))
+                },
+                budget,
+            )
+        })();
+        if result.is_err() {
+            self.poisoned.store(true, Ordering::Release);
+        }
+        result
+    }
+
     pub(super) fn gram_page(
         &self,
         after: Option<[u8; 3]>,
         budget: &mut WorkBudget,
     ) -> Result<super::text_memory::PreparedRows<[u8; 3]>, IndexError> {
+        self.ensure_healthy()?;
         budget.charge(WorkUsage {
             reads: 1,
             bytes: 4096,
@@ -236,6 +306,7 @@ impl LiteralEditSpool {
         prior: u64,
         budget: &mut WorkBudget,
     ) -> Result<u64, IndexError> {
+        self.ensure_healthy()?;
         budget.charge(WorkUsage {
             reads: 1,
             ..WorkUsage::default()
@@ -261,6 +332,7 @@ impl LiteralEditSpool {
             grams,
             slot: 0,
             after: None,
+            page: quanta_index_scratch_sqlite::MapEditPage::default(),
         }
     }
 
@@ -269,8 +341,30 @@ impl LiteralEditSpool {
             spool: self,
             surface: 0,
             after: None,
+            page: quanta_index_scratch_sqlite::MapEditPage::default(),
         }
     }
+}
+
+fn edit_page(
+    db: &ScratchConnection,
+    query: &str,
+    args: &[&dyn rusqlite::ToSql],
+    max_key_bytes: usize,
+    root: u32,
+    budget: &mut WorkBudget,
+) -> Result<quanta_index_scratch_sqlite::MapEditPage, IndexError> {
+    let db = db.scoped(budget)?;
+    let mut statement = db.prepare_cached(query).map_err(|error| sql(&error))?;
+    quanta_index_scratch_sqlite::MapEditPage::read(
+        &mut statement,
+        args,
+        4096,
+        budget,
+        |row, budget| {
+            quanta_index_scratch_sqlite::read_map_edit_budgeted(row, max_key_bytes, root, budget)
+        },
+    )
 }
 
 pub(super) struct PostingCursor<'a> {
@@ -278,53 +372,48 @@ pub(super) struct PostingCursor<'a> {
     grams: &'a [[u8; 3]],
     slot: usize,
     after: Option<OrdinalMapEdit>,
+    page: quanta_index_scratch_sqlite::MapEditPage,
 }
 
 impl MapEditCursor for PostingCursor<'_> {
     fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
+        self.spool.ensure_healthy()?;
+        budget.checkpoint()?;
         while let Some(gram) = self.grams.get(self.slot) {
-            budget.charge(WorkUsage {
-                reads: 1,
-                bytes: 4096,
-                ..WorkUsage::default()
-            })?;
-            let root = u32::try_from(self.slot).map_err(|_error| IndexError::ResourceLimited)?;
-            let row = if let Some(after) = self
-                .after
-                .as_ref()
-                .map(|position| position.edit.key.as_slice())
-            {
-                self.spool.db.scoped(budget)?.query_row(
-                    POSTING_AFTER_SQL,
-                    params![gram.as_slice(), after],
-                    |row| {
-                        Ok(quanta_index_scratch_sqlite::read_map_edit(
-                            row, 32, root, budget,
-                        ))
-                    },
-                )
-            } else {
-                self.spool.db.scoped(budget)?.query_row(
-                    "SELECT k,p,n FROM posting WHERE g=?1 ORDER BY k LIMIT 1",
-                    params![gram.as_slice()],
-                    |row| {
-                        Ok(quanta_index_scratch_sqlite::read_map_edit(
-                            row, 32, root, budget,
-                        ))
-                    },
-                )
-            }
-            .optional()
-            .map_err(|error| sql(&error))?;
-            if let Some(edit) = row.transpose()? {
+            if let Some(edit) = self.page.pop()? {
                 self.after = Some(edit.clone());
                 return Ok(Some(edit));
             }
-            self.slot = self
-                .slot
-                .checked_add(1)
-                .ok_or(IndexError::ResourceLimited)?;
-            self.after = None;
+            if self.page.complete() {
+                self.slot = self
+                    .slot
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                self.after = None;
+                self.page = quanta_index_scratch_sqlite::MapEditPage::default();
+                continue;
+            }
+            let root = u32::try_from(self.slot).map_err(|_error| IndexError::ResourceLimited)?;
+            let gram = gram.as_slice();
+            self.page = if let Some(after) = &self.after {
+                edit_page(
+                    &self.spool.db,
+                    POSTING_AFTER_SQL,
+                    &[&gram, &after.edit.key.as_slice()],
+                    32,
+                    root,
+                    budget,
+                )?
+            } else {
+                edit_page(
+                    &self.spool.db,
+                    POSTING_FIRST_SQL,
+                    &[&gram],
+                    32,
+                    root,
+                    budget,
+                )?
+            };
         }
         Ok(None)
     }
@@ -334,59 +423,48 @@ pub(super) struct TopCursor<'a> {
     spool: &'a LiteralEditSpool,
     surface: u8,
     after: Option<OrdinalMapEdit>,
+    page: quanta_index_scratch_sqlite::MapEditPage,
 }
 
 impl MapEditCursor for TopCursor<'_> {
     fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
+        self.spool.ensure_healthy()?;
+        budget.checkpoint()?;
         while self.surface < 2 {
-            budget.charge(WorkUsage {
-                reads: 1,
-                bytes: 4096,
-                ..WorkUsage::default()
-            })?;
-            let max_key_bytes = if self.surface == 0 { 3 } else { 32 };
-            let row = if let Some(after) = self
-                .after
-                .as_ref()
-                .map(|position| position.edit.key.as_slice())
-            {
-                self.spool.db.scoped(budget)?.query_row(
-                    TOP_AFTER_SQL,
-                    params![self.surface, after],
-                    |row| {
-                        Ok(quanta_index_scratch_sqlite::read_map_edit(
-                            row,
-                            max_key_bytes,
-                            u32::from(self.surface),
-                            budget,
-                        ))
-                    },
-                )
-            } else {
-                self.spool.db.scoped(budget)?.query_row(
-                    "SELECT k,p,n FROM edits WHERE surface=?1 ORDER BY k LIMIT 1",
-                    params![self.surface],
-                    |row| {
-                        Ok(quanta_index_scratch_sqlite::read_map_edit(
-                            row,
-                            max_key_bytes,
-                            u32::from(self.surface),
-                            budget,
-                        ))
-                    },
-                )
-            }
-            .optional()
-            .map_err(|error| sql(&error))?;
-            if let Some(edit) = row.transpose()? {
+            if let Some(edit) = self.page.pop()? {
                 self.after = Some(edit.clone());
                 return Ok(Some(edit));
             }
-            self.surface = self
-                .surface
-                .checked_add(1)
-                .ok_or(IndexError::ResourceLimited)?;
-            self.after = None;
+            if self.page.complete() {
+                self.surface = self
+                    .surface
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                self.after = None;
+                self.page = quanta_index_scratch_sqlite::MapEditPage::default();
+                continue;
+            }
+            let max_key_bytes = if self.surface == 0 { 3 } else { 32 };
+            let root = u32::from(self.surface);
+            self.page = if let Some(after) = &self.after {
+                edit_page(
+                    &self.spool.db,
+                    TOP_AFTER_SQL,
+                    &[&self.surface, &after.edit.key.as_slice()],
+                    max_key_bytes,
+                    root,
+                    budget,
+                )?
+            } else {
+                edit_page(
+                    &self.spool.db,
+                    TOP_FIRST_SQL,
+                    &[&self.surface],
+                    max_key_bytes,
+                    root,
+                    budget,
+                )?
+            };
         }
         Ok(None)
     }
@@ -596,8 +674,18 @@ mod tests {
                 probe_keyset(&*spool.db.scoped(&work)?, query, &early_args)?;
             let (late_keys, late_steps) =
                 probe_keyset(&*spool.db.scoped(&work)?, query, &late_args)?;
-            check_eq!(early_keys, vec![10_u16.to_be_bytes().to_vec()]);
-            check_eq!(late_keys, vec![4097_u16.to_be_bytes().to_vec()]);
+            check_eq!(
+                early_keys,
+                (10_u16..74)
+                    .map(|key| key.to_be_bytes().to_vec())
+                    .collect::<Vec<_>>()
+            );
+            check_eq!(
+                late_keys,
+                (4097_u16..4161)
+                    .map(|key| key.to_be_bytes().to_vec())
+                    .collect::<Vec<_>>()
+            );
             check!(late_steps <= early_steps.saturating_add(128));
         }
         let target_grams = [target];
@@ -605,26 +693,19 @@ mod tests {
         posting_cursor.after = Some(OrdinalMapEdit::copy_object_key(
             0, &late, None, None, &work,
         )?);
-        check_eq!(
-            posting_cursor
-                .next_edit(&mut work)?
-                .ok_or_else(|| IndexError::BackendViolation("missing late posting".into()))?
-                .edit
-                .key,
-            4097_u16.to_be_bytes().to_vec()
-        );
         let mut top_cursor = spool.top_cursor();
         top_cursor.after = Some(OrdinalMapEdit::copy_object_key(
             0, &late, None, None, &work,
         )?);
-        check_eq!(
-            top_cursor
-                .next_edit(&mut work)?
-                .ok_or_else(|| IndexError::BackendViolation("missing late top edit".into()))?
-                .edit
-                .key,
-            4097_u16.to_be_bytes().to_vec()
-        );
+        for expected in 4097_u16..4162 {
+            let cursors: [&mut dyn MapEditCursor; 2] = [&mut posting_cursor, &mut top_cursor];
+            for cursor in cursors {
+                let row = cursor.next_edit(&mut work)?.ok_or_else(|| {
+                    IndexError::BackendViolation("missing late literal edit".into())
+                })?;
+                check_eq!(row.edit.key, expected.to_be_bytes().to_vec());
+            }
+        }
         Ok(())
     }
 
@@ -705,6 +786,86 @@ mod tests {
         }
         check_eq!(page_lengths, vec![64, 64, 2]);
         check_eq!(observed, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn posting_batch_preserves_rows_order_and_poisons_failed_attempt() -> Result<(), IndexError> {
+        let mut budget = budget()?;
+        let spool = LiteralEditSpool::new(&TestScratch, &mut budget)?;
+        let marker = ObjectRef(Digest([7; 32]));
+        let rows = (0_u8..64)
+            .rev()
+            .map(|key| (*b"abc", MapEdit::objects(vec![key], None, Some(marker))))
+            .collect::<Vec<_>>();
+        let before = budget.usage();
+        spool.posting_batch(&rows, &mut budget)?;
+        let after = budget.usage();
+        if after.writes.checked_sub(before.writes) != Some(64)
+            || after
+                .bytes
+                .checked_sub(before.bytes)
+                .is_none_or(|bytes| bytes >= 64 * 4096)
+        {
+            return Err(IndexError::BackendViolation(
+                "literal posting batch lost per-row writes or retained per-row SQL fees".into(),
+            ));
+        }
+        let ordered = {
+            let db = spool.db.scoped(&budget)?;
+            let mut statement = db
+                .prepare("SELECT k FROM posting WHERE g=x'616263' ORDER BY k")
+                .map_err(|error| sql(&error))?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, Vec<u8>>(0))
+                .map_err(|error| sql(&error))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|error| sql(&error))?
+        };
+        if ordered != (0_u8..64).map(|key| vec![key]).collect::<Vec<_>>() {
+            return Err(IndexError::BackendViolation(
+                "literal posting batch key order changed".into(),
+            ));
+        }
+        let duplicate = vec![
+            (*b"def", MapEdit::objects(vec![99], None, Some(marker))),
+            (*b"def", MapEdit::objects(vec![99], None, Some(marker))),
+        ];
+        if spool.posting_batch(&duplicate, &mut budget).is_ok() {
+            return Err(IndexError::BackendViolation(
+                "duplicate literal posting batch accepted".into(),
+            ));
+        }
+        if !matches!(
+            spool.gram_page(None, &mut budget),
+            Err(IndexError::BackendViolation(_))
+        ) || !matches!(
+            spool.cardinality(*b"abc", 0, &mut budget),
+            Err(IndexError::BackendViolation(_))
+        ) || !matches!(
+            spool.posting_batch(&rows[..1], &mut budget),
+            Err(IndexError::BackendViolation(_))
+        ) || !matches!(
+            spool.edit(0, b"x", None, Some(marker), &mut budget),
+            Err(IndexError::BackendViolation(_))
+        ) || !matches!(
+            spool.posting_cursor(&[]).next_edit(&mut budget),
+            Err(IndexError::BackendViolation(_))
+        ) || !matches!(
+            spool.top_cursor().next_edit(&mut budget),
+            Err(IndexError::BackendViolation(_))
+        ) {
+            return Err(IndexError::BackendViolation(
+                "failed literal posting batch allowed scratch reuse".into(),
+            ));
+        }
+        let mut fresh_budget = self::budget()?;
+        let fresh = LiteralEditSpool::new(&TestScratch, &mut fresh_budget)?;
+        if fresh.gram_page(None, &mut fresh_budget)?.len() != 0 {
+            return Err(IndexError::BackendViolation(
+                "fresh literal scratch was not empty".into(),
+            ));
+        }
         Ok(())
     }
 

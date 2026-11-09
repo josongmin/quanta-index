@@ -294,12 +294,8 @@ def _native_child_inputs(
         trace_file = RawFile.capture(trace_path)
         if trace_file.size > child_limit:
             raise ValueError("native child trace exceeds its declared byte bound")
-        trace = trace_file.consume_seekable(
-            lambda stream, limit=child_limit: parse_timeline_stream(stream, max_capture_bytes=limit)
-        )
         result[role] = {
             "trace_file": trace_file,
-            "trace": trace,
             "stderr_file": RawFile.capture(stderr_path),
         }
     return result
@@ -636,6 +632,8 @@ def _preflight_native_socket_path(out_root: Path) -> None:
 
 
 def capture(args: argparse.Namespace) -> dict:
+    if sys.version_info < (3, 10):
+        raise ValueError("causal capture requires Python 3.10 or newer")
     history_policy = _history_inputs(args.history_max_bytes, args.history_max_total_bytes)
     native_workload = _native_inputs(args)
     linux_parent = _linux_cgroup_parent(args)
@@ -1015,7 +1013,7 @@ def capture(args: argparse.Namespace) -> dict:
                     "stderr_path": str(record["stderr_file"].path),
                     "stderr_sha256": record["stderr_file"].sha256.removeprefix("sha256:"),
                     "stderr_bytes": record["stderr_file"].size,
-                    "capture_id": record["trace"]["capture_id"],
+                    "capture_id": product["children"][role]["capture_id"],
                 }
                 for role, record in child_inputs.items()
             }

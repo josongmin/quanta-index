@@ -31,5 +31,5 @@ pub use registry::{AdapterDescriptor, AdapterRegistry};
 pub use ticket::ReadTicket;
 pub use update::{
     ControlCatalog, Kernel, KernelServices, OperationExecutionClass, PinnedQuerySession,
-    PreparedQuery, PreparedQueryStage, ResumeDispatch,
+    PreparedQuery, PreparedQueryStage, QueryExecutionTimings, ResumeDispatch,
 };

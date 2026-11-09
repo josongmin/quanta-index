@@ -9,9 +9,10 @@
 //! These envelopes are not parent-fsync-only timers or CPU measurements.
 //! Lane21 observes only the parent sync within a successful native-sync settlement.
 //! Lane22 aggregates native `AfterWrite` callbacks across one Record scope.
-//! Scratch starts that envelope at its first attempted write or sync, so a
-//! missing scratch lane22 only means no observed write/sync in that scope;
-//! read-only `SQLite` work can still have occurred. Catalog remains eager.
+//! Scratch and top-level Catalog start that envelope at the first attempted
+//! write or sync. A missing lane22 does not prove that no read-only `SQLite`
+//! work occurred. Nested Catalog scopes remain eager to preserve their
+//! diagnostic reentry boundary.
 //! Its bytes are requested, not successful or device bytes. A preflight
 //! refusal has no `AfterWrite`; an adapter refusal after lower `xWrite` still does.
 //! Lane25 observes only the `CKPT_START` to `CKPT_DONE` backfill window. `SQLite`
@@ -97,7 +98,7 @@ struct Active {
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum WriteStart {
-    // Scratch read-only scopes have no lane22 span or diagnostic clock sample.
+    // Lazy read-only scopes have no lane22 span or diagnostic clock sample.
     Pending,
     // Prevent observer reentry from opening a duplicate segment.
     Starting,
@@ -135,7 +136,7 @@ fn new_writes(context: &DiagnosticContextV1) -> Option<WriteAggregate> {
     })
 }
 
-/// Start a scratch aggregate at its first attempted write or sync.
+/// Start a pending aggregate at its first attempted write or sync.
 ///
 /// The state claim and installation touch TLS separately; clock and sink
 /// callbacks run without a `RefCell` borrow and cannot reject physical `SQLite` I/O.
@@ -429,11 +430,13 @@ pub(super) struct Scope {
 
 impl Scope {
     pub(super) fn enter(owner: NonZeroU64, context: Option<&DiagnosticContextV1>) -> Self {
+        // A top-level read-only Catalog scope has no reached write or sync to
+        // report. Nested Catalog scopes retain their existing eager boundary.
         Self::enter_with_writes(owner, context, true)
     }
 
-    /// Defer scratch lane22 until an attempted write or sync; keep the same
-    /// nested Off/foreign masking and restoration as eager Catalog scopes.
+    /// Defer scratch lane22 even in a nested scope. Keep the same Off/foreign
+    /// masking and restoration as Catalog scopes.
     pub(super) fn enter_scratch(owner: NonZeroU64, context: Option<&DiagnosticContextV1>) -> Self {
         Self::enter_with_writes(owner, context, false)
     }
@@ -445,13 +448,17 @@ impl Scope {
     ) -> Self {
         // A nested diagnostic scope masks the in-flight callback. Neither an
         // Off nor a foreign capture may complete the outer write envelope.
-        CURRENT.with(|slot| {
-            if let Some(active) = slot.borrow_mut().as_mut()
+        let nested = CURRENT.with(|slot| {
+            let mut current = slot.borrow_mut();
+            let nested = current.is_some();
+            if let Some(active) = current.as_mut()
                 && let Some(writes) = active.writes.as_mut()
             {
                 writes.timing.mask_for_nested_scope();
             }
+            nested
         });
+        let eager = eager && nested;
         let current = context.map(|context| {
             // Span entry may invoke the clock or sink. Do it before touching
             // CURRENT so observer reentry cannot borrow an active RefCell.
@@ -706,4 +713,65 @@ pub(super) fn finish_settlement<T>(
         let _finished = span.finish(outcome);
     }
     result
+}
+
+#[cfg(test)]
+mod lazy_catalog_tests {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    };
+
+    use quanta_index_core::{
+        DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticEmitV1, DiagnosticEventKindV1,
+        DiagnosticEventSinkV1, DiagnosticRootKindV1,
+    };
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct Clock(AtomicU64);
+    impl DiagnosticClockV1 for Clock {
+        fn now_ns(&self) -> u64 {
+            self.0.fetch_add(1, Ordering::Relaxed)
+        }
+    }
+
+    #[derive(Debug)]
+    struct Events(Mutex<Vec<DiagnosticEmitV1>>);
+    impl DiagnosticEventSinkV1 for Events {
+        fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+            let Ok(mut events) = self.0.lock() else {
+                return false;
+            };
+            events.push(event);
+            true
+        }
+    }
+
+    #[test]
+    fn top_level_catalog_read_only_scope_omits_lane22() -> Result<(), Box<dyn std::error::Error>> {
+        let events = Arc::new(Events(Mutex::new(Vec::new())));
+        let context = DiagnosticContextV1::new(
+            DiagnosticCaptureIdV1([31; 16]),
+            Arc::new(Clock(AtomicU64::new(0))),
+            Arc::clone(&events) as Arc<dyn DiagnosticEventSinkV1>,
+        );
+        let root = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))?;
+        let child = context.child_context(&root);
+        {
+            let _scope = Scope::enter(NonZeroU64::new(1).ok_or("missing owner")?, Some(&child));
+        }
+        root.finish(DiagnosticTerminalV1::Ok)?;
+        let rows = events.0.lock().map_err(|_poisoned| "event lock poisoned")?;
+        assert!(!rows.iter().any(|event| matches!(
+            event.kind,
+            DiagnosticEventKindV1::SpanBegin {
+                stage: DiagnosticStageV1::SqliteWork,
+                lane: DiagnosticLaneV1(22),
+                ..
+            }
+        )));
+        Ok(())
+    }
 }

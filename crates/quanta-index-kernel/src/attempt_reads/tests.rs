@@ -267,6 +267,67 @@ fn reuse_defers_to_the_selected_ports_original_cost_and_refusal() -> TestResult 
 }
 
 #[test]
+fn source_record_retention_survives_body_collision_with_original_read_cost() -> TestResult {
+    let (_root, objects, record) = fixture()?;
+    let body = objects
+        .put(b"independent-body", &[], &mut budget())?
+        .reference;
+    let record_bytes = StoredObject::allocation_bytes(b"fixed-parent".len(), 1)?;
+    let body_bytes = StoredObject::allocation_bytes(b"independent-body".len(), 0)?;
+    let capacity = record_bytes
+        .checked_add(body_bytes)
+        .ok_or(IndexError::ResourceLimited)?;
+    let mut reads = AttemptObjectReads::with_bounds(&objects, 1, capacity);
+    reads.source_record_reserve = record_bytes;
+
+    let mut first = budget();
+    let original = reads.get_source_record(record, &mut first)?;
+    drop(reads.get(body, &mut budget())?);
+    let mut second = budget();
+    let reused = reads.get(record, &mut second)?;
+    require(
+        reused.payload.as_ptr() == original.payload.as_ptr()
+            && reused.registration.reference == record
+            && first.usage() == second.usage()
+            && objects.gets.load(Ordering::SeqCst) == 2,
+        "a later body collision reopened or changed retained record DATA",
+    )?;
+    let window = reads.lock()?;
+    require(
+        window.retained == record_bytes && window.general_retained == 0,
+        "record reservation did not preserve the bounded accounting",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn source_record_reserve_keeps_one_large_body_within_total_cap() -> TestResult {
+    let (_root, objects, record) = fixture()?;
+    let body = objects
+        .put(&vec![b'x'; 3 * 1024 * 1024], &[], &mut budget())?
+        .reference;
+    let mut reads = AttemptObjectReads::with_bounds(&objects, 8, MAX_RETAINED_BYTES);
+    reads.source_record_reserve = SOURCE_RECORD_RESERVE;
+    drop(reads.get_source_record(record, &mut budget())?);
+    let mut cold = budget();
+    let first = reads.get(body, &mut cold)?;
+    let mut warm = budget();
+    let second = reads.get(body, &mut warm)?;
+    require(
+        first.payload.as_ptr() == second.payload.as_ptr()
+            && cold.usage() == warm.usage()
+            && objects.gets.load(Ordering::SeqCst) == 2,
+        "record capacity prevented the original large body DATA reuse",
+    )?;
+    let window = reads.lock()?;
+    require(
+        window.retained <= MAX_RETAINED_BYTES && window.general_retained > SOURCE_RECORD_RESERVE,
+        "large body retention exceeded the combined cap or ignored unused capacity",
+    )?;
+    Ok(())
+}
+
+#[test]
 fn collision_evicts_data_without_aliasing_another_identity() -> TestResult {
     let (_root, objects, first_ref) = fixture()?;
     let second_ref = objects

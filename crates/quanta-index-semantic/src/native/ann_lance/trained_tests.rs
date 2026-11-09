@@ -134,11 +134,13 @@ async fn check_selected_query(
     vectors: &[[f32; DIMENSION]],
     recipe: Digest,
     budget: &mut WorkBudget,
+    memory: &CountedMemory,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let query = vectors
         .get(QUERY_ORDINAL)
         .ok_or("trained ANN query absent")?;
     let mut rejected = 0usize;
+    let mut accepted = Vec::new();
     let page = query_region(
         region,
         query,
@@ -147,10 +149,15 @@ async fn check_selected_query(
         64,
         budget,
         |candidate, _budget| {
+            if memory.live.load(Ordering::SeqCst) == 0 {
+                return Err(IndexError::ResourceLimited);
+            }
             let value = ordinal(candidate)?;
             let eligible = value.is_multiple_of(2) && value != QUERY_ORDINAL;
             if !eligible {
                 rejected = rejected.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+            } else {
+                accepted.push(candidate.clone());
             }
             Ok(eligible)
         },
@@ -158,16 +165,17 @@ async fn check_selected_query(
     .await?;
     verify(rejected > 0, "trained ANN filter rejected no candidates")?;
     verify(
-        page.hits().len() == TOP_K,
-        "trained ANN returned too few eligible rows",
+        accepted.len() >= TOP_K,
+        "trained ANN callback saw too few eligible rows",
     )?;
     verify(
         matches!(page.traversal, NativeSemanticTraversal::Approximate { .. }),
         "trained ANN claimed global exact exhaustion",
     )?;
 
-    let mut actual = BTreeSet::new();
-    for candidate in page.hits() {
+    let mut observed = BTreeSet::new();
+    let mut ranked = Vec::new();
+    for candidate in &accepted {
         let value = ordinal(candidate)?;
         let expected = vectors.get(value).ok_or("trained ANN row absent")?;
         verify(
@@ -191,10 +199,22 @@ async fn check_selected_query(
             "trained ANN score differs from independent exact cosine",
         )?;
         verify(
-            actual.insert(value),
-            "trained ANN returned duplicate vector ID",
+            observed.insert(value),
+            "trained ANN callback repeated a vector ID",
         )?;
+        ranked.push((candidate.cosine, value));
     }
+    ranked.sort_by(|left, right| {
+        right
+            .0
+            .total_cmp(&left.0)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    let actual: BTreeSet<_> = ranked
+        .into_iter()
+        .take(TOP_K)
+        .map(|(_, value)| value)
+        .collect();
     let mut exact: Vec<_> = vectors
         .iter()
         .enumerate()
@@ -215,6 +235,10 @@ async fn check_selected_query(
     verify(
         actual.intersection(&gold).count() >= 4,
         "trained ANN missed more than one fixed eligible top-five row",
+    )?;
+    verify(
+        memory.live.load(Ordering::SeqCst) == 0,
+        "trained ANN retained scratch memory after query",
     )?;
     Ok(())
 }
@@ -303,10 +327,10 @@ async fn trained_region_body() -> Result<(), Box<dyn std::error::Error>> {
         "trained ANN physical table has no vector index",
     )?;
     let opened = open_region(table, seal.clone(), &mut budget).await?;
-    check_selected_query(&opened, &vectors, recipe, &mut budget).await?;
+    check_selected_query(&opened, &vectors, recipe, &mut budget, &memory).await?;
     let reopened_table = connection.open_table("trained").execute().await?;
     let reopened = open_region(reopened_table, seal, &mut budget).await?;
-    check_selected_query(&reopened, &vectors, recipe, &mut budget).await?;
+    check_selected_query(&reopened, &vectors, recipe, &mut budget, &memory).await?;
     verify(
         memory.live.load(Ordering::SeqCst) == 0 && !memory.invalid_release.load(Ordering::SeqCst),
         "trained ANN retained an original budget lease after query",

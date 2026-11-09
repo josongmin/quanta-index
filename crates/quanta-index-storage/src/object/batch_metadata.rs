@@ -188,6 +188,7 @@ impl RegistrationBatch {
 /// before the caller reserves custody or writes any immutable object.
 pub(super) struct BatchShards {
     paths: [Option<PathBuf>; MAX_INSTALL_BATCH_INPUTS],
+    prefixes: [u8; MAX_INSTALL_BATCH_INPUTS],
     count: usize,
     // Path backing drops before this one temporary allocation grant.
     _memory: Option<MemoryLease>,
@@ -234,6 +235,7 @@ impl BatchShards {
             )?
         };
         let mut paths = std::array::from_fn(|_| None);
+        let mut prefixes = [0; MAX_INSTALL_BATCH_INPUTS];
         let mut filled = 0usize;
         for (first, used) in present.into_iter().enumerate() {
             if !used {
@@ -256,6 +258,9 @@ impl BatchShards {
             path.push(objects);
             path.push(shard);
             *paths.get_mut(filled).ok_or(IndexError::ResourceLimited)? = Some(path);
+            *prefixes
+                .get_mut(filled)
+                .ok_or(IndexError::ResourceLimited)? = byte;
             filled = filled.checked_add(1).ok_or(IndexError::ResourceLimited)?;
         }
         if filled != count {
@@ -265,15 +270,25 @@ impl BatchShards {
         }
         Ok(Self {
             paths,
+            prefixes,
             count,
             _memory: memory,
         })
     }
 
+    #[cfg(test)]
     pub(super) fn iter(&self) -> impl Iterator<Item = &Path> {
         self.paths
             .iter()
             .take(self.count)
             .filter_map(Option::as_deref)
+    }
+
+    pub(super) fn indexed_iter(&self) -> impl Iterator<Item = (usize, &Path)> {
+        self.prefixes
+            .iter()
+            .zip(self.paths.iter())
+            .take(self.count)
+            .filter_map(|(prefix, path)| path.as_deref().map(|path| (usize::from(*prefix), path)))
     }
 }

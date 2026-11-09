@@ -182,13 +182,14 @@ pub(crate) fn validate_path(path: &str) -> Result<(), IndexError> {
 
 fn read_record(
     reference: ObjectRef,
+    reads: &crate::attempt_reads::AttemptObjectReads<'_>,
     context: &mut AttemptContext<'_>,
 ) -> Result<SourceRecordOwner, IndexError> {
     use crate::diagnostic::{SourceOwnerStep, source_owner_step};
 
     let objects = context.objects;
     let stored = source_owner_step(context.budget, SourceOwnerStep::RecordGet, |budget| {
-        objects.get(reference, budget)
+        reads.get_source_record(reference, budget)
     })?;
     let record = source_owner_step(
         context.budget,
@@ -684,6 +685,11 @@ struct SourceEditCursor<'a> {
 }
 
 impl MapEditCursor for SourceEditCursor<'_> {
+    fn pack_terminal_subtrees_for_root(&self) -> Option<u32> {
+        // Path values are inline, so packing adds no physical child edges.
+        Some(1)
+    }
+
     fn next_edit(
         &mut self,
         budget: &mut quanta_index_core::index::WorkBudget,
@@ -740,12 +746,12 @@ impl MapEditCursor for SourceEditCursor<'_> {
 }
 
 pub(crate) fn apply_source(
-    operation: OperationKey,
     base_view: ViewRef,
     base: SourceCut,
     transition: &SourceTransition,
     mode: SourceOperationMode,
     authority: &dyn SourceAuthorityPort,
+    reads: &crate::attempt_reads::AttemptObjectReads<'_>,
     context: &mut AttemptContext<'_>,
 ) -> Result<AppliedSource, IndexError> {
     crate::diagnostic::WorkStage::begin(
@@ -754,12 +760,12 @@ pub(crate) fn apply_source(
     )
     .run(context, |phase_context| {
         apply_source_inner(
-            operation,
             base_view,
             base,
             transition,
             mode,
             authority,
+            reads,
             phase_context,
         )
         .map(|delta| AppliedSource {
@@ -770,14 +776,15 @@ pub(crate) fn apply_source(
 }
 
 fn apply_source_inner(
-    operation: OperationKey,
     base_view: ViewRef,
     base: SourceCut,
     transition: &SourceTransition,
     mode: SourceOperationMode,
     authority: &dyn SourceAuthorityPort,
+    reads: &crate::attempt_reads::AttemptObjectReads<'_>,
     context: &mut AttemptContext<'_>,
 ) -> Result<SourceDelta, IndexError> {
+    let operation = context.attempt.operation;
     if base != transition.expected_source {
         return Err(IndexError::Conflict);
     }
@@ -894,13 +901,13 @@ fn apply_source_inner(
                 }
                 let prior = actual
                     .map(|reference| {
-                        read_record(reference, context).map(|record| (reference, record))
+                        read_record(reference, reads, context).map(|record| (reference, record))
                     })
                     .transpose()?;
                 let next = mutation
                     .next
                     .map(|reference| {
-                        read_record(reference, context).map(|record| (reference, record))
+                        read_record(reference, reads, context).map(|record| (reference, record))
                     })
                     .transpose()?;
                 if let Some((_, prior)) = &prior {

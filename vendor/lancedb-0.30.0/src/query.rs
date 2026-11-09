@@ -937,6 +937,9 @@ pub struct VectorQueryRequest {
     pub distance_type: Option<DistanceType>,
     /// Default is true. Set to false to enforce a brute force search.
     pub use_index: bool,
+    /// Optional exact flat-search secondary keys applied inside distance Top-K.
+    /// This is separate from `base.order_by`, which sorts after Top-K.
+    pub exact_tie_order: Option<Vec<String>>,
 }
 
 impl Default for VectorQueryRequest {
@@ -953,6 +956,7 @@ impl Default for VectorQueryRequest {
             refine_factor: None,
             distance_type: None,
             use_index: true,
+            exact_tie_order: None,
         }
     }
 }
@@ -1201,6 +1205,14 @@ impl VectorQuery {
     /// calculate your recall to select an appropriate value for nprobes.
     pub fn bypass_vector_index(mut self) -> Self {
         self.request.use_index = false;
+        self
+    }
+
+    /// Select equal reported-score rows by these stored columns before the
+    /// exact flat-search Top-K cut. Requires `bypass_vector_index`.
+    pub fn exact_tie_order(mut self, columns: &[&str]) -> Self {
+        self.request.exact_tie_order =
+            Some(columns.iter().map(|column| (*column).to_owned()).collect());
         self
     }
 

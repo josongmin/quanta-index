@@ -1046,7 +1046,7 @@ pub(crate) fn legacy_ops_for_batch(
             revision_id: batch.revision_id.clone(),
             generation: batch.generation,
             payload: encode_cbor(
-                &(batch.mode, batch.base_generation, scope.clone()),
+                &(batch.mode, batch.base_generation, scope),
                 "replace lexical scope payload",
             )?,
         }));
@@ -1058,7 +1058,7 @@ pub(crate) fn legacy_ops_for_batch(
                 revision_id: batch.revision_id.clone(),
                 generation: batch.generation,
                 payload: encode_cbor(
-                    &(batch.mode, batch.base_generation, scope.clone()),
+                    &(batch.mode, batch.base_generation, scope),
                     "tombstone lexical scope payload",
                 )?,
             },

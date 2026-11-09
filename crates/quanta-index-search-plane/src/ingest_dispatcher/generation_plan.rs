@@ -271,6 +271,7 @@ impl SealedGenerationBuildPlanV1 {
         lexical_discard: &dyn IncompleteGenerationDiscardPort,
         semantic_discard: &dyn IncompleteGenerationDiscardPort,
         pending_batch: &SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
     ) -> Result<(), CoreError> {
         // Both tracks being in progress is the ordinary path after accepted
         // non-seal ingests. Discarding either side here would turn a normal
@@ -280,9 +281,11 @@ impl SealedGenerationBuildPlanV1 {
         if matches!(self.lexical_state, PhysicalGenerationStateV1::InProgress)
             && matches!(self.semantic_state, PhysicalGenerationStateV1::Exact)
         {
-            match lexical_discard
-                .discard_incomplete_generation(&self.lexical, Some(pending_batch))?
-            {
+            match lexical_discard.discard_pending_generation_with_owner(
+                &self.lexical,
+                pending_batch,
+                owner,
+            )? {
                 IncompleteGenerationDiscardOutcomeV1::Absent
                 | IncompleteGenerationDiscardOutcomeV1::Discarded => {}
             }

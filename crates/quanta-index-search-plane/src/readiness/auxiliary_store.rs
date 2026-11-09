@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(test)]
 use quanta_index_core::domains::generation::RetentionMeasurementPolicy;
 use quanta_index_core::publication_admission::DurableControlFileAdmissionPort;
-use quanta_index_core::{AuxiliaryAuthorityCatalogPort, CoreError};
+use quanta_index_core::{AuxiliaryAuthorityCatalogPort, CoreError, DiagnosticContextV1};
 #[cfg(test)]
 use quanta_index_core::{RequestBudgetV1, SealedGenerationBytesV1};
 
@@ -410,8 +410,16 @@ impl AuxiliaryAuthorityStore {
     /// auxiliary authorities are restored from the catalog by
     /// [`restore_auxiliary_rows_into`].
     pub fn restore_into(&self, ledger: &mut Ledger) -> Result<(), CoreError> {
-        self.restore_search_corpus_history_into(ledger)?;
-        Ok(())
+        self.restore_into_with_diagnostic(ledger, None)
+    }
+
+    /// Restore history while attributing retention work to the boot span.
+    pub fn restore_into_with_diagnostic(
+        &self,
+        ledger: &mut Ledger,
+        diagnostic: Option<&DiagnosticContextV1>,
+    ) -> Result<(), CoreError> {
+        self.restore_search_corpus_history_into(ledger, diagnostic)
     }
 }
 

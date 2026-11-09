@@ -23,12 +23,12 @@ use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{LqExpr, LqLeaf, LqQuery, LqSpan};
 use quanta_index_core::index::{
     AttemptContext, BaseMember, CollectionId, DeltaInput, Digest, GroupActivation, IndexError,
-    IndexInstanceId, IndexKind, IndexProfile, InputDomain, InstanceSpec, MemberBinding,
+    IndexInstanceId, IndexKind, IndexProfile, InputDomain, InstanceSpec, MapRoot, MemberBinding,
     OperationKey, OperationStatus, OwnerKey, OwnerMutation, PlanContext, PlanDecision, ProducerId,
     PublicationGroupId, Refusal, SchemaId, SlotId, SourceDelta, SourceEvent, SourceInput,
     SourceTextAdmission, SourceTransition, StableOwnerId, StorageFormatId, StreamId, SubmitOutcome,
     TenantId, TicketRecord, UpdateKind, UpdateRequest, ViewRef, ViewSelection, WorkBudget,
-    WorkLimits, WorkspaceKey, WorktreeId,
+    WorkLimits, WorkspaceKey, WorktreeId, owner_map_key,
     ports::{ImmutableObjectPort, IndexBuildPort, IndexFuture, PersistentMapPort},
 };
 use quanta_index_kernel::{AdapterDescriptor, AdapterRegistry, Kernel, KernelServices};
@@ -239,6 +239,62 @@ fn binding(
     )?)
 }
 
+fn assert_literal_matches(
+    engine: &Kernel<SqliteCatalog>,
+    objects: &FileObjectStore,
+    view: ViewRef,
+    needle: &[u8],
+    expected: &[OwnerKey],
+) -> TestResult {
+    let ticket = engine.pin_view(ViewSelection::Exact(view), &budget()?)?;
+    let [literal_spec, _, _] = specs()?;
+    let literal = binding(objects, ticket.record(), literal_spec.instance)?;
+    let mut after = None;
+    let mut actual = Vec::new();
+    loop {
+        let page = NativeLiteralIndex.search(
+            &literal,
+            LiteralQuery {
+                literal: needle,
+                after: after.as_deref(),
+                limit: 31,
+            },
+            LiteralReadContext {
+                ticket: ticket.record(),
+                input: literal.input,
+                objects,
+                maps: objects,
+                budget: &mut budget()?,
+            },
+        )?;
+        if page.has_more {
+            let last = page.hits.last().ok_or("literal continuation has no hit")?;
+            let mut last_key = [0; 32];
+            for (target, value) in last_key
+                .iter_mut()
+                .zip(last.owner.producer.0.iter().chain(&last.owner.stable_id.0))
+            {
+                *target = *value;
+            }
+            assert_eq!(page.after.as_deref(), Some(last_key.as_slice()));
+        } else {
+            assert!(page.after.is_none());
+        }
+        actual.extend(page.hits.into_iter().map(|hit| hit.owner));
+        if !page.has_more {
+            break;
+        }
+        after = page.after;
+    }
+    assert_eq!(
+        actual.as_slice(),
+        expected,
+        "literal {needle:?} at {view:?}"
+    );
+    ticket.release()?;
+    Ok(())
+}
+
 fn assert_gold(
     engine: &Kernel<SqliteCatalog>,
     objects: &FileObjectStore,
@@ -393,6 +449,14 @@ fn existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens() -
             text: admitted,
         })
         .collect::<Vec<_>>();
+    // 4096 distinct byte trigrams with no ASCII hit. The excluded source
+    // forces multiple literal blocks even with prefix compression.
+    let mut binary = Vec::new();
+    for ordinal in 0_u16..4096 {
+        let high = u8::try_from(ordinal >> 6)?;
+        let low = u8::try_from(ordinal & 63)?;
+        binary.extend_from_slice(&[0xff, 0x80 | high, 0x80 | low]);
+    }
     inputs.extend([
         SourceInput {
             path: "src/empty.rs".into(),
@@ -401,7 +465,7 @@ fn existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens() -
         },
         SourceInput {
             path: "src/excluded.bin".into(),
-            bytes: vec![0xff],
+            bytes: binary,
             text: SourceTextAdmission::Excluded,
         },
     ]);
@@ -509,11 +573,145 @@ fn existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens() -
     );
     literal_ticket.release()?;
     old.release()?;
+
+    // The source cut spans more than one bounded literal posting block. Replace
+    // an early owner and delete a late owner while retaining both old views.
+    let prior = engine.pin_view(ViewSelection::Exact(rebuilt), &budget()?)?;
+    let prior_source = prior.view().source;
+    let [literal_spec, _, _] = specs()?;
+    let literal_binding = binding(&objects, prior.record(), literal_spec.instance)?;
+    let artifact = objects.get(literal_binding.artifact, &mut budget()?)?;
+    let directory = MapRoot(artifact.registration.children.as_slice().last().copied());
+    assert_eq!(
+        objects
+            .scan(directory, None, 2, &mut budget()?)?
+            .entries
+            .len(),
+        2
+    );
+    let first_record = objects
+        .lookup_object(
+            prior_source.owners,
+            &owner_map_key(owner(1)),
+            &mut budget()?,
+        )?
+        .ok_or("first source record absent")?;
+    let last_record = objects
+        .lookup_object(
+            prior_source.owners,
+            &owner_map_key(owner(129)),
+            &mut budget()?,
+        )?
+        .ok_or("last source record absent")?;
+    let binary_record = objects
+        .lookup_object(
+            prior_source.owners,
+            &owner_map_key(owner(131)),
+            &mut budget()?,
+        )?
+        .ok_or("binary source record absent")?;
+    prior.release()?;
+    let key = operation(6);
+    let ingress = engine.begin_input(key)?;
+    let replacement = engine.stage_source_text(
+        ingress,
+        "src/001.rs",
+        b"Ne XQZ",
+        SourceTextAdmission::Utf8 { policy: ADMISSION },
+        &mut budget()?,
+    )?;
+    let mutations = engine.stage_mutations(
+        ingress,
+        [
+            Ok(OwnerMutation {
+                owner: owner(1),
+                expected: Some(first_record),
+                next: Some(replacement),
+            }),
+            Ok(OwnerMutation {
+                owner: owner(129),
+                expected: Some(last_record),
+                next: None,
+            }),
+            Ok(OwnerMutation {
+                owner: owner(131),
+                expected: Some(binary_record),
+                next: None,
+            }),
+        ],
+        &mut budget()?,
+    )?;
+    let mut transition = SourceTransition {
+        expected_source: prior_source,
+        owners: mutations,
+        events: Vec::new(),
+    };
+    transition.events.push(SourceEvent {
+        producer: key.producer,
+        stream: key.stream,
+        stream_epoch: key.stream_epoch,
+        predecessor: 1,
+        sequence: 2,
+        payload: transition.owner_digest()?,
+    });
+    let revised = published(block_on(engine.submit(
+        UpdateRequest {
+            operation: key,
+            expected_view: rebuilt,
+            kind: UpdateKind::SourceAdvance(transition),
+        },
+        &mut budget()?,
+    ))?)?;
+    assert_eq!(literal_builds.load(Ordering::Relaxed), 4);
+    let original_owners = (1..=129).map(owner).collect::<Vec<_>>();
+    let remaining_owners = (1..=128).map(owner).collect::<Vec<_>>();
+    let remaining_needle_owners = (2..=128).map(owner).collect::<Vec<_>>();
+    for view in [installed, rebuilt] {
+        assert_literal_matches(&engine, &objects, view, b"Needle", &original_owners)?;
+        assert_literal_matches(&engine, &objects, view, b"N", &original_owners)?;
+        assert_literal_matches(&engine, &objects, view, b"Ne", &original_owners)?;
+        assert_literal_matches(&engine, &objects, view, b"XQZ", &[])?;
+        assert_literal_matches(&engine, &objects, view, &[0xff, 0x80, 0x80], &[owner(131)])?;
+    }
+    assert_literal_matches(
+        &engine,
+        &objects,
+        revised,
+        b"Needle",
+        &remaining_needle_owners,
+    )?;
+    assert_literal_matches(&engine, &objects, revised, b"N", &remaining_owners)?;
+    assert_literal_matches(&engine, &objects, revised, b"Ne", &remaining_owners)?;
+    assert_literal_matches(&engine, &objects, revised, b"XQZ", &[owner(1)])?;
+    assert_literal_matches(&engine, &objects, revised, &[0xff, 0x80, 0x80], &[])?;
     drop(engine);
     drop(objects);
     let (reopened, objects) = open_engine(root.path(), literal_builds.clone())?;
     assert_gold(&reopened, &objects, rebuilt)?;
     assert_gold(&reopened, &objects, installed)?;
-    assert_eq!(literal_builds.load(Ordering::Relaxed), 3);
+    for view in [installed, rebuilt] {
+        assert_literal_matches(&reopened, &objects, view, b"N", &original_owners)?;
+        assert_literal_matches(&reopened, &objects, view, b"Ne", &original_owners)?;
+        assert_literal_matches(&reopened, &objects, view, b"XQZ", &[])?;
+        assert_literal_matches(
+            &reopened,
+            &objects,
+            view,
+            &[0xff, 0x80, 0x80],
+            &[owner(131)],
+        )?;
+    }
+    assert_literal_matches(
+        &reopened,
+        &objects,
+        revised,
+        b"Needle",
+        &remaining_needle_owners,
+    )?;
+    assert_literal_matches(&reopened, &objects, revised, b"N", &remaining_owners)?;
+    assert_literal_matches(&reopened, &objects, revised, b"Ne", &remaining_owners)?;
+    assert_literal_matches(&reopened, &objects, revised, b"XQZ", &[owner(1)])?;
+    assert_literal_matches(&reopened, &objects, revised, &[0xff, 0x80, 0x80], &[])?;
+    assert_eq!(literal_builds.load(Ordering::Relaxed), 4);
     Ok(())
 }

@@ -28,9 +28,23 @@ pub struct NativeReadReleaseObservation {
     pub has_remaining_target_pins: bool,
 }
 
+/// First predicate that withheld logical settlement in the same snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeReadSettlementBlocker {
+    TargetPin,
+    ExactFloor,
+    WorkBelowFloor,
+    TerminalWork,
+    TerminalCustody { oldest_ready_sequence: u64 },
+    UnretiredView,
+    ReclaimQueue,
+    ObjectLifecycle,
+    UnreferencedObject,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeReadSettlementStatus {
-    Pending,
+    Pending(NativeReadSettlementBlocker),
     Incomplete,
     SettledAtSnapshot,
 }

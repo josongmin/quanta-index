@@ -5,6 +5,11 @@ pub use quanta_index_contract_base::index_refs::*;
 /// Source path byte limit, leaving five bytes for the canonical path map key
 /// namespace within the native 4096-byte map key format.
 pub const MAX_SOURCE_PATH_BYTES: usize = 4091;
+/// Maximum number of source items in one Native `StageSources` request.
+pub const MAX_NATIVE_STAGE_SOURCES_INPUTS: usize = 128;
+/// Maximum sum of path bytes, source bytes and 256 bytes per staged item.
+/// The IPC frame and encoded object batch apply independent byte limits.
+pub const MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MapRoot(pub Option<ObjectRef>);
@@ -99,7 +104,7 @@ pub struct SourceTransition {
 }
 
 /// Persisted native index state format, shared by the catalog and runtime.
-pub const NATIVE_INDEX_STATE_VERSION: u32 = 18;
+pub const NATIVE_INDEX_STATE_VERSION: u32 = 19;
 /// Persisted native source-event capture payload format.
 pub const NATIVE_SOURCE_CAPTURE_VERSION: u32 = 2;
 /// Hash domain for logical owner mutation capture, independent of execution base.
@@ -148,7 +153,7 @@ mod source_capture_tests {
             0x40, 0x8b, 0x26, 0xa6, 0xa1, 0xca, 0xa5, 0xab, 0x69, 0xcf, 0xb6, 0xd0, 0x1d, 0xc1,
             0xbe, 0x88, 0x40, 0xe2,
         ];
-        assert_eq!(NATIVE_INDEX_STATE_VERSION, 18);
+        assert_eq!(NATIVE_INDEX_STATE_VERSION, 19);
         assert_eq!(NATIVE_SOURCE_CAPTURE_VERSION, 2);
         assert_eq!(
             NATIVE_SOURCE_CAPTURE_HASH_DOMAIN,

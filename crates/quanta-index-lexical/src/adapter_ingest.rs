@@ -407,7 +407,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         budget: &RequestBudgetV1,
         diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
-        owner.bind_batch(batch)?;
+        let operations_sha256 = owner.bind_batch_payload_sha256(batch)?;
         if self.maintenance_policy.is_none() || batch.base_generation.is_none() {
             return Ok(());
         }
@@ -434,6 +434,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         let mut publication = crate::lexical_publication::PublicationContext::begin(
             &self.state_root,
             batch,
+            operations_sha256,
             reservation,
             base_directory.as_deref(),
             None,
@@ -501,11 +502,11 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                         CoverageReadPhase::UnderOperationLock
                     }
                 };
-                batch
-                    .validate_v1()
+                owner
+                    .validate_batch_shape(batch)
                     .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
-                batch
-                    .validate_surface_mutations_v1()
+                owner
+                    .validate_batch_surface(batch)
                     .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
                 if let Some(payload) = &batch.bundle_payload {
                     let _metadata = decode_repo_metadata_payload(payload)?;
@@ -560,7 +561,17 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                 let _planned = self.plan_batch_coverage(
                     batch, &identity, &directory, read_phase, owner, diagnostic,
                 )?;
+                let preflight_label = match phase {
+                    SearchCorpusPreflightPhaseV1::BeforeIntent => {
+                        "lexical_file_preflight_before_intent"
+                    }
+                    SearchCorpusPreflightPhaseV1::UnderOperationLock => {
+                        "lexical_file_preflight_under_operation_lock"
+                    }
+                };
+                let preflight_phase = crate::causal_profile::begin_phase(preflight_label);
                 self.preflight_file_authority_batch(batch, owner)?;
+                crate::causal_profile::finish_phase(preflight_label, preflight_phase);
                 Ok(())
             },
         )
@@ -588,14 +599,14 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             diagnostic,
             quanta_index_core::DiagnosticStageV1::LexicalBuild,
             |diagnostic, sync_totals| {
-                owner.bind_batch(batch)?;
+                let operations_sha256 = owner.bind_batch_payload_sha256(batch)?;
                 let preparation_started = Instant::now();
                 // Storage-free admission precedes even the sealed replay shortcut.
                 // The same owner validates the public materializer and raw channel.
-                batch.validate_surface_mutations_v1().map_err(|error| {
+                owner.validate_batch_surface(batch).map_err(|error| {
                     CoreError::InvalidContract(format!("lexical: file mutation admission: {error}"))
                 })?;
-                batch.validate_v1().map_err(|error| {
+                owner.validate_batch_shape(batch).map_err(|error| {
                     CoreError::InvalidContract(format!("lexical: batch admission: {error}"))
                 })?;
                 if owner.lexical_reservation().is_none() {
@@ -684,6 +695,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                 let mut publication = crate::lexical_publication::PublicationContext::begin(
                     &self.state_root,
                     batch,
+                    operations_sha256,
                     reservation,
                     base_directory.as_deref(),
                     sync_totals.clone(),

@@ -382,6 +382,63 @@ TEXT_OCCURRENCE_DIFF_GOLD = {
 }
 
 
+def _native_child_with_map_root_staged(
+    path: Path, *, missing_owner: bool = False, duplicate_count: bool = False,
+    shadow: bool = False,
+) -> tuple[RawFile, dict]:
+    raw, _parsed = _native_child(path, "1" * 32, publication=True, schema_version=5)
+    rows = [json.loads(line) for line in raw.path.read_bytes().splitlines()]
+    events = rows[1:-1]
+
+    def map_events(base: int, lane: int, terms: int, owners: int) -> list[list]:
+        result = [
+            ["b", base, 3, "native_text_postings", lane, None],
+            ["b", base + 1, base, "map_apply", 0, None],
+            ["b", base + 2, base + 1, "map_apply", 5, None],
+            ["b", base + 3, base + 2, "map_apply", 6, None],
+            ["c", base + 3, "new_objects", terms],
+        ]
+        if duplicate_count and lane == 39:
+            result.append(["c", base + 3, "new_objects", 1])
+        result.append(["e", base + 3, "ok", None])
+        if not missing_owner or lane != 39:
+            result.extend([
+                ["b", base + 4, base + 2, "map_apply", 7, None],
+                ["c", base + 4, "new_objects", owners],
+                ["e", base + 4, "ok", None],
+            ])
+        result.append(["e", base + 2, "ok", None])
+        for key, value in (
+            ("map_root_reuse_candidates", 0),
+            ("map_root_reuses", 0),
+            ("map_root_builds", 2),
+        ):
+            result.append(["c", base + 1, key, value])
+        result.extend([["e", base + 1, "ok", None], ["e", base, "ok", None]])
+        return result
+
+    inserted = map_events(6, 39, 8, 3)
+    if shadow:
+        inserted += map_events(20, 38, 999, 888)
+    request_end = next(
+        index for index, event in enumerate(events)
+        if isinstance(event[4], list) and event[4][:2] == ["e", 3]
+    )
+    events[request_end:request_end] = [
+        ["e", 0, "1" * 32, 0, kind] for kind in inserted
+    ]
+    for sequence, event in enumerate(events, 1):
+        event[1] = event[3] = sequence
+    rows[-1].update(
+        closed_ns=len(events) + 1, last_output_seq=len(events),
+        events_attempted=len(events), events_accepted=len(events),
+        events_written=len(events),
+    )
+    path.write_bytes(b"".join(json.dumps(row).encode() + b"\n" for row in (rows[0], *events, rows[-1])))
+    path.chmod(0o600)
+    return RawFile.capture(path), parse_timeline(path.read_bytes())
+
+
 def _native_child_with_text_occurrence_diff(
     path: Path, *, outcomes: tuple[str, ...] = ("ok",),
     parent_span_id: int = 3, counters: dict[str, int] | None = None,
@@ -427,6 +484,58 @@ def _native_child_with_text_occurrence_diff(
     path.write_bytes(b"".join(json.dumps(row).encode() + b"\n" for row in (rows[0], *events, rows[-1])))
     path.chmod(0o600)
     return RawFile.capture(path), parse_timeline(path.read_bytes())
+
+
+def test_native_child_reports_only_scoped_map_root_staged_counts(tmp_path: Path) -> None:
+    raw, parsed = _native_child_with_map_root_staged(tmp_path / "child.jsonl", shadow=True)
+    child = _native_child_trace(parsed, raw, publication=True)
+    assert child["map_root_staged"] == {
+        "scope": "native_text_postings/39->map_apply/0->map_apply/5; staged_counts_not_physical_writes",
+        "observed_batches": 1,
+        "observed_requests": 1,
+        "omitted_requests": 0,
+        "requests": [{
+            "request_span_id": 3,
+            "request_identity": {"request_id": 1, "plane": "control", "connection_id": 1},
+            "map_batches": 1,
+            "terms_staged_objects": 8,
+            "owners_staged_objects": 3,
+        }],
+    }
+
+
+@pytest.mark.parametrize(
+    ("missing_owner", "duplicate_count", "reason"),
+    (
+        (True, False, "root count pair is incomplete"),
+        (False, True, "root count is duplicated or absent"),
+    ),
+)
+def test_native_child_rejects_malformed_scoped_map_root_counts(
+    tmp_path: Path, missing_owner: bool, duplicate_count: bool, reason: str,
+) -> None:
+    raw, parsed = _native_child_with_map_root_staged(
+        tmp_path / "child.jsonl", missing_owner=missing_owner, duplicate_count=duplicate_count,
+    )
+    with pytest.raises(ValueError, match=reason):
+        _native_child_trace(parsed, raw, publication=True)
+
+
+def test_native_product_carries_map_root_staged_counts_without_requiring_them(
+    tmp_path: Path,
+) -> None:
+    summary, children, workload = _native_product_fixture(tmp_path, timeline_schema_version=5)
+    path = children["first"]["trace_file"].path
+    raw, parsed = _native_child_with_map_root_staged(path)
+    children["first"].update(trace_file=raw, trace=parsed)
+    summary["detail"]["child_trace_files"]["captures"][0].update(
+        bytes=raw.size, sha256=raw.sha256.removeprefix("sha256:")
+    )
+    product = _native_validate(summary, children, workload)
+    assert product["children"]["first"]["map_root_staged"]["requests"][0][
+        "terms_staged_objects"
+    ] == 8
+    assert "map_root_staged" not in product["children"]["reopen"]
 
 
 def test_native_child_summarizes_text_occurrence_diff_by_request(tmp_path: Path) -> None:
@@ -783,6 +892,27 @@ def _native_validate(
     )
 
 
+def test_native_product_accepts_raw_only_children_and_rechecks_supplied_parse(
+    tmp_path: Path,
+) -> None:
+    summary, children, workload = _native_product_fixture(tmp_path)
+    raw_only = {
+        role: {key: record[key] for key in ("trace_file", "stderr_file")}
+        for role, record in children.items()
+    }
+    result = _native_validate(summary, raw_only, workload)
+    assert set(result["children"]) == {"first", "reopen"}
+    assert result["children"]["first"]["capture_id"] == "1" * 32
+    forged = deepcopy(children)
+    forged["first"]["trace"] = dict(children["first"]["trace"], clock_domain="f" * 32)
+    with pytest.raises(ValueError, match="parsed capture differs"):
+        _native_validate(summary, forged, workload)
+    malformed = deepcopy(children)
+    malformed["first"]["trace"] = None
+    with pytest.raises(ValueError, match="raw record malformed"):
+        _native_validate(summary, malformed, workload)
+
+
 def _native_off_fixture(tmp_path: Path) -> tuple[dict, dict]:
     summary, children, workload = _native_product_fixture(tmp_path, sampling=True)
     for role in ("first", "reopen"):
@@ -1034,7 +1164,8 @@ def _native_mixed_fixture(tmp_path: Path, *, churn_cycles: int = 0) -> tuple[dic
 
     detail["mixed_load"] = {
         "scope": (
-            "Native UDS mixed offered load with product retained-read witness; "
+            "Native UDS mixed offered load on one continuous 960-second epoch "
+            "with product retained-read witness; "
             "sampled resource observations are not continuous peaks"
         ),
         "warmup": window("warmup", 60, 6 + churn_cycles),
@@ -1051,6 +1182,7 @@ def _native_mixed_fixture(tmp_path: Path, *, churn_cycles: int = 0) -> tuple[dic
             "initial_revision": 1,
             "final_revision": 5,
             "initial_expiry_ms": 1_000_300_000,
+            "load_start_ms": 0.0,
             "renewals_ms": [float(step * 120_000) for step in range(1, 5)],
             "renewal_expiries_ms": [1_000_300_000 + step * 120_000 for step in range(1, 5)],
             "held_queries": 6,
@@ -1323,6 +1455,19 @@ def test_native_mixed_off_after_two_churn_cycles_binds_window_sequence(tmp_path:
         _native_validate_mixed(summary, workload, churn_cycles=2)
 
 
+def test_native_mixed_overlapping_warmup_completions_count_once(tmp_path: Path) -> None:
+    summary, workload = _native_mixed_fixture(tmp_path)
+    detail = summary["detail"]
+    detail["total_ms"] = 960_500.0
+    first_epoch = detail["native_resource_observation"]["epochs"][0]
+    first_epoch["observed_elapsed_ms"] = 960_500.0
+    _native_validate_mixed(summary, workload)
+
+    first_epoch["observed_elapsed_ms"] = 960_499.0
+    with pytest.raises(ValueError, match="duration is outside its process observation"):
+        _native_validate_mixed(summary, workload)
+
+
 @pytest.mark.parametrize(
     "fault",
     (
@@ -1331,6 +1476,7 @@ def test_native_mixed_off_after_two_churn_cycles_binds_window_sequence(tmp_path:
         "wrong_view",
         "renew_gap",
         "short_hold",
+        "short_overlap",
         "wrong_query_count",
         "wrong_revision",
         "stale_expiry",
@@ -1359,6 +1505,8 @@ def test_native_mixed_retained_read_requires_actual_bound_lifecycle(
         held["renewals_ms"][1] = 301_000.0
     elif fault == "short_hold":
         held["first_release_attempt_ms"] = 599_999.0
+    elif fault == "short_overlap":
+        held["load_start_ms"] = 1.0
     elif fault == "wrong_query_count":
         held["held_queries"] = 5
     elif fault == "wrong_revision":
@@ -1388,6 +1536,7 @@ def test_native_mixed_retained_read_requires_actual_bound_lifecycle(
     (
         "empty_mixed",
         "missing_window",
+        "prior_discontinuous_scope",
         "bool_offered",
         "query_drop",
         "query_error",
@@ -1421,6 +1570,11 @@ def test_native_mixed_off_product_refuses_partial_or_forged_load(
         detail["mixed_load"] = {}
     elif fault == "missing_window":
         del mixed["measure"]
+    elif fault == "prior_discontinuous_scope":
+        mixed["scope"] = (
+            "Native UDS mixed offered load with product retained-read witness; "
+            "sampled resource observations are not continuous peaks"
+        )
     elif fault == "bool_offered":
         warmup["queries"]["offered"] = True
     elif fault == "query_drop":

@@ -2,6 +2,7 @@
 //!
 //! A checked layout owns its authenticated immutable payload and DATA lease.
 
+use std::cmp::Ordering;
 use std::ops::Range;
 
 use quanta_index_core::index::{
@@ -20,7 +21,71 @@ pub(in crate::native) const LAYOUT_POLICY: &[u8] =
     b"QITXOC01;be16-terms-vectors;be32-reserved0;sorted-unique-keys;first-use-vectors;be32-strict-positions;max8192-512-8192";
 
 const MAGIC: &[u8; 8] = b"QITXOC01";
-const HEADER_BYTES: usize = 16;
+pub(in crate::native) const HEADER_BYTES: usize = 16;
+/// Ephemeral sorted ordinals; the exact vector remains in the original
+/// first-use slot, so lookup order cannot change the canonical wire.
+pub(in crate::native) struct VectorIndex {
+    slots: [u16; MAX_BLOCK_TERMS],
+    len: usize,
+    _memory: Option<MemoryLease>,
+}
+
+impl VectorIndex {
+    pub(in crate::native) fn within_owner_grant() -> Self {
+        Self {
+            slots: [0; MAX_BLOCK_TERMS],
+            len: 0,
+            _memory: None,
+        }
+    }
+
+    fn new(budget: &WorkBudget) -> Result<Self, IndexError> {
+        let memory = budget.reserve_memory(
+            u64::try_from(MAX_BLOCK_TERMS * std::mem::size_of::<u16>())
+                .map_err(|_error| IndexError::ResourceLimited)?,
+            MemoryLifetime::Temporary,
+        )?;
+        let mut index = Self::within_owner_grant();
+        index._memory = memory;
+        Ok(index)
+    }
+
+    pub(in crate::native) fn locate(
+        &self,
+        budget: &WorkBudget,
+        mut compare: impl FnMut(usize) -> Result<Ordering, IndexError>,
+    ) -> Result<(Option<usize>, usize), IndexError> {
+        let mut lower = 0;
+        let mut upper = self.len;
+        while lower < upper {
+            budget.checkpoint()?;
+            let middle = lower + (upper - lower) / 2;
+            let ordinal = usize::from(*self.slots.get(middle).ok_or(IndexError::ResourceLimited)?);
+            match compare(ordinal)? {
+                Ordering::Less => lower = middle + 1,
+                Ordering::Greater => upper = middle,
+                Ordering::Equal => return Ok((Some(ordinal), middle)),
+            }
+        }
+        Ok((None, lower))
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the bounded vector count and search insertion position establish the slot"
+    )]
+    pub(in crate::native) fn insert(&mut self, slot: usize, ordinal: u16) {
+        // Caller proved the insertion slot and the 512-vector cap. Shifting
+        // compact ordinals does not move or rewrite the original vectors.
+        self.slots.copy_within(slot..self.len, slot + 1);
+        self.slots[slot] = ordinal;
+        self.len += 1;
+    }
+}
+
+pub(in crate::native) fn is_packed(payload: &[u8]) -> bool {
+    payload.starts_with(MAGIC)
+}
 
 pub(in crate::native) struct BlockTerm {
     pub(in crate::native) key: PreparedKey,
@@ -46,11 +111,123 @@ pub(in crate::native) enum SealedBlock {
     },
 }
 
+/// The one canonical packed-wire writer accepts either owned draft rows or a
+/// checked owner-local borrowed view. Vector ordinals remain first-use IDs.
+pub(in crate::native) trait PackedBlockView {
+    fn term_count(&self) -> usize;
+    fn vector_count(&self) -> usize;
+    fn term(&self, ordinal: usize) -> Result<(&[u8], u16), IndexError>;
+    fn vector_len(&self, ordinal: usize) -> Result<usize, IndexError>;
+    fn position(&self, vector: usize, ordinal: usize) -> Result<u32, IndexError>;
+}
+
+pub(in crate::native) fn encode_packed(
+    view: &impl PackedBlockView,
+    encoded_len: usize,
+    budget: &WorkBudget,
+) -> Result<StagedPayload, IndexError> {
+    budget.checkpoint()?;
+    if !(2..=MAX_BLOCK_TERMS).contains(&view.term_count()) || encoded_len > MAX_BLOCK_BYTES {
+        return Err(IndexError::ResourceLimited);
+    }
+    let memory = budget.reserve_memory(
+        u64::try_from(encoded_len).map_err(|_error| IndexError::ResourceLimited)?,
+        MemoryLifetime::Temporary,
+    )?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(encoded_len)
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    bytes.extend_from_slice(MAGIC);
+    bytes.extend_from_slice(
+        &u16::try_from(view.term_count())
+            .map_err(|_error| IndexError::ResourceLimited)?
+            .to_be_bytes(),
+    );
+    bytes.extend_from_slice(
+        &u16::try_from(view.vector_count())
+            .map_err(|_error| IndexError::ResourceLimited)?
+            .to_be_bytes(),
+    );
+    bytes.extend_from_slice(&0_u32.to_be_bytes());
+    for ordinal in 0..view.term_count() {
+        budget.checkpoint()?;
+        let (key, vector) = view.term(ordinal)?;
+        bytes.extend_from_slice(
+            &u16::try_from(key.len())
+                .map_err(|_error| IndexError::ResourceLimited)?
+                .to_be_bytes(),
+        );
+        bytes.extend_from_slice(key);
+        bytes.extend_from_slice(&vector.to_be_bytes());
+    }
+    for vector in 0..view.vector_count() {
+        budget.checkpoint()?;
+        let positions = view.vector_len(vector)?;
+        bytes.extend_from_slice(
+            &u16::try_from(positions)
+                .map_err(|_error| IndexError::ResourceLimited)?
+                .to_be_bytes(),
+        );
+        for ordinal in 0..positions {
+            bytes.extend_from_slice(&view.position(vector, ordinal)?.to_be_bytes());
+        }
+    }
+    if bytes.len() != encoded_len || bytes.len() > MAX_BLOCK_BYTES {
+        return Err(IndexError::BackendViolation(
+            "text block wire census changed".into(),
+        ));
+    }
+    budget.checkpoint()?;
+    Ok(StagedPayload { bytes, memory })
+}
+
+impl PackedBlockView for BlockDraft {
+    fn term_count(&self) -> usize {
+        self.terms.len()
+    }
+
+    fn vector_count(&self) -> usize {
+        self.vectors.len()
+    }
+
+    fn term(&self, ordinal: usize) -> Result<(&[u8], u16), IndexError> {
+        let term = self
+            .terms
+            .as_slice()
+            .get(ordinal)
+            .ok_or(IndexError::ResourceLimited)?;
+        Ok((term.key.as_slice(), term.vector))
+    }
+
+    fn vector_len(&self, ordinal: usize) -> Result<usize, IndexError> {
+        Ok(self
+            .vectors
+            .as_slice()
+            .get(ordinal)
+            .ok_or(IndexError::ResourceLimited)?
+            .as_slice()
+            .len())
+    }
+
+    fn position(&self, vector: usize, ordinal: usize) -> Result<u32, IndexError> {
+        self.vectors
+            .as_slice()
+            .get(vector)
+            .ok_or(IndexError::ResourceLimited)?
+            .as_slice()
+            .get(ordinal)
+            .copied()
+            .ok_or(IndexError::ResourceLimited)
+    }
+}
+
 pub(in crate::native) struct BlockDraft {
     // Both containers acquire their own backing before the first push.
     // The first occurrence of each distinct vector owns its position grant.
     terms: PreparedRows<BlockTerm>,
     vectors: PreparedRows<PreparedPositions>,
+    vector_index: Option<VectorIndex>,
     encoded_len: usize,
 }
 
@@ -59,6 +236,7 @@ impl BlockDraft {
         Ok(Self {
             terms: PreparedRows::new(MAX_BLOCK_TERMS)?,
             vectors: PreparedRows::new(MAX_BLOCK_TERMS)?,
+            vector_index: None,
             encoded_len: HEADER_BYTES,
         })
     }
@@ -100,18 +278,57 @@ impl BlockDraft {
                 "text block positions must be nonempty and strictly increasing".into(),
             ));
         }
-        let mut same = None;
-        for (index, saved) in self.vectors.as_slice().iter().enumerate() {
-            // The 512-row envelope is bounded, but distinct vectors can make
-            // this scan quadratic. Keep cancellation live within that bound.
-            if index.is_multiple_of(32) {
-                budget.checkpoint()?;
+        let mut new_index = None;
+        if self.vector_index.is_none() && self.vectors.len() >= 2 {
+            let mut index = VectorIndex::new(budget)?;
+            for ordinal in 0..self.vectors.len() {
+                let candidate = self
+                    .vectors
+                    .as_slice()
+                    .get(ordinal)
+                    .ok_or(IndexError::ResourceLimited)?
+                    .as_slice();
+                let (same, slot) = index.locate(budget, |prior| {
+                    Ok(self
+                        .vectors
+                        .as_slice()
+                        .get(prior)
+                        .ok_or(IndexError::ResourceLimited)?
+                        .as_slice()
+                        .cmp(candidate))
+                })?;
+                if same.is_some() {
+                    return Err(IndexError::BackendViolation(
+                        "text block draft repeats a canonical vector".into(),
+                    ));
+                }
+                index.insert(
+                    slot,
+                    u16::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?,
+                );
             }
-            if saved.as_slice() == values {
-                same = Some(index);
-                break;
-            }
+            new_index = Some(index);
         }
+        let (same, insertion_slot) =
+            if let Some(index) = self.vector_index.as_ref().or(new_index.as_ref()) {
+                index.locate(budget, |ordinal| {
+                    Ok(self
+                        .vectors
+                        .as_slice()
+                        .get(ordinal)
+                        .ok_or(IndexError::ResourceLimited)?
+                        .as_slice()
+                        .cmp(values))
+                })?
+            } else {
+                (
+                    self.vectors
+                        .as_slice()
+                        .iter()
+                        .position(|prior| prior.as_slice() == values),
+                    0,
+                )
+            };
         let row_bytes = 4_usize
             .checked_add(key.len())
             .ok_or(IndexError::ResourceLimited)?;
@@ -150,6 +367,16 @@ impl BlockDraft {
             }
             return Err(error);
         }
+        if same.is_none() {
+            if let Some(index) = &mut self.vector_index {
+                index.insert(insertion_slot, vector);
+            } else if let Some(index) = &mut new_index {
+                index.insert(insertion_slot, vector);
+            }
+        }
+        if let Some(index) = new_index {
+            self.vector_index = Some(index);
+        }
         self.encoded_len = next_len;
         Ok(BlockPush::Added)
     }
@@ -176,58 +403,9 @@ impl BlockDraft {
                 })
             }
             _ => {
-                let memory = budget.reserve_memory(
-                    u64::try_from(self.encoded_len)
-                        .map_err(|_error| IndexError::ResourceLimited)?,
-                    MemoryLifetime::Temporary,
-                )?;
-                let mut bytes = Vec::new();
-                bytes
-                    .try_reserve_exact(self.encoded_len)
-                    .map_err(|_error| IndexError::ResourceLimited)?;
-                bytes.extend_from_slice(MAGIC);
-                bytes.extend_from_slice(
-                    &u16::try_from(self.terms.len())
-                        .map_err(|_error| IndexError::ResourceLimited)?
-                        .to_be_bytes(),
-                );
-                bytes.extend_from_slice(
-                    &u16::try_from(self.vectors.len())
-                        .map_err(|_error| IndexError::ResourceLimited)?
-                        .to_be_bytes(),
-                );
-                bytes.extend_from_slice(&0_u32.to_be_bytes());
-                for row in self.terms.as_slice() {
-                    budget.checkpoint()?;
-                    let key = row.key.as_slice();
-                    bytes.extend_from_slice(
-                        &u16::try_from(key.len())
-                            .map_err(|_error| IndexError::ResourceLimited)?
-                            .to_be_bytes(),
-                    );
-                    bytes.extend_from_slice(key);
-                    bytes.extend_from_slice(&row.vector.to_be_bytes());
-                }
-                for vector in self.vectors.as_slice() {
-                    budget.checkpoint()?;
-                    let positions = vector.as_slice();
-                    bytes.extend_from_slice(
-                        &u16::try_from(positions.len())
-                            .map_err(|_error| IndexError::ResourceLimited)?
-                            .to_be_bytes(),
-                    );
-                    for position in positions {
-                        bytes.extend_from_slice(&position.to_be_bytes());
-                    }
-                }
-                if bytes.len() != self.encoded_len || bytes.len() > MAX_BLOCK_BYTES {
-                    return Err(IndexError::BackendViolation(
-                        "text block wire census changed".into(),
-                    ));
-                }
-                budget.checkpoint()?;
+                let payload = encode_packed(&self, self.encoded_len, budget)?;
                 Ok(SealedBlock::Packed {
-                    payload: StagedPayload { bytes, memory },
+                    payload,
                     terms: self.terms,
                 })
             }
@@ -311,6 +489,7 @@ impl CheckedBlock {
         let payload = checked.object.payload.as_slice();
         let mut offset = HEADER_BYTES;
         let mut next_vector = 0_usize;
+        let mut vector_index = None;
         for index in 0..term_count {
             budget.checkpoint()?;
             let length = usize::from(read_u16(payload, &mut offset)?);
@@ -376,29 +555,39 @@ impl CheckedBlock {
                 }
                 previous = Some(position);
             }
-            for (prior_index, prior) in checked
-                .vectors
-                .get(..index)
-                .ok_or_else(|| corrupt("text block vector exceeds layout"))?
-                .iter()
-                .enumerate()
-            {
-                if prior_index.is_multiple_of(32) {
-                    budget.checkpoint()?;
-                }
-                if payload
-                    .get(prior.start..prior.end)
-                    .ok_or_else(|| corrupt("text block vector exceeds payload"))?
-                    == values
-                {
-                    return Err(corrupt("text block repeats a position vector"));
-                }
+            if index == 1 {
+                let mut ready = VectorIndex::new(budget)?;
+                ready.insert(0, 0);
+                vector_index = Some(ready);
+            }
+            let (same, insertion_slot) = if let Some(index) = &vector_index {
+                index.locate(budget, |ordinal| {
+                    let prior = checked
+                        .vectors
+                        .get(ordinal)
+                        .ok_or_else(|| corrupt("text block vector exceeds layout"))?;
+                    Ok(payload
+                        .get(prior.start..prior.end)
+                        .ok_or_else(|| corrupt("text block vector exceeds payload"))?
+                        .cmp(values))
+                })?
+            } else {
+                (None, 0)
+            };
+            if same.is_some() {
+                return Err(corrupt("text block repeats a position vector"));
             }
             *checked
                 .vectors
                 .get_mut(index)
                 .ok_or_else(|| corrupt("text block vector exceeds layout"))? =
                 VectorSpan { start, end: offset };
+            if let Some(lookup) = &mut vector_index {
+                lookup.insert(
+                    insertion_slot,
+                    u16::try_from(index).map_err(|_error| IndexError::ResourceLimited)?,
+                );
+            }
         }
         if offset != payload.len() {
             return Err(corrupt("text block has trailing bytes"));
@@ -411,11 +600,64 @@ impl CheckedBlock {
         &self.object
     }
 
+    pub(in crate::native) fn term_count(&self) -> usize {
+        self.term_count
+    }
+
+    pub(in crate::native) fn key(&self, slot: usize) -> Result<&[u8], IndexError> {
+        let row = self
+            .rows
+            .get(..self.term_count)
+            .ok_or_else(layout_invariant)?
+            .get(slot)
+            .ok_or_else(|| IndexError::InvalidInput("text block term slot out of range".into()))?;
+        self.object
+            .payload
+            .get(row.start..row.end)
+            .ok_or_else(layout_invariant)
+    }
+
+    /// Return the insertion slot for any raw key, including one beyond the
+    /// final term. Parsing has already proved the rows strictly sorted.
+    pub(in crate::native) fn lower_bound(
+        &self,
+        key: &[u8],
+        budget: &WorkBudget,
+    ) -> Result<usize, IndexError> {
+        budget.checkpoint()?;
+        let mut lower = 0;
+        let mut upper = self.term_count;
+        while lower < upper {
+            budget.checkpoint()?;
+            let middle = upper
+                .checked_sub(lower)
+                .and_then(|remaining| remaining.checked_div(2))
+                .and_then(|half| lower.checked_add(half))
+                .ok_or_else(layout_invariant)?;
+            if self.key(middle)? < key {
+                lower = middle.checked_add(1).ok_or_else(layout_invariant)?;
+            } else {
+                upper = middle;
+            }
+        }
+        budget.checkpoint()?;
+        Ok(lower)
+    }
+
     pub(in crate::native) fn selection(
         &self,
         term: &[u8],
         budget: &WorkBudget,
     ) -> Result<Range<usize>, IndexError> {
+        self.selection_with_ordinal(term, budget)
+            .map(|(range, _)| range)
+    }
+
+    fn selection_with_ordinal(
+        &self,
+        term: &[u8],
+        budget: &WorkBudget,
+    ) -> Result<(Range<usize>, usize), IndexError> {
         budget.checkpoint()?;
         check_term_key(term)?;
         let payload = self.object.payload.as_slice();
@@ -441,21 +683,76 @@ impl CheckedBlock {
                 }
                 std::cmp::Ordering::Greater => upper = middle,
                 std::cmp::Ordering::Equal => {
-                    let vector = usize::from(row.vector);
-                    if vector >= self.vector_count {
-                        return Err(layout_invariant());
-                    }
-                    let selected = self.vectors.get(vector).ok_or_else(layout_invariant)?;
-                    if payload.get(selected.start..selected.end).is_none() {
-                        return Err(layout_invariant());
-                    }
-                    budget.checkpoint()?;
-                    return Ok(selected.start..selected.end);
+                    return Ok((self.selected_vector(row, budget)?, middle));
                 }
             }
         }
         budget.checkpoint()?;
         Err(corrupt("term is absent from text block"))
+    }
+
+    fn selected_vector(
+        &self,
+        row: &RowSpan,
+        budget: &WorkBudget,
+    ) -> Result<Range<usize>, IndexError> {
+        let vector = usize::from(row.vector);
+        if vector >= self.vector_count {
+            return Err(layout_invariant());
+        }
+        let selected = self.vectors.get(vector).ok_or_else(layout_invariant)?;
+        if self
+            .object
+            .payload
+            .get(selected.start..selected.end)
+            .is_none()
+        {
+            return Err(layout_invariant());
+        }
+        budget.checkpoint()?;
+        Ok(selected.start..selected.end)
+    }
+
+    /// An exact ordinal from this already checked layout avoids a second
+    /// binary search when a sorted inventory cursor visits consecutive keys.
+    pub(in crate::native) fn position_count_if_at(
+        &self,
+        ordinal: usize,
+        term: &[u8],
+        budget: &WorkBudget,
+    ) -> Result<Option<u64>, IndexError> {
+        budget.checkpoint()?;
+        if ordinal >= self.term_count || self.key(ordinal)? != term {
+            return Ok(None);
+        }
+        check_term_key(term)?;
+        let row = self.rows.get(ordinal).ok_or_else(layout_invariant)?;
+        let selected = self.selected_vector(row, budget)?;
+        u64::try_from(selected.len().div_euclid(4))
+            .map(Some)
+            .map_err(|_error| IndexError::ResourceLimited)
+    }
+
+    pub(in crate::native) fn position_count_with_ordinal(
+        &self,
+        term: &[u8],
+        budget: &WorkBudget,
+    ) -> Result<(u64, usize), IndexError> {
+        let (selected, ordinal) = self.selection_with_ordinal(term, budget)?;
+        Ok((
+            u64::try_from(selected.len().div_euclid(4))
+                .map_err(|_error| IndexError::ResourceLimited)?,
+            ordinal,
+        ))
+    }
+
+    pub(in crate::native) fn position_count(
+        &self,
+        term: &[u8],
+        budget: &WorkBudget,
+    ) -> Result<u64, IndexError> {
+        self.position_count_with_ordinal(term, budget)
+            .map(|(count, _)| count)
     }
 }
 

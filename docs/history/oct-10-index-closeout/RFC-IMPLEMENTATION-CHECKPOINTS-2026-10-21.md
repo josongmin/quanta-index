@@ -4284,5 +4284,3 @@ workspace formatting and diff checks passed. These are scoped current-code
 results; the overlapping 123-test and 15-test runs are not added together as a
 single suite result. Auto execution, power-loss, global resource limits, full
 suite, formal benchmarks and product cutover remain unqualified.
-
-

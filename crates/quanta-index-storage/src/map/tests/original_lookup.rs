@@ -57,6 +57,14 @@ fn batch_lookup_matches_independent_values_order_absence_and_refusals() -> TestR
     ));
     check_eq!(sentinel, [Some(object.into())]);
     check_eq!(shape.usage(), WorkUsage::default());
+    let over_limit =
+        vec![b"".as_slice(); quanta_index_core::index::ports::MAX_MAP_LOOKUP_BATCH + 1];
+    let mut over_limit_values = vec![None; over_limit.len()];
+    check!(matches!(
+        store.lookup_batch(root, &over_limit, &mut over_limit_values, &mut shape),
+        Err(IndexError::InvalidInput(_))
+    ));
+    check_eq!(shape.usage(), WorkUsage::default());
     let oversized = vec![b'q'; MAX_KEY_BYTES + 1];
     let mut provisional = [None; 2];
     check!(matches!(

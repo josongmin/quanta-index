@@ -48,6 +48,10 @@ mod read_session;
 mod repomap;
 mod stub_reply;
 
+pub use quanta_index_contract::index::{
+    MAX_NATIVE_STAGE_SOURCES_INPUTS, MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES,
+};
+
 /// One canonical Native publication response with its memory charges.
 ///
 /// Borrow the payload while this owner is alive. Cloning an owned response
@@ -124,12 +128,6 @@ pub struct BorrowedSourceInput<'a> {
     pub bytes: &'a [u8],
     pub text: SourceTextAdmission,
 }
-
-/// Maximum number of source items in one `StageSources` request.
-pub const MAX_NATIVE_STAGE_SOURCES_INPUTS: usize = 32;
-/// Maximum sum of each item's path bytes, source bytes, and 256-byte wire
-/// allowance. The IPC codec applies its separate encoded-body limit.
-pub const MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES: usize = 8 * 1024 * 1024;
 
 trait SourceInputView {
     fn path(&self) -> &str;
@@ -1101,6 +1099,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
     }
 
     /// Uploads one bounded child-first source batch without a per-file UDS fallback.
+    /// Batches above 32 inputs require a daemon with the matching Native bound.
     pub fn stage_sources(
         &self,
         ingress: IngressRef,
@@ -1115,6 +1114,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
     /// Stage a source batch from caller-owned paths and bytes. The caller must
     /// retain both until this method returns; the IPC frame and response are
     /// still materialized by the common transport under the original budget.
+    /// Batches above 32 inputs require a daemon with the matching Native bound.
     pub fn stage_sources_borrowed(
         &self,
         ingress: IngressRef,
@@ -4952,7 +4952,7 @@ mod tests {
             operation: key(31),
             fence: 19,
         };
-        let owned = vec![
+        let mut owned = vec![
             SourceInput {
                 path: "src/a.rs".into(),
                 bytes: vec![0, 23, 255],
@@ -4966,6 +4966,14 @@ mod tests {
                 text: SourceTextAdmission::Excluded,
             },
         ];
+        assert_eq!(MAX_NATIVE_STAGE_SOURCES_INPUTS, 128);
+        owned.extend(
+            (owned.len()..MAX_NATIVE_STAGE_SOURCES_INPUTS).map(|index| SourceInput {
+                path: format!("src/{index}.rs"),
+                bytes: vec![u8::try_from(index).expect("source ordinal fits u8")],
+                text: SourceTextAdmission::Excluded,
+            }),
+        );
         let borrowed = owned
             .iter()
             .map(|input| BorrowedSourceInput {
@@ -4994,7 +5002,13 @@ mod tests {
         let directory = tempfile::tempdir().expect("socket directory");
         let socket = directory.path().join("native.sock");
         let listener = UnixListener::bind(&socket).expect("bind scripted native socket");
-        let references = vec![ObjectRef(Digest([8; 32])), ObjectRef(Digest([9; 32]))];
+        let references = (0..MAX_NATIVE_STAGE_SOURCES_INPUTS)
+            .map(|index| {
+                ObjectRef(Digest(
+                    [u8::try_from(index).expect("source ordinal fits u8"); 32],
+                ))
+            })
+            .collect::<Vec<_>>();
         let reply_references = references.clone();
         let peer = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept borrowed source batch");

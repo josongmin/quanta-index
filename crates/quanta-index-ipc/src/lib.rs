@@ -83,3 +83,6 @@ pub use socket_access::{
     PeerCredentials, PeerRefusal, SharedSocketAccess, SocketAccessPolicy, WORLD_DIRECTORY_MODE,
     WORLD_SOCKET_MODE, admit_peer,
 };
+#[cfg(feature = "native-send-observer-v1")]
+#[doc(hidden)]
+pub mod native_send_observer_v1;

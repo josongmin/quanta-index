@@ -37,19 +37,12 @@ fn dense_lane_trace_entry_v1(dense_lane: &DenseLaneContractV1) -> PlannerTraceEn
     }
 }
 
-/// Outcome of the shared hybrid lexical+semantic fusion, before the caller
-/// wraps it in its path-specific response (plain hybrid vs. hybrid-seed).
+/// Outcome of ordinary hybrid chunk fusion before response construction.
 pub(super) struct HybridFusion {
     pub(super) pin: GenerationPin,
     pub(super) fused: Vec<HybridCandidateV1>,
-    pub(super) lexical_rows: Vec<LexicalCandidate>,
-    pub(super) dense_rows: Vec<LexicalCandidate>,
-    pub(super) dense_outcome: quanta_index_core::DenseAdmissionOutcomeV1,
-    pub(super) dense_examined: usize,
-    pub(super) internal_top_k: u32,
-    pub(super) execution: LaneExecutionSummaryV1,
-    /// Typed outcome and coverage (S21-06): the dense admission outcome
-    /// survives fusion here instead of collapsing into row counts.
+    /// Typed outcome and coverage (S21-06) remain in the ordinary Hybrid
+    /// window instead of collapsing into fused row counts.
     pub(super) window_v2: QueryResultWindowV2,
     pub(super) explanation: SearchExplanation,
 }
@@ -1030,6 +1023,63 @@ pub(super) struct HybridLaneTallyV1 {
     pub(super) fused_universe: usize,
     pub(super) fused_hits: usize,
     pub(super) execution: LaneExecutionSummaryV1,
+}
+
+/// The Go trace route ranks distinct files after fetching two chunk lanes.
+/// These counts describe the fetched lanes and the returned file projection;
+/// they are not the ordinary hybrid chunk-fusion universe.
+pub(super) struct GoTraceFileTallyV1 {
+    pub(super) lexical_hits: usize,
+    pub(super) semantic_hits: usize,
+    pub(super) file_hits: usize,
+    pub(super) execution: LaneExecutionSummaryV1,
+}
+
+pub(super) fn build_go_trace_file_response_explanation(
+    tally: &GoTraceFileTallyV1,
+    internal_top_k: u32,
+    dense_lane: &DenseLaneContractV1,
+    filters: &HybridFilterTraceV1,
+    request_id: u64,
+) -> SearchExplanation {
+    let mut planner_trace = vec![
+        PlannerTraceEntry {
+            stage: PlannerStage::Plan,
+            detail: format!("go_test_trace.internal_top_k={internal_top_k}"),
+        },
+        dense_lane_trace_entry_v1(dense_lane),
+    ];
+    planner_trace.extend(filters.trace_entries());
+    planner_trace.extend([
+        PlannerTraceEntry {
+            stage: PlannerStage::ExecFanout,
+            detail: format!(
+                "go_test_trace.lanes=independent; lexical_hits={}; semantic_hits={}",
+                tally.lexical_hits, tally.semantic_hits
+            ),
+        },
+        PlannerTraceEntry {
+            stage: PlannerStage::Merge,
+            detail: format!("go_test_trace.file_results={}", tally.file_hits),
+        },
+    ]);
+    SearchExplanation {
+        planner_trace,
+        engines_touched: tally.execution.touched_engines(),
+        engines_executed: tally.execution.executed_engines(),
+        request_id,
+        stage_timings: None,
+        // The file ranker returns a truncated file list without the full
+        // pre-truncation count, so a count-reached claim is not available.
+        early_stop_reason: None,
+        contributions: Vec::new(),
+        ranker_weights_hash: [0u8; 32],
+        strategy: "go_test_trace_file_rrf".to_string(),
+        summary: format!(
+            "go test trace fetched {} lexical and {} semantic chunk candidates and returned {} ranked files",
+            tally.lexical_hits, tally.semantic_hits, tally.file_hits
+        ),
+    }
 }
 
 pub(super) fn build_hybrid_response_explanation(

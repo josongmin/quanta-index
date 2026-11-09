@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tools.benchmark import evidence
 from tools.benchmark.retrieval import decision
 from tools.benchmark.retrieval import evaluator as ev
 
@@ -832,3 +833,427 @@ def test_capture_binding_selects_report_and_owned_resource_root(monkeypatch, tmp
     monkeypatch.setattr(decision.run, "_resolve_artifact", mutate_manifest)
     with pytest.raises(decision.DecisionError, match="inputs changed"):
         decision.build_decision(tmp_path, suite, manifest, policy_path)
+
+
+def test_go_trace_refuses_known_files_as_recall_gold(tmp_path):
+    plan = tmp_path / "plan.json"
+    judgments = tmp_path / "judgments.json"
+    plan.write_text(json.dumps({"status": "FROZEN_GO_TRACE_HOLDOUT"}), encoding="utf-8")
+    judgments.write_text(
+        json.dumps({"recall_denominator": {"genuinely_exhaustive": False}, "cases": []}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(decision.DecisionError, match="denominator is not exhaustive"):
+        decision.evaluate_go_trace_file_holdout(plan, judgments)
+
+
+def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
+    case_dir = tmp_path / "case"
+    case_dir.mkdir()
+    paths = [f"src/file{i:02d}.go" for i in range(20)]
+    commit = "a" * 40
+    source_head = "b" * 40
+    build_binding = "c" * 64
+    input_digest = "d" * 64
+
+    def write(path, value):
+        raw = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+        path.write_bytes(raw)
+        return hashlib.sha256(raw).hexdigest()
+
+    corpus = case_dir / "corpus"
+    files = []
+    for index, path in enumerate(paths):
+        source = corpus / path
+        source.parent.mkdir(parents=True, exist_ok=True)
+        raw = (f"package source\n// file {index}\n" + ("func Trigger() {}\n" if index == 0 else "")).encode()
+        source.write_bytes(raw)
+        files.append({"path": path, "file_sha256": hashlib.sha256(raw).hexdigest()})
+    manifest_digest = write(
+        case_dir / "manifest.json", {"repository_commit": commit, "files": files}
+    )
+    task_id = "blind-task"
+    query = "failure query"
+    excerpt = "panic: source fault"
+    query_digest = hashlib.sha256(query.encode()).hexdigest()
+    excerpt_digest = hashlib.sha256(excerpt.encode()).hexdigest()
+    pack = {
+        "repository_commit": commit,
+        "file_universe": files,
+        "comparison_contract": {"top_k": 100},
+        "tasks": [
+            {
+                "task_id": task_id,
+                "query": query,
+                "query_sha256": query_digest,
+                "semantic_input": {
+                    "profile": "go_test_excerpt_v1",
+                    "text": excerpt,
+                    "text_sha256": excerpt_digest,
+                    "failure_excerpt": excerpt,
+                    "failure_excerpt_sha256": excerpt_digest,
+                },
+            }
+        ],
+    }
+    pack_digest = write(case_dir / "pack.json", pack)
+    plan = {
+        "status": "FROZEN_GO_TRACE_HOLDOUT",
+        "source_head": source_head,
+        "build_binding_sha256": build_binding,
+        "input_sha256": input_digest,
+        "plans": [
+            {
+                "repo_id": "repo",
+                "task_ids": [task_id],
+                "directory": str(case_dir),
+                "commit": commit,
+                "manifest_sha256": manifest_digest,
+                "pack_sha256": pack_digest,
+            }
+        ],
+    }
+    plan_path = tmp_path / "plan.json"
+    plan_digest = write(plan_path, plan)
+    judgments_path = tmp_path / "judgments.json"
+    write(
+        judgments_path,
+        {
+            "recall_denominator": {"genuinely_exhaustive": True},
+            "cases": [
+                {
+                    "task_id": task_id,
+                    "source_commit": commit,
+                    "source_manifest_sha256": manifest_digest,
+                    "recall_denominator_exhaustive": True,
+                    "direct_production_gold": [{"path": paths[0]}],
+                }
+            ],
+        },
+    )
+
+    def candidate(path):
+        return {"path": path, "source_repo_id": "repo"}
+
+    def window(count):
+        return {"outcome": {"kind": "exact_exhausted"}, "returned": count}
+
+    trace_candidates = [
+        {
+            **candidate(path),
+            "file": {"repo_relative_path": path, "source_repo_id": "repo"},
+            "file_rrf_score": 1 / (60 + index),
+            "production_source": True,
+            "source_frame": False,
+            "lexical": {"path": path, "source_repo_id": "repo"},
+            "dense": None,
+        }
+        for index, path in enumerate(paths, 1)
+    ]
+    paired = {
+        "pack_sha256": hashlib.sha256(evidence.canonical_json(pack).encode()).hexdigest(),
+        "lane_top_k": 100,
+        "generation": {"repo_id": "repo", "revision_id": commit, "manifest_generation": 1},
+        "tasks": [
+            {
+                "task_id": task_id,
+                "query_identity": {
+                    "original_query_sha256": query_digest,
+                    "semantic_text_sha256": excerpt_digest,
+                    "effective_lexical_request_sha256": "f" * 64,
+                },
+                "lexical": {
+                    "candidates": [candidate(paths[1]), candidate(paths[0])],
+                    "window": window(2),
+                },
+                "semantic": {"candidates": [], "window": window(0)},
+                "hybrid": {
+                    "candidates": [candidate(paths[0]), candidate(paths[1])],
+                    "window": window(2),
+                },
+                "trace_files": {
+                    "profile": "go_trace_file_rrf_v1",
+                    "candidates": trace_candidates,
+                    "frame_class": "unresolved",
+                    "failure_excerpt_sha256": excerpt_digest,
+                    "lexical_window": window(20),
+                    "dense_window": window(0),
+                    "source_context": {
+                        "mode": "explicit_pilot_owner_v1",
+                        "failure_source_repo_id": "repo",
+                        "pilot_plan_sha256": plan_digest,
+                        "pilot_inputs_sha256": input_digest,
+                        "manifest_sha256": manifest_digest,
+                        "pack_file_sha256": pack_digest,
+                    },
+                },
+            }
+        ],
+    }
+    paired_digest = write(case_dir / "paired.json", paired)
+    execution = {
+        "status": "VERIFIED",
+        "execution_source_head": source_head,
+        "policy_frozen_source_head": source_head,
+        "build_binding_sha256": build_binding,
+        "paired_sha256": paired_digest,
+    }
+    write(case_dir / "execution.json", execution)
+
+    scored = decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    assert scored["product_default_decision"] is False
+    assert scored["metric_denominator"] == "exhaustive_positive_repository_tasks"
+    assert scored["aggregate"]["lexical"] == {"Recall@20": 1.0, "MRR@20": 0.5}
+    assert scored["aggregate"]["trace_files"] == {"Recall@20": 1.0, "MRR@20": 1.0}
+
+    execution["execution_source_head"] = "f" * 40
+    write(case_dir / "execution.json", execution)
+    with pytest.raises(decision.DecisionError, match="policy source drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+
+    execution["execution_source_head"] = source_head
+    write(case_dir / "execution.json", execution)
+    judgment = json.loads(judgments_path.read_text(encoding="utf-8"))
+    judgment["cases"][0]["source_commit"] = "f" * 40
+    write(judgments_path, judgment)
+    with pytest.raises(decision.DecisionError, match="judgment source/manifest drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    judgment["cases"][0]["source_commit"] = commit
+    write(judgments_path, judgment)
+
+    def store_pair():
+        execution["paired_sha256"] = write(case_dir / "paired.json", paired)
+        write(case_dir / "execution.json", execution)
+
+    context = paired["tasks"][0]["trace_files"]["source_context"]
+    context["mode"] = "unowned"
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="failure-source owner drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    context["mode"] = "explicit_pilot_owner_v1"
+
+    paired["tasks"][0]["trace_files"]["candidates"][0]["source_frame"] = True
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="promoted without exact owner"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    paired["tasks"][0]["trace_files"]["candidates"][0]["source_frame"] = False
+
+    paired["tasks"][0]["hybrid"]["window"] = []
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="hybrid window is incomplete"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    paired["tasks"][0]["hybrid"]["window"] = window(2)
+    store_pair()
+
+    with pytest.raises(decision.DecisionError, match="output must be a new path"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path, judgments_path)
+
+    # A qualified Go holdout must commit source-only reviews before SDK replay.
+    paired["tasks"][0]["hybrid"]["window"] = window(2)
+    denominator = {
+        "genuinely_exhaustive": True,
+        "scope": "all production Go files in the frozen manifest",
+        "criterion": "direct production logic necessary to repair the reported failure",
+    }
+    context = {
+        "schema_version": 1,
+        "kind": "go_trace_source_only_review_v1",
+        "task_id": task_id,
+        "query": query,
+        "semantic_input": pack["tasks"][0]["semantic_input"],
+        "source_commit": commit,
+        "source_manifest_sha256": manifest_digest,
+        "pack_sha256": pack_digest,
+        "criterion": denominator["criterion"],
+        "scope": denominator["scope"],
+    }
+    rows = [
+        {
+            **file,
+            "direct_production": file["path"] == paths[0],
+            "rationale": "direct repair site" if file["path"] == paths[0] else "",
+        }
+        for file in files
+    ]
+    review_1 = {**context, "reviewer_id": "reviewer-one", "files": rows}
+    review_2 = {**context, "reviewer_id": "reviewer-two", "files": rows}
+    review_dir = tmp_path / "source-only-review"
+    review_dir.mkdir()
+    first_digest = write(review_dir / "review-1.json", review_1)
+    second_digest = write(review_dir / "review-2.json", review_2)
+    adjudication = {
+        **context,
+        "reviewer_id": "adjudicator",
+        "files": rows,
+        "review_sha256": [first_digest, second_digest],
+        "resolution": "both independent source reviews agree",
+    }
+    adjudication_digest = write(review_dir / "adjudication.json", adjudication)
+    commitments = {
+        "review_1_sha256": first_digest,
+        "review_2_sha256": second_digest,
+        "adjudication_sha256": adjudication_digest,
+    }
+    plan["status"] = "FROZEN_GO_TRACE_HOLDOUT_REVIEWED_V1"
+    plan["plans"][0]["review_receipts"] = commitments
+    plan_digest = write(plan_path, plan)
+    paired["tasks"][0]["trace_files"]["source_context"]["pilot_plan_sha256"] = plan_digest
+    store_pair()
+    judgment["recall_denominator"] = denominator
+    judgment["cases"][0]["review_directory"] = str(review_dir)
+    judgment["cases"][0]["review_receipts"] = commitments
+    judgment["cases"][0]["direct_production_gold"] = [
+        {"path": paths[0], "evidence": "direct repair site"}
+    ]
+    write(judgments_path, judgment)
+    qualified = decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    assert qualified["status"] == "scored_complete_denominator_no_default_decision"
+    assert qualified["review_receipts_verified"] is True
+
+    # The same plan cannot score after a source byte or receipt mutation.
+    (corpus / paths[0]).write_bytes(b"package source\n// changed\n")
+    with pytest.raises(decision.DecisionError, match="source byte drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    (corpus / paths[0]).write_bytes(b"package source\n// file 0\nfunc Trigger() {}\n")
+    review_2["reviewer_id"] = "reviewer-one"
+    write(review_dir / "review-2.json", review_2)
+    with pytest.raises(decision.DecisionError, match="commitment drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+
+    def rebind_reviews():
+        commitments["review_2_sha256"] = write(review_dir / "review-2.json", review_2)
+        adjudication["review_sha256"] = [first_digest, commitments["review_2_sha256"]]
+        commitments["adjudication_sha256"] = write(review_dir / "adjudication.json", adjudication)
+        plan["plans"][0]["review_receipts"] = dict(commitments)
+        new_plan_digest = write(plan_path, plan)
+        paired["tasks"][0]["trace_files"]["source_context"]["pilot_plan_sha256"] = new_plan_digest
+        store_pair()
+        judgment["cases"][0]["review_receipts"] = dict(commitments)
+        write(judgments_path, judgment)
+
+    rebind_reviews()
+    with pytest.raises(decision.DecisionError, match="not distinct"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+
+    review_2["reviewer_id"] = "reviewer-two"
+    review_2["files"] = rows[:-1]
+    rebind_reviews()
+    with pytest.raises(decision.DecisionError, match="coverage incomplete"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+
+    review_2["files"] = [
+        {**row, "direct_production": True, "rationale": "review disagreement"}
+        if index == 1 else row
+        for index, row in enumerate(rows)
+    ]
+    adjudication["files"] = [
+        {**row, "direct_production": True, "rationale": "undisputed file changed"}
+        if index == 2 else row
+        for index, row in enumerate(rows)
+    ]
+    rebind_reviews()
+    with pytest.raises(decision.DecisionError, match="changed an undisputed judgment"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+
+    review_2["files"] = rows
+    adjudication["files"] = rows
+    rebind_reviews()
+    judgment["cases"][0]["direct_production_gold"] = [
+        {"path": paths[1], "evidence": "invented"}
+    ]
+    write(judgments_path, judgment)
+    with pytest.raises(decision.DecisionError, match="differs from adjudication"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+
+    # The module mode is admitted only with a frozen source-owner transcript,
+    # source coordinate, and matching SDK context. Rust owns AST name parsing.
+    module_excerpt = (
+        "panic: source fault\ngoroutine 1 [running]:\n"
+        "github.com/example/mod.Trigger()\n"
+        "\t/go/pkg/mod/github.com/example/mod@v1.2.3/src/file00.go:3 +0x1"
+    )
+    module_digest = hashlib.sha256(module_excerpt.encode()).hexdigest()
+    semantic_input = {
+        "profile": "go_test_excerpt_v1",
+        "text": module_excerpt,
+        "text_sha256": module_digest,
+        "failure_excerpt": module_excerpt,
+        "failure_excerpt_sha256": module_digest,
+    }
+    pack["tasks"][0]["semantic_input"] = semantic_input
+    pack_digest = write(case_dir / "pack.json", pack)
+    module_frame = {
+        "path": paths[0],
+        "line": 3,
+        "symbol": "Trigger",
+        "file_sha256": files[0]["file_sha256"],
+    }
+    owner_input = [{
+        "task_id": task_id,
+        "repo_id": "repo",
+        "commit": commit,
+        "failure_excerpt": module_excerpt,
+        "provenance": {
+            "kind": "original_upstream_issue_failure_transcript",
+            "frame_stratum": "in_repo_module_cache_panic_frame",
+            "failure_excerpt_sha256": module_digest,
+            "module_path": "github.com/example/mod",
+            "module_version": "v1.2.3",
+            "module_tag_commit": commit,
+        },
+    }]
+    input_path = tmp_path / "source-owner-inputs.json"
+    input_digest = write(input_path, owner_input)
+    plan["source_owner_inputs_path"] = str(input_path)
+    plan["input_sha256"] = input_digest
+    plan["plans"][0].update({
+        "pack_sha256": pack_digest,
+        "module_path": "github.com/example/mod",
+        "module_version": "v1.2.3",
+        "module_frame": module_frame,
+    })
+    for form in (review_1, review_2, adjudication):
+        form["semantic_input"] = semantic_input
+        form["pack_sha256"] = pack_digest
+    first_digest = write(review_dir / "review-1.json", review_1)
+    commitments["review_1_sha256"] = first_digest
+    rebind_reviews()
+    judgment["cases"][0]["direct_production_gold"] = [
+        {"path": paths[0], "evidence": "direct repair site"}
+    ]
+    write(judgments_path, judgment)
+    paired["pack_sha256"] = hashlib.sha256(evidence.canonical_json(pack).encode()).hexdigest()
+    source_context = paired["tasks"][0]["trace_files"]["source_context"]
+    source_context.update({
+        "mode": "frozen_module_panic_v1",
+        "module_path": "github.com/example/mod",
+        "module_version": "v1.2.3",
+        "module_frame": module_frame,
+        "pilot_inputs_sha256": input_digest,
+        "pack_file_sha256": pack_digest,
+    })
+    paired["tasks"][0]["query_identity"]["semantic_text_sha256"] = module_digest
+    paired["tasks"][0]["trace_files"]["failure_excerpt_sha256"] = module_digest
+    paired["tasks"][0]["trace_files"]["frame_class"] = "exact"
+    paired["tasks"][0]["trace_files"]["candidates"][0]["source_frame"] = True
+    store_pair()
+    module_score = decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    assert module_score["review_receipts_verified"] is True
+
+    source_context["module_frame"] = {**module_frame, "line": 2}
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="module frame receipt differs"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    source_context["module_frame"] = module_frame
+    paired["tasks"][0]["trace_files"]["candidates"][1]["source_frame"] = True
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="promoted module frame path differs"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    paired["tasks"][0]["trace_files"]["candidates"][1]["source_frame"] = False
+    plan["status"] = "FROZEN_GO_TRACE_HOLDOUT"
+    old_plan_digest = write(plan_path, plan)
+    source_context["pilot_plan_sha256"] = old_plan_digest
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="requires reviewed holdout"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)

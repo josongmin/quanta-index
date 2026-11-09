@@ -3,6 +3,7 @@
 use super::super::{
     entry_map::{EntryMap, EntryMapUse, SmallMap},
     entry_patch,
+    posting_witness::OccurrenceDigestWitness,
 };
 use super::*;
 use quanta_index_core::index::{OrdinalMapEdit, StagedMapRoots};
@@ -11,18 +12,27 @@ use std::sync::Mutex;
 mod block_codec;
 mod block_cursor;
 mod block_custody;
+mod dense_posting;
+mod posting_witness;
 mod support;
 use support::CanonicalObjects;
 
 #[derive(Default)]
 struct ModelMaps {
-    trees: Mutex<BTreeMap<ObjectRef, BTreeMap<Vec<u8>, ObjectRef>>>,
+    trees: Mutex<BTreeMap<ObjectRef, BTreeMap<Vec<u8>, MapValue>>>,
     scans: AtomicUsize,
     applies: AtomicUsize,
     stop_early: bool,
 }
 impl ModelMaps {
     fn keep(&self, rows: BTreeMap<Vec<u8>, ObjectRef>) -> Result<MapRoot, IndexError> {
+        self.keep_values(
+            rows.into_iter()
+                .map(|(key, value)| (key, value.into()))
+                .collect(),
+        )
+    }
+    fn keep_values(&self, rows: BTreeMap<Vec<u8>, MapValue>) -> Result<MapRoot, IndexError> {
         if rows.is_empty() {
             return Ok(MapRoot(None));
         }
@@ -35,7 +45,7 @@ impl ModelMaps {
                     .to_be_bytes(),
             );
             hash.update(key);
-            hash.update(value.0.0);
+            hash.update(value.encoded()?.as_slice()?);
         }
         let reference = ObjectRef(Digest(hash.finalize().into()));
         let _prior = self
@@ -64,7 +74,11 @@ impl PersistentMapPort for ModelMaps {
         let rows = trees
             .get(&reference)
             .ok_or_else(|| IndexError::CorruptObject("model root absent".into()))?;
-        let found = rows.get(key).copied();
+        let found = rows
+            .get(key)
+            .copied()
+            .map(MapValue::object_ref)
+            .transpose()?;
         drop(trees);
         Ok(found)
     }
@@ -74,8 +88,20 @@ impl PersistentMapPort for ModelMaps {
         key: &[u8],
         budget: &mut WorkBudget,
     ) -> Result<Option<quanta_index_core::index::MapValue>, IndexError> {
-        self.lookup_object(root, key, budget)
-            .map(|value| value.map(Into::into))
+        budget.checkpoint()?;
+        let trees = self
+            .trees
+            .lock()
+            .map_err(|_error| IndexError::Storage("model lock".into()))?;
+        root.0
+            .map(|reference| {
+                trees
+                    .get(&reference)
+                    .ok_or_else(|| IndexError::CorruptObject("model root absent".into()))
+                    .map(|rows| rows.get(key).copied())
+            })
+            .transpose()
+            .map(Option::flatten)
     }
 
     fn scan(
@@ -112,7 +138,7 @@ impl PersistentMapPort for ModelMaps {
                     more = true;
                     break;
                 }
-                entries.push((key.clone(), (*value).into()));
+                entries.push((key.clone(), *value));
             }
         }
         Ok(MapPage::new(entries, more, Vec::new(), None))
@@ -182,11 +208,11 @@ impl PersistentMapPort for ModelMaps {
             let map = next
                 .get_mut(usize::try_from(row.root).map_err(|_error| IndexError::ResourceLimited)?)
                 .ok_or(IndexError::Conflict)?;
-            if map.get(&row.edit.key).copied().map(Into::into) != row.edit.expected {
+            if map.get(&row.edit.key).copied() != row.edit.expected {
                 return Err(IndexError::Conflict);
             }
             if let Some(value) = row.edit.next {
-                let _old = map.insert(row.edit.key.clone(), value.object_ref()?);
+                let _old = map.insert(row.edit.key.clone(), value);
             } else {
                 let _old = map.remove(&row.edit.key);
             }
@@ -194,7 +220,7 @@ impl PersistentMapPort for ModelMaps {
         }
         // Store no new root until the entire reference input and CAS have passed.
         for rows in next {
-            roots.push(self.keep(rows)?)?;
+            roots.push(self.keep_values(rows)?)?;
         }
         roots.finish()
     }
@@ -273,6 +299,7 @@ fn execute(
         &mut Rows::new(edits.to_vec()),
         |_slot| Ok(Rows::new(edits.to_vec())),
         &mut context,
+        None,
     )?;
     result
         .as_slice()
@@ -457,7 +484,8 @@ fn compact_result_requires_the_same_complete_original_edit_stream() -> Result<()
             &[1],
             &mut Rows::new(vec![changed]),
             |_slot| Ok(Rows::new(vec![first.clone()])),
-            &mut context
+            &mut context,
+            None,
         ),
         Err(IndexError::CorruptObject(_))
     ));
@@ -470,7 +498,8 @@ fn compact_result_requires_the_same_complete_original_edit_stream() -> Result<()
             &[1],
             &mut interrupted,
             |_slot| Ok(Rows::new(vec![first.clone()])),
-            &mut context
+            &mut context,
+            None,
         ),
         Err(IndexError::Cancelled)
     ));
@@ -607,6 +636,7 @@ fn mixed_root_ordinals_empty_roots_and_malformed_complete_streams_are_exact()
             }))
         },
         &mut context,
+        None,
     )?;
     let mut result = results.as_slice().iter();
     assert_rows(
@@ -651,7 +681,8 @@ fn mixed_root_ordinals_empty_roots_and_malformed_complete_streams_are_exact()
                 &[1],
                 &mut Rows::new(malformed),
                 |_slot| Ok(Rows::new(vec![first.clone()])),
-                &mut context
+                &mut context,
+                None,
             ),
             Err(IndexError::CorruptObject(_))
         ));
@@ -664,6 +695,7 @@ fn mixed_root_ordinals_empty_roots_and_malformed_complete_streams_are_exact()
         &mut empty,
         |_slot| Ok(Rows::new(Vec::new())),
         &mut context,
+        None,
     )?;
     check_eq!(empty_result.len(), 64);
     check!(

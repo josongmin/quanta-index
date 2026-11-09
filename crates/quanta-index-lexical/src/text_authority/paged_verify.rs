@@ -1,6 +1,7 @@
 //! Seal oracle for newly written Native segments, independent of posting builders.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
+use std::time::Instant;
 
 use quanta_index_core::{CoreError, RequestBudgetV1};
 use quanta_index_lq_positions::MAX_POSITIONS_PER_CELL;
@@ -10,7 +11,9 @@ use crate::lexical_runs::RunScrubCursor;
 use crate::lexical_store::{BlobCursor, BlobRef, ObjectKind, ObjectRef, ObjectStore};
 use crate::normalize::{self, CaseMode};
 use crate::text_authority::paged_manifest::NativeRoot;
-use crate::text_authority::paged_merge_proof::NativeMergeProof;
+use crate::text_authority::paged_merge_proof::{
+    NativeMergeProof, RouteWitness, VerifiedRoutePages,
+};
 use crate::text_authority::paged_posting_page::{PostingPage, route_posting_key};
 use crate::text_authority::paged_segment::{
     GRAM_FOLDED, GRAM_RAW, TERM_FOLDED, TERM_RAW, decode_body,
@@ -26,6 +29,33 @@ use crate::text_authority::paged_writer::{
 
 type TermDocs = BTreeMap<String, Vec<(u32, Vec<u32>)>>;
 type PageRoutes = BTreeMap<ObjectRef, (BlobRef, BTreeSet<Vec<u8>>)>;
+type ExpectedPosting = (Vec<u8>, ObjectKind, Vec<u8>);
+
+#[expect(clippy::print_stderr, reason = "Opt-in publication phase diagnosis.")]
+fn trace_changed_route_segment(started: Option<Instant>, segment_key: u64, routes: usize) {
+    if started.is_some() {
+        eprintln!(
+            "QI_INGEST_PHASE_V1 label=seal_changed_routes event=segment segment_key={segment_key} routes={routes}"
+        );
+    }
+}
+
+#[expect(clippy::print_stderr, reason = "Opt-in publication phase diagnosis.")]
+fn trace_route_map_reads(
+    started: Instant,
+    segment_key: u64,
+    completed: usize,
+    before: (u64, u64),
+    after: (u64, u64),
+    event: &'static str,
+) {
+    eprintln!(
+        "QI_INGEST_PHASE_V1 label=seal_route_map_reads event={event} segment_key={segment_key} completed={completed} physical_objects={} physical_bytes={} elapsed_ns={}",
+        after.1.saturating_sub(before.1),
+        after.0.saturating_sub(before.0),
+        started.elapsed().as_nanos()
+    );
+}
 
 /// In-process semantic scrub progress. A restart begins a new pass; no
 /// partially checked state is persisted as a proof.
@@ -325,7 +355,7 @@ impl NativeScrubCursor {
         }
         let digest = source_digest(&record.source)?;
         if store.map_get(&self.root.membership, &membership_key(&digest, id), budget)?
-            != Some(current_ref)
+            != Some(current_ref.clone())
         {
             return Err(corrupt("scrub membership differs"));
         }
@@ -339,9 +369,7 @@ impl NativeScrubCursor {
         if coverage.source.file != record.source {
             return Err(corrupt("scrub source identity differs"));
         }
-        if record.body.root.kind != ObjectKind::NativeBody {
-            return Err(corrupt("scrub body kind differs"));
-        }
+        verify_body_dependency(store, &current_ref, &record.body, budget)?;
         self.pending = Some(PendingBlob {
             cursor: store.blob_cursor(&record.body, MAX_BODY_BYTES)?,
             bytes: Vec::new(),
@@ -562,6 +590,21 @@ impl NativeScrubCursor {
     }
 }
 
+fn verify_body_dependency(
+    store: &ObjectStore,
+    current: &BlobRef,
+    body: &BlobRef,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<(), CoreError> {
+    if body.root.kind != ObjectKind::NativeBody
+        || store.object_dependencies(&current.root, budget)?.as_slice()
+            != std::slice::from_ref(&body.root)
+    {
+        return Err(corrupt("Native current body dependency differs"));
+    }
+    Ok(())
+}
+
 /// Recompute every posting from selected committed bodies.
 ///
 /// Compare the complete route inventory and persisted posting bytes. Unchanged
@@ -602,6 +645,13 @@ fn verify_changed_segments_for_seal_inner(
     if first_new_segment_id == 0 || first_new_segment_id > root.next_segment_id {
         return Err(corrupt("new segment range differs"));
     }
+    if merge_proof
+        .as_ref()
+        .and_then(|proof| proof.routes.as_ref())
+        .is_some_and(|witness| !witness.matches(&root.gram_routes, &root.term_routes))
+    {
+        return Err(corrupt("route witness does not bind this generation"));
+    }
     let mut output = crate::maintenance_merge_facts::NativeMergeOutputFacts::default();
     let mut output_attributable = true;
     for segment_key in first_new_segment_id..root.next_segment_id {
@@ -620,6 +670,9 @@ fn verify_changed_segments_for_seal_inner(
         let mut folded_grams = BTreeMap::<[u8; 3], Vec<u32>>::new();
         let mut raw_terms = TermDocs::new();
         let mut folded_terms = TermDocs::new();
+        // The source map is immutable for this proof. Retain only the file
+        // identity, bounded by the number of documents in this segment.
+        let mut verified_sources = BTreeMap::new();
         for (ordinal, id) in segment.logical_ids.iter().copied().enumerate() {
             let local =
                 u32::try_from(ordinal).map_err(|_error| corrupt("local ID width differs"))?;
@@ -629,11 +682,18 @@ fn verify_changed_segments_for_seal_inner(
                 return Err(corrupt("new segment current locator differs"));
             }
             let digest = source_digest(&record.source)?;
-            let source_ref = store
-                .map_get(&root.source, &digest, None)?
-                .ok_or_else(|| corrupt("new segment source binding missing"))?;
-            let coverage = decode_source(&store.read_blob(&source_ref, 64 * 1024, None)?)?;
-            if coverage.source.file != record.source {
+            let source = match verified_sources.entry(digest) {
+                Entry::Occupied(entry) => entry.into_mut(),
+                Entry::Vacant(entry) => {
+                    let source_ref = store
+                        .map_get(&root.source, &digest, None)?
+                        .ok_or_else(|| corrupt("new segment source binding missing"))?;
+                    let coverage =
+                        decode_source(&store.read_blob(&source_ref, 64 * 1024, None)?)?;
+                    entry.insert(coverage.source.file)
+                }
+            };
+            if *source != record.source {
                 return Err(corrupt("new segment source identity differs"));
             }
             let membership_ref = store
@@ -642,9 +702,7 @@ fn verify_changed_segments_for_seal_inner(
             if current_ref != membership_ref {
                 return Err(corrupt("new segment membership/current differ"));
             }
-            if record.body.root.kind != ObjectKind::NativeBody {
-                return Err(corrupt("new segment body kind differs"));
-            }
+            verify_body_dependency(store, &current_ref, &record.body, None)?;
             let body = store.read_blob(&record.body, MAX_BODY_BYTES, None)?;
             let (candidate, indexed, folded) = decode_body(&body)?;
             let indexed_sha256: [u8; 32] = Sha256::digest(indexed.as_bytes()).into();
@@ -658,7 +716,7 @@ fn verify_changed_segments_for_seal_inner(
         }
         crate::causal_profile::finish_phase("seal_changed_documents", documents_phase);
         let expected_phase = crate::causal_profile::begin_phase("seal_changed_expected");
-        let mut expected = Vec::<(Vec<u8>, ObjectKind, Vec<u8>)>::new();
+        let mut expected = Vec::<ExpectedPosting>::new();
         for (surface, grams) in [(GRAM_RAW, raw_grams), (GRAM_FOLDED, folded_grams)] {
             for (gram, locals) in grams {
                 let key = route_key(&gram_prefix(surface, gram), segment_key);
@@ -689,61 +747,16 @@ fn verify_changed_segments_for_seal_inner(
             ));
         }
         crate::causal_profile::finish_phase("seal_changed_expected", expected_phase);
-        let routes_phase = crate::causal_profile::begin_phase("seal_changed_routes");
-        let mut pages = BTreeMap::<ObjectRef, (BlobRef, BTreeMap<Vec<u8>, Vec<u8>>)>::new();
-        let mut cursor_kind = None;
-        let mut route_cursor = None;
-        for (key, kind, expected_bytes) in expected {
-            let routes = if kind == ObjectKind::NativeTrigrams {
-                &root.gram_routes
-            } else {
-                &root.term_routes
-            };
-            if cursor_kind != Some(kind) {
-                route_cursor = Some(store.map_cursor(routes, &key, None, None)?);
-                cursor_kind = Some(kind);
-            }
-            let (actual_key, reference) = route_cursor
-                .as_mut()
-                .ok_or_else(|| corrupt("new segment route cursor is missing"))?
-                .next_at_or_after(&key)?
-                .ok_or_else(|| corrupt("new segment route is missing"))?;
-            if actual_key != key {
-                return Err(corrupt("new segment route is missing"));
-            }
-            if reference.root.kind != kind {
-                return Err(corrupt("new segment posting kind differs"));
-            }
-            let (_surface, _posting_key) = route_posting_key(&key, segment_key)?;
-            let group = pages
-                .entry(reference.root.clone())
-                .or_insert_with(|| (reference.clone(), BTreeMap::new()));
-            if group.0 != reference || group.1.insert(key.clone(), expected_bytes).is_some() {
-                return Err(corrupt(
-                    "new segment posting page route repeats or reference differs",
-                ));
-            }
+        if let Some(witness) = merge_proof.as_ref().and_then(|proof| proof.routes.as_ref()) {
+            verify_witnessed_posting_pages(
+                store,
+                segment_key,
+                witness.pages(segment_key),
+                expected,
+            )?;
+        } else {
+            verify_posting_pages_from_map(store, root, segment_key, expected)?;
         }
-        crate::causal_profile::finish_phase("seal_changed_routes", routes_phase);
-        let pages_phase = crate::causal_profile::begin_phase("seal_changed_posting_pages");
-        for (_, (reference, expected_rows)) in pages {
-            let actual_bytes = store.read_blob(&reference, MAX_POSTING_BYTES, None)?;
-            let actual = PostingPage::decode(&actual_bytes, segment_key)?;
-            if actual.rows.len() != expected_rows.len() {
-                return Err(corrupt(
-                    "new segment posting page differs from raw documents",
-                ));
-            }
-            for row in actual.rows {
-                let route = route_for_posting_row(row.surface, row.key, segment_key)?;
-                if expected_rows.get(&route).map(Vec::as_slice) != Some(row.payload) {
-                    return Err(corrupt(
-                        "new segment posting page differs from raw documents",
-                    ));
-                }
-            }
-        }
-        crate::causal_profile::finish_phase("seal_changed_posting_pages", pages_phase);
         if let Some(proof) = merge_proof.as_mut() {
             observe_verified_native_output(
                 proof,
@@ -758,6 +771,154 @@ fn verify_changed_segments_for_seal_inner(
         return Ok(None);
     };
     finish_native_output(proof, output, output_attributable).map(Some)
+}
+
+fn verify_posting_pages_from_map(
+    store: &ObjectStore,
+    root: &NativeRoot,
+    segment_key: u64,
+    expected: Vec<ExpectedPosting>,
+) -> Result<(), CoreError> {
+    let routes_phase = crate::causal_profile::begin_phase("seal_changed_routes");
+    let route_count = expected.len();
+    let progress_stride = route_count.div_ceil(16).max(256);
+    trace_changed_route_segment(routes_phase, segment_key, route_count);
+    // The proof already owns a private metered cache. A second clone would
+    // discard warmed pages and change the route walk being diagnosed.
+    let route_reads_before = routes_phase.map(|_| store.read_meter_snapshot());
+    let mut pages = BTreeMap::<ObjectRef, (BlobRef, BTreeMap<Vec<u8>, Vec<u8>>)>::new();
+    let mut cursor_kind = None;
+    let mut route_cursor = None;
+    for (index, (key, kind, expected_bytes)) in expected.into_iter().enumerate() {
+        let routes = if kind == ObjectKind::NativeTrigrams {
+            &root.gram_routes
+        } else {
+            &root.term_routes
+        };
+        if cursor_kind != Some(kind) {
+            route_cursor = Some(store.map_cursor(routes, &key, None, None)?);
+            cursor_kind = Some(kind);
+        }
+        let (actual_key, reference) = route_cursor
+            .as_mut()
+            .ok_or_else(|| corrupt("new segment route cursor is missing"))?
+            .next_at_or_after(&key)?
+            .ok_or_else(|| corrupt("new segment route is missing"))?;
+        if actual_key != key {
+            return Err(corrupt("new segment route is missing"));
+        }
+        if reference.root.kind != kind {
+            return Err(corrupt("new segment posting kind differs"));
+        }
+        let (_surface, _posting_key) = route_posting_key(&key, segment_key)?;
+        let group = pages
+            .entry(reference.root.clone())
+            .or_insert_with(|| (reference.clone(), BTreeMap::new()));
+        if group.0 != reference || group.1.insert(key.clone(), expected_bytes).is_some() {
+            return Err(corrupt(
+                "new segment posting page route repeats or reference differs",
+            ));
+        }
+        let completed = index + 1;
+        if routes_phase.is_some()
+            && completed < route_count
+            && completed.is_multiple_of(progress_stride)
+        {
+            crate::causal_profile::phase_progress(
+                "seal_changed_routes",
+                routes_phase,
+                completed,
+                None,
+            );
+            if let (Some(started), Some(before)) = (routes_phase, route_reads_before) {
+                trace_route_map_reads(
+                    started,
+                    segment_key,
+                    completed,
+                    before,
+                    store.read_meter_snapshot(),
+                    "progress",
+                );
+            }
+        }
+    }
+    crate::causal_profile::phase_progress("seal_changed_routes", routes_phase, route_count, None);
+    if let (Some(started), Some(before)) = (routes_phase, route_reads_before) {
+        trace_route_map_reads(
+            started,
+            segment_key,
+            route_count,
+            before,
+            store.read_meter_snapshot(),
+            "completed",
+        );
+    }
+    crate::causal_profile::finish_phase("seal_changed_routes", routes_phase);
+    let pages_phase = crate::causal_profile::begin_phase("seal_changed_posting_pages");
+    for (_, (reference, expected_rows)) in pages {
+        let actual_bytes = store.read_blob(&reference, MAX_POSTING_BYTES, None)?;
+        let actual = PostingPage::decode(&actual_bytes, segment_key)?;
+        if actual.rows.len() != expected_rows.len() {
+            return Err(corrupt(
+                "new segment posting page differs from raw documents",
+            ));
+        }
+        for row in actual.rows {
+            let route = route_for_posting_row(row.surface, row.key, segment_key)?;
+            if expected_rows.get(&route).map(Vec::as_slice) != Some(row.payload) {
+                return Err(corrupt(
+                    "new segment posting page differs from raw documents",
+                ));
+            }
+        }
+    }
+    crate::causal_profile::finish_phase("seal_changed_posting_pages", pages_phase);
+    Ok(())
+}
+
+fn verify_witnessed_posting_pages(
+    store: &ObjectStore,
+    segment_key: u64,
+    pages: Option<&VerifiedRoutePages>,
+    mut expected: Vec<ExpectedPosting>,
+) -> Result<(), CoreError> {
+    let phase = crate::causal_profile::begin_phase("seal_witnessed_posting_pages");
+    for page in pages.into_iter().flat_map(VerifiedRoutePages::values) {
+        let bytes = store.read_blob(&page.reference, MAX_POSTING_BYTES, None)?;
+        let actual = PostingPage::decode(&bytes, segment_key)?;
+        let mut keys = Vec::new();
+        keys.try_reserve_exact(actual.rows.len()).map_err(|error| {
+            CoreError::Storage(format!("lexical: reserve verified posting keys: {error}"))
+        })?;
+        for row in actual.rows {
+            let key = route_for_posting_row(row.surface, row.key, segment_key)?;
+            let index = expected
+                .binary_search_by(|entry| entry.0.cmp(&key))
+                .map_err(|_| corrupt("posting page adds a route absent from raw documents"))?;
+            let (_, kind, payload) = expected
+                .get_mut(index)
+                .ok_or_else(|| corrupt("verified posting index disappeared"))?;
+            if page.reference.root.kind != *kind
+                || payload.is_empty()
+                || payload.as_slice() != row.payload
+            {
+                return Err(corrupt(
+                    "new segment posting page differs from raw documents",
+                ));
+            }
+            payload.clear();
+            keys.push(key);
+        }
+        // Term keys include encoded lengths, so page row order alone is not
+        // the authenticated map order.
+        keys.sort_unstable();
+        page.verify_keys(&keys)?;
+    }
+    if expected.iter().any(|(_, _, payload)| !payload.is_empty()) {
+        return Err(corrupt("posting pages omit a route from raw documents"));
+    }
+    crate::causal_profile::finish_phase("seal_witnessed_posting_pages", phase);
+    Ok(())
 }
 
 fn observe_verified_native_output(
@@ -880,7 +1041,7 @@ pub(crate) fn verify_all_for_scrub(
             }
             let digest = source_digest(&record.source)?;
             if store.map_get(&root.membership, &membership_key(&digest, id), budget)?
-                != Some(current_ref)
+                != Some(current_ref.clone())
             {
                 return Err(corrupt("live membership differs from current"));
             }
@@ -894,9 +1055,7 @@ pub(crate) fn verify_all_for_scrub(
             if coverage.source.file != record.source {
                 return Err(corrupt("live source binding identity differs"));
             }
-            if record.body.root.kind != ObjectKind::NativeBody {
-                return Err(corrupt("live body kind differs"));
-            }
+            verify_body_dependency(store, &current_ref, &record.body, budget)?;
             let (candidate, indexed, folded) =
                 decode_body(&store.read_blob(&record.body, MAX_BODY_BYTES, budget)?)?;
             let indexed_sha256: [u8; 32] = Sha256::digest(indexed.as_bytes()).into();
@@ -1064,7 +1223,7 @@ pub(super) fn independently_count_segment_index_from_verified_route_diff(
     root: &NativeRoot,
     key: &[u8],
     reference: &BlobRef,
-    witness: &super::paged_transition::RouteWitness,
+    witness: &RouteWitness,
     budget: Option<&RequestBudgetV1>,
 ) -> Result<u64, CoreError> {
     let id = u64::from_be_bytes(
@@ -1072,7 +1231,7 @@ pub(super) fn independently_count_segment_index_from_verified_route_diff(
             .map_err(|_width| corrupt("verified route witness segment key width differs"))?,
     );
     let roots = witness
-        .roots(id)
+        .pages(id)
         .ok_or_else(|| corrupt("verified route witness lacks segment"))?;
     count_segment_index_with_routes(store, root, key, reference, Some(roots), budget)
 }
@@ -1082,7 +1241,7 @@ fn count_segment_index_with_routes(
     root: &NativeRoot,
     key: &[u8],
     reference: &BlobRef,
-    verified_roots: Option<&BTreeSet<ObjectRef>>,
+    verified_pages: Option<&VerifiedRoutePages>,
     budget: Option<&RequestBudgetV1>,
 ) -> Result<u64, CoreError> {
     let id = u64::from_be_bytes(
@@ -1101,13 +1260,12 @@ fn count_segment_index_with_routes(
         .as_ref()
         .ok_or_else(|| corrupt("run verifier route inventory absent"))?;
     let mut roots = BTreeSet::from([reference.root.clone(), inventory.root.clone()]);
-    let routes = read_route_inventory_budget(store, &descriptor, budget)?;
-    if let Some(verified_roots) = verified_roots {
+    if let Some(verified_pages) = verified_pages {
         // The producer cannot supply this set. The transition verifier just
         // proved the complete route-key inventory against its own map diff.
-        roots.extend(verified_roots.iter().cloned());
+        roots.extend(verified_pages.keys().cloned());
     } else {
-        for route in routes {
+        for route in read_route_inventory_budget(store, &descriptor, budget)? {
             let surface = route
                 .first()
                 .copied()
@@ -1430,6 +1588,7 @@ mod cursor_tests {
             },
             clean_doc_ids: BTreeSet::from([11, 12]),
             new_segment_index_bytes: BTreeMap::from([(7, 31), (8, 29)]),
+            routes: None,
         };
         let mut pure = proof();
         let mut pure_output = NativeMergeOutputFacts::default();
@@ -1467,6 +1626,70 @@ mod cursor_tests {
             assert_eq!(facts.input_index_encoded_bytes, 47);
             assert_eq!(facts.output, None);
         }
+    }
+
+    #[test]
+    fn route_witness_refuses_same_count_and_pages_with_swapped_keys()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{
+            PostingPage, RouteWitness, encode_expected_posting, gram_prefix, route_key,
+            verify_witnessed_posting_pages,
+        };
+        use crate::lexical_store::ObjectKind;
+        use crate::text_authority::paged_segment::{BuiltPosting, GRAM_RAW};
+
+        let directory = tempfile::tempdir()?;
+        let store = ObjectStore::open(directory.path())?;
+        let lease = store.begin_attempt(
+            &AttemptBinding {
+                root_incarnation: [1; 16],
+                repository_sha256: [2; 32],
+                revision_sha256: [3; 32],
+                source_event_sha256: [4; 32],
+                target_generation: 1,
+                base_root_sha256: None,
+                operations_sha256: [5; 32],
+                format: 1,
+            },
+            &[],
+        )?;
+        let kind = ObjectKind::NativeTrigrams;
+        let grams = [*b"abc", *b"xyz"];
+        let mut refs = Vec::new();
+        let mut expected = Vec::new();
+        for gram in grams {
+            let payload = encode_expected_posting(1, GRAM_RAW, &[0], None)?;
+            let row = BuiltPosting {
+                surface: GRAM_RAW,
+                key: gram.to_vec(),
+                bytes: payload.clone(),
+            };
+            refs.push(store.put_blob(&lease, kind, &[], &PostingPage::encode(1, &[&row])?)?);
+            expected.push((route_key(&gram_prefix(GRAM_RAW, gram), 1), kind, payload));
+        }
+        for swap in [false, true] {
+            let mut witness = RouteWitness::new(&MapRoot::default(), &MapRoot::default());
+            for (index, (key, _, _)) in expected.iter().enumerate() {
+                let reference = refs
+                    .get(if swap { 1 - index } else { index })
+                    .ok_or("posting reference absent")?;
+                assert!(witness.add(1, key, reference, 4096)?);
+            }
+            let result =
+                verify_witnessed_posting_pages(&store, 1, witness.pages(1), expected.clone());
+            if swap {
+                let error =
+                    result.expect_err("same roots and count must not hide wrong assignment");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("keys differ from authenticated route assignments")
+                );
+            } else {
+                result?;
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -1575,6 +1798,12 @@ mod cursor_tests {
                 )?;
                 assert_eq!(optimized, ordinary);
             }
+            let _facts = verify_changed_segments_for_seal_with_merge_facts(
+                &store,
+                &root,
+                1,
+                NativeMergeProof::without_merge(Some(witnessed)),
+            )?;
             let mut missing = root.clone();
             missing.gram_routes = MapRoot::default();
             assert!(

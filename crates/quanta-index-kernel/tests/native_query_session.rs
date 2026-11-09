@@ -33,6 +33,7 @@ use quanta_index_core::{
 };
 use quanta_index_kernel::{
     AdapterDescriptor, AdapterRegistry, Kernel, KernelServices, QueryAdapterRegistry,
+    QueryExecutionTimings,
 };
 use quanta_index_lexical::native::NativeLiteralIndex;
 use quanta_index_storage::{FileObjectStore, FileScratchSpace};
@@ -296,6 +297,55 @@ struct ManualClock(AtomicU64);
 impl CatalogClockPort for ManualClock {
     fn now_unix_ms(&self) -> u64 {
         self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// In an isolated borrowed query, the Catalog clock is reached once by each
+/// successful `validate_ticket` call. Setup and release are excluded by deltas.
+struct CountedCatalogClock {
+    calls: AtomicUsize,
+    expire_after: AtomicUsize,
+}
+
+impl Default for CountedCatalogClock {
+    fn default() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            expire_after: AtomicUsize::new(usize::MAX),
+        }
+    }
+}
+
+impl CatalogClockPort for CountedCatalogClock {
+    fn now_unix_ms(&self) -> u64 {
+        let previous = self.calls.fetch_add(1, Ordering::SeqCst);
+        if previous >= self.expire_after.load(Ordering::SeqCst) {
+            31_000
+        } else {
+            1_000
+        }
+    }
+}
+
+struct ProjectionScheduler {
+    clock: Arc<CountedCatalogClock>,
+    expire_at_release: bool,
+    released_after: AtomicUsize,
+}
+
+impl ResourceScheduler for ProjectionScheduler {
+    type Token = ();
+
+    fn try_reserve(&self, _need: ResourceNeed) -> Option<Self::Token> {
+        Some(())
+    }
+
+    fn release(&self, _token: Self::Token) {
+        let calls = self.clock.calls.load(Ordering::SeqCst);
+        self.released_after.store(calls, Ordering::SeqCst);
+        if self.expire_at_release {
+            self.clock.expire_after.store(calls, Ordering::SeqCst);
+        }
     }
 }
 
@@ -719,6 +769,193 @@ fn borrowed_ticket_queries_below_exact_floor_without_repin_or_transfer() -> Test
 }
 
 #[test]
+fn borrowed_prepared_stage_uses_five_catalog_validations_and_retains_pin() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let clock = Arc::new(CountedCatalogClock::default());
+    let (kernel, catalog) = kernel_with_clock(root.path(), clock.clone())?;
+    let view = configured(&kernel)?;
+    let (readers, calls, _) = queries(0, Fault::None)?;
+    let mut held = kernel.pin_view(ViewSelection::Exact(view), &budget())?;
+    let reservation = guard(need())?;
+    assert_eq!(native_pin_count(&catalog)?, 1);
+
+    let before = clock.calls.load(Ordering::SeqCst);
+    let mut work = budget();
+    let mut session = kernel.begin_query_session_with_ticket(&mut held, &mut work)?;
+    let prepared = session.prepare_stage(&readers, instance().instance, 1_u8)?;
+    let old = prepared.execute(&reservation)?;
+    assert_eq!(*old.result(), 1);
+    session.close()?;
+    assert_eq!(clock.calls.load(Ordering::SeqCst) - before, 6);
+    assert_eq!(native_pin_count(&catalog)?, 1);
+
+    let before = clock.calls.load(Ordering::SeqCst);
+    let mut work = budget();
+    let mut timings = QueryExecutionTimings::default();
+    let new = kernel.with_prepared_stage_for_ticket(
+        &readers,
+        &held,
+        instance().instance,
+        2_u8,
+        &mut work,
+        |prepared| prepared.execute_with_timings(&reservation, &mut timings),
+    )?;
+    assert_eq!(*new.result(), 2);
+    assert!(timings.before_ticket_validation.is_some());
+    assert!(timings.reader_query.is_some());
+    assert!(timings.after_ticket_validation.is_some());
+    assert_eq!(clock.calls.load(Ordering::SeqCst) - before, 5);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(native_pin_count(&catalog)?, 1);
+
+    let other_root = tempfile::tempdir()?;
+    let (other_kernel, _) = kernel_with_clock(other_root.path(), Arc::new(SystemCatalogClock))?;
+    let mut foreign_work = budget();
+    let mut callback_calls = 0;
+    assert!(matches!(
+        other_kernel.with_prepared_stage_for_ticket(
+            &readers,
+            &held,
+            instance().instance,
+            3_u8,
+            &mut foreign_work,
+            |prepared| {
+                callback_calls += 1;
+                prepared.execute(&reservation)
+            },
+        ),
+        Err(IndexError::InvalidInput(_))
+    ));
+    assert_eq!(callback_calls, 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(native_pin_count(&catalog)?, 1);
+
+    let scope = NativeReadSettlementScope {
+        workspace: workspace(),
+        epoch: 1,
+        target: view,
+    };
+    let released = kernel.release_read_ticket(&mut held, scope, &mut budget())?;
+    assert_eq!(released.scope, scope);
+    assert!(!released.has_remaining_target_pins);
+    assert_eq!(native_pin_count(&catalog)?, 0);
+    Ok(())
+}
+
+#[test]
+fn projected_stage_releases_execution_before_final_validation() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let clock = Arc::new(CountedCatalogClock::default());
+    let (kernel, catalog) = kernel_with_clock(root.path(), clock.clone())?;
+    let view = configured(&kernel)?;
+    let held = kernel.pin_view(ViewSelection::Exact(view), &budget())?;
+
+    for (fault, expire, expected) in [
+        (Fault::None, false, Err(IndexError::ResourceLimited)),
+        (Fault::None, true, Err(IndexError::SnapshotUnavailable)),
+        (
+            Fault::WrongView,
+            true,
+            Err(IndexError::BackendViolation(
+                "query result differs from the selected view".into(),
+            )),
+        ),
+    ] {
+        clock.expire_after.store(usize::MAX, Ordering::SeqCst);
+        let (readers, calls, _) = queries(0, fault)?;
+        let scheduler = Arc::new(ProjectionScheduler {
+            clock: Arc::clone(&clock),
+            expire_at_release: expire,
+            released_after: AtomicUsize::new(usize::MAX),
+        });
+        let reservation = ReservationGuard::try_acquire(Arc::clone(&scheduler), need())
+            .ok_or("test scheduler refused reservation")?;
+        let before = clock.calls.load(Ordering::SeqCst);
+        let mut projections = 0;
+        let mut timings = QueryExecutionTimings::default();
+        let result: Result<(), IndexError> = kernel.with_prepared_stage_for_ticket(
+            &readers,
+            &held,
+            instance().instance,
+            1_u8,
+            &mut budget(),
+            |prepared| {
+                prepared.execute_projected(reservation, Some(&mut timings), |outcome, _work| {
+                    assert_eq!(*outcome.result(), 1);
+                    assert_eq!(scheduler.released_after.load(Ordering::SeqCst), usize::MAX);
+                    projections += 1;
+                    Err(IndexError::ResourceLimited)
+                })?
+            },
+        );
+        assert_eq!(result, expected);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(projections, usize::from(matches!(fault, Fault::None)));
+        assert_eq!(
+            scheduler.released_after.load(Ordering::SeqCst),
+            before.saturating_add(4)
+        );
+        assert_eq!(clock.calls.load(Ordering::SeqCst), before.saturating_add(5));
+        assert!(timings.after_ticket_validation.is_some());
+        assert_eq!(native_pin_count(&catalog)?, 1);
+    }
+
+    held.release()?;
+    assert_eq!(native_pin_count(&catalog)?, 0);
+    Ok(())
+}
+
+#[test]
+fn borrowed_prepared_stage_expiry_after_profile_refuses_before_reader_resolution() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let clock = Arc::new(CountedCatalogClock::default());
+    let (kernel, catalog) = kernel_with_clock(root.path(), clock.clone())?;
+    let view = configured(&kernel)?;
+    let held = kernel.pin_view(ViewSelection::Exact(view), &budget())?;
+    let reservations = Arc::new(AtomicUsize::new(0));
+    let queries = Arc::new(AtomicUsize::new(0));
+    let mut readers = QueryAdapterRegistry::new();
+    readers.register(
+        AdapterDescriptor {
+            kind: instance().kind,
+            schema: instance().schema,
+            format: instance().format,
+        },
+        need(),
+        DriftingReservationReader {
+            reservations: Arc::clone(&reservations),
+            queries: Arc::clone(&queries),
+        },
+    )?;
+    let before = clock.calls.load(Ordering::SeqCst);
+    // The first validation authorizes the profile read. Expire at the shared
+    // profile completion and stage-entry validation.
+    clock.expire_after.store(before + 1, Ordering::SeqCst);
+    let reservation = guard(need())?;
+    let mut callback_calls = 0;
+    let result = kernel.with_prepared_stage_for_ticket(
+        &readers,
+        &held,
+        instance().instance,
+        1_u8,
+        &mut budget(),
+        |prepared| {
+            callback_calls += 1;
+            prepared.execute(&reservation).map(|_outcome| ())
+        },
+    );
+    assert_eq!(result, Err(IndexError::SnapshotUnavailable));
+    assert_eq!(clock.calls.load(Ordering::SeqCst) - before, 2);
+    assert_eq!(callback_calls, 0);
+    assert_eq!(reservations.load(Ordering::SeqCst), 0);
+    assert_eq!(queries.load(Ordering::SeqCst), 0);
+    assert_eq!(native_pin_count(&catalog)?, 1);
+    held.release()?;
+    assert_eq!(native_pin_count(&catalog)?, 0);
+    Ok(())
+}
+
+#[test]
 fn stages_share_original_mutation_budget_without_refresh() -> TestResult {
     let root = tempfile::tempdir()?;
     let (kernel, catalog) = kernel(root.path())?;
@@ -794,10 +1031,17 @@ fn wrong_guard_aborted_stage_and_bad_binding_preserve_session() -> TestResult {
         cpu_units: 2,
         ..need()
     };
+    let mut timings = QueryExecutionTimings {
+        reader_query: Some(Duration::ZERO),
+        ..QueryExecutionTimings::default()
+    };
     assert!(matches!(
-        mismatched.execute(&guard(wrong_need)?),
+        mismatched.execute_with_timings(&guard(wrong_need)?, &mut timings),
         Err(IndexError::BackendViolation(_))
     ));
+    assert!(timings.before_ticket_validation.is_some());
+    assert!(timings.reader_query.is_none());
+    assert!(timings.after_ticket_validation.is_some());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert_eq!(native_pin_count(&catalog)?, 1);
 

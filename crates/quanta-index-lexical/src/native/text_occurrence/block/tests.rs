@@ -80,6 +80,44 @@ fn literal_boundary_wire() -> Result<Vec<u8>, IndexError> {
     Ok(wire)
 }
 
+fn distinct_vector_key(ordinal: u16) -> Result<[u8; 4], IndexError> {
+    let high = ordinal
+        .checked_div(676)
+        .ok_or(IndexError::ResourceLimited)?;
+    let middle = ordinal
+        .checked_div(26)
+        .and_then(|value| value.checked_rem(26))
+        .ok_or(IndexError::ResourceLimited)?;
+    let low = ordinal.checked_rem(26).ok_or(IndexError::ResourceLimited)?;
+    let high = u8::try_from(high).map_err(|_error| IndexError::ResourceLimited)?;
+    let middle = u8::try_from(middle).map_err(|_error| IndexError::ResourceLimited)?;
+    let low = u8::try_from(low).map_err(|_error| IndexError::ResourceLimited)?;
+    Ok([
+        0,
+        b'a'.checked_add(high).ok_or(IndexError::ResourceLimited)?,
+        b'a'.checked_add(middle)
+            .ok_or(IndexError::ResourceLimited)?,
+        b'a'.checked_add(low).ok_or(IndexError::ResourceLimited)?,
+    ])
+}
+
+/// Independent wire for 512 distinct vectors: 16-byte header, 512 eight-byte
+/// rows, and 512 six-byte one-position vectors total 7184 bytes.
+fn literal_distinct_vector_wire() -> Result<Vec<u8>, IndexError> {
+    let mut wire = b"QITXOC01\x02\x00\x02\x00\x00\x00\x00\x00".to_vec();
+    for ordinal in 0_u16..512 {
+        wire.extend_from_slice(b"\x00\x04");
+        wire.extend_from_slice(&distinct_vector_key(ordinal)?);
+        wire.extend_from_slice(&ordinal.to_be_bytes());
+    }
+    for ordinal in 0_u16..512 {
+        wire.extend_from_slice(b"\x00\x01");
+        wire.extend_from_slice(&u32::from(ordinal).to_be_bytes());
+    }
+    check_eq!(wire.len(), 7_184);
+    Ok(wire)
+}
+
 fn budget() -> Result<WorkBudget, IndexError> {
     Ok(WorkBudget::new(
         WorkLimits {
@@ -149,6 +187,29 @@ fn byte_mut(bytes: &mut [u8], index: usize) -> Result<&mut u8, IndexError> {
     bytes.get_mut(index).ok_or_else(|| {
         IndexError::BackendViolation("fixed malformed-wire fixture offset changed".into())
     })
+}
+
+#[test]
+fn checked_block_exposes_sorted_raw_key_bounds() -> Result<(), IndexError> {
+    let work = budget()?;
+    check!(is_packed(TWO_TERMS));
+    check!(!is_packed(b"QITXOC0"));
+    let checked = parsed(TWO_TERMS, &work)?;
+    check_eq!(checked.term_count(), 2);
+    check_eq!(checked.key(0)?, b"\0alpha");
+    check_eq!(checked.key(1)?, b"\0beta");
+    check!(matches!(checked.key(2), Err(IndexError::InvalidInput(_))));
+    let queries: &[(&[u8], usize)] = &[
+        (b"", 0),
+        (b"\0alpha", 0),
+        (b"\0alphaz", 1),
+        (b"\0beta", 1),
+        (b"\0zeta", 2),
+    ];
+    for &(key, expected) in queries {
+        check_eq!(checked.lower_bound(key, &work)?, expected);
+    }
+    Ok(())
 }
 
 #[test]
@@ -236,6 +297,87 @@ fn equal_positions_share_one_canonical_vector() -> Result<(), IndexError> {
 }
 
 #[test]
+fn sorted_index_shifts_slots_without_changing_first_use_wire_or_duplicate_refusal()
+-> Result<(), IndexError> {
+    let work = budget()?;
+    let mut draft = BlockDraft::new()?;
+    for (ordinal, (key, values)) in [
+        (b"\0alpha".as_slice(), [3, 13]),
+        (b"\0beta".as_slice(), [3, 11]),
+        (b"\0gamma".as_slice(), [3, 12]),
+        (b"\0omega".as_slice(), [3, 13]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (key, positions) = input(key, &values, &work)?;
+        check!(matches!(
+            draft.try_push(key, positions, &work)?,
+            BlockPush::Added
+        ));
+        check_eq!(draft.vector_index.is_some(), ordinal >= 2);
+    }
+    let SealedBlock::Packed { payload, terms } = draft.finish(&work)? else {
+        return Err(IndexError::BackendViolation(
+            "sorted vector fixture did not pack".into(),
+        ));
+    };
+    check_eq!(terms.as_slice()[0].vector, 0);
+    check_eq!(terms.as_slice()[1].vector, 1);
+    check_eq!(terms.as_slice()[2].vector, 2);
+    check_eq!(terms.as_slice()[3].vector, 0);
+    let mut expected = b"QITXOC01\x00\x04\x00\x03\x00\x00\x00\x00".to_vec();
+    for (key, selector) in [
+        (b"\0alpha".as_slice(), 0_u16),
+        (b"\0beta".as_slice(), 1),
+        (b"\0gamma".as_slice(), 2),
+        (b"\0omega".as_slice(), 0),
+    ] {
+        expected.extend_from_slice(
+            &u16::try_from(key.len())
+                .map_err(|_error| IndexError::ResourceLimited)?
+                .to_be_bytes(),
+        );
+        expected.extend_from_slice(key);
+        expected.extend_from_slice(&selector.to_be_bytes());
+    }
+    for values in [[3_u32, 13], [3, 11], [3, 12]] {
+        expected.extend_from_slice(&2_u16.to_be_bytes());
+        for value in values {
+            expected.extend_from_slice(&value.to_be_bytes());
+        }
+    }
+    check_eq!(payload.bytes, expected);
+    let checked = parsed(&expected, &work)?;
+    check_eq!(
+        selected(&checked, b"\0alpha", &work)?,
+        selected(&checked, b"\0omega", &work)?
+    );
+    check_eq!(
+        selected(&checked, b"\0beta", &work)?,
+        b"\x00\x00\x00\x03\x00\x00\x00\x0b"
+    );
+    check_eq!(
+        selected(&checked, b"\0gamma", &work)?,
+        b"\x00\x00\x00\x03\x00\x00\x00\x0c"
+    );
+    let mut repeated = expected;
+    let second_start = repeated
+        .len()
+        .checked_sub(8)
+        .ok_or(IndexError::ResourceLimited)?;
+    repeated
+        .get_mut(second_start..)
+        .ok_or(IndexError::ResourceLimited)?
+        .copy_from_slice(b"\x00\x00\x00\x03\x00\x00\x00\x0d");
+    check!(matches!(
+        parsed(&repeated, &work),
+        Err(IndexError::CorruptObject(_))
+    ));
+    Ok(())
+}
+
+#[test]
 fn writer_matches_literal_512_row_8192_byte_boundary() -> Result<(), IndexError> {
     let work = budget()?;
     let expected = literal_boundary_wire()?;
@@ -275,6 +417,51 @@ fn writer_matches_literal_512_row_8192_byte_boundary() -> Result<(), IndexError>
     oversized.push(0);
     check!(matches!(
         parsed(&oversized, &work),
+        Err(IndexError::CorruptObject(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn writer_matches_literal_512_distinct_vectors_and_reader_rejects_duplicate()
+-> Result<(), IndexError> {
+    let work = budget()?;
+    let expected = literal_distinct_vector_wire()?;
+    let mut draft = BlockDraft::new()?;
+    for ordinal in 0_u16..512 {
+        let key = distinct_vector_key(ordinal)?;
+        let (key, positions) = input(&key, &[u32::from(ordinal)], &work)?;
+        check!(matches!(
+            draft.try_push(key, positions, &work)?,
+            BlockPush::Added
+        ));
+    }
+    let SealedBlock::Packed { payload, terms } = draft.finish(&work)? else {
+        return Err(IndexError::BackendViolation(
+            "512 distinct vectors were not packed".into(),
+        ));
+    };
+    check_eq!(terms.len(), 512);
+    check_eq!(payload.bytes.as_slice(), expected.as_slice());
+    let checked = parsed(&expected, &work)?;
+    for ordinal in [0_u16, 1, 510, 511] {
+        let expected_positions = u32::from(ordinal).to_be_bytes();
+        check_eq!(
+            selected(&checked, &distinct_vector_key(ordinal)?, &work)?,
+            expected_positions.as_slice()
+        );
+    }
+    let mut duplicate = expected;
+    let last_position = duplicate
+        .len()
+        .checked_sub(4)
+        .ok_or(IndexError::ResourceLimited)?;
+    duplicate
+        .get_mut(last_position..)
+        .ok_or(IndexError::ResourceLimited)?
+        .copy_from_slice(&510_u32.to_be_bytes());
+    check!(matches!(
+        parsed(&duplicate, &work),
         Err(IndexError::CorruptObject(_))
     ));
     Ok(())
@@ -397,6 +584,7 @@ fn singleton_is_leaf_and_full_returns_original_input() -> Result<(), IndexError>
         one.try_push(key, positions, &work)?,
         BlockPush::Added
     ));
+    check!(one.vector_index.is_none());
     let SealedBlock::Leaf { term, positions } = one.finish(&work)? else {
         return Err(IndexError::BackendViolation(
             "singleton was not leaf".into(),
@@ -497,6 +685,52 @@ impl MemoryScopePort for MeterScope {
 }
 
 #[test]
+fn sorted_index_grant_denial_keeps_two_term_draft_reusable() -> Result<(), IndexError> {
+    let mut work = budget()?;
+    let meter = Arc::new(MemoryMeter::default());
+    meter.ceiling.store(100_000, Ordering::Relaxed);
+    work.bind_memory_scope(Some(MemoryScope::new(Arc::new(MeterScope(meter.clone())))));
+    let mut draft = BlockDraft::new()?;
+    for (key, values) in [
+        (b"\0alpha".as_slice(), [3, 13]),
+        (b"\0beta".as_slice(), [3, 11]),
+    ] {
+        let (key, positions) = input(key, &values, &work)?;
+        check!(matches!(
+            draft.try_push(key, positions, &work)?,
+            BlockPush::Added
+        ));
+    }
+    check!(draft.vector_index.is_none());
+    let (key, positions) = input(b"\0gamma", &[3, 12], &work)?;
+    meter
+        .ceiling
+        .store(meter.live.load(Ordering::Relaxed), Ordering::Relaxed);
+    check!(matches!(
+        draft.try_push(key, positions, &work),
+        Err(IndexError::ResourceLimited)
+    ));
+    check_eq!(draft.len(), 2);
+    check!(draft.vector_index.is_none());
+    meter.ceiling.store(100_000, Ordering::Relaxed);
+    let (key, positions) = input(b"\0gamma", &[3, 12], &work)?;
+    check!(matches!(
+        draft.try_push(key, positions, &work)?,
+        BlockPush::Added
+    ));
+    check!(draft.vector_index.is_some());
+    let SealedBlock::Packed { payload, terms } = draft.finish(&work)? else {
+        return Err(IndexError::BackendViolation(
+            "recovered sorted draft did not pack".into(),
+        ));
+    };
+    drop(payload);
+    drop(terms);
+    check_eq!(meter.live.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[test]
 fn memory_denial_and_cancellation_are_not_capacity_full() -> Result<(), IndexError> {
     let mut work = budget()?;
     let meter = Arc::new(MemoryMeter::default());
@@ -580,6 +814,17 @@ fn checked_layout_grant_lives_with_owned_object_and_refunds() -> Result<(), Inde
     check_eq!(checked.object().payload.as_slice(), TWO_TERMS);
     check_eq!(selected(&checked, b"\0beta", &work)?, b"\x00\x00\x00\x07");
     drop(checked);
+    check_eq!(meter.live.load(Ordering::Relaxed), 0);
+
+    let mut work = budget()?;
+    let meter = Arc::new(MemoryMeter::default());
+    let layout_bytes = u64::try_from(std::mem::size_of::<CheckedBlock>())
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    meter.ceiling.store(layout_bytes, Ordering::Relaxed);
+    work.bind_memory_scope(Some(MemoryScope::new(Arc::new(MeterScope(meter.clone())))));
+    let one_vector = parsed(ALIASED, &work)?;
+    check_eq!(meter.live.load(Ordering::Relaxed), layout_bytes);
+    drop(one_vector);
     check_eq!(meter.live.load(Ordering::Relaxed), 0);
 
     let mut work = budget()?;

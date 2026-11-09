@@ -386,6 +386,16 @@ pub trait IncompleteGenerationDiscardPort: Send + Sync {
         candidate: &GenerationSnapshot,
         pending_batch: Option<&SearchCorpusIngestBatch>,
     ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError>;
+
+    /// Discard an incomplete pending target within its original publication scope.
+    fn discard_pending_generation_with_owner(
+        &self,
+        candidate: &GenerationSnapshot,
+        batch: &SearchCorpusIngestBatch,
+        _owner: &mut crate::PublicationValidationOwner,
+    ) -> Result<IncompleteGenerationDiscardOutcomeV1, CoreError> {
+        self.discard_incomplete_generation(candidate, Some(batch))
+    }
 }
 
 /// Wire code for a discard whose target is not quarantined right now.

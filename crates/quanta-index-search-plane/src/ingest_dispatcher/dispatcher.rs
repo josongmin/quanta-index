@@ -343,7 +343,7 @@ impl SearchPlaneIngestDispatcher {
     ///
     fn publish_source_idempotent(
         &self,
-        batch: &quanta_index_contract::SearchCorpusIngestBatch,
+        batch: &Arc<quanta_index_contract::SearchCorpusIngestBatch>,
         budget: &RequestBudgetV1,
         apply: impl FnOnce(
             &quanta_index_contract::SearchCorpusIngestBatch,
@@ -356,13 +356,16 @@ impl SearchPlaneIngestDispatcher {
         ),
         CoreError,
     > {
+        let mut validation =
+            quanta_index_core::PublicationValidationOwner::for_request(Arc::clone(batch));
+        let batch = batch.as_ref();
         let diagnostic = budget.diagnostic_context();
         let body_digest = verified_batch_digest_v1(batch)?;
-        batch
-            .validate_v1()
+        validation
+            .validate_batch_shape(batch)
             .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
-        batch
-            .validate_surface_mutations_v1()
+        validation
+            .validate_batch_surface(batch)
             .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
         if let Some(record) = self
             .source_publication
@@ -465,8 +468,7 @@ impl SearchPlaneIngestDispatcher {
         // this same catalog and the original operation journal.
         // This scope dies with this attempt, including refusals and replay
         // races. The synchronous journal stages borrow it sequentially.
-        let validation =
-            std::cell::RefCell::new(quanta_index_core::PublicationValidationOwner::default());
+        let validation = std::cell::RefCell::new(validation);
         let receipt = self.publish_idempotent_verified(
             batch,
             body_digest,
@@ -709,6 +711,7 @@ impl SearchPlaneIngestDispatcher {
                 }
             }
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => {
+                let batch = Arc::new(batch);
                 let mut observation = None;
                 match self.publish_source_idempotent(&batch, budget, |batch, owner| {
                     let outcome = self

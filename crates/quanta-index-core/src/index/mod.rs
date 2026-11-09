@@ -48,7 +48,8 @@ pub use owned_work::{
 };
 pub use owner_coverage::{pending_owner_coverage_value, read_owner_coverage};
 pub use ports::{
-    AttemptContext, ObjectReadFile, ObjectReadIoPort, ObjectWriteIoPort, ObjectWriteTicket,
+    AttemptContext, ObjectReadFile, ObjectReadIoPort, ObjectWriteIoPort, ObjectWriteSyncDirectories,
+    ObjectWriteTicket,
 };
 pub use quanta_index_contract::index::*;
 pub use query::{
@@ -57,7 +58,7 @@ pub use query::{
 };
 pub use read_settlement::{
     CatalogReadSettlementPort, NativeReadReleaseObservation, NativeReadSettlement,
-    NativeReadSettlementScope, NativeReadSettlementStatus,
+    NativeReadSettlementBlocker, NativeReadSettlementScope, NativeReadSettlementStatus,
 };
 pub use reclaim::{
     MAX_RECLAIM_CANDIDATES, MAX_RECLAIM_CHILDREN, MAX_RECLAIM_DRAIN_PAGE, ObjectNamespaceBinding,

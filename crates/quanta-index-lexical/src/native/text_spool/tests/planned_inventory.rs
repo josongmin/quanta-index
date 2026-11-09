@@ -96,12 +96,48 @@ fn planned_row_after_first_page_refuses_both_cursors_before_any_ready_prefix()
 }
 
 #[test]
+fn existing_inventory_cursors_refuse_new_planned_packet_before_cached_ready_row()
+-> Result<(), IndexError> {
+    let mut work = budget()?;
+    let spool = TextSpool::new(&TestScratch, &mut work)?;
+    for key in [b"\0a".as_slice(), b"\0b".as_slice()] {
+        add(
+            &spool,
+            InventoryPartition::Ready(0),
+            key,
+            reference(1),
+            &mut work,
+        )?;
+    }
+    let mut global = spool.inventory_cursor(1)?;
+    let mut root = spool.inventory_root_cursor(0)?;
+    check!(global.next_edit(&mut work)?.is_some());
+    check!(root.next_edit(&mut work)?.is_some());
+    add(
+        &spool,
+        InventoryPartition::Planned(0),
+        b"\0z",
+        reference(2),
+        &mut work,
+    )?;
+    check!(matches!(
+        global.next_edit(&mut work),
+        Err(IndexError::CorruptObject(_))
+    ));
+    check!(matches!(
+        root.next_edit(&mut work),
+        Err(IndexError::CorruptObject(_))
+    ));
+    Ok(())
+}
+
+#[test]
 fn partition_codec_refuses_invalid_ordinals_and_corrupt_sql_ranges() -> Result<(), IndexError> {
     let mut work = budget()?;
     let spool = TextSpool::new(&TestScratch, &mut work)?;
     for partition in [
-        InventoryPartition::Ready(64),
-        InventoryPartition::Planned(64),
+        InventoryPartition::Ready(PLANNED_ROOT_OFFSET),
+        InventoryPartition::Planned(PLANNED_ROOT_OFFSET),
     ] {
         let before = work.usage();
         check!(matches!(
@@ -110,7 +146,7 @@ fn partition_codec_refuses_invalid_ordinals_and_corrupt_sql_ranges() -> Result<(
         ));
         check_eq!(work.usage(), before);
     }
-    for invalid in [-1_i64, 128_i64] {
+    for invalid in [-1_i64, i64::from(PLANNED_ROOT_END)] {
         let _inserted = spool
             .db
             .scoped(&work)?
@@ -151,6 +187,16 @@ fn confirmation_preflight_checks_refs_count_fence_and_ready_pk_collision() -> Re
     ));
     check!(matches!(
         spool.admit_inventory_confirmation(
+            &[reference(4), reference(9)],
+            1,
+            owner,
+            false,
+            &mut work
+        ),
+        Err(IndexError::BackendViolation(_))
+    ));
+    check!(matches!(
+        spool.admit_inventory_confirmation(
             &[reference(4), reference(4)],
             1,
             owner,
@@ -169,70 +215,92 @@ fn confirmation_preflight_checks_refs_count_fence_and_ready_pk_collision() -> Re
         ),
         Err(IndexError::FenceLost)
     ));
-    add(
-        &spool,
-        InventoryPartition::Ready(3),
-        b"\0a",
-        reference(8),
-        &mut work,
-    )?;
+    check!(
+        add(
+            &spool,
+            InventoryPartition::Ready(3),
+            b"\0a",
+            reference(8),
+            &mut work,
+        )
+        .is_err()
+    );
     check!(matches!(
         spool.admit_inventory_confirmation(&[reference(4)], 1, owner, false, &mut work),
-        Err(IndexError::Conflict)
+        Err(IndexError::BackendViolation(_))
     ));
     check!(matches!(
         spool.inventory_cursor(4)?.next_edit(&mut work),
-        Err(IndexError::CorruptObject(_))
+        Err(IndexError::BackendViolation(_))
     ));
+    check!(matches!(
+        spool.reset_inventories(&mut work),
+        Err(IndexError::BackendViolation(_))
+    ));
+    check!(matches!(
+        add(
+            &spool,
+            InventoryPartition::Planned(3),
+            b"\0b",
+            reference(9),
+            &mut work
+        ),
+        Err(IndexError::BackendViolation(_))
+    ));
+    let fresh = TextSpool::new(&TestScratch, &mut work)?;
+    add(
+        &fresh,
+        InventoryPartition::Planned(3),
+        b"\0a",
+        reference(4),
+        &mut work,
+    )?;
+    fresh
+        .admit_inventory_confirmation(&[reference(4)], 1, owner, false, &mut work)?
+        .finish(&work)?;
     Ok(())
 }
 
 #[test]
-fn confirmation_sql_failure_leaves_every_fanout_row_planned() -> Result<(), IndexError> {
+fn out_of_band_sql_after_admission_poison_refuses_packet() -> Result<(), IndexError> {
     let mut work = budget()?;
     let spool = TextSpool::new(&TestScratch, &mut work)?;
     let refs = [reference(10), reference(11)];
-    add(
-        &spool,
-        InventoryPartition::Planned(0),
-        b"\0a",
-        refs[0],
-        &mut work,
-    )?;
-    add(
-        &spool,
-        InventoryPartition::Planned(0),
-        b"\0b",
-        refs[1],
-        &mut work,
-    )?;
+    for (key, reference) in [(b"\0a".as_slice(), refs[0]), (b"\0b".as_slice(), refs[1])] {
+        add(
+            &spool,
+            InventoryPartition::Planned(0),
+            key,
+            reference,
+            &mut work,
+        )?;
+    }
     let receipt = spool.admit_inventory_confirmation(&refs, 2, attempt(), false, &mut work)?;
-    spool
+    // The private connection is inaccessible to product callers. This direct
+    // mutation exercises the independent SQL total-changes fence.
+    let inserted = spool
         .db
         .scoped(&work)?
-        .execute_batch(
-            "CREATE TRIGGER refuse_inventory_confirmation BEFORE UPDATE ON inventory
-             BEGIN SELECT RAISE(ABORT, 'injected confirmation refusal'); END;",
+        .execute(
+            "INSERT INTO inventory(root,k,p,n) VALUES(0,x'007a',NULL,?1)",
+            [reference_bytes(&refs[0])?],
         )
         .map_err(|error| sql(&error))?;
-    check!(matches!(receipt.finish(&work), Err(IndexError::Storage(_))));
+    check_eq!(inserted, 1);
+    check!(matches!(
+        receipt.finish(&work),
+        Err(IndexError::BackendViolation(_))
+    ));
     check!(matches!(
         spool.inventory_cursor(1)?.next_edit(&mut work),
-        Err(IndexError::CorruptObject(_))
+        Err(IndexError::BackendViolation(_))
     ));
-    let planned: i64 = spool
-        .db
-        .scoped(&work)?
-        .query_row("SELECT COUNT(*) FROM inventory WHERE root>=64", [], |row| {
-            row.get(0)
-        })
-        .map_err(|error| sql(&error))?;
-    check_eq!(planned, 2);
+    check_eq!(spool.inventory_packet.borrow().rows, 2);
     Ok(())
 }
 
 #[test]
-fn confirmation_denial_and_cancel_do_not_expose_planned_rows() -> Result<(), IndexError> {
+fn confirmation_cancel_does_not_expose_planned_rows() -> Result<(), IndexError> {
     let mut work = budget()?;
     let spool = TextSpool::new(&TestScratch, &mut work)?;
     add(
@@ -242,115 +310,51 @@ fn confirmation_denial_and_cancel_do_not_expose_planned_rows() -> Result<(), Ind
         reference(12),
         &mut work,
     )?;
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(10))
-        .ok_or(IndexError::ResourceLimited)?;
-    let mut no_reads = WorkBudget::new(
-        WorkLimits {
-            reads: 0,
-            writes: 100,
-            bytes: 1_000_000,
-            mutations: 100,
-        },
-        deadline,
-    );
-    check!(matches!(
-        spool.admit_inventory_confirmation(&[reference(12)], 1, attempt(), false, &mut no_reads),
-        Err(IndexError::ResourceLimited)
-    ));
-    let mut no_writes = WorkBudget::new(
-        WorkLimits {
-            reads: 100,
-            writes: 0,
-            bytes: 1_000_000,
-            mutations: 100,
-        },
-        deadline,
-    );
-    check!(matches!(
-        spool.admit_inventory_confirmation(&[reference(12)], 1, attempt(), false, &mut no_writes),
-        Err(IndexError::ResourceLimited)
-    ));
     check!(matches!(
         spool.inventory_cursor(1)?.next_edit(&mut work),
         Err(IndexError::CorruptObject(_))
     ));
+    let receipt =
+        spool.admit_inventory_confirmation(&[reference(12)], 1, attempt(), false, &mut work)?;
     work.request().cancel_handle().cancel();
+    check!(matches!(receipt.finish(&work), Err(IndexError::Cancelled)));
+    let mut fresh = budget()?;
     check!(matches!(
-        spool.admit_inventory_confirmation(&[reference(12)], 1, attempt(), false, &mut work),
-        Err(IndexError::Cancelled)
+        spool.reset_inventories(&mut fresh),
+        Err(IndexError::BackendViolation(_))
     ));
     Ok(())
 }
 
 #[test]
-fn confirmation_charges_typed_null_and_object_rows_before_promotion() -> Result<(), IndexError> {
-    let mut literal = [0_u8; 33];
-    literal
-        .get_mut(1..)
-        .ok_or(IndexError::ResourceLimited)?
-        .fill(19);
-    check_eq!(reference_fixed_bytes(&reference(19))?, literal);
-    let encoded = MapValue::Object(reference(19)).encoded()?;
-    check_eq!(encoded.as_slice()?, literal.as_slice());
-
-    // Fixed golds: 20,560 for probes and the aggregate check, plus three
-    // 108-byte NULL/Object or 140-byte Object/Object row envelopes.
-    for (prior, exact) in [(None, 20_884_u64), (Some(reference(18)), 20_980_u64)] {
-        for admitted in [false, true] {
-            let mut setup = budget()?;
-            let spool = TextSpool::new(&TestScratch, &mut setup)?;
-            spool.inventory_batch(
-                &[(
-                    InventoryPartition::Planned(0),
-                    MapEdit {
-                        key: b"\0a".to_vec(),
-                        expected: prior.map(Into::into),
-                        next: Some(reference(19).into()),
-                    },
-                )],
-                &mut setup,
-            )?;
-            let deadline = Instant::now()
-                .checked_add(Duration::from_secs(10))
-                .ok_or(IndexError::ResourceLimited)?;
-            let mut work = WorkBudget::new(
-                WorkLimits {
-                    reads: 100,
-                    writes: 100,
-                    bytes: if admitted { exact } else { exact - 1 },
-                    mutations: 100,
-                },
-                deadline,
-            );
-            let result = spool.admit_inventory_confirmation(
-                &[reference(19)],
-                1,
-                attempt(),
-                false,
-                &mut work,
-            );
-            if admitted {
-                check_eq!(work.usage().bytes, exact);
-                result?.finish(&work)?;
-                check!(spool.inventory_cursor(1)?.next_edit(&mut setup)?.is_some());
-            } else {
-                check!(matches!(result, Err(IndexError::ResourceLimited)));
-                check!(matches!(
-                    spool.inventory_cursor(1)?.next_edit(&mut setup),
-                    Err(IndexError::CorruptObject(_))
-                ));
-                let planned: i64 = spool
-                    .db
-                    .scoped(&setup)?
-                    .query_row("SELECT COUNT(*) FROM inventory WHERE root>=64", [], |row| {
-                        row.get(0)
-                    })
-                    .map_err(|error| sql(&error))?;
-                check_eq!(planned, 1);
-            }
-        }
-    }
+fn admitted_packet_does_not_recharge_inserted_term_rows() -> Result<(), IndexError> {
+    let mut setup = budget()?;
+    let spool = TextSpool::new(&TestScratch, &mut setup)?;
+    add(
+        &spool,
+        InventoryPartition::Planned(0),
+        b"\0a",
+        reference(19),
+        &mut setup,
+    )?;
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(10))
+        .ok_or(IndexError::ResourceLimited)?;
+    let mut work = WorkBudget::new(
+        WorkLimits {
+            reads: 0,
+            writes: 0,
+            bytes: 0,
+            mutations: 0,
+        },
+        deadline,
+    );
+    let before = work.usage();
+    let receipt =
+        spool.admit_inventory_confirmation(&[reference(19)], 1, attempt(), false, &mut work)?;
+    check_eq!(work.usage(), before);
+    receipt.finish(&work)?;
+    check!(spool.inventory_cursor(1)?.next_edit(&mut setup)?.is_some());
     Ok(())
 }
 
@@ -358,16 +362,20 @@ fn confirmation_charges_typed_null_and_object_rows_before_promotion() -> Result<
 fn planned_partition_probes_use_the_inventory_primary_key() -> Result<(), IndexError> {
     let mut work = budget()?;
     let spool = TextSpool::new(&TestScratch, &mut work)?;
-    for query in [
-        "SELECT 1 FROM inventory WHERE root<0 LIMIT 1",
-        "SELECT 1 FROM inventory WHERE root>=64 LIMIT 1",
-        "SELECT root,k,p,n FROM inventory WHERE root>=64 ORDER BY root,k",
+    for (query, params) in [
+        ("SELECT 1 FROM inventory WHERE root<0 LIMIT 1", None),
+        (
+            "SELECT 1 FROM inventory WHERE root>=?1 LIMIT 1",
+            Some(i64::from(PLANNED_ROOT_OFFSET)),
+        ),
     ] {
-        let detail: String = spool
-            .db
-            .scoped(&work)?
-            .query_row(&format!("EXPLAIN QUERY PLAN {query}"), [], |row| row.get(3))
-            .map_err(|error| sql(&error))?;
+        let plan = format!("EXPLAIN QUERY PLAN {query}");
+        let db = spool.db.scoped(&work)?;
+        let detail: String = match params {
+            Some(root) => db.query_row(&plan, [root], |row| row.get(3)),
+            None => db.query_row(&plan, [], |row| row.get(3)),
+        }
+        .map_err(|error| sql(&error))?;
         check!(
             detail.contains("SEARCH inventory USING PRIMARY KEY"),
             "{detail}"
@@ -387,39 +395,60 @@ fn planned_partition_probes_use_the_inventory_primary_key() -> Result<(), IndexE
 }
 
 #[test]
-fn confirmation_cannot_promote_rows_added_after_its_physical_plan() -> Result<(), IndexError> {
-    for replacement in [reference(20), reference(21)] {
-        let mut work = budget()?;
-        let spool = TextSpool::new(&TestScratch, &mut work)?;
-        add(
-            &spool,
-            InventoryPartition::Planned(0),
-            b"\0a",
-            reference(20),
-            &mut work,
-        )?;
-        let receipt =
-            spool.admit_inventory_confirmation(&[reference(20)], 1, attempt(), false, &mut work)?;
+fn writer_refuses_late_row_during_physical_receipt() -> Result<(), IndexError> {
+    let mut work = budget()?;
+    let spool = TextSpool::new(&TestScratch, &mut work)?;
+    add(
+        &spool,
+        InventoryPartition::Planned(0),
+        b"\0a",
+        reference(20),
+        &mut work,
+    )?;
+    let receipt =
+        spool.admit_inventory_confirmation(&[reference(20)], 1, attempt(), false, &mut work)?;
+    check!(matches!(
         add(
             &spool,
             InventoryPartition::Planned(1),
             b"\0b",
-            replacement,
+            reference(21),
+            &mut work
+        ),
+        Err(IndexError::BackendViolation(_))
+    ));
+    receipt.finish(&work)?;
+    let mut cursor = spool.inventory_cursor(2)?;
+    check!(cursor.next_edit(&mut work)?.is_some());
+    check!(cursor.next_edit(&mut work)?.is_none());
+    Ok(())
+}
+
+#[test]
+fn reset_reuses_stable_key_only_after_completed_packet() -> Result<(), IndexError> {
+    let mut work = budget()?;
+    let spool = TextSpool::new(&TestScratch, &mut work)?;
+    for reference in [reference(41), reference(42)] {
+        add(
+            &spool,
+            InventoryPartition::Planned(0),
+            b"\0same-key",
+            reference,
             &mut work,
         )?;
         check!(matches!(
-            receipt.finish(&work),
+            spool.reset_inventories(&mut work),
             Err(IndexError::BackendViolation(_))
         ));
-        let ready: i64 = spool
-            .db
-            .scoped(&work)?
-            .query_row("SELECT COUNT(*) FROM inventory WHERE root<64", [], |row| {
-                row.get(0)
-            })
-            .map_err(|error| sql(&error))?;
-        check_eq!(ready, 0);
-        check!(spool.inventory_cursor(2)?.next_edit(&mut work).is_err());
+        let receipt =
+            spool.admit_inventory_confirmation(&[reference], 1, attempt(), false, &mut work)?;
+        receipt.finish(&work)?;
+        let row = spool
+            .inventory_cursor(1)?
+            .next_edit(&mut work)?
+            .ok_or(IndexError::ResourceLimited)?;
+        check_eq!(row.edit.next, Some(reference.into()));
+        spool.reset_inventories(&mut work)?;
     }
     Ok(())
 }

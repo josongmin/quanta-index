@@ -3,6 +3,7 @@
 
 use std::{borrow::Cow, sync::Arc};
 
+use super::text::BoundTextMember;
 use super::{Bm25Policy, NativeTextIndex, TextReadContext, TextRecipe};
 use super::{
     text_overlay::{
@@ -13,9 +14,9 @@ use super::{
 };
 use crate::plan::LexicalPlan;
 use quanta_index_core::index::{
-    FiniteScore, IndexError, IndexQueryPort, MAX_SOURCE_PATH_BYTES, MemberBinding, MemoryLease,
-    MemoryLifetime, ObjectRef, OwnerKey, QueryOutcome, QueryReadContext, SourceRecordOwner,
-    WorkUsage, effort::ResourceNeed, member_map_key, owner_map_key, ports::IndexBuildPort,
+    FiniteScore, IndexError, IndexQueryPort, MAX_SOURCE_PATH_BYTES, MemoryLease, MemoryLifetime,
+    ObjectRef, OwnerKey, QueryOutcome, QueryReadContext, SourceRecordOwner, WorkUsage,
+    effort::ResourceNeed, owner_map_key, ports::IndexBuildPort,
 };
 
 use quanta_index_contract::native_protocol::MAX_NATIVE_TEXT_TOP_K;
@@ -248,39 +249,6 @@ impl NativeTextReader {
         })
     }
 
-    fn pinned_member(
-        &self,
-        context: &mut QueryReadContext<'_>,
-    ) -> Result<MemberBinding, IndexError> {
-        let key = member_map_key(context.instance.instance);
-        let reference = context
-            .maps
-            .lookup_object(context.ticket.view.members, &key, context.budget)?
-            .ok_or(IndexError::SnapshotUnavailable)?;
-        let stored = context.objects.get(reference, context.budget)?;
-        let member =
-            quanta_index_core::index::decode_member_binding(&stored.payload, context.budget)?;
-        let children = [Some(member.artifact), member.input.root.0];
-        if stored.registration.reference != reference
-            || !stored
-                .registration
-                .children
-                .iter()
-                .copied()
-                .eq(children.into_iter().flatten())
-            || member.instance != context.instance.instance
-            || member.format != context.instance.format
-            || member.input.schema != context.instance.schema
-            || member.input.policy != context.instance.policy
-            || member.input.root != context.ticket.view.source.owners
-        {
-            return Err(IndexError::CorruptObject(
-                "native text member differs from selected ticket or instance".into(),
-            ));
-        }
-        Ok(member)
-    }
-
     fn source_path(
         &self,
         owner: OwnerKey,
@@ -457,7 +425,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
         context: &mut QueryReadContext<'_>,
     ) -> Result<(), IndexError> {
         self.validate_instance(context.instance)?;
-        let member = self.pinned_member(context)?;
+        let member = context.source_member_binding()?;
         self.index.validate_searchable_owner(
             &member,
             owner,
@@ -495,7 +463,8 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
     ) -> Result<QueryOutcome<TextReadResult>, IndexError> {
         self.validate_instance(context.instance)?;
         let _need = self.reservation(request)?;
-        let member = self.pinned_member(context)?;
+        let bound = BoundTextMember::from_context(context)?;
+        let member = bound.member();
         let mut overlay_input_memory = None;
         let mut overlay_path_memory = None;
         let mut overlay_source_memory = None;
@@ -619,8 +588,8 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
                 },
             )?)
         };
-        let mut ranked = self.index.search_content_with_overlay(
-            &member,
+        let mut ranked = self.index.search_content_with_bound_member(
+            &bound,
             &request.plan,
             &request.constraints,
             TextContentExecution {
@@ -846,15 +815,29 @@ mod tests {
         )?;
         let port: &dyn IndexQueryPort<PlannedTextRead, TextReadResult> = &reader;
         let valid = spec(recipe);
-        // Fixed digests independently bind both retired policies and the
-        // current positional inventory plus occurrence dictionary bounds.
+        // Fixed digests bind the current entry-map, inline contribution and
+        // packed occurrence layouts and reject retired policies at admission.
         check!(
             recipe.output_policy()
                 == Digest([
-                    178, 193, 223, 24, 180, 82, 72, 93, 105, 239, 78, 104, 123, 122, 53, 25, 240,
-                    124, 255, 247, 111, 226, 95, 10, 102, 93, 135, 6, 37, 141, 125, 149
+                    106, 9, 87, 172, 113, 228, 220, 33, 99, 101, 112, 241, 85, 191, 130, 177,
+                    167, 55, 147, 210, 87, 35, 8, 11, 237, 108, 190, 209, 71, 42, 254, 218
                 ])
         );
+        let prior_posting_reference_layout = InstanceSpec {
+            policy: Digest([
+                20, 198, 213, 49, 209, 48, 78, 164, 215, 224, 199, 81, 144, 50, 36, 228, 164, 219,
+                14, 248, 153, 29, 246, 190, 197, 45, 183, 66, 30, 76, 192, 168,
+            ]),
+            ..valid
+        };
+        let prior_inventory_layout = InstanceSpec {
+            policy: Digest([
+                178, 193, 223, 24, 180, 82, 72, 93, 105, 239, 78, 104, 123, 122, 53, 25, 240, 124,
+                255, 247, 111, 226, 95, 10, 102, 93, 135, 6, 37, 141, 125, 149,
+            ]),
+            ..valid
+        };
         let prior_block_layout = InstanceSpec {
             policy: Digest([
                 238, 241, 88, 98, 162, 10, 241, 27, 249, 231, 23, 55, 71, 223, 46, 21, 88, 151,
@@ -869,6 +852,23 @@ mod tests {
             ]),
             ..valid
         };
+        check!(matches!(
+            port.validate_instance(&prior_posting_reference_layout),
+            Err(IndexError::InvalidInput(_))
+        ));
+        check!(matches!(
+            crate::native::NativeTextIndex::new(recipe)
+                .validate_instance(&prior_posting_reference_layout),
+            Err(IndexError::InvalidInput(_))
+        ));
+        check!(matches!(
+            port.validate_instance(&prior_inventory_layout),
+            Err(IndexError::InvalidInput(_))
+        ));
+        check!(matches!(
+            crate::native::NativeTextIndex::new(recipe).validate_instance(&prior_inventory_layout),
+            Err(IndexError::InvalidInput(_))
+        ));
         check!(matches!(
             port.validate_instance(&prior_block_layout),
             Err(IndexError::InvalidInput(_))

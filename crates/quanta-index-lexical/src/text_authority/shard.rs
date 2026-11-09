@@ -66,11 +66,29 @@ impl ShardBody {
     /// This seal oracle shares only the text normalizer with the writer. It
     /// neither calls a posting builder nor decodes untrusted position counts
     /// before comparing their complete canonical byte strings.
+    #[cfg(test)]
     pub(crate) fn verify_semantics(
         &self,
         index: u64,
         generation_dir: &Path,
         name: &str,
+    ) -> Result<(), CoreError> {
+        self.verify_semantics_with_verified_terms(
+            index,
+            generation_dir,
+            name,
+            |_case, _term, _entries| Ok(()),
+        )
+    }
+
+    /// Visit term membership only after its complete posting bytes match the
+    /// source-derived oracle. The visitor does not retain the oracle table.
+    pub(crate) fn verify_semantics_with_verified_terms(
+        &self,
+        index: u64,
+        generation_dir: &Path,
+        name: &str,
+        mut on_verified_term: impl FnMut(CaseMode, &str, &[(u64, Vec<u32>)]) -> Result<(), CoreError>,
     ) -> Result<(), CoreError> {
         let corrupt =
             |reason: &str| crate::index_store::sidecar_corrupt(generation_dir, name, reason);
@@ -116,12 +134,14 @@ impl ShardBody {
             &self.positions,
             CaseMode::Sensitive,
             &corrupt,
+            &mut on_verified_term,
         )?;
         verify_positions(
             &self.docs_by_id,
             &self.positions_folded,
             CaseMode::Folded,
             &corrupt,
+            &mut on_verified_term,
         )?;
         Ok(())
     }
@@ -209,6 +229,7 @@ fn verify_positions(
     observed: &PositionsIndex,
     case: CaseMode,
     corrupt: &impl Fn(&str) -> CoreError,
+    on_verified_term: &mut impl FnMut(CaseMode, &str, &[(u64, Vec<u32>)]) -> Result<(), CoreError>,
 ) -> Result<(), CoreError> {
     type OracleTermDocs = Vec<(u64, Vec<u32>)>;
     let mut expected: BTreeMap<String, OracleTermDocs> = BTreeMap::new();
@@ -241,7 +262,7 @@ fn verify_positions(
     }
 
     let mut actual_terms = observed.terms();
-    for (term, entries) in &expected {
+    for (term, entries) in expected {
         if actual_terms.next() != Some(term.as_str()) {
             return Err(corrupt(
                 "shard position term inventory differs from its document table",
@@ -252,7 +273,7 @@ fn verify_positions(
             .map_err(|_error| corrupt("shard term has too many documents"))?;
         oracle_varint(doc_count, &mut bytes)?;
         let mut prior_doc = 0_u64;
-        for (doc_id, positions) in entries {
+        for (doc_id, positions) in &entries {
             let gap = doc_id
                 .checked_sub(prior_doc)
                 .ok_or_else(|| corrupt("shard position doc IDs are not ascending"))?;
@@ -273,11 +294,12 @@ fn verify_positions(
                 prior_position = *position;
             }
         }
-        if observed.raw_postings(term) != Some(bytes.as_slice()) {
+        if observed.raw_postings(&term) != Some(bytes.as_slice()) {
             return Err(corrupt(
                 "shard position postings differ from its document table",
             ));
         }
+        on_verified_term(case, &term, &entries)?;
     }
     if actual_terms.next().is_some() {
         return Err(corrupt("shard position dictionary has an extra term"));
@@ -497,6 +519,7 @@ impl ShardBuilders {
 mod tests {
     use super::SHARD_DOCS;
     use super::{ShardBody, ShardBuilders};
+    use crate::normalize::CaseMode;
     use quanta_index_contract::ManifestGeneration;
     use quanta_index_lq_positions::PositionsIndex;
     use quanta_index_lq_trigram::{DocId as TrigramDocId, TrigramIndexBuilder};
@@ -717,6 +740,56 @@ mod tests {
             wrong_folded,
         );
         assert!(!verify_fixture(&mutant));
+    }
+
+    #[test]
+    fn term_visitor_receives_only_byte_verified_source_members() {
+        let valid = semantic_fixture();
+        let mut visited = Vec::new();
+        valid
+            .verify_semantics_with_verified_terms(
+                0,
+                Path::new("/g1"),
+                "shard",
+                |case, term, entries| {
+                    visited.push((
+                        case,
+                        term.to_owned(),
+                        entries.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                    ));
+                    Ok(())
+                },
+            )
+            .expect("verified terms");
+        assert_eq!(
+            visited,
+            vec![
+                (CaseMode::Sensitive, "abc".into(), vec![1]),
+                (CaseMode::Folded, "abc".into(), vec![1]),
+            ]
+        );
+
+        let mut mutant = valid.clone();
+        mutant.positions = PositionsIndex::from_raw(
+            valid.positions.generation(),
+            valid.positions.normalizer_version(),
+            BTreeMap::from([(Box::<str>::from("abc"), vec![1, 1, 2, 0, 2])]),
+        );
+        let mut called = false;
+        assert!(
+            mutant
+                .verify_semantics_with_verified_terms(
+                    0,
+                    Path::new("/g1"),
+                    "shard",
+                    |_case, _term, _entries| {
+                        called = true;
+                        Ok(())
+                    },
+                )
+                .is_err()
+        );
+        assert!(!called, "mutant term reached the visitor before byte proof");
     }
 
     #[test]

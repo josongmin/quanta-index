@@ -14,11 +14,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use quanta_index_contract::index::{
-    CollectionId, Digest, GroupActivation, IndexInstanceId, IndexKind, IndexProfile, InputDomain,
-    InstanceSpec, OperationKey, OwnerKey, OwnerMutation, ProducerId, PublicationGroupId, SchemaId,
-    SlotId, SourceEvent, SourceInput, SourceTextAdmission, SourceTransition, StableOwnerId,
-    StorageFormatId, StreamId, TenantId, UpdateKind, UpdateRequest, ViewRef, ViewSelection,
-    WorkspaceKey, WorktreeId,
+    CatalogView, CollectionId, Digest, GroupActivation, IndexInstanceId, IndexKind, IndexProfile,
+    InputDomain, InstanceSpec, OperationKey, OwnerKey, OwnerMutation, ProducerId,
+    PublicationGroupId, SchemaId, SlotId, SourceEvent, SourceInput, SourceTextAdmission,
+    SourceTransition, StableOwnerId, StorageFormatId, StreamId, TenantId, UpdateKind,
+    UpdateRequest, ViewRef, ViewSelection, WorkspaceKey, WorktreeId,
 };
 use quanta_index_contract::native_protocol::{
     NativeIndexRequest, NativeIndexResponse, NativeReadSessionStatus,
@@ -51,12 +51,15 @@ mod publication;
 use publication::{PublicationAudit, PublicationLabel};
 #[path = "native_index/child_trace.rs"]
 mod child_trace;
+#[path = "native_index/corpus.rs"]
+mod corpus;
 #[path = "native_index/daemon_diagnostic.rs"]
 mod daemon_diagnostic;
 #[path = "native_index/mixed_load.rs"]
 mod mixed_load;
 #[path = "native_index/retained_read.rs"]
 mod retained_read;
+pub use corpus::{NativeCorpusInput, measure_native_corpus};
 
 use super::{
     BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
@@ -441,7 +444,7 @@ fn mixed_native_config(
         "retention".into(),
         json!({
             "scopes":[{"workspace":workspace(),"epoch":1}],
-            "sequence_window":1,"page_limit":1,"interval_ms":20,
+            "sequence_window":1,"page_limit":1,"custody_page_limit":32,"interval_ms":20,
             "round_timeout_ms":2_000,"head_probe_every":2,
             "work_limits":{"reads":1_000_000,"writes":1_000_000,
                 "bytes":536_870_912,"mutations":1_000_000}
@@ -580,6 +583,17 @@ fn advance_staged(
     publication: &mut PublicationAudit,
 ) -> Result<ViewRef> {
     let prior = client.read_view(ViewSelection::Exact(expected), &budget())?;
+    let request = prepare_source_advance(client, ingress, &prior, mutations, event_sequence)?;
+    publication::publish(client, request, label, publication)
+}
+
+fn prepare_source_advance(
+    client: &NativeUdsClient,
+    ingress: quanta_index_contract::index::IngressRef,
+    prior: &CatalogView,
+    mutations: impl IntoIterator<Item = OwnerMutation>,
+    event_sequence: u64,
+) -> Result<UpdateRequest> {
     let owners = client.stage_mutations(ingress, mutations, &budget())?;
     let mut transition = SourceTransition {
         expected_source: prior.source,
@@ -596,16 +610,11 @@ fn advance_staged(
         sequence: event_sequence,
         payload: transition.owner_digest()?,
     });
-    publication::publish(
-        client,
-        UpdateRequest {
-            operation: ingress.operation,
-            expected_view: expected,
-            kind: UpdateKind::SourceAdvance(transition),
-        },
-        label,
-        publication,
-    )
+    Ok(UpdateRequest {
+        operation: ingress.operation,
+        expected_view: prior.identity,
+        kind: UpdateKind::SourceAdvance(transition),
+    })
 }
 
 fn advance_frontier_only(
@@ -1257,7 +1266,7 @@ fn measure_native_inner(
                 &corpus,
                 &refs,
                 mixed_load::MixedStart {
-                    view: final_view,
+                    view: client.read_view(ViewSelection::Exact(final_view), &budget())?,
                     first_ref: final_first_ref,
                     first_token: final_first_token.take(),
                     next_operation_sequence: u64::from(churn.requested)
@@ -1623,7 +1632,7 @@ fn write_index_native_artifacts_inner(
     if measurement.mixed_load.is_some() {
         digest_inputs.push((
             "mixed_load",
-            "large-seed42-60s-warmup-900s-50qps-held-v2".into(),
+            "large-seed42-60s-warmup-900s-50qps-held-continuous-v3".into(),
         ));
     }
     let mut detail = json!({

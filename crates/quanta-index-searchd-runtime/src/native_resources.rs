@@ -6,15 +6,21 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    thread,
+    time::Duration,
 };
 
 use quanta_index_core::index::{
     IndexError, MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope, MemoryScopePort,
-    effort::{ResourceNeed, ResourceScheduler},
+    WorkBudget,
+    effort::{ReservationGuard, ResourceNeed, ResourceScheduler},
 };
+
+const MAX_REQUEST_WAITERS: usize = 64;
+const REQUEST_WAIT_POLL: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeResourcePlan {
@@ -225,7 +231,99 @@ pub(super) struct NativeResourceLedger {
     background_control_enabled: bool,
     maintenance_control_enabled: bool,
     state: Mutex<LedgerState>,
+    interactive_waiters: Mutex<BoundedWaiters>,
+    interactive_changed: Condvar,
+    control_waiters: Mutex<BoundedWaiters>,
+    control_changed: Condvar,
     invalid: AtomicBool,
+}
+
+/// Fixed backing belongs to the service ledger, not to any waiting request.
+struct BoundedWaiters {
+    next_ticket: u64,
+    tickets: [u64; MAX_REQUEST_WAITERS],
+    len: usize,
+    admitting: Option<thread::ThreadId>,
+}
+
+impl Default for BoundedWaiters {
+    fn default() -> Self {
+        Self {
+            next_ticket: 0,
+            tickets: [0; MAX_REQUEST_WAITERS],
+            len: 0,
+            admitting: None,
+        }
+    }
+}
+
+impl BoundedWaiters {
+    fn enqueue(&mut self) -> Result<u64, IndexError> {
+        if self.len == MAX_REQUEST_WAITERS {
+            return Err(IndexError::ResourceLimited);
+        }
+        let ticket = self
+            .next_ticket
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        *self
+            .tickets
+            .get_mut(self.len)
+            .ok_or(IndexError::ResourceLimited)? = ticket;
+        self.len = self.len.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        self.next_ticket = ticket;
+        Ok(ticket)
+    }
+
+    fn first(&self) -> Option<u64> {
+        self.tickets.get(..self.len)?.first().copied()
+    }
+
+    fn remove(&mut self, ticket: u64) -> bool {
+        let Some(active) = self.tickets.get_mut(..self.len) else {
+            return false;
+        };
+        let Some(slot) = active.iter().position(|value| *value == ticket) else {
+            return false;
+        };
+        let Some(next) = slot.checked_add(1) else {
+            return false;
+        };
+        active.copy_within(next..self.len, slot);
+        let Some(next_len) = self.len.checked_sub(1) else {
+            return false;
+        };
+        self.len = next_len;
+        true
+    }
+}
+
+struct ClassWaiter<'a> {
+    ledger: &'a NativeResourceLedger,
+    class: BoundedClass,
+    ticket: u64,
+    active: bool,
+}
+
+impl Drop for ClassWaiter<'_> {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let (queue, changed) = self.ledger.wait_queue(self.class);
+        let mut waiters = queue.lock().unwrap_or_else(|poison| {
+            self.ledger.invalid.store(true, Ordering::Release);
+            poison.into_inner()
+        });
+        if !waiters.remove(self.ticket) {
+            self.ledger.invalid.store(true, Ordering::Release);
+        }
+        if waiters.admitting == Some(thread::current().id()) {
+            waiters.admitting = None;
+        }
+        drop(waiters);
+        changed.notify_all();
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -236,6 +334,21 @@ pub(super) enum NativeResourceClass {
     Interactive,
     Core,
     Enrichment,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum BoundedClass {
+    Control,
+    Interactive,
+}
+
+impl BoundedClass {
+    const fn resource_class(self) -> NativeResourceClass {
+        match self {
+            Self::Control => NativeResourceClass::Control,
+            Self::Interactive => NativeResourceClass::Interactive,
+        }
+    }
 }
 
 impl NativeResourceClass {
@@ -315,9 +428,145 @@ impl NativeClassScheduler {
     pub(super) fn denial(&self) -> IndexError {
         self.ledger.denial()
     }
+
+    /// Wait only for transient Interactive contention; the original request
+    /// budget bounds queue residence and no reservation is held while waiting.
+    pub(super) fn acquire_interactive_for_request(
+        self: &Arc<Self>,
+        need: ResourceNeed,
+        budget: &WorkBudget,
+    ) -> Result<ReservationGuard<Self>, IndexError> {
+        self.acquire_bounded_for_request(BoundedClass::Interactive, need, budget)
+    }
+
+    /// Only callers opting in to bounded Control waiting join this FIFO.
+    /// Existing direct Control reservations retain their immediate semantics.
+    pub(super) fn acquire_control_for_request(
+        self: &Arc<Self>,
+        need: ResourceNeed,
+        budget: &WorkBudget,
+    ) -> Result<ReservationGuard<Self>, IndexError> {
+        self.acquire_bounded_for_request(BoundedClass::Control, need, budget)
+    }
+
+    fn acquire_bounded_for_request(
+        self: &Arc<Self>,
+        class: BoundedClass,
+        need: ResourceNeed,
+        budget: &WorkBudget,
+    ) -> Result<ReservationGuard<Self>, IndexError> {
+        budget.checkpoint()?;
+        let compatible = match class {
+            BoundedClass::Interactive => {
+                need.cpu_units != 0
+                    && need.io_bytes != 0
+                    && need.memory_bytes != 0
+                    && fits(need, self.ledger.plan.interactive)
+            }
+            BoundedClass::Control => need == self.ledger.plan.control,
+        };
+        if self.class != class.resource_class() || !compatible {
+            return Err(IndexError::ResourceLimited);
+        }
+        if self.ledger.invalid.load(Ordering::Acquire) {
+            return Err(invalid_ledger());
+        }
+        let (queue, changed) = self.ledger.wait_queue(class);
+        // Interactive's existing try_reserve guard prevents barging. Direct
+        // Control reservations remain immediate, so an opting-in Control caller
+        // checks its own queue while holding the queue lock through admission.
+        let immediate = if class == BoundedClass::Control {
+            let waiters = queue.lock().map_err(|_poison| {
+                self.ledger.invalid.store(true, Ordering::Release);
+                invalid_ledger()
+            })?;
+            if waiters.len == 0 {
+                ReservationGuard::try_acquire(Arc::clone(self), need)
+            } else {
+                None
+            }
+        } else {
+            ReservationGuard::try_acquire(Arc::clone(self), need)
+        };
+        if let Some(reservation) = immediate {
+            budget.checkpoint()?;
+            return Ok(reservation);
+        }
+        let ticket = {
+            let mut waiters = queue.lock().map_err(|_poison| {
+                self.ledger.invalid.store(true, Ordering::Release);
+                invalid_ledger()
+            })?;
+            waiters.enqueue()?
+        };
+        let mut waiter = ClassWaiter {
+            ledger: &self.ledger,
+            class,
+            ticket,
+            active: true,
+        };
+        loop {
+            budget.checkpoint()?;
+            let mut waiters = queue.lock().map_err(|_poison| {
+                self.ledger.invalid.store(true, Ordering::Release);
+                invalid_ledger()
+            })?;
+            if self.ledger.invalid.load(Ordering::Acquire) {
+                return Err(invalid_ledger());
+            }
+            if waiters.first() == Some(ticket) && waiters.admitting.is_none() {
+                waiters.admitting = Some(thread::current().id());
+                drop(waiters);
+                let reservation = ReservationGuard::try_acquire(Arc::clone(self), need);
+                let mut waiters = queue.lock().map_err(|_poison| {
+                    self.ledger.invalid.store(true, Ordering::Release);
+                    invalid_ledger()
+                })?;
+                waiters.admitting = None;
+                if let Some(reservation) = reservation {
+                    if !waiters.remove(ticket) {
+                        self.ledger.invalid.store(true, Ordering::Release);
+                        return Err(invalid_ledger());
+                    }
+                    waiter.active = false;
+                    drop(waiters);
+                    changed.notify_all();
+                    budget.checkpoint()?;
+                    return Ok(reservation);
+                }
+                if self.ledger.invalid.load(Ordering::Acquire) {
+                    return Err(invalid_ledger());
+                }
+                self.ledger.pause_waiters(changed, waiters, budget)?;
+                continue;
+            }
+            self.ledger.pause_waiters(changed, waiters, budget)?;
+        }
+    }
 }
 
 impl NativeResourceLedger {
+    const fn wait_queue(&self, class: BoundedClass) -> (&Mutex<BoundedWaiters>, &Condvar) {
+        match class {
+            BoundedClass::Interactive => (&self.interactive_waiters, &self.interactive_changed),
+            BoundedClass::Control => (&self.control_waiters, &self.control_changed),
+        }
+    }
+
+    fn pause_waiters(
+        &self,
+        changed: &Condvar,
+        waiters: std::sync::MutexGuard<'_, BoundedWaiters>,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        let timeout = REQUEST_WAIT_POLL.min(budget.request().remaining());
+        let (_waiters, _outcome) = changed.wait_timeout(waiters, timeout).map_err(|_poison| {
+            self.invalid.store(true, Ordering::Release);
+            invalid_ledger()
+        })?;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(super) fn new(plan: NativeResourcePlan) -> Result<Arc<Self>, IndexError> {
         Self::with_background_control(plan, false)
@@ -347,6 +596,10 @@ impl NativeResourceLedger {
             background_control_enabled: owned_pump_enabled,
             maintenance_control_enabled: maintenance_enabled,
             state: Mutex::new(LedgerState::default()),
+            interactive_waiters: Mutex::new(BoundedWaiters::default()),
+            interactive_changed: Condvar::new(),
+            control_waiters: Mutex::new(BoundedWaiters::default()),
+            control_changed: Condvar::new(),
             invalid: AtomicBool::new(false),
         }))
     }
@@ -433,6 +686,21 @@ impl ResourceScheduler for NativeClassScheduler {
         if !admitted_need || self.ledger.invalid.load(Ordering::Acquire) {
             return None;
         }
+        // All Interactive reservations, including legacy immediate callers,
+        // obey a queued head. The head temporarily marks its own thread while
+        // constructing the existing non-cloneable ReservationGuard.
+        let _waiters = if self.class == NativeResourceClass::Interactive {
+            let Ok(waiters) = self.ledger.interactive_waiters.lock() else {
+                self.ledger.invalid.store(true, Ordering::Release);
+                return None;
+            };
+            if waiters.len != 0 && waiters.admitting != Some(thread::current().id()) {
+                return None;
+            }
+            Some(waiters)
+        } else {
+            None
+        };
         let Ok(mut state) = self.ledger.state.lock() else {
             self.ledger.invalid.store(true, Ordering::Release);
             return None;
@@ -501,6 +769,8 @@ impl ResourceScheduler for NativeClassScheduler {
         if let Err(_error) = self.ledger.finish_execution(self.class, &token) {
             self.ledger.invalid.store(true, Ordering::Release);
         }
+        self.ledger.interactive_changed.notify_all();
+        self.ledger.control_changed.notify_all();
     }
 
     fn memory_scope(&self, token: &Self::Token) -> Option<MemoryScope> {
@@ -793,7 +1063,12 @@ impl NativeResourceLedger {
         } else {
             let _previous = state.allocations.insert(reservation, allocation);
         }
+        let capacity_freed = !allocation.active || lifetime == MemoryLifetime::Retained;
         drop(state);
+        if capacity_freed {
+            self.interactive_changed.notify_all();
+            self.control_changed.notify_all();
+        }
         Ok(())
     }
 
@@ -903,6 +1178,8 @@ fn floor_shortfall(floor: ResourceNeed, reserved: ResourceNeed) -> ResourceNeed 
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::mpsc, time::Instant};
+
     use quanta_index_core::index::effort::ReservationGuard;
 
     use super::*;
@@ -977,6 +1254,353 @@ mod tests {
             core: unit,
             enrichment: unit,
         }
+    }
+
+    fn interactive_wait_budget() -> WorkBudget {
+        interactive_budget_for(Duration::from_secs(5))
+    }
+
+    fn interactive_budget_for(duration: Duration) -> WorkBudget {
+        WorkBudget::with_request(
+            quanta_index_core::index::WorkLimits {
+                reads: 1,
+                writes: 1,
+                bytes: 1,
+                mutations: 1,
+            },
+            quanta_index_core::RequestBudgetV1::for_duration(duration),
+        )
+    }
+
+    fn wait_for_interactive_queue(
+        ledger: &NativeResourceLedger,
+        count: usize,
+    ) -> Result<(), IndexError> {
+        let until = Instant::now()
+            .checked_add(Duration::from_secs(2))
+            .ok_or(IndexError::ResourceLimited)?;
+        loop {
+            let waiters = ledger
+                .interactive_waiters
+                .lock()
+                .map_err(|_poison| invalid_ledger())?;
+            if waiters.len == count {
+                return Ok(());
+            }
+            drop(waiters);
+            if Instant::now() >= until {
+                return Err(IndexError::BackendViolation(
+                    "interactive waiter did not reach expected queue depth".into(),
+                ));
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn wait_for_control_queue(
+        ledger: &NativeResourceLedger,
+        count: usize,
+    ) -> Result<(), IndexError> {
+        let until = Instant::now()
+            .checked_add(Duration::from_secs(2))
+            .ok_or(IndexError::ResourceLimited)?;
+        loop {
+            let waiters = ledger
+                .control_waiters
+                .lock()
+                .map_err(|_poison| invalid_ledger())?;
+            if waiters.len == count {
+                return Ok(());
+            }
+            drop(waiters);
+            if Instant::now() >= until {
+                return Err(IndexError::BackendViolation(
+                    "control waiter did not reach expected queue depth".into(),
+                ));
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn control_request_fifo_handoff_and_cancel_refund() -> Result<(), IndexError> {
+        let configured = plan();
+        let ledger = NativeResourceLedger::new(configured)?;
+        let control = ledger.scheduler(NativeResourceClass::Control);
+        let held = ReservationGuard::try_acquire(Arc::clone(&control), configured.control)
+            .ok_or(IndexError::ResourceLimited)?;
+        let (admit_send, admitted) = mpsc::channel();
+        let (release_first, hold_first) = mpsc::channel();
+        let first_control = Arc::clone(&control);
+        let first_send = admit_send.clone();
+        let first = thread::spawn(move || -> Result<(), IndexError> {
+            let guard = first_control
+                .acquire_control_for_request(configured.control, &interactive_wait_budget())?;
+            first_send.send(1).map_err(|_error| {
+                IndexError::BackendViolation("first control receiver closed".into())
+            })?;
+            hold_first
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_error| {
+                    IndexError::BackendViolation("first control release absent".into())
+                })?;
+            drop(guard);
+            Ok(())
+        });
+        wait_for_control_queue(&ledger, 1)?;
+        let second_control = Arc::clone(&control);
+        let second = thread::spawn(move || -> Result<(), IndexError> {
+            let guard = second_control
+                .acquire_control_for_request(configured.control, &interactive_wait_budget())?;
+            admit_send.send(2).map_err(|_error| {
+                IndexError::BackendViolation("second control receiver closed".into())
+            })?;
+            drop(guard);
+            Ok(())
+        });
+        wait_for_control_queue(&ledger, 2)?;
+        drop(held);
+        check_eq!(
+            admitted
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_error| IndexError::ResourceLimited)?,
+            1
+        )?;
+        release_first
+            .send(())
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        check_eq!(
+            admitted
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_error| IndexError::ResourceLimited)?,
+            2
+        )?;
+        first.join().map_err(|_panic| {
+            IndexError::BackendViolation("first control waiter panicked".into())
+        })??;
+        second.join().map_err(|_panic| {
+            IndexError::BackendViolation("second control waiter panicked".into())
+        })??;
+        wait_for_control_queue(&ledger, 0)?;
+        let held = ReservationGuard::try_acquire(Arc::clone(&control), configured.control)
+            .ok_or(IndexError::ResourceLimited)?;
+        let budget = interactive_wait_budget();
+        let cancel = budget.request().cancel_handle();
+        let (sent, received) = mpsc::channel();
+        let cancelled = thread::spawn(move || {
+            let result = control.acquire_control_for_request(configured.control, &budget);
+            sent.send((result.map(drop), budget.first_denial()))
+        });
+        wait_for_control_queue(&ledger, 1)?;
+        cancel.cancel();
+        let (result, denial) = received
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        check_eq!(result, Err(IndexError::Cancelled))?;
+        check_eq!(
+            denial,
+            Some(quanta_index_core::index::WorkBudgetDenial::Cancelled)
+        )?;
+        cancelled
+            .join()
+            .map_err(|_panic| IndexError::BackendViolation("control waiter panicked".into()))?
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        wait_for_control_queue(&ledger, 0)?;
+        drop(held);
+        check_eq!(ledger.snapshot()?.reserved, ResourceNeed::default())?;
+        Ok(())
+    }
+
+    #[test]
+    fn interactive_fifo_handoff_preserves_control_and_refunds() -> Result<(), IndexError> {
+        let configured = capacity_for_slots(plan(), 5)?;
+        let ledger = NativeResourceLedger::new(configured)?;
+        let interactive = ledger.scheduler(NativeResourceClass::Interactive);
+        let first = ReservationGuard::try_acquire(Arc::clone(&interactive), configured.interactive)
+            .ok_or(IndexError::ResourceLimited)?;
+        let second =
+            ReservationGuard::try_acquire(Arc::clone(&interactive), configured.interactive)
+                .ok_or(IndexError::ResourceLimited)?;
+        let control = ReservationGuard::try_acquire(
+            ledger.scheduler(NativeResourceClass::Control),
+            configured.control,
+        )
+        .ok_or(IndexError::ResourceLimited)?;
+        let (admit_send, admitted) = mpsc::channel();
+        let (release_first, hold_first) = mpsc::channel();
+        let for_first = Arc::clone(&interactive);
+        let sent_first = admit_send.clone();
+        let first_waiter = thread::spawn(move || -> Result<(), IndexError> {
+            let guard = for_first.acquire_interactive_for_request(
+                configured.interactive,
+                &interactive_wait_budget(),
+            )?;
+            sent_first.send(1).map_err(|_error| {
+                IndexError::BackendViolation("first waiter receiver closed".into())
+            })?;
+            hold_first
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_error| {
+                    IndexError::BackendViolation("first waiter release absent".into())
+                })?;
+            drop(guard);
+            Ok(())
+        });
+        wait_for_interactive_queue(&ledger, 1)?;
+        let for_second = Arc::clone(&interactive);
+        let second_waiter = thread::spawn(move || -> Result<(), IndexError> {
+            let guard = for_second.acquire_interactive_for_request(
+                configured.interactive,
+                &interactive_wait_budget(),
+            )?;
+            admit_send.send(2).map_err(|_error| {
+                IndexError::BackendViolation("second waiter receiver closed".into())
+            })?;
+            drop(guard);
+            Ok(())
+        });
+        wait_for_interactive_queue(&ledger, 2)?;
+        check!(
+            ReservationGuard::try_acquire(Arc::clone(&interactive), configured.interactive)
+                .is_none()
+        )?;
+        drop(first);
+        check_eq!(
+            admitted
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_error| IndexError::ResourceLimited)?,
+            1
+        )?;
+        drop(second);
+        check_eq!(
+            admitted
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(|_error| IndexError::ResourceLimited)?,
+            2
+        )?;
+        release_first
+            .send(())
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        first_waiter
+            .join()
+            .map_err(|_panic| IndexError::BackendViolation("first waiter panicked".into()))??;
+        second_waiter
+            .join()
+            .map_err(|_panic| IndexError::BackendViolation("second waiter panicked".into()))??;
+        drop(control);
+        check_eq!(ledger.snapshot()?.reserved, ResourceNeed::default())?;
+        wait_for_interactive_queue(&ledger, 0)?;
+        Ok(())
+    }
+
+    #[test]
+    fn interactive_cancel_and_waiter_cap_leave_no_reservation() -> Result<(), IndexError> {
+        let mut inline = BoundedWaiters::default();
+        for _ in 0..MAX_REQUEST_WAITERS {
+            let _ticket = inline.enqueue()?;
+        }
+        check_eq!(inline.len, MAX_REQUEST_WAITERS)?;
+        check_eq!(inline.enqueue(), Err(IndexError::ResourceLimited))?;
+        check!(inline.remove(1))?;
+        check_eq!(inline.len, MAX_REQUEST_WAITERS.saturating_sub(1))?;
+
+        let configured = plan();
+        let ledger = NativeResourceLedger::new(configured)?;
+        let interactive = ledger.scheduler(NativeResourceClass::Interactive);
+        let held = ReservationGuard::try_acquire(Arc::clone(&interactive), configured.interactive)
+            .ok_or(IndexError::ResourceLimited)?;
+        let budget = interactive_wait_budget();
+        let cancel = budget.request().cancel_handle();
+        let (sent, received) = mpsc::channel();
+        let waiter = thread::spawn(move || {
+            let result =
+                interactive.acquire_interactive_for_request(configured.interactive, &budget);
+            sent.send((result.map(drop), budget.first_denial()))
+        });
+        wait_for_interactive_queue(&ledger, 1)?;
+        cancel.cancel();
+        let (result, denial) = received
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        check_eq!(result, Err(IndexError::Cancelled))?;
+        check_eq!(
+            denial,
+            Some(quanta_index_core::index::WorkBudgetDenial::Cancelled)
+        )?;
+        waiter
+            .join()
+            .map_err(|_panic| IndexError::BackendViolation("cancelled waiter panicked".into()))?
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        wait_for_interactive_queue(&ledger, 0)?;
+        let short = interactive_budget_for(Duration::from_millis(20));
+        let scheduler = ledger.scheduler(NativeResourceClass::Interactive);
+        check_eq!(
+            scheduler
+                .acquire_interactive_for_request(configured.interactive, &short)
+                .map(drop),
+            Err(IndexError::ResourceLimited)
+        )?;
+        check_eq!(
+            short.first_denial(),
+            Some(quanta_index_core::index::WorkBudgetDenial::Deadline)
+        )?;
+        wait_for_interactive_queue(&ledger, 0)?;
+        drop(held);
+        let admitted = ReservationGuard::try_acquire(
+            ledger.scheduler(NativeResourceClass::Interactive),
+            configured.interactive,
+        )
+        .ok_or(IndexError::ResourceLimited)?;
+        drop(admitted);
+        check_eq!(ledger.snapshot()?.reserved, ResourceNeed::default())?;
+        Ok(())
+    }
+
+    #[test]
+    fn interactive_wait_rechecks_retained_memory_and_refuses_static_need() -> Result<(), IndexError>
+    {
+        let configured = capacity_for_slots(plan(), 5)?;
+        let ledger = NativeResourceLedger::new(configured)?;
+        let interactive = ledger.scheduler(NativeResourceClass::Interactive);
+        let incompatible = ResourceNeed {
+            cpu_units: configured.interactive.cpu_units.saturating_add(1),
+            ..configured.interactive
+        };
+        check_eq!(
+            interactive
+                .acquire_interactive_for_request(incompatible, &interactive_wait_budget())
+                .map(drop),
+            Err(IndexError::ResourceLimited)
+        )?;
+        wait_for_interactive_queue(&ledger, 0)?;
+
+        let retained = ledger.reserve_response_memory(1024)?;
+        let first = ReservationGuard::try_acquire(Arc::clone(&interactive), configured.interactive)
+            .ok_or(IndexError::ResourceLimited)?;
+        let (sent, received) = mpsc::channel();
+        let waiter = thread::spawn(move || -> Result<(), IndexError> {
+            let second = interactive.acquire_interactive_for_request(
+                configured.interactive,
+                &interactive_wait_budget(),
+            )?;
+            sent.send(()).map_err(|_error| {
+                IndexError::BackendViolation("retained-memory waiter receiver closed".into())
+            })?;
+            drop(second);
+            Ok(())
+        });
+        wait_for_interactive_queue(&ledger, 1)?;
+        drop(retained);
+        received
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        waiter.join().map_err(|_panic| {
+            IndexError::BackendViolation("retained-memory waiter panicked".into())
+        })??;
+        drop(first);
+        check_eq!(ledger.snapshot()?.reserved, ResourceNeed::default())?;
+        wait_for_interactive_queue(&ledger, 0)?;
+        Ok(())
     }
 
     #[test]

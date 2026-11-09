@@ -47,8 +47,9 @@ use quanta_index_retrieval_bench::record::{
 use quanta_index_retrieval_bench::schedule::QueryProtocol;
 use quanta_index_retrieval_bench::sdk::{
     DEFAULT_IO_TIMEOUT, DEFAULT_READY_TIMEOUT, DaemonConfig, DaemonSession, QueryOutcome,
-    RouteQuery, publish_and_activate, query_route_with_policy_client_observed,
-    query_route_with_policy_timed, resolve_searchd_binary, verify_searchd_digest,
+    RouteQuery, publish_and_activate_with_timeout_observer,
+    query_route_with_policy_client_observed, query_route_with_policy_timed, resolve_searchd_binary,
+    verify_searchd_digest,
 };
 use quanta_index_retrieval_bench::symbols::{
     SymbolCoveragePolicy, SymbolPreflightOptions, preflight_corpus_symbols,
@@ -71,6 +72,7 @@ fn print_help() -> BenchResult<()> {
          run: manifest -> chunks -> real searchd publish/activate -> SDK queries -> v5 record\n\
          chunk: manifest -> chunks + coverage JSON (no daemon)\n\
          trace-profile: --query-pack PATH --state-root PATH --repo-id ID --generation N --out PATH\n\
+           Optional pilot owner: --source-owner-plan PATH --source-owner-inputs PATH\n\
            Paired SDK quality replay at top_k=100 on an existing sealed generation.\n\
          preflight: --repo PATH --manifest PATH --out PATH (all-file symbol census; no daemon)\n\
          [--symbol-coverage require-complete|allow-incomplete] (default require-complete)\n\
@@ -95,6 +97,7 @@ fn print_help() -> BenchResult<()> {
          [--symbol-preflight-out PATH]\n\
          --out PATH --refusal-out PATH [--metrics-out PATH] [--diagnostics-out PATH] [--embedder potion-code|potion-code-full-v2|hash-dev]\n\
          [--request-events-out PATH] (diagnostic only; 1-2 serial lexical queries)\n\
+         [--publish-timeout-events-out PATH] (diagnostic only; observe ingest for up to 120s after a read timeout)\n\
          [--rank-study-out PATH --rank-study-max-files N --rank-study-max-pages N --rank-study-timeout-ms N] (optional post-measurement ordinary CodeSearch study)\n\
          potion-code: historical effective 512-token V1; potion-code-full-v2: no 512-token truncation, 16 KiB/text and 4 MiB/model batch admission, rebuild required\n\
          [--max-file-bytes N]\n\
@@ -830,6 +833,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "metrics-out",
             "diagnostics-out",
             "request-events-out",
+            "publish-timeout-events-out",
             "rank-study-out",
             "rank-study-max-files",
             "rank-study-max-pages",
@@ -887,9 +891,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         )));
     }
     let state_root = PathBuf::from(required(args, "state-root")?);
-    let _external_path = require_external_path(&repo, &state_root, "--state-root")?;
+    let external_state_root = require_external_path(&repo, &state_root, "--state-root")?;
     let out = PathBuf::from(required(args, "out")?);
-    let _external_path = require_external_path(&repo, &out, "--out")?;
+    let external_out = require_external_path(&repo, &out, "--out")?;
     if out.exists() {
         return Err(BenchError::Config(format!(
             "--out already exists: {}",
@@ -912,6 +916,25 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         if path.exists() {
             return Err(BenchError::Config(format!(
                 "--diagnostics-out already exists: {}",
+                path.display()
+            )));
+        }
+    }
+    let publish_timeout_events_out = args
+        .flags
+        .get("publish-timeout-events-out")
+        .map(PathBuf::from);
+    if let Some(path) = &publish_timeout_events_out {
+        let external = require_external_path(&repo, path, "--publish-timeout-events-out")?;
+        if external == external_out || external.starts_with(&external_state_root) {
+            return Err(BenchError::Config(
+                "--publish-timeout-events-out must be separate from runner output and daemon state"
+                    .into(),
+            ));
+        }
+        if path.exists() {
+            return Err(BenchError::Config(format!(
+                "--publish-timeout-events-out already exists: {}",
                 path.display()
             )));
         }
@@ -1242,10 +1265,21 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     // Boot proves the fresh index empty; readiness precedes publish.
     let session = DaemonSession::boot(&config)?;
     let boot_elapsed = boot_start.elapsed();
+    let publish_timeout_capture = publish_timeout_events_out
+        .map(|path| {
+            request_events::PublishTimeoutCapture::begin(session.state_root())
+                .map(|capture| (path, capture))
+        })
+        .transpose()?;
 
     let publish_start = Instant::now();
     let (receipt, ack, ingest_observation, sdk_timings) =
-        publish_and_activate(&session, &batch, &identity, None)?;
+        publish_and_activate_with_timeout_observer(&session, &batch, &identity, None, || {
+            match &publish_timeout_capture {
+                Some((path, capture)) => capture.write_after_timeout(path),
+                None => Ok(()),
+            }
+        })?;
     let publish_elapsed = publish_start.elapsed();
     let sdk_total_ns = sdk_timings
         .publish_ns

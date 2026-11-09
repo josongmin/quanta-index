@@ -3,8 +3,9 @@
 use super::{CoreError, RecordEdit, RunGramCount, RunPostingPage, corrupt, invalid};
 
 pub(super) const MAX_BYTES: u64 = 4 * 1024 * 1024;
-// Includes the transient decoded posting page and its wire palette/rows.
-const DECODE_SCRATCH_BYTES: usize = 4 * super::MAX_POSTING_PAGE_BYTES;
+// Keep the original conservative page-scratch reservation within the count
+// cache ceiling even though the producer now supplies its validated page.
+const PAGE_SCRATCH_RESERVE_BYTES: usize = 4 * super::MAX_POSTING_PAGE_BYTES;
 type CountRow = ([u8; 4], u64);
 
 pub(super) struct FirstPassCounts {
@@ -15,7 +16,7 @@ pub(super) struct FirstPassCounts {
 
 impl FirstPassCounts {
     pub(super) fn new(byte_limit: u64) -> Self {
-        let overhead = std::mem::size_of::<Self>() + DECODE_SCRATCH_BYTES;
+        let overhead = std::mem::size_of::<Self>() + PAGE_SCRATCH_RESERVE_BYTES;
         let limit = usize::try_from(byte_limit.min(MAX_BYTES)).unwrap_or(0);
         let capacity = limit.saturating_sub(overhead) / std::mem::size_of::<CountRow>();
         let mut rows = Vec::new();
@@ -28,14 +29,10 @@ impl FirstPassCounts {
         }
     }
 
-    fn observe(&mut self, edit: &RecordEdit) -> Result<(), CoreError> {
+    pub(super) fn observe_page(&mut self, page: &RunPostingPage) -> Result<(), CoreError> {
         let Some(rows) = self.rows.as_mut() else {
             return Ok(());
         };
-        let page = RunPostingPage::decode(&edit.bytes)?;
-        if page.key()?.as_slice() != edit.key {
-            return Err(corrupt("first-pass page key differs"));
-        }
         let key = [page.surface, page.gram[0], page.gram[1], page.gram[2]];
         let count = u64::try_from(page.rows.len()).map_err(|_| invalid("page count width"))?;
         if let Some((previous, total)) = rows.last_mut() {
@@ -101,44 +98,13 @@ impl Iterator for CountRecords {
     }
 }
 
-pub(super) struct CountingPages<'a, I> {
-    source: I,
-    counts: &'a mut FirstPassCounts,
-    failed: bool,
-}
-
-impl<'a, I> CountingPages<'a, I> {
-    pub(super) fn new(source: I, counts: &'a mut FirstPassCounts) -> Self {
-        Self {
-            source,
-            counts,
-            failed: false,
-        }
-    }
-}
-
-impl<I: Iterator<Item = Result<RecordEdit, CoreError>>> Iterator for CountingPages<'_, I> {
-    type Item = Result<RecordEdit, CoreError>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.failed {
-            return None;
-        }
-        let result = self.source.next()?.and_then(|edit| {
-            self.counts.observe(&edit)?;
-            Ok(edit)
-        });
-        self.failed = result.is_err();
-        Some(result)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::RunPostingRow;
     use super::*;
 
-    fn edit(gram: [u8; 3], id: u64) -> RecordEdit {
-        let page = RunPostingPage::new(
+    fn page(gram: [u8; 3], id: u64) -> RunPostingPage {
+        RunPostingPage::new(
             1,
             gram,
             id >> 8,
@@ -147,43 +113,30 @@ mod tests {
                 segment_sha256: [7; 32],
             }],
         )
-        .expect("page");
-        RecordEdit {
-            key: page.key().expect("key").to_vec(),
-            bytes: page.encode().expect("bytes"),
-        }
+        .expect("page")
     }
 
     #[test]
     fn bounded_count_cache_overflow_releases_acceleration_without_new_refusal() {
         let limit = u64::try_from(
             std::mem::size_of::<FirstPassCounts>()
-                + DECODE_SCRATCH_BYTES
+                + PAGE_SCRATCH_RESERVE_BYTES
                 + std::mem::size_of::<CountRow>(),
         )
         .expect("limit");
         let mut cache = FirstPassCounts::new(limit);
-        cache.observe(&edit(*b"abc", 1)).expect("first gram");
+        cache.observe_page(&page(*b"abc", 1)).expect("first gram");
         cache
-            .observe(&edit(*b"abd", 2))
+            .observe_page(&page(*b"abd", 2))
             .expect("overflow uses original path");
         assert!(cache.into_records().is_none());
         assert!(FirstPassCounts::new(0).into_records().is_none());
     }
 
     #[test]
-    fn first_pass_counts_rejects_malformed_posting_and_wrong_key() {
+    fn first_pass_counts_rejects_out_of_order_typed_pages() {
         let mut cache = FirstPassCounts::new(MAX_BYTES);
-        assert!(
-            cache
-                .observe(&RecordEdit {
-                    key: vec![0; 12],
-                    bytes: vec![255]
-                })
-                .is_err()
-        );
-        let mut wrong = edit(*b"abc", 1);
-        wrong.key[1] = b'z';
-        assert!(cache.observe(&wrong).is_err());
+        cache.observe_page(&page(*b"abd", 1)).expect("first gram");
+        assert!(cache.observe_page(&page(*b"abc", 2)).is_err());
     }
 }

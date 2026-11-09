@@ -43,6 +43,7 @@
         "sync_failures", "sync_elapsed_ns", "new_objects", "reused_objects",
         "compacted_documents", "compacted_segments", "compacted_bytes", "posting_mutations",
         "map_page_mutations", "managed_object_inputs",
+        "map_root_reuse_candidates", "map_root_reuses", "map_root_builds",
         "text_occurrence_prior_validation_attempts", "text_occurrence_next_validation_attempts",
         "text_occurrence_ram_reuses", "text_occurrence_spill_reuses",
         "text_occurrence_equal_reuses", "text_occurrence_validation_failures",
@@ -217,7 +218,8 @@
             "native_source_path_install", "native_source_map_apply",
             "retention_plan", "retention_measure",
             "closure_read", "closure_hash", "closure_decode", "sqlite_work",
-            "physical_inode_census", "managed_object_reserve", "managed_object_confirm", "managed_object_install",
+            "physical_inode_census", "managed_object_reserve", "managed_object_confirm", "managed_object_install", "managed_object_advance",
+            "map_apply",
             "native_publish", "file_publish", "lexical_seal",
             "lexical_proof", "compaction",
             "query_parse", "query_plan", "query_read_view",
@@ -355,7 +357,9 @@
         "span_id": { "$ref": "#/$defs/spanId" },
         "phase": { "enum": [
           "child_validation", "namespace_and_create", "write", "file_sync",
-          "publish_and_retire", "directory_sync", "barrier", "settlement", "existing"
+          "publish_and_retire", "directory_sync", "barrier", "settlement", "existing",
+          "namespace_validation", "writer_create", "writer_ticket_prepare", "writer_open",
+          "writer_created_witness"
         ] },
         "calls": { "type": "integer", "minimum": 1, "maximum": 18446744073709551615 },
         "elapsed_sum_ns": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
@@ -377,11 +381,11 @@
             "coverage_orphan_directory", "history_layout_directory", "atomic_file",
             "atomic_parent", "atomic_at_file", "atomic_at_parent", "sealed_leftover_directory",
             "pool_new_directory_full", "pool_new_parent_full", "pool_adoption_full_barrier",
-            "pool_new_directory_posix", "pool_new_parent_posix",
             "pool_data_file_posix", "pool_object_file_full", "pool_control_file_full",
             "pool_data_shard_posix", "pool_object_shard_full", "pool_control_parent_full",
             "pool_reused_file_posix", "pool_reused_shard_posix", "pool_adoption_journal_full",
-            "pool_sync_all", "state_sync_all"
+            "pool_sync_all", "state_sync_all",
+            "pool_new_directory_posix", "pool_new_parent_posix"
           ]
         },
         "calls": { "type": "integer", "minimum": 0 },

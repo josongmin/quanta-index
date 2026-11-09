@@ -75,7 +75,7 @@ impl PublicationFileDeletions {
     /// Execute or reconcile one authenticated unlink. A failed started ticket
     /// remains in this slot and a retry never issues a second unlink syscall.
     pub fn delete_file_and_sync(&self, path: &Path) -> Result<(), CoreError> {
-        self.delete_matching_file_and_sync(path, None)
+        self.delete_matching_file_and_sync(path, None, false)
     }
 
     /// Remove only the committed output identified by the caller's owned FD.
@@ -86,7 +86,18 @@ impl PublicationFileDeletions {
         inode: InodeKey,
         bytes: u64,
     ) -> Result<(), CoreError> {
-        self.delete_matching_file_and_sync(path, Some((inode, bytes)))
+        self.delete_matching_file_and_sync(path, Some((inode, bytes)), false)
+    }
+
+    /// Delete a committed Sidecar only through its current private parent.
+    /// The original owned-inode witness and pending ticket survive a refusal.
+    pub(crate) fn delete_sidecar_owned_file_and_sync(
+        &self,
+        path: &Path,
+        inode: InodeKey,
+        bytes: u64,
+    ) -> Result<(), CoreError> {
+        self.delete_matching_file_and_sync(path, Some((inode, bytes)), true)
     }
 
     /// Reconcile the retained ticket even when its pathname is already absent
@@ -110,7 +121,7 @@ impl PublicationFileDeletions {
             match self.binder.recover_retired_control_create(&target)? {
                 ControlCreateRecovery::RetainedTarget | ControlCreateRecovery::Absent => {}
                 ControlCreateRecovery::RetainedTemporary { path, inode, bytes } => {
-                    self.delete_matching_locked(&path, Some((inode, bytes)), &mut pending)?;
+                    self.delete_matching_locked(&path, Some((inode, bytes)), false, &mut pending)?;
                 }
             }
         }
@@ -177,16 +188,18 @@ impl PublicationFileDeletions {
         &self,
         path: &Path,
         expected: Option<(InodeKey, u64)>,
+        sidecar_private_parent: bool,
     ) -> Result<(), CoreError> {
         let path = self.canonical_path(path)?;
         let mut pending = self.lock_pending()?;
-        self.delete_matching_locked(&path, expected, &mut pending)
+        self.delete_matching_locked(&path, expected, sidecar_private_parent, &mut pending)
     }
 
     fn delete_matching_locked(
         &self,
         path: &Path,
         expected: Option<(InodeKey, u64)>,
+        sidecar_private_parent: bool,
         pending: &mut Option<PendingOperation>,
     ) -> Result<(), CoreError> {
         let path = self.canonical_path(path)?;
@@ -199,11 +212,18 @@ impl PublicationFileDeletions {
             }) {
                 return Err(contract("pending deletion belongs to another output"));
             }
+            if sidecar_private_parent != prior.ticket.has_sidecar_private_parent() {
+                return Err(contract("pending deletion belongs to another parent policy"));
+            }
             self.reconcile_pending(pending)
         } else if pending.is_some() {
             Err(busy(pending.as_ref()))
         } else {
-            let ticket = self.binder.begin_delete(&path)?;
+            let ticket = if sidecar_private_parent {
+                self.binder.begin_sidecar_delete(&path)?
+            } else {
+                self.binder.begin_delete(&path)?
+            };
             let (source, parent) = ticket.source_metadata()?;
             let observed = InodeObservation {
                 inode: InodeKey {

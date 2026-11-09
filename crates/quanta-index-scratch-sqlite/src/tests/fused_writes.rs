@@ -71,6 +71,12 @@ fn sixty_four_rows_use_one_sql_run_and_keep_original_row_and_query_funding()
             .collect::<Vec<_>>()
             .join(",")
     );
+    // Per row: 8-byte partition, 2-byte key, 64-byte overhead, plus
+    // alternating NULL/object and NULL/maximum inline wire values.
+    check_eq!(
+        budget.usage().bytes,
+        4096 + u64::try_from(query.len())? + 64 * 189
+    );
     let prepared = db.prepare_cached(&query).map_err(|error| sql(&error))?;
     check_eq!(prepared.get_status(StatementStatus::Run), 1);
     drop(prepared);

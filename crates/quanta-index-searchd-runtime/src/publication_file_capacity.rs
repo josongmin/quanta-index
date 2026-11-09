@@ -23,6 +23,7 @@ use quanta_index_core::publication_capacity::{
 };
 use quanta_index_core::{
     CoreError, DiagnosticContextV1, DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1,
+    index::ObjectWriteSyncDirectories,
 };
 use quanta_index_searchd::app::runtime::{StateRootDirectoryV1, StateRootLease};
 use rusqlite::ffi::quanta_capacity_vfs::close_owned_file;
@@ -39,7 +40,11 @@ fn storage_io(context: &str, error: impl Into<std::io::Error>) -> CoreError {
     let error = error.into();
     CoreError::storage_io(&format!("publication file capacity {context}"), &error)
 }
-fn append_failure(mut primary: CoreError, context: &str, secondary: &CoreError) -> CoreError {
+pub(super) fn append_failure(
+    mut primary: CoreError,
+    context: &str,
+    secondary: &CoreError,
+) -> CoreError {
     let message = match &mut primary {
         CoreError::InvalidContract(message)
         | CoreError::NotReady(message)
@@ -79,6 +84,30 @@ fn path_error(context: &str, error: rustix::io::Errno, missing: MissingDispositi
 }
 fn contract(message: &str) -> CoreError {
     CoreError::InvalidContract(format!("publication file capacity: {message}"))
+}
+fn private_parent_identity_is_secure(
+    metadata: &std::fs::Metadata,
+    root_device: Option<u64>,
+) -> bool {
+    metadata.is_dir()
+        && metadata.uid() == rustix::process::getuid().as_raw()
+        && metadata.mode() & 0o022 == 0
+        && root_device.is_none_or(|device| metadata.dev() == device)
+}
+fn require_synced_directory(file: &File, expected: InodeKey, role: &str) -> Result<(), CoreError> {
+    let metadata = file
+        .metadata()
+        .map_err(|error| storage_io("stat synced object directory", error))?;
+    let actual = InodeKey {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    };
+    if !private_parent_identity_is_secure(&metadata, None) || actual != expected {
+        return Err(contract(&format!(
+            "fsynced {role} differs from live directory"
+        )));
+    }
+    Ok(())
 }
 fn capacity(message: &str) -> CoreError {
     CoreError::Typed {
@@ -215,6 +244,100 @@ impl HeldPath {
     }
 }
 impl Anchor {
+    fn require_same_parent(&self, current: &Anchor) -> Result<(), CoreError> {
+        let actual = current
+            .parent
+            .metadata()
+            .map_err(|error| storage_io("stat current mutation parent", error))?;
+        self.require_same_parent_with_current_inode(
+            current,
+            InodeKey {
+                device: actual.dev(),
+                inode: actual.ino(),
+            },
+        )
+    }
+
+    fn require_same_parent_with_current_inode(
+        &self,
+        current: &Anchor,
+        current_inode: InodeKey,
+    ) -> Result<(), CoreError> {
+        let held = self
+            .parent
+            .metadata()
+            .map_err(|error| storage_io("stat held mutation parent", error))?;
+        if self.relative != current.relative
+            || self.name != current.name
+            || held.dev() != current_inode.device
+            || held.ino() != current_inode.inode
+        {
+            return Err(contract("mutation parent incarnation changed"));
+        }
+        Ok(())
+    }
+
+    fn require_current_parent(&self, binder: &PublicationFileCapacity) -> Result<(), CoreError> {
+        self.require_current_parent_observing(binder, None, None)
+    }
+
+    fn require_current_sidecar_private_parent(
+        &self,
+        binder: &PublicationFileCapacity,
+    ) -> Result<(), CoreError> {
+        let current = binder.sidecar_private_anchor_relative(&self.relative)?;
+        let checked = self.require_same_parent(&current);
+        let close = close_owned_file(current.parent).map_err(|error| {
+            binder.mark_close_unwitnessed();
+            storage_io("close current Sidecar private parent observer", error)
+        });
+        match (checked, close) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(primary), Ok(())) | (Ok(()), Err(primary)) => Err(primary),
+            (Err(primary), Err(close)) => {
+                Err(append_failure(primary, "parent retirement", &close))
+            }
+        }
+    }
+
+    fn require_current_parent_observing(
+        &self,
+        binder: &PublicationFileCapacity,
+        expected: Option<InodeObservation>,
+        directories: Option<ObjectWriteSyncDirectories>,
+    ) -> Result<(), CoreError> {
+        let current = binder.anchor_with_directory_witness(
+            &self.relative,
+            MissingDisposition::Storage,
+            directories,
+        )?;
+        let checked = (|| {
+            if let Some(directories) = directories {
+                // The live walk just authenticated this shard identity.
+                self.require_same_parent_with_current_inode(&current, directories.shard)?;
+            } else {
+                self.require_same_parent(&current)?;
+            }
+            if let Some(observed) = expected
+                && current.stat()? != Some(observed)
+            {
+                return Err(contract("settled FD and current pathname differ"));
+            }
+            Ok(())
+        })();
+        let close = close_owned_file(current.parent).map_err(|error| {
+            binder.mark_close_unwitnessed();
+            storage_io("close current mutation parent observer", error)
+        });
+        match (checked, close) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(primary), Ok(())) | (Ok(()), Err(primary)) => Err(primary),
+            (Err(primary), Err(close)) => {
+                Err(append_failure(primary, "parent retirement", &close))
+            }
+        }
+    }
+
     fn stat(&self) -> Result<Option<InodeObservation>, CoreError> {
         match statat(
             &self.parent,
@@ -978,19 +1101,14 @@ impl PublicationFileCapacity {
     ) -> Result<Arc<PublicationAllowance>, CoreError> {
         self.reserve_publication_allowance(max_bytes, 1)
     }
-    /// Create only missing ancestors below the held private root. Directory
-    /// blocks are outside the regular-file byte/slot contract; every created
-    /// directory and its parent are synchronized before a child publication.
-    pub fn ensure_private_parent_directories(&self, path: &Path) -> Result<(), CoreError> {
-        self.shared.root.require_current_v1()?;
-        let relative = self.relative(path)?;
-        let namespace_guard = lock(&self.shared.state)?;
-        require_publication_open(&namespace_guard)?;
-        if directory_scope_busy(&namespace_guard, &relative) {
-            return Err(capacity(
-                "parent directory namespace is being moved or deleted",
-            ));
-        }
+    /// Traverse and create private parents while the caller holds the
+    /// namespace mutex. Sidecar paths require every ancestor to remain on
+    /// the protected root's device; other ensure callers retain their policy.
+    fn private_parent_anchor_locked(
+        &self,
+        relative: &Path,
+        require_same_device: bool,
+    ) -> Result<Anchor, CoreError> {
         let mut parent = File::from(
             self.shared
                 .root
@@ -998,14 +1116,26 @@ impl PublicationFileCapacity {
                 .try_clone_to_owned()
                 .map_err(|error| storage_io("clone root directory FD", error))?,
         );
+        let root_device = if require_same_device {
+            Some(
+                parent
+                    .metadata()
+                    .map_err(|error| storage_io("fstat private root", error))?
+                    .dev(),
+            )
+        } else {
+            None
+        };
         let mut parts = relative.components().peekable();
+        let mut leaf_name = None;
         while let Some(component) = parts.next() {
-            if parts.peek().is_none() {
-                break;
-            }
             let Component::Normal(name) = component else {
                 return Err(contract("invalid directory component"));
             };
+            if parts.peek().is_none() {
+                leaf_name = Some(name.to_os_string());
+                break;
+            }
             let child_name = Path::new(name);
             let mut created = false;
             let child = match openat(
@@ -1036,12 +1166,9 @@ impl PublicationFileCapacity {
             let metadata = child
                 .metadata()
                 .map_err(|error| storage_io("fstat private parent", error))?;
-            if !metadata.is_dir()
-                || metadata.uid() != rustix::process::getuid().as_raw()
-                || metadata.mode() & 0o022 != 0
-            {
+            if !private_parent_identity_is_secure(&metadata, root_device) {
                 return Err(contract(
-                    "private parent directory has insecure identity or mode",
+                    "private parent directory has insecure identity, mode or device",
                 ));
             }
             if created {
@@ -1054,6 +1181,92 @@ impl PublicationFileCapacity {
             }
             parent = child;
         }
+        Ok(Anchor {
+            shared: Arc::clone(&self.shared),
+            parent,
+            name: leaf_name.ok_or_else(|| contract("missing basename"))?,
+            relative: relative.to_owned(),
+        })
+    }
+
+    /// Hot-path claim witness. An absent parent selects the unchanged
+    /// create-and-reopen protocol; this walk never creates a directory.
+    fn existing_private_parent_anchor_locked(
+        &self,
+        relative: &Path,
+    ) -> Result<Option<Anchor>, CoreError> {
+        let mut parent = File::from(
+            self.shared
+                .root
+                .as_fd()
+                .try_clone_to_owned()
+                .map_err(|error| storage_io("clone root directory FD", error))?,
+        );
+        let root_device = parent
+            .metadata()
+            .map_err(|error| storage_io("fstat private root", error))?
+            .dev();
+        let mut parts = relative.components().peekable();
+        let mut leaf_name = None;
+        while let Some(component) = parts.next() {
+            let Component::Normal(name) = component else {
+                return Err(contract("invalid directory component"));
+            };
+            if parts.peek().is_none() {
+                leaf_name = Some(name.to_os_string());
+                break;
+            }
+            let child = match openat(
+                &parent,
+                Path::new(name),
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::DIRECTORY,
+                Mode::empty(),
+            ) {
+                Ok(opened) => File::from(opened),
+                Err(rustix::io::Errno::NOENT) => return Ok(None),
+                Err(error) => return Err(storage_io("open private parent", error)),
+            };
+            let metadata = child
+                .metadata()
+                .map_err(|error| storage_io("fstat private parent", error))?;
+            if !private_parent_identity_is_secure(&metadata, Some(root_device)) {
+                return Err(contract(
+                    "private parent directory has insecure identity, mode or device",
+                ));
+            }
+            parent = child;
+        }
+        Ok(Some(Anchor {
+            shared: Arc::clone(&self.shared),
+            parent,
+            name: leaf_name.ok_or_else(|| contract("missing basename"))?,
+            relative: relative.to_owned(),
+        }))
+    }
+
+    fn sidecar_private_anchor_relative(&self, relative: &Path) -> Result<Anchor, CoreError> {
+        self.shared.root.require_current_v1()?;
+        let anchor = self
+            .existing_private_parent_anchor_locked(relative)?
+            .ok_or_else(|| contract("Sidecar private parent is absent"))?;
+        self.shared.root.require_current_v1()?;
+        Ok(anchor)
+    }
+
+    /// Create only missing ancestors below the held private root. Directory
+    /// blocks are outside the regular-file byte/slot contract; every created
+    /// directory and its parent are synchronized before a child publication.
+    pub fn ensure_private_parent_directories(&self, path: &Path) -> Result<(), CoreError> {
+        self.shared.root.require_current_v1()?;
+        let relative = self.relative(path)?;
+        let namespace_guard = lock(&self.shared.state)?;
+        require_publication_open(&namespace_guard)?;
+        if directory_scope_busy(&namespace_guard, &relative) {
+            return Err(capacity(
+                "parent directory namespace is being moved or deleted",
+            ));
+        }
+        let _anchor = self.private_parent_anchor_locked(&relative, false)?;
         self.shared.root.require_current_v1()?;
         // Hold the namespace mutex through all parent creation and fsyncs.
         drop(namespace_guard);
@@ -1262,8 +1475,24 @@ impl PublicationFileCapacity {
         path: &Path,
         missing: MissingDisposition,
     ) -> Result<Anchor, CoreError> {
+        self.anchor_with_directory_witness(path, missing, None)
+    }
+    fn anchor_with_directory_witness(
+        &self,
+        path: &Path,
+        missing: MissingDisposition,
+        directories: Option<ObjectWriteSyncDirectories>,
+    ) -> Result<Anchor, CoreError> {
         self.shared.root.require_current_v1()?;
         let relative = self.relative(path)?;
+        if directories.is_some()
+            && relative
+                .parent()
+                .and_then(Path::parent)
+                .is_none_or(|path| path.as_os_str().is_empty())
+        {
+            return Err(contract("objects directory must be below the private root"));
+        }
         let mut components = relative.components();
         let mut parent = File::from(
             self.shared
@@ -1288,7 +1517,14 @@ impl PublicationFileCapacity {
                 Mode::empty(),
             )
             .map_err(|error| path_error("open parent nofollow", error, missing))?;
-            parent = File::from(child);
+            let child = File::from(child);
+            if let Some(directories) = directories
+                && components.as_path().parent() == Some(Path::new(""))
+            {
+                require_synced_directory(&parent, directories.objects, "objects ancestor")?;
+                require_synced_directory(&child, directories.shard, "object shard")?;
+            }
+            parent = child;
         }
         self.shared.root.require_current_v1()?;
         Ok(Anchor {
@@ -1298,6 +1534,66 @@ impl PublicationFileCapacity {
             relative,
         })
     }
+    fn claim_anchor_locked(
+        &self,
+        state: &mut Tracking,
+        relative: &Path,
+        supplied: bool,
+        operation: &'static str,
+    ) -> Result<(), CoreError> {
+        require_publication_open(state)?;
+        if state.paths_busy.contains(relative)
+            || state.opening_readers.contains_key(relative)
+            || directory_scope_busy(state, relative)
+        {
+            trace_claim_path_busy(state, relative, operation);
+            return Err(capacity("path has an in-flight operation or reader open"));
+        }
+        if state.paths_busy.len() >= self.shared.max_tracked_entries {
+            return Err(capacity("tracked path ceiling exceeded"));
+        }
+        if !supplied {
+            self.refresh_maintenance_reserve_locked(state)?;
+        }
+        if !state.paths_busy.insert(relative.to_owned()) {
+            return Err(contract("claimed path was already busy"));
+        }
+        Ok(())
+    }
+
+    fn claim_private_parent_path(
+        &self,
+        path: &Path,
+        allowance: Arc<PublicationAllowance>,
+        operation: &'static str,
+        create_missing: bool,
+    ) -> Result<Option<(Anchor, Arc<PublicationAllowance>)>, CoreError> {
+        self.validate_held_allowance_accounting(&allowance)?;
+        self.shared.root.require_current_v1()?;
+        let relative = self.relative(path)?;
+        let mut state = lock(&self.shared.state)?;
+        require_publication_open(&state)?;
+        // Preserve the early directory-move refusal from the old ensure step.
+        if directory_scope_busy(&state, &relative) {
+            return Err(capacity(
+                "parent directory namespace is being moved or deleted",
+            ));
+        }
+        let anchor = if create_missing {
+            Some(self.private_parent_anchor_locked(&relative, true)?)
+        } else {
+            self.existing_private_parent_anchor_locked(&relative)?
+        };
+        let Some(anchor) = anchor else {
+            self.shared.root.require_current_v1()?;
+            return Ok(None);
+        };
+        self.shared.root.require_current_v1()?;
+        self.claim_anchor_locked(&mut state, &relative, true, operation)?;
+        drop(state);
+        Ok(Some((anchor, allowance)))
+    }
+
     fn claim_path(
         &self,
         path: &Path,
@@ -1310,23 +1606,12 @@ impl PublicationFileCapacity {
         let anchor = self.anchor(path)?;
         {
             let mut state = lock(&self.shared.state)?;
-            require_publication_open(&state)?;
-            if state.paths_busy.contains(&anchor.relative)
-                || state.opening_readers.contains_key(&anchor.relative)
-                || directory_scope_busy(&state, &anchor.relative)
-            {
-                trace_claim_path_busy(&state, &anchor.relative, operation);
-                return Err(capacity("path has an in-flight operation or reader open"));
-            }
-            if state.paths_busy.len() >= self.shared.max_tracked_entries {
-                return Err(capacity("tracked path ceiling exceeded"));
-            }
-            if supplied.is_none() {
-                self.refresh_maintenance_reserve_locked(&state)?;
-            }
-            if !state.paths_busy.insert(anchor.relative.clone()) {
-                return Err(contract("claimed path was already busy"));
-            }
+            self.claim_anchor_locked(
+                &mut state,
+                &anchor.relative,
+                supplied.is_some(),
+                operation,
+            )?;
         }
         let allocation = supplied.map_or_else(
             || {
@@ -1839,7 +2124,7 @@ impl PublicationFileCapacity {
         self.begin_create_with_bound(final_path, 1, CreatePolicy::SafeReplace, None, None)
     }
     /// Claim the current namespace once, then reject an existing target before
-    /// reserving an inode slot or output. `None` means that target already exists.
+    /// reserving an inode slot or the full output bound. `None` means the target exists.
     ///
     /// Path-busy and zero-allowance admission precede the target observation,
     /// so either may refuse before an existing-target conflict is reported.
@@ -1847,8 +2132,16 @@ impl PublicationFileCapacity {
     pub(crate) fn begin_create_if_absent(
         &self,
         final_path: &Path,
+        max_bytes: u64,
     ) -> Result<Option<FileMutation>, CoreError> {
-        self.try_begin_create_with_bound(final_path, 1, CreatePolicy::SafeIfAbsent, None, None)
+        self.try_begin_create_with_bound(
+            final_path,
+            max_bytes,
+            CreatePolicy::SafeIfAbsent,
+            None,
+            None,
+            false,
+        )
     }
     pub fn begin_native_create(&self, final_path: &Path) -> Result<FileMutation, CoreError> {
         self.begin_create_with_bound(final_path, 1, CreatePolicy::NativeIfAbsent, None, None)
@@ -1922,6 +2215,29 @@ impl PublicationFileCapacity {
             Some(ticket),
         )
     }
+    /// Use one checked parent walk when every private ancestor already
+    /// exists. A missing ancestor follows the original create-and-reopen
+    /// protocol with the same still-unstarted child ticket.
+    pub(crate) fn begin_create_with_reserved_output_in_private_parent(
+        &self,
+        final_path: &Path,
+        max_bytes: u64,
+        allowance: Arc<PublicationAllowance>,
+        ticket: &mut Option<OutputTicket>,
+    ) -> Result<FileMutation, CoreError> {
+        if ticket.is_none() {
+            return Err(contract("private parent output lacks reserved ticket"));
+        }
+        self.try_begin_create_with_bound_borrowed(
+            final_path,
+            max_bytes,
+            CreatePolicy::SafeReplace,
+            Some(allowance),
+            ticket,
+            true,
+        )?
+        .ok_or_else(|| contract("private parent create unexpectedly refused replacement"))
+    }
     fn begin_create_with_bound(
         &self,
         final_path: &Path,
@@ -1930,7 +2246,7 @@ impl PublicationFileCapacity {
         supplied: Option<Arc<PublicationAllowance>>,
         reserved_ticket: Option<OutputTicket>,
     ) -> Result<FileMutation, CoreError> {
-        self.try_begin_create_with_bound(final_path, bound, policy, supplied, reserved_ticket)?
+        self.try_begin_create_with_bound(final_path, bound, policy, supplied, reserved_ticket, false)?
             .ok_or_else(|| match policy {
                 CreatePolicy::NativeIfAbsent => existing_target("native create"),
                 CreatePolicy::SafeReplace | CreatePolicy::SafeIfAbsent => {
@@ -1944,7 +2260,27 @@ impl PublicationFileCapacity {
         bound: u64,
         policy: CreatePolicy,
         supplied: Option<Arc<PublicationAllowance>>,
-        mut reserved_ticket: Option<OutputTicket>,
+        reserved_ticket: Option<OutputTicket>,
+        private_parent: bool,
+    ) -> Result<Option<FileMutation>, CoreError> {
+        let mut reserved_ticket = reserved_ticket;
+        self.try_begin_create_with_bound_borrowed(
+            final_path,
+            bound,
+            policy,
+            supplied,
+            &mut reserved_ticket,
+            private_parent,
+        )
+    }
+    fn try_begin_create_with_bound_borrowed(
+        &self,
+        final_path: &Path,
+        bound: u64,
+        policy: CreatePolicy,
+        supplied: Option<Arc<PublicationAllowance>>,
+        reserved_ticket: &mut Option<OutputTicket>,
+        private_parent: bool,
     ) -> Result<Option<FileMutation>, CoreError> {
         if bound == 0 {
             return Err(contract("creation bound must be positive"));
@@ -1962,7 +2298,19 @@ impl PublicationFileCapacity {
             CreatePolicy::SafeIfAbsent => "safe_create_if_absent",
             CreatePolicy::NativeIfAbsent => "native_create",
         };
-        let (anchor, allowance) = self.claim_path(final_path, supplied, operation)?;
+        let (anchor, allowance) = if private_parent {
+            let held = supplied
+                .as_ref()
+                .ok_or_else(|| contract("private parent output requires supplied allowance"))?;
+            match self.claim_private_parent_path(final_path, Arc::clone(held), operation, false)? {
+                Some(claim) => claim,
+                None => self
+                    .claim_private_parent_path(final_path, Arc::clone(held), operation, true)?
+                    .ok_or_else(|| contract("private parent creation lost its claim"))?,
+            }
+        } else {
+            self.claim_path(final_path, supplied, operation)?
+        };
         let relative = anchor.relative.clone();
         let mut claimed_inode = None;
         let mut reserved_new = false;
@@ -1996,10 +2344,29 @@ impl PublicationFileCapacity {
             if !supplied_funding {
                 allowance.top_up(bound, 1)?;
             }
-            let ticket = if let Some(ticket) = reserved_ticket.take() {
-                ticket
+            let local_ticket = if reserved_ticket.is_some() {
+                None
             } else {
-                allowance.reserve_output(bound)?
+                Some(allowance.reserve_output(bound)?)
+            };
+            let replaced_old = match replaced_old_meta {
+                Some((retained, observed)) => Some((
+                    old_file_on_error
+                        .take()
+                        .ok_or_else(|| contract("replacement FD disappeared"))?,
+                    retained,
+                    observed,
+                )),
+                None => None,
+            };
+            // Every fallible precreate step precedes taking a borrowed child.
+            // A parent-walk or claim refusal leaves Sidecar's unstarted ticket
+            // available for a corrected bind attempt.
+            let ticket = match local_ticket {
+                Some(ticket) => ticket,
+                None => reserved_ticket
+                    .take()
+                    .ok_or_else(|| contract("reserved output ticket disappeared"))?,
             };
             Ok(Some(FileMutation {
                 binder: self.clone(),
@@ -2016,17 +2383,10 @@ impl PublicationFileCapacity {
                 observed: None,
                 pin: None,
                 declared_temp: None,
+                declared_temp_same_parent: false,
+                sidecar_private_parent: private_parent,
                 control_create: None,
-                replaced_old: match replaced_old_meta {
-                    Some((retained, observed)) => Some((
-                        old_file_on_error
-                            .take()
-                            .ok_or_else(|| contract("replacement FD disappeared"))?,
-                        retained,
-                        observed,
-                    )),
-                    None => None,
-                },
+                replaced_old,
                 busy_inode: claimed_inode,
                 phase: MutationPhase::Reserved,
                 mode: if matches!(policy, CreatePolicy::NativeIfAbsent) {
@@ -2159,6 +2519,8 @@ impl PublicationFileCapacity {
                 replaced_old: None,
                 busy_inode: claimed_inode,
                 declared_temp: None,
+                declared_temp_same_parent: false,
+                sidecar_private_parent: false,
                 control_create: None,
                 phase: MutationPhase::Reserved,
                 mode: MutationMode::Safe,
@@ -2268,6 +2630,8 @@ impl PublicationFileCapacity {
                 replaced_old: None,
                 busy_inode: claimed_inode,
                 declared_temp: None,
+                declared_temp_same_parent: false,
+                sidecar_private_parent: false,
                 control_create: None,
                 phase: MutationPhase::Reserved,
                 mode: MutationMode::Native,
@@ -3261,6 +3625,8 @@ pub struct FileMutation {
     replaced_old: Option<(File, RetainedId, InodeObservation)>,
     busy_inode: Option<InodeKey>,
     declared_temp: Option<Anchor>,
+    declared_temp_same_parent: bool,
+    sidecar_private_parent: bool,
     control_create: Option<(Arc<HeldPath>, Arc<HeldPath>)>,
     phase: MutationPhase,
     mode: MutationMode,
@@ -3270,6 +3636,26 @@ pub struct FileMutation {
     reserved_inode_slot: bool,
 }
 impl FileMutation {
+    /// Return a Sidecar child that has not crossed the physical create
+    /// boundary. Drop still retires this mutation's path and inode claims.
+    pub(crate) fn reclaim_unstarted_create_ticket(&mut self) -> Result<OutputTicket, CoreError> {
+        if self.phase != MutationPhase::Reserved
+            || self.observed.is_some()
+            || self.pin.is_some()
+            || self.external_writer_live
+            || self.safe_writer_fd.is_some()
+        {
+            return Err(contract("reserved output cannot be reclaimed after create"));
+        }
+        match self.ticket.take() {
+            Some(MutationTicket::Create(ticket)) => Ok(ticket),
+            other => {
+                self.ticket = other;
+                Err(contract("reserved output lacks creation ticket"))
+            }
+        }
+    }
+
     /// Transfer the owned FD pin into a lifetime guard after settlement.
     pub fn take_owned_lease(&mut self) -> Result<ReaderLease, CoreError> {
         if !self.is_settled() || self.external_writer_live {
@@ -3297,6 +3683,18 @@ impl FileMutation {
         // actual FD is closed and the new inode has a tracked reader lease.
         self.binder.sweep_retired()?;
         Ok(lease)
+    }
+
+    /// A Sidecar cannot retry the lease transfer after consuming its writer.
+    /// Retire the remaining pin on refusal so the settled inode can be reopened.
+    pub(crate) fn take_sidecar_owned_lease(&mut self) -> Result<ReaderLease, CoreError> {
+        match self.take_owned_lease() {
+            Err(primary) if self.pin.is_some() => match self.confirmed_safe_pin_retired() {
+                Ok(()) => Err(primary),
+                Err(close) => Err(append_failure(primary, "settled pin retirement", &close)),
+            },
+            result => result,
+        }
     }
     #[must_use]
     pub fn is_settled(&self) -> bool {
@@ -3583,6 +3981,62 @@ impl FileMutation {
             ));
         }
         self.declared_temp = Some(temp);
+        self.declared_temp_same_parent = false;
+        Ok(())
+    }
+    /// A Sidecar bind has just claimed this final parent. Keep a distinct FD
+    /// for the temp witness without walking the same private ancestors again.
+    pub(crate) fn declare_temp_path_from_claimed_parent(
+        &mut self,
+        temp_path: &Path,
+    ) -> Result<(), CoreError> {
+        if !matches!(self.ticket, Some(MutationTicket::Create(_)))
+            || self.control_create.is_some()
+            || self.phase != MutationPhase::Reserved
+            || self.declared_temp.is_some()
+        {
+            return Err(contract("temp path requires creation ticket"));
+        }
+        self.binder.shared.root.require_current_v1()?;
+        let relative = self.binder.relative(temp_path)?;
+        if relative.parent() != self.anchor.relative.parent() {
+            return self.declare_temp_path(temp_path);
+        }
+        let name = relative
+            .file_name()
+            .ok_or_else(|| contract("temp basename absent"))?
+            .to_os_string();
+        let temp = Anchor {
+            shared: Arc::clone(&self.anchor.shared),
+            parent: self
+                .anchor
+                .parent
+                .try_clone()
+                .map_err(|error| storage_io("clone claimed temp parent", error))?,
+            name,
+            relative,
+        };
+        let checked = (|| {
+            if temp.relative == self.anchor.relative || temp.stat()?.is_some() {
+                return Err(contract(
+                    "temp path collides with final path or existing entry",
+                ));
+            }
+            self.binder.shared.root.require_current_v1()
+        })();
+        if let Err(primary) = checked {
+            let close = close_owned_file(temp.parent).map_err(|error| {
+                self.binder.mark_close_unwitnessed();
+                storage_io("close rejected temp parent", error)
+            });
+            return match close {
+                Ok(()) => Err(primary),
+                Err(error) => Err(append_failure(primary, "temp parent retirement", &error)),
+            };
+        }
+        self.declared_temp = Some(temp);
+        // This FD was cloned from the final anchor's parent in this method.
+        self.declared_temp_same_parent = true;
         Ok(())
     }
     /// Select an exact private pathname before the caller's `O_EXCL` create.
@@ -3603,6 +4057,18 @@ impl FileMutation {
         Ok(path)
     }
     pub fn created(&mut self, file: &File, temp_path: &Path) -> Result<(), CoreError> {
+        self.created_with_declared_temp(file, Some(temp_path))
+    }
+
+    pub(crate) fn created_declared_temp(&mut self, file: &File) -> Result<(), CoreError> {
+        self.created_with_declared_temp(file, None)
+    }
+
+    fn created_with_declared_temp(
+        &mut self,
+        file: &File,
+        temp_path: Option<&Path>,
+    ) -> Result<(), CoreError> {
         if !self.is_started() {
             return Err(contract("creation has not started"));
         }
@@ -3616,7 +4082,9 @@ impl FileMutation {
             .declared_temp
             .as_ref()
             .ok_or_else(|| contract("temp path was not declared before create"))?;
-        if self.binder.relative(temp_path)? != temp.relative {
+        if let Some(temp_path) = temp_path
+            && self.binder.relative(temp_path)? != temp.relative
+        {
             return Err(contract("created temp path differs from declaration"));
         }
         let observed = InodeObservation::from_file(file)?;
@@ -3631,6 +4099,212 @@ impl FileMutation {
         self.safe_writer_fd = Some(file.as_raw_fd());
         self.external_writer_live = true;
         Ok(())
+    }
+
+    /// Check both bound parents before a Sidecar starts consuming its output ticket.
+    pub(crate) fn start_sidecar_declared_temp(&mut self) -> Result<(), CoreError> {
+        if self.is_native()
+            || self.is_started()
+            || !matches!(self.ticket, Some(MutationTicket::Create(_)))
+        {
+            return Err(contract("declared temporary is not reserved"));
+        }
+        self.require_declared_parents_current()?;
+        self.creation_started()
+    }
+
+    /// A Sidecar stages and publishes on the same device as its claimed target.
+    pub(crate) fn require_sidecar_staging_device(&self) -> Result<(), CoreError> {
+        let temp = self
+            .declared_temp
+            .as_ref()
+            .ok_or_else(|| contract("declared temporary is absent"))?;
+        if self.declared_temp_same_parent {
+            return Ok(());
+        }
+        let staging_device = temp
+            .parent
+            .metadata()
+            .map_err(|error| storage_io("stat Sidecar staging parent", error))?
+            .dev();
+        let target_device = self
+            .anchor
+            .parent
+            .metadata()
+            .map_err(|error| storage_io("stat Sidecar target parent", error))?
+            .dev();
+        if staging_device != target_device {
+            return Err(contract("Sidecar staging and target parents differ by device"));
+        }
+        Ok(())
+    }
+
+    fn require_declared_parents_current(&self) -> Result<(), CoreError> {
+        let temp = self
+            .declared_temp
+            .as_ref()
+            .ok_or_else(|| contract("declared temporary is absent"))?;
+        if self.sidecar_private_parent {
+            self.anchor
+                .require_current_sidecar_private_parent(&self.binder)?;
+        } else {
+            self.anchor.require_current_parent(&self.binder)?;
+        }
+        if self.declared_temp_same_parent {
+            if temp.relative.parent() != self.anchor.relative.parent() {
+                return Err(contract("cloned temporary parent path changed"));
+            }
+            return Ok(());
+        }
+        if self.sidecar_private_parent {
+            temp.require_current_sidecar_private_parent(&self.binder)
+        } else {
+            temp.require_current_parent(&self.binder)
+        }
+    }
+
+    pub(crate) fn require_sidecar_private_parents_current(&self) -> Result<(), CoreError> {
+        if !self.sidecar_private_parent {
+            return Err(contract("mutation lacks Sidecar private-parent policy"));
+        }
+        self.require_declared_parents_current()
+    }
+
+    /// Keep a native object birth under the same held private parent used by
+    /// its output ticket. No fallible work follows a successful create syscall.
+    pub(crate) fn open_declared_temp(&self) -> Result<File, CoreError> {
+        if self.is_native()
+            || !self.is_started()
+            || !matches!(self.ticket, Some(MutationTicket::Create(_)))
+            || self.observed.is_some()
+            || self.pin.is_some()
+            || self.external_writer_live
+        {
+            return Err(contract("declared temporary create is out of order"));
+        }
+        let temp = self
+            .declared_temp
+            .as_ref()
+            .ok_or_else(|| contract("declared temporary is absent"))?;
+        self.require_declared_parents_current()?;
+        let fd = openat(
+            &temp.parent,
+            Path::new(&temp.name),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|error| storage_io("create declared temporary", error))?;
+        Ok(File::from(fd))
+    }
+
+    /// Move only the original witnessed temporary into its canonical name.
+    /// The caller disarms temporary cleanup immediately on successful return.
+    pub(crate) fn publish_declared_temp_no_replace(
+        &self,
+        writer: &File,
+        final_path: &Path,
+    ) -> Result<bool, CoreError> {
+        self.publish_declared_temp(writer, final_path, false)
+    }
+
+    /// Publish the original staged FD through the held parent descriptors.
+    /// A replacement may overwrite only the inode witnessed at admission.
+    pub(crate) fn publish_declared_temp_replace(
+        &self,
+        writer: &File,
+        final_path: &Path,
+    ) -> Result<(), CoreError> {
+        if self.publish_declared_temp(writer, final_path, true)? {
+            Ok(())
+        } else {
+            Err(existing_target("declared temporary replacement"))
+        }
+    }
+
+    fn publish_declared_temp(
+        &self,
+        writer: &File,
+        final_path: &Path,
+        replace: bool,
+    ) -> Result<bool, CoreError> {
+        if self.is_native()
+            || !self.is_started()
+            || !matches!(self.ticket, Some(MutationTicket::Create(_)))
+            || !self.external_writer_live
+            || self.safe_writer_fd != Some(writer.as_raw_fd())
+            || (!replace && self.replaced_old.is_some())
+            || self.binder.relative(final_path)? != self.anchor.relative
+        {
+            return Err(contract("declared temporary publication is out of order"));
+        }
+        let temp = self
+            .declared_temp
+            .as_ref()
+            .ok_or_else(|| contract("declared temporary is absent"))?;
+        self.require_declared_parents_current()?;
+        let observed = InodeObservation::from_file(writer)?;
+        if self.observed.map(|prior| prior.inode) != Some(observed.inode)
+            || observed.links != 1
+            || observed.bytes > self.reserved_end
+            || temp.stat()? != Some(observed)
+        {
+            return Err(contract("declared temporary and original writer differ"));
+        }
+        if replace {
+            self.before_replace(final_path)?;
+        }
+        self.require_declared_parents_current()?;
+        let flags = if replace && self.replaced_old.is_some() {
+            RenameFlags::empty()
+        } else {
+            RenameFlags::NOREPLACE
+        };
+        match renameat_with(
+            &temp.parent,
+            Path::new(&temp.name),
+            &self.anchor.parent,
+            Path::new(&self.anchor.name),
+            flags,
+        ) {
+            Ok(()) => Ok(true),
+            Err(rustix::io::Errno::EXIST) => Ok(false),
+            Err(error) => Err(storage_io("publish declared temporary", error)),
+        }
+    }
+
+    /// Sync the directory FDs that participated in a completed staged rename.
+    /// This remains separate from the rename syscall so a sync failure keeps
+    /// the promoted inode under its pending mutation ticket.
+    pub(crate) fn sync_promoted_parents(&self) -> Result<(), CoreError> {
+        if self.is_native() || !self.is_started() || !self.external_writer_live {
+            return Err(contract("promoted parent sync is out of order"));
+        }
+        let temp = self
+            .declared_temp
+            .as_ref()
+            .ok_or_else(|| contract("declared temporary is absent"))?;
+        let expected = self
+            .observed
+            .ok_or_else(|| contract("promoted output lacks original FD witness"))?;
+        if temp.stat()?.is_some()
+            || self.anchor.stat()?.map(|current| current.inode) != Some(expected.inode)
+        {
+            return Err(contract("promoted output differs from original temporary"));
+        }
+        temp.sync_parent()?;
+        let temp_parent = temp
+            .parent
+            .metadata()
+            .map_err(|error| storage_io("stat promoted temp parent", error))?;
+        let final_parent = self
+            .anchor
+            .parent
+            .metadata()
+            .map_err(|error| storage_io("stat promoted final parent", error))?;
+        if temp_parent.dev() != final_parent.dev() || temp_parent.ino() != final_parent.ino() {
+            self.anchor.sync_parent()?;
+        }
+        self.require_declared_parents_current()
     }
 
     /// Authenticate the sole safe writer of a visible, non-replacing birth.
@@ -3717,8 +4391,23 @@ impl FileMutation {
 
     /// Settle an exact born-but-unregistered temporary only after actual close.
     pub fn cancel_rejected_created_temp(&mut self, writer: File) -> Result<(), CoreError> {
+        self.cancel_rejected_created_temp_with_parent_policy(writer, false)
+    }
+
+    pub(crate) fn cancel_sidecar_rejected_created_temp(
+        &mut self,
+        writer: File,
+    ) -> Result<(), CoreError> {
+        self.cancel_rejected_created_temp_with_parent_policy(writer, true)
+    }
+
+    fn cancel_rejected_created_temp_with_parent_policy(
+        &mut self,
+        writer: File,
+        allow_detached_parent: bool,
+    ) -> Result<(), CoreError> {
         if self.safe_writer_fd == Some(writer.as_raw_fd()) {
-            return self.cancel_declared_temp(writer);
+            return self.cancel_declared_temp_with_parent_policy(writer, allow_detached_parent);
         }
         let cleanup = (|| {
             if self.is_native()
@@ -3744,24 +4433,32 @@ impl FileMutation {
                     "rejected create is not the declared original inode",
                 ));
             }
-            let held = HeldPath::from_anchor(temp)?;
-            let current = held.current_anchor(&self.binder)?;
+            let current = if allow_detached_parent {
+                self.binder.shared.root.require_current_v1()?;
+                None
+            } else {
+                let held = HeldPath::from_anchor(temp)?;
+                Some(held.current_anchor(&self.binder)?)
+            };
+            let selected = current.as_ref().unwrap_or(temp);
             let result = (|| {
-                if current.stat()? != Some(observed) {
+                if selected.stat()? != Some(observed) {
                     return Err(contract("rejected create parent or inode changed"));
                 }
-                unlinkat(&current.parent, Path::new(&current.name), AtFlags::empty())
+                unlinkat(&selected.parent, Path::new(&selected.name), AtFlags::empty())
                     .map_err(|error| storage_io("unlink rejected staged birth", error))?;
-                current.sync_parent()?;
+                selected.sync_parent()?;
                 let absent = InodeObservation::from_file(&writer)?;
                 if absent.inode != observed.inode || absent.links != 0 {
                     return Err(contract("rejected birth lacks original zero-link proof"));
                 }
                 self.binder.shared.root.require_current_v1()
             })();
-            let close = close_owned_file(current.parent).map_err(|error| {
-                self.binder.mark_close_unwitnessed();
-                storage_io("close rejected-create parent observer", error)
+            let close = current.map_or(Ok(()), |current| {
+                close_owned_file(current.parent).map_err(|error| {
+                    self.binder.mark_close_unwitnessed();
+                    storage_io("close rejected-create parent observer", error)
+                })
             });
             match (result, close) {
                 (Ok(()), Ok(())) => Ok(()),
@@ -3830,18 +4527,28 @@ impl FileMutation {
     }
     pub fn before_replace(&self, final_path: &Path) -> Result<(), CoreError> {
         let final_anchor = self.binder.anchor(final_path)?;
-        if final_anchor.relative != self.anchor.relative {
-            return Err(contract("final path changed"));
-        }
-        if let Some((_, _, prior)) = &self.replaced_old {
-            if final_anchor.stat()? != Some(*prior) {
-                return Err(contract("replacement target changed"));
+        let checked = (|| {
+            self.anchor.require_same_parent(&final_anchor)?;
+            if let Some((_, _, prior)) = &self.replaced_old {
+                if final_anchor.stat()? != Some(*prior) {
+                    return Err(contract("replacement target changed"));
+                }
+            } else if final_anchor.stat()?.is_some() {
+                return Err(contract("new final path unexpectedly exists"));
             }
-        } else if final_anchor.stat()?.is_some() {
-            return Err(contract("new final path unexpectedly exists"));
+            self.binder.shared.root.require_current_v1()
+        })();
+        let close = close_owned_file(final_anchor.parent).map_err(|error| {
+            self.binder.mark_close_unwitnessed();
+            storage_io("close final mutation parent observer", error)
+        });
+        match (checked, close) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(primary), Ok(())) | (Ok(()), Err(primary)) => Err(primary),
+            (Err(primary), Err(close)) => {
+                Err(append_failure(primary, "parent retirement", &close))
+            }
         }
-        self.binder.shared.root.require_current_v1()?;
-        Ok(())
     }
     pub fn settle_after_file_and_parent_sync(
         &mut self,
@@ -3862,7 +4569,7 @@ impl FileMutation {
         observed: InodeObservation,
         diagnostics: Option<&DiagnosticContextV1>,
     ) -> Result<RetainedId, CoreError> {
-        self.settle_observed_sync(observed, true, diagnostics)
+        self.settle_observed_sync(observed, true, diagnostics, None)
     }
     /// Settle after the selected file store's completed sync protocol.
     ///
@@ -3878,7 +4585,25 @@ impl FileMutation {
                 .as_ref()
                 .ok_or_else(|| contract("external sync pin absent"))?,
         )?;
-        self.settle_observed_sync(observed, false, None)
+        self.settle_observed_sync(observed, false, None, None)
+    }
+    /// Settle a native object only when the exact directories fsynced by the
+    /// store are still the live parent and its immediate ancestor.
+    pub(crate) fn settle_after_external_object_sync(
+        &mut self,
+        directories: ObjectWriteSyncDirectories,
+    ) -> Result<RetainedId, CoreError> {
+        if self.is_native() || self.external_writer_live {
+            return Err(contract(
+                "external object sync requires retired safe writer",
+            ));
+        }
+        let observed = InodeObservation::from_file(
+            self.pin
+                .as_ref()
+                .ok_or_else(|| contract("external object sync pin absent"))?,
+        )?;
+        self.settle_observed_sync(observed, false, None, Some(directories))
     }
     /// Close the remaining safe writer pin after retirement and settlement.
     ///
@@ -3899,12 +4624,22 @@ impl FileMutation {
     /// Anchored inode authentication precedes unlink; a
     /// canonical name is never removed by this operation.
     pub fn cancel_declared_temp(&mut self, writer: File) -> Result<(), CoreError> {
+        self.cancel_declared_temp_with_parent_policy(writer, false)
+    }
+
+    fn cancel_declared_temp_with_parent_policy(
+        &mut self,
+        writer: File,
+        allow_detached_parent: bool,
+    ) -> Result<(), CoreError> {
         let cleanup = (|| {
             if self.is_native() || self.safe_writer_fd != Some(writer.as_raw_fd()) {
                 return Err(contract("temporary cancellation lacks original safe FD"));
             }
             let observed = InodeObservation::from_file(&writer)?;
-            if self.observed.map(|prior| prior.inode) != Some(observed.inode) {
+            if (allow_detached_parent && observed.links != 1)
+                || self.observed.map(|prior| prior.inode) != Some(observed.inode)
+            {
                 return Err(contract("temporary cancellation inode changed"));
             }
             let temp = self
@@ -3913,19 +4648,24 @@ impl FileMutation {
                 .ok_or_else(|| contract("temporary absent"))?;
             // A held directory FD alone does not prove that this parent is
             // still linked in the leased namespace.
-            let current = self.binder.anchor(&temp.relative)?;
-            let held_parent = temp
-                .parent
-                .metadata()
-                .map_err(|error| storage_io("stat temporary parent", error))?;
-            let current_parent = current
-                .parent
-                .metadata()
-                .map_err(|error| storage_io("stat current temporary parent", error))?;
-            if held_parent.dev() != current_parent.dev()
-                || held_parent.ino() != current_parent.ino()
-            {
-                return Err(contract("temporary cancellation parent changed"));
+            if allow_detached_parent {
+                self.binder.shared.root.require_current_v1()?;
+            } else {
+                // Native object callers retain the current-parent policy.
+                let current = self.binder.anchor(&temp.relative)?;
+                let held_parent = temp
+                    .parent
+                    .metadata()
+                    .map_err(|error| storage_io("stat temporary parent", error))?;
+                let current_parent = current
+                    .parent
+                    .metadata()
+                    .map_err(|error| storage_io("stat current temporary parent", error))?;
+                if held_parent.dev() != current_parent.dev()
+                    || held_parent.ino() != current_parent.ino()
+                {
+                    return Err(contract("temporary cancellation parent changed"));
+                }
             }
             if temp.stat()? != Some(observed) {
                 return Err(contract("temporary cancellation path and FD differ"));
@@ -3933,6 +4673,9 @@ impl FileMutation {
             unlinkat(&temp.parent, Path::new(&temp.name), AtFlags::empty())
                 .map_err(|error| storage_io("unlink cancelled temporary", error))?;
             temp.sync_parent()?;
+            if allow_detached_parent {
+                self.binder.shared.root.require_current_v1()?;
+            }
             Ok(())
         })();
         if let Err(error) = cleanup {
@@ -3949,6 +4692,7 @@ impl FileMutation {
         observed: InodeObservation,
         sync_parent: bool,
         diagnostics: Option<&DiagnosticContextV1>,
+        object_directories: Option<ObjectWriteSyncDirectories>,
     ) -> Result<RetainedId, CoreError> {
         if !self.is_started() {
             return Err(contract("mutation has not started"));
@@ -3967,9 +4711,6 @@ impl FileMutation {
             if observed.bytes > self.reserved_end {
                 return Err(contract("settlement width exceeds reservation"));
             }
-            if self.anchor.stat()? != Some(observed) {
-                return Err(contract("settled FD and pathname differ"));
-            }
         }
         if observed.bytes > self.reserved_end {
             return Err(contract("settlement width exceeds reservation"));
@@ -3986,6 +4727,24 @@ impl FileMutation {
                 let _finished = span.finish(DiagnosticTerminalV1::from_result(&result));
             }
             result?;
+        }
+        if let Some(directories) = object_directories {
+            self.anchor.require_current_parent_observing(
+                &self.binder,
+                Some(observed),
+                Some(directories),
+            )?;
+        } else if self.sidecar_private_parent {
+            self.anchor
+                .require_current_sidecar_private_parent(&self.binder)?;
+            if self.anchor.stat()? != Some(observed) {
+                return Err(contract("settled FD and current pathname differ"));
+            }
+        } else if self.is_native() {
+            self.anchor.require_current_parent(&self.binder)?;
+        } else {
+            self.anchor
+                .require_current_parent_observing(&self.binder, Some(observed), None)?;
         }
         self.binder.shared.root.require_current_v1()?;
         let ticket = self
@@ -4545,6 +5304,7 @@ pub struct PathTicket {
     target_before: Option<InodeObservation>,
     replaced_target: Option<(File, RetainedId)>,
     action: PathAction,
+    sidecar_private_parents: bool,
     settled: bool,
     started: bool,
 }
@@ -4554,9 +5314,34 @@ impl PublicationFileCapacity {
         from: &Path,
         to: &Path,
         action: PathAction,
+        sidecar_private_parents: bool,
     ) -> Result<PathTicket, CoreError> {
-        let from = self.anchor(from)?;
-        let to = self.anchor(to)?;
+        let (from, to) = if sidecar_private_parents {
+            self.shared.root.require_current_v1()?;
+            let from_relative = self.relative(from)?;
+            let to_relative = self.relative(to)?;
+            if from_relative == to_relative {
+                return Err(contract("source equals destination"));
+            }
+            let state = lock(&self.shared.state)?;
+            require_publication_open(&state)?;
+            if directory_scope_busy(&state, &from_relative)
+                || directory_scope_busy(&state, &to_relative)
+            {
+                return Err(capacity(
+                    "parent directory namespace is being moved or deleted",
+                ));
+            }
+            let from = self
+                .existing_private_parent_anchor_locked(&from_relative)?
+                .ok_or_else(|| contract("Sidecar source parent is absent"))?;
+            let to = self.private_parent_anchor_locked(&to_relative, true)?;
+            self.shared.root.require_current_v1()?;
+            drop(state);
+            (from, to)
+        } else {
+            (self.anchor(from)?, self.anchor(to)?)
+        };
         if from.relative == to.relative {
             return Err(contract("source equals destination"));
         }
@@ -4646,6 +5431,7 @@ impl PublicationFileCapacity {
                     None => None,
                 },
                 action,
+                sidecar_private_parents,
                 settled: false,
                 started: false,
             })
@@ -4665,22 +5451,43 @@ impl PublicationFileCapacity {
         result
     }
     pub fn begin_link(&self, from: &Path, to: &Path) -> Result<PathTicket, CoreError> {
-        self.begin_path_change(from, to, PathAction::Link)
+        self.begin_path_change(from, to, PathAction::Link, false)
     }
     pub fn begin_move(&self, from: &Path, to: &Path) -> Result<PathTicket, CoreError> {
-        self.begin_path_change(from, to, PathAction::Move)
+        self.begin_path_change(from, to, PathAction::Move, false)
+    }
+    pub(crate) fn begin_sidecar_move(
+        &self,
+        from: &Path,
+        to: &Path,
+    ) -> Result<PathTicket, CoreError> {
+        self.begin_path_change(from, to, PathAction::Move, true)
     }
     /// Admit a move only when its destination is absent. The resulting ticket
     /// keeps the absent-target witness and uses `RENAME_NOREPLACE` at the syscall.
     pub fn begin_move_if_absent(&self, from: &Path, to: &Path) -> Result<PathTicket, CoreError> {
-        let ticket = self.begin_path_change(from, to, PathAction::Move)?;
+        let ticket = self.begin_path_change(from, to, PathAction::Move, false)?;
         if ticket.target_before.is_some() {
             return Err(existing_target("create-mode move"));
         }
         Ok(ticket)
     }
     pub fn begin_delete(&self, path: &Path) -> Result<DeleteTicket, CoreError> {
-        let anchor = self.anchor(path)?;
+        self.begin_delete_with_parent_policy(path, false)
+    }
+    pub(crate) fn begin_sidecar_delete(&self, path: &Path) -> Result<DeleteTicket, CoreError> {
+        self.begin_delete_with_parent_policy(path, true)
+    }
+    fn begin_delete_with_parent_policy(
+        &self,
+        path: &Path,
+        sidecar_private_parent: bool,
+    ) -> Result<DeleteTicket, CoreError> {
+        let anchor = if sidecar_private_parent {
+            self.sidecar_private_anchor_relative(&self.relative(path)?)?
+        } else {
+            self.anchor(path)?
+        };
         let mut source = Some(anchor.open()?);
         let result = (|| {
             let expected = InodeObservation::from_file(
@@ -4717,6 +5524,7 @@ impl PublicationFileCapacity {
                 ),
                 expected,
                 retained,
+                sidecar_private_parent,
                 settled: false,
                 started: false,
             })
@@ -4823,6 +5631,16 @@ impl Drop for NativeDeleteTicket {
     }
 }
 impl PathTicket {
+    pub(crate) fn require_source_identity(
+        &self,
+        owned: InodeObservation,
+    ) -> Result<(), CoreError> {
+        if self.expected.inode != owned.inode || self.expected.bytes != owned.bytes {
+            return Err(contract("path source differs from settled output FD"));
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn has_started(&self) -> bool {
         self.started
@@ -4866,6 +5684,9 @@ impl PathTicket {
     }
 
     fn require_current_parent(&self, anchor: &Anchor) -> Result<(), CoreError> {
+        if self.sidecar_private_parents {
+            return anchor.require_current_sidecar_private_parent(&self.binder);
+        }
         let current = self.binder.anchor(&anchor.relative)?;
         let checked = (|| {
             let held = anchor
@@ -4938,6 +5759,12 @@ impl PathTicket {
         Ok(())
     }
     pub fn perform_and_sync(&mut self) -> Result<(), CoreError> {
+        self.perform_change()?;
+        self.changed_and_synced()
+    }
+    /// Execute only the anchored syscall. The caller owns the post-rename
+    /// sync and may need to retain the moved identity if that sync fails.
+    pub(crate) fn perform_change(&mut self) -> Result<(), CoreError> {
         self.change_started()?;
         match self.action {
             PathAction::Link => linkat(
@@ -4964,7 +5791,7 @@ impl PathTicket {
                 .map_err(|error| storage_io("renameat", error))?;
             }
         }
-        self.changed_and_synced()
+        Ok(())
     }
     pub fn changed_and_synced(&mut self) -> Result<(), CoreError> {
         self.require_current_parents()?;
@@ -5186,10 +6013,24 @@ pub struct DeleteTicket {
     source: Option<File>,
     expected: InodeObservation,
     retained: RetainedId,
+    sidecar_private_parent: bool,
     settled: bool,
     started: bool,
 }
 impl DeleteTicket {
+    pub(crate) fn has_sidecar_private_parent(&self) -> bool {
+        self.sidecar_private_parent
+    }
+
+    fn require_current_parent(&self) -> Result<(), CoreError> {
+        if self.sidecar_private_parent {
+            self.anchor
+                .require_current_sidecar_private_parent(&self.binder)
+        } else {
+            Ok(())
+        }
+    }
+
     #[must_use]
     pub fn is_settled(&self) -> bool {
         self.settled
@@ -5220,6 +6061,7 @@ impl DeleteTicket {
         if self.started || self.settled {
             return Err(contract("delete started twice"));
         }
+        self.require_current_parent()?;
         if self.anchor.stat()? != Some(self.expected) {
             return Err(contract("delete source changed"));
         }
@@ -5240,10 +6082,12 @@ impl DeleteTicket {
         if !self.started {
             return Err(contract("delete not started"));
         }
+        self.require_current_parent()?;
         if self.anchor.stat()?.is_some() {
             return Err(contract("unlink target still exists"));
         }
         self.anchor.sync_parent()?;
+        self.require_current_parent()?;
         self.binder.shared.root.require_current_v1()?;
         // Observation or tracking refusal is retryable with this exact ticket.
         // Keep the actual observer until those checks succeed; taking and
@@ -5291,7 +6135,9 @@ impl DeleteTicket {
         if !self.started || self.settled || self.anchor.stat()? != Some(self.expected) {
             return Err(contract("failed delete lacks unchanged proof"));
         }
+        self.require_current_parent()?;
         self.anchor.sync_parent()?;
+        self.require_current_parent()?;
         self.binder.shared.root.require_current_v1()?;
         let source = self
             .source

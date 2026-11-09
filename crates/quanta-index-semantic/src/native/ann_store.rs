@@ -103,21 +103,42 @@ struct Counters {
     frozen: bool,
 }
 
+#[derive(Clone, Copy)]
+enum ChargePhase {
+    Complete,
+    Operation,
+    Bytes,
+}
+
+impl ChargePhase {
+    const fn ops(self) -> u64 {
+        match self {
+            Self::Complete | Self::Operation => 1,
+            Self::Bytes => 0,
+        }
+    }
+
+    const fn claims_path(self) -> bool {
+        matches!(self, Self::Complete | Self::Bytes)
+    }
+}
+
 impl Counters {
-    fn charge(
+    fn charge_delta(
         &mut self,
         limits: AnnStoreLimits,
         path: Option<&Path>,
         write_bytes: u64,
         read_bytes: u64,
         mutation: bool,
+        phase: ChargePhase,
     ) -> object_store::Result<()> {
         if mutation && self.frozen {
             return Err(denied("ANN staging is frozen"));
         }
         let next_ops = self
             .ops
-            .checked_add(1)
+            .checked_add(phase.ops())
             .ok_or_else(|| denied("ANN op overflow"))?;
         let next_write = self
             .write_bytes
@@ -137,14 +158,21 @@ impl Counters {
             validate_path(path, limits.max_path_bytes)?;
             let file_limit = usize::try_from(limits.max_files)
                 .map_err(|_error| denied("ANN file count conversion overflow"))?;
-            if mutation && !self.paths.contains(path) && self.paths.len() >= file_limit {
+            if phase.claims_path()
+                && mutation
+                && !self.paths.contains(path)
+                && self.paths.len() >= file_limit
+            {
                 return Err(denied("ANN file count exceeded"));
             }
         }
         self.ops = next_ops;
         self.write_bytes = next_write;
         self.read_bytes = next_read;
-        if mutation && let Some(path) = path {
+        if phase.claims_path()
+            && mutation
+            && let Some(path) = path
+        {
             let _inserted = self.paths.insert(path.clone());
         }
         Ok(())
@@ -235,18 +263,54 @@ impl Shared {
         read_bytes: u64,
         mutation: bool,
     ) -> object_store::Result<()> {
+        self.charge_delta(
+            path,
+            write_bytes,
+            read_bytes,
+            mutation,
+            ChargePhase::Complete,
+        )
+    }
+
+    fn charge_operation(&self, path: &Path, mutation: bool) -> object_store::Result<()> {
+        self.charge_delta(Some(path), 0, 0, mutation, ChargePhase::Operation)
+    }
+
+    /// Complete a previously admitted operation without charging another op.
+    fn charge_bytes(
+        &self,
+        path: Option<&Path>,
+        write_bytes: u64,
+        read_bytes: u64,
+        mutation: bool,
+    ) -> object_store::Result<()> {
+        self.charge_delta(path, write_bytes, read_bytes, mutation, ChargePhase::Bytes)
+    }
+
+    fn charge_delta(
+        &self,
+        path: Option<&Path>,
+        write_bytes: u64,
+        read_bytes: u64,
+        mutation: bool,
+        phase: ChargePhase,
+    ) -> object_store::Result<()> {
         checkpoint(&self.request)?;
         let result = self
             .counters
             .lock()
             .map_err(|_error| denied("ANN counters poisoned"))?
-            .charge(self.limits, path, write_bytes, read_bytes, mutation);
-        if let Err(object_store::Error::Generic { source, .. }) = &result
+            .charge_delta(self.limits, path, write_bytes, read_bytes, mutation, phase);
+        self.record_denial(&result);
+        result
+    }
+
+    fn record_denial(&self, result: &object_store::Result<()>) {
+        if let Err(object_store::Error::Generic { source, .. }) = result
             && let Some(failure) = source.downcast_ref::<AnnFailure>()
         {
             let _first = self.first_denial.set(failure.error.clone());
         }
-        result
     }
 }
 
@@ -457,27 +521,19 @@ impl ObjectStore for AnnMemoryStore {
     ) -> object_store::Result<GetResult> {
         checkpoint(&self.shared.request)?;
         validate_path(location, self.shared.limits.max_path_bytes)?;
-        let meta = self.inner.head(location).await?;
+        self.shared.charge(Some(location), 0, 0, false)?;
         let head_only = options.head;
+        let mut result = self.inner.get_opts(location, options).await?;
         let read_bytes = if head_only {
             0
-        } else if let Some(range) = &options.range {
-            let range =
-                range
-                    .as_range(meta.size)
-                    .map_err(|error| object_store::Error::Generic {
-                        store: "AnnMemoryStore",
-                        source: Box::new(error),
-                    })?;
-            range
-                .end
-                .checked_sub(range.start)
-                .ok_or_else(|| denied("ANN read range invalid"))?
         } else {
-            meta.size
+            result
+                .range
+                .end
+                .checked_sub(result.range.start)
+                .ok_or_else(|| denied("ANN read range invalid"))?
         };
-        self.shared.charge(Some(location), 0, read_bytes, false)?;
-        let mut result = self.inner.get_opts(location, options).await?;
+        self.shared.charge_bytes(None, 0, read_bytes, false)?;
         if head_only {
             result.range = 0..0;
             result.payload = GetResultPayload::Stream(futures::stream::empty().boxed());
@@ -570,10 +626,11 @@ impl ObjectStore for AnnMemoryStore {
         to: &Path,
         options: CopyOptions,
     ) -> object_store::Result<()> {
-        let _mutation = self.shared.mutation_gate.read().await;
         validate_path(from, self.shared.limits.max_path_bytes)?;
+        let _mutation = self.shared.mutation_gate.write().await;
+        self.shared.charge_operation(to, true)?;
         let source = self.inner.head(from).await?;
-        self.shared.charge(Some(to), source.size, 0, true)?;
+        self.shared.charge_bytes(Some(to), source.size, 0, true)?;
         self.inner.copy_opts(from, to, options).await
     }
 }
@@ -844,6 +901,240 @@ mod tests {
                     .is_empty()
             );
             assert!(store.get(&Path::from("a")).await.is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "operation admission and actual returned-byte accounting are the test oracle"
+    )]
+    fn get_precharges_missing_and_counts_only_returned_range() -> Result<(), IndexError> {
+        let runtime = test_runtime()?;
+        crate::run_blocking(&runtime, async {
+            let (mut budget, counter) = test_budget()?;
+            let store = AnnMemoryStore::new(
+                AnnStoreLimits {
+                    max_read_bytes: 2,
+                    max_ops: 10,
+                    ..tiny_limits()
+                },
+                &mut budget,
+            )?;
+            let _written = store
+                .put(&Path::from("a"), PutPayload::from_static(b"abcd"))
+                .await
+                .map_err(index_error)?;
+            assert!(store.get(&Path::from("missing")).await.is_err());
+            assert_eq!(store.shared.counters.lock().expect("counters").ops, 2);
+            let result = store
+                .get_opts(
+                    &Path::from("a"),
+                    GetOptions {
+                        range: Some(object_store::GetRange::Bounded(2..100)),
+                        ..GetOptions::default()
+                    },
+                )
+                .await
+                .map_err(index_error)?;
+            assert_eq!(result.range, 2..4);
+            assert_eq!(result.bytes().await.map_err(index_error)?.as_ref(), b"cd");
+            assert_eq!(
+                store.shared.counters.lock().expect("counters").read_bytes,
+                2
+            );
+            assert!(
+                store
+                    .get_opts(
+                        &Path::from("a"),
+                        GetOptions {
+                            range: Some(object_store::GetRange::Bounded(0..1)),
+                            ..GetOptions::default()
+                        },
+                    )
+                    .await
+                    .is_err()
+            );
+            let counters = store.shared.counters.lock().expect("counters");
+            assert_eq!((counters.ops, counters.read_bytes), (4, 2));
+            drop(counters);
+            assert!(matches!(
+                store.first_denial(),
+                Some(IndexError::ResourceLimited)
+            ));
+            drop(store);
+            assert_eq!(counter.0.load(Ordering::Acquire), 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "copy admission and mutation exclusion are the test oracle"
+    )]
+    fn copy_precharges_missing_and_excludes_concurrent_mutation() -> Result<(), IndexError> {
+        let runtime = test_runtime()?;
+        crate::run_blocking(&runtime, async {
+            let (mut budget, _counter) = test_budget()?;
+            let store = AnnMemoryStore::new(
+                AnnStoreLimits {
+                    max_write_bytes: 12,
+                    ..tiny_limits()
+                },
+                &mut budget,
+            )?;
+            let _written = store
+                .put(&Path::from("a"), PutPayload::from_static(b"abcd"))
+                .await
+                .map_err(index_error)?;
+            assert!(
+                store
+                    .copy(&Path::from("missing"), &Path::from("b"))
+                    .await
+                    .is_err()
+            );
+            assert_eq!(store.shared.counters.lock().expect("counters").ops, 2);
+
+            let mutation = store.shared.mutation_gate.read().await;
+            let from = Path::from("a");
+            let to = Path::from("b");
+            let mut copy = std::pin::pin!(store.copy(&from, &to));
+            assert!(matches!(
+                futures::poll!(copy.as_mut()),
+                std::task::Poll::Pending
+            ));
+            drop(mutation);
+            copy.await.map_err(index_error)?;
+            assert_eq!(
+                store
+                    .get(&Path::from("b"))
+                    .await
+                    .map_err(index_error)?
+                    .bytes()
+                    .await
+                    .map_err(index_error)?
+                    .as_ref(),
+                b"abcd"
+            );
+            let counters = store.shared.counters.lock().expect("counters");
+            assert_eq!((counters.ops, counters.write_bytes), (4, 8));
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "failed copies may consume an operation but cannot claim a file slot"
+    )]
+    fn failed_copy_does_not_claim_destination_file_slot() -> Result<(), IndexError> {
+        let runtime = test_runtime()?;
+        crate::run_blocking(&runtime, async {
+            let (mut budget, _counter) = test_budget()?;
+            let store = AnnMemoryStore::new(
+                AnnStoreLimits {
+                    max_write_bytes: 4,
+                    max_files: 2,
+                    ..tiny_limits()
+                },
+                &mut budget,
+            )?;
+            let _written = store
+                .put(&Path::from("a"), PutPayload::from_static(b"abcd"))
+                .await
+                .map_err(index_error)?;
+            assert!(
+                store
+                    .copy(&Path::from("missing"), &Path::from("b"))
+                    .await
+                    .is_err()
+            );
+            assert!(matches!(
+                store
+                    .copy(&Path::from("a"), &Path::from("b"))
+                    .await
+                    .map_err(index_error),
+                Err(IndexError::ResourceLimited)
+            ));
+            {
+                let counters = store.shared.counters.lock().expect("counters");
+                assert_eq!((counters.ops, counters.write_bytes), (3, 4));
+                assert!(!counters.paths.contains(&Path::from("b")));
+            }
+            let _written = store
+                .put(&Path::from("c"), PutPayload::from_static(b""))
+                .await
+                .map_err(index_error)?;
+            assert_eq!(
+                store.shared.counters.lock().expect("counters").paths.len(),
+                2
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the first typed destination refusal must survive copy validation"
+    )]
+    fn invalid_copy_destination_records_first_denial_without_operation() -> Result<(), IndexError> {
+        let runtime = test_runtime()?;
+        crate::run_blocking(&runtime, async {
+            let (mut budget, _counter) = test_budget()?;
+            let store = AnnMemoryStore::new(tiny_limits(), &mut budget)?;
+            let _written = store
+                .put(&Path::from("a"), PutPayload::from_static(b"x"))
+                .await
+                .map_err(index_error)?;
+            let invalid = Path::from("abcdefghijklmnopq");
+            assert!(matches!(
+                store
+                    .copy(&Path::from("a"), &invalid)
+                    .await
+                    .map_err(index_error),
+                Err(IndexError::InvalidInput(_))
+            ));
+            assert!(matches!(
+                store.first_denial(),
+                Some(IndexError::InvalidInput(_))
+            ));
+            let counters = store.shared.counters.lock().expect("counters");
+            assert_eq!(
+                (counters.ops, counters.write_bytes, counters.paths.len()),
+                (1, 1, 1)
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "exhausted operation cap must precede backend lookup"
+    )]
+    fn exhausted_operation_refuses_before_missing_lookup() -> Result<(), IndexError> {
+        let runtime = test_runtime()?;
+        crate::run_blocking(&runtime, async {
+            let (mut budget, _counter) = test_budget()?;
+            let store = AnnMemoryStore::new(
+                AnnStoreLimits {
+                    max_ops: 1,
+                    ..tiny_limits()
+                },
+                &mut budget,
+            )?;
+            assert!(store.get(&Path::from("missing")).await.is_err());
+            assert!(matches!(
+                store
+                    .get(&Path::from("still-missing"))
+                    .await
+                    .map_err(index_error),
+                Err(IndexError::ResourceLimited)
+            ));
+            assert_eq!(store.shared.counters.lock().expect("counters").ops, 1);
             Ok(())
         })
     }

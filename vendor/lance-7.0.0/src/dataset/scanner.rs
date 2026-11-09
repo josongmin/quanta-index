@@ -765,6 +765,9 @@ pub struct Scanner {
     /// will always be unordered since we are just going to reorder it anyways.
     ordering: Option<Vec<ColumnOrdering>>,
 
+    /// Stored secondary keys used inside exact nearest-neighbor Top-K.
+    exact_tie_order: Option<Vec<String>>,
+
     nearest: Option<Query>,
 
     /// If false, do not use any scalar indices for the scan
@@ -1020,6 +1023,7 @@ impl Scanner {
             limit: None,
             offset: None,
             ordering: None,
+            exact_tie_order: None,
             nearest: None,
             use_stats: true,
             ordered: true,
@@ -1689,6 +1693,25 @@ impl Scanner {
             q.use_index = use_index
         }
         self
+    }
+
+    /// Order equal reported cosine similarities before the exact Top-K cut.
+    /// The indexed path does not expose stored columns at its candidate cut.
+    pub fn exact_tie_order(&mut self, columns: &[String]) -> Result<&mut Self> {
+        if columns.is_empty() || self.nearest.as_ref().is_none_or(|query| query.use_index) {
+            return Err(Error::invalid_input(
+                "exact tie order requires a nonempty key and bypassed vector index".to_string(),
+            ));
+        }
+        for column in columns {
+            if self.dataset.schema().field(column).is_none() {
+                return Err(Error::invalid_input(format!(
+                    "exact tie order column {column} not found"
+                )));
+            }
+        }
+        self.exact_tie_order = Some(columns.to_vec());
+        Ok(self)
     }
 
     /// Configure partition-search concurrency for each vector query.
@@ -3699,6 +3722,9 @@ impl Scanner {
             if let Some(refine_expr) = filter_plan.refine_expr.as_ref() {
                 columns.extend(Planner::column_names_in_expr(refine_expr));
             }
+            if let Some(tie_order) = &self.exact_tie_order {
+                columns.extend(tie_order.iter().cloned());
+            }
             let mut vector_scan_projection = self
                 .dataset
                 .empty_projection()
@@ -4313,28 +4339,51 @@ impl Scanner {
             flat_dist
         };
 
-        // Use DataFusion's [SortExec] for Top-K search
-        let sort = SortExec::new(
-            [
-                PhysicalSortExpr {
-                    expr: expressions::col(DIST_COL, knn_plan.schema().as_ref())?,
+        // The opt-in path ranks by the same f32 score exported to callers.
+        // Floating-point subtraction can collapse distinct distances into one
+        // reported score, so sorting raw distances would disagree at a tie.
+        let mut topk_order = Vec::new();
+        if let Some(columns) = &self.exact_tie_order {
+            let schema = knn_plan.schema();
+            let logical = lit(1.0_f32) - col(DIST_COL);
+            let df_schema = DFSchema::try_from(schema)?;
+            topk_order.push(PhysicalSortExpr {
+                expr: create_physical_expr(&logical, &df_schema, &ExecutionProps::new())?,
+                options: SortOptions {
+                    descending: true,
+                    nulls_first: false,
+                },
+            });
+            for column in columns {
+                topk_order.push(PhysicalSortExpr {
+                    expr: expressions::col(column, knn_plan.schema().as_ref())?,
                     options: SortOptions {
                         descending: false,
                         nulls_first: false,
                     },
+                });
+            }
+        } else {
+            topk_order.push(PhysicalSortExpr {
+                expr: expressions::col(DIST_COL, knn_plan.schema().as_ref())?,
+                options: SortOptions {
+                    descending: false,
+                    nulls_first: false,
                 },
-                PhysicalSortExpr {
-                    expr: expressions::col(ROW_ID, knn_plan.schema().as_ref())?,
-                    options: SortOptions {
-                        descending: false,
-                        nulls_first: false,
-                    },
-                },
-            ]
-            .into(),
-            knn_plan,
-        )
-        .with_fetch(Some(q.k));
+            });
+        }
+        topk_order.push(PhysicalSortExpr {
+            expr: expressions::col(ROW_ID, knn_plan.schema().as_ref())?,
+            options: SortOptions {
+                descending: false,
+                nulls_first: false,
+            },
+        });
+        // Use DataFusion's [SortExec] for Top-K search.
+        let ordering = LexOrdering::new(topk_order).ok_or(exec_datafusion_err!(
+            "Empty nearest-neighbor Top-K ordering"
+        ))?;
+        let sort = SortExec::new(ordering, knn_plan).with_fetch(Some(q.k));
 
         let logical_not_null = col(DIST_COL).is_not_null();
         let not_nulls = Arc::new(LanceFilterExec::try_new(logical_not_null, Arc::new(sort))?);

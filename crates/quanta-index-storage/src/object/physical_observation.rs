@@ -35,6 +35,11 @@ const fn phase_index(phase: DiagnosticObjectInstallPhaseV1) -> usize {
         DiagnosticObjectInstallPhaseV1::Barrier => 6,
         DiagnosticObjectInstallPhaseV1::Settlement => 7,
         DiagnosticObjectInstallPhaseV1::Existing => 8,
+        DiagnosticObjectInstallPhaseV1::NamespaceValidation => 9,
+        DiagnosticObjectInstallPhaseV1::WriterCreate => 10,
+        DiagnosticObjectInstallPhaseV1::WriterTicketPrepare => 11,
+        DiagnosticObjectInstallPhaseV1::WriterOpen => 12,
+        DiagnosticObjectInstallPhaseV1::WriterCreatedWitness => 13,
     }
 }
 
@@ -52,7 +57,7 @@ impl Default for PhaseCell {
 pub(super) struct PhysicalObservation {
     context: DiagnosticContextV1,
     span: Option<DiagnosticSpanGuardV1>,
-    cells: [PhaseCell; 9],
+    cells: [PhaseCell; DiagnosticObjectInstallPhaseV1::ALL.len()],
     flushed: bool,
 }
 
@@ -70,7 +75,7 @@ impl PhysicalObservation {
         Some(Self {
             context,
             span: Some(span),
-            cells: [PhaseCell::default(); 9],
+            cells: [PhaseCell::default(); DiagnosticObjectInstallPhaseV1::ALL.len()],
             flushed: false,
         })
     }

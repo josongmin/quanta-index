@@ -370,7 +370,10 @@ impl ObjectWriteTicket for LosingWriterTicket {
         Ok(())
     }
 
-    fn synced(self: Box<Self>) -> Result<(), IndexError> {
+    fn synced(
+        self: Box<Self>,
+        _directories: quanta_index_core::index::ObjectWriteSyncDirectories,
+    ) -> Result<(), IndexError> {
         Err(IndexError::BackendViolation(
             "losing writer unexpectedly settled".into(),
         ))

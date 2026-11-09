@@ -181,6 +181,9 @@ pub async fn create_plan(
 
     scanner.distance_range(query.lower_bound, query.upper_bound);
     scanner.use_index(query.use_index);
+    if let Some(columns) = &query.exact_tie_order {
+        scanner.exact_tie_order(columns)?;
+    }
     scanner.prefilter(query.base.prefilter);
 
     match query.base.select {
@@ -334,6 +337,11 @@ async fn execute_namespace_query(
 fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
     match query {
         AnyQuery::VectorQuery(vq) => {
+            if vq.exact_tie_order.is_some() {
+                return Err(Error::NotSupported {
+                    message: "exact tie order is supported only by local Lance tables".to_string(),
+                });
+            }
             // Extract the query vector(s)
             let vector = extract_query_vector(&vq.query_vector)?;
 

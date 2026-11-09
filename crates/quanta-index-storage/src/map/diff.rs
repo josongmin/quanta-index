@@ -10,8 +10,8 @@ use quanta_index_core::index::{
 
 use super::{
     BranchValue, FileObjectStore, IndexError, MAX_KEY_BYTES, MAX_NIBBLES, MAX_SCAN_LIMIT,
-    MapBuffer, MapRoot, MapValue, MemoryLifetime, Node, ObjectRef, WorkBudget, WorkUsage,
-    nibbles_to_key,
+    MapBuffer, MapRoot, MapValue, MemoryLifetime, Node, ObjectRef, PackedBranch, WorkBudget,
+    WorkUsage, nibbles_to_key,
 };
 
 struct SharedNode {
@@ -21,18 +21,56 @@ struct SharedNode {
     _memory: Option<MemoryLease>,
 }
 
+enum NodeOwner {
+    Stored(Arc<SharedNode>),
+    Packed(Arc<PackedBranch>),
+}
+
+impl NodeOwner {
+    fn node(&self) -> &Node {
+        match self {
+            Self::Stored(shared) => &shared.node,
+            Self::Packed(packed) => &packed.node,
+        }
+    }
+
+    fn clone_owner(&self) -> Self {
+        match self {
+            Self::Stored(shared) => Self::Stored(Arc::clone(shared)),
+            Self::Packed(packed) => Self::Packed(Arc::clone(packed)),
+        }
+    }
+
+    fn identity(&self, edge: Option<usize>, offset: usize) -> PositionIdentity {
+        match self {
+            Self::Stored(shared) => PositionIdentity::Stored(shared.reference, edge, offset),
+            Self::Packed(packed) => PositionIdentity::Packed(Arc::as_ptr(packed), edge, offset),
+        }
+    }
+
+    fn is_packed(&self) -> bool {
+        matches!(self, Self::Packed(_))
+    }
+}
+
+#[derive(Eq, PartialEq)]
+enum PositionIdentity {
+    Stored(ObjectRef, Option<usize>, usize),
+    Packed(*const PackedBranch, Option<usize>, usize),
+}
+
 enum Position {
     Stored(ObjectRef),
-    Node(Arc<SharedNode>, usize),
-    Terminal(Arc<SharedNode>, usize, usize),
+    Node(NodeOwner, usize),
+    Terminal(NodeOwner, usize, usize),
 }
 
 impl Position {
-    fn identity(&self) -> (ObjectRef, Option<usize>, usize) {
+    fn identity(&self) -> PositionIdentity {
         match self {
-            Self::Stored(reference) => (*reference, None, 0),
-            Self::Node(node, offset) => (node.reference, None, *offset),
-            Self::Terminal(node, edge, offset) => (node.reference, Some(*edge), *offset),
+            Self::Stored(reference) => PositionIdentity::Stored(*reference, None, 0),
+            Self::Node(node, offset) => node.identity(None, *offset),
+            Self::Terminal(node, edge, offset) => node.identity(Some(*edge), *offset),
         }
     }
 
@@ -57,11 +95,11 @@ impl Position {
             let memory = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
             let node = read_node(reference, budget)?;
             *self = Self::Node(
-                Arc::new(SharedNode {
+                NodeOwner::Stored(Arc::new(SharedNode {
                     reference,
                     node,
                     _memory: memory,
-                }),
+                })),
                 0,
             );
         }
@@ -70,19 +108,21 @@ impl Position {
 
     fn value(&self) -> Result<Option<MapValue>, IndexError> {
         match self {
-            Self::Node(shared, offset) => Ok((*offset == shared.node.prefix.len())
-                .then_some(shared.node.value)
+            Self::Node(owner, offset) => Ok((*offset == owner.node().prefix.len())
+                .then_some(owner.node().value)
                 .flatten()),
-            Self::Terminal(shared, edge, offset) => {
-                let branch = shared
-                    .node
+            Self::Terminal(owner, edge, offset) => {
+                let branch = owner
+                    .node()
                     .branches
                     .get(*edge)?
                     .ok_or_else(invalid_position)?;
                 if *offset == branch.prefix.len() {
-                    match branch.value {
-                        BranchValue::Terminal(value) => Ok(Some(value)),
-                        BranchValue::Indirect(_) => Err(invalid_position()),
+                    match &branch.value {
+                        BranchValue::Terminal(value) => Ok(Some(*value)),
+                        BranchValue::Indirect(_) | BranchValue::Packed(_) => {
+                            Err(invalid_position())
+                        }
                     }
                 } else {
                     Ok(None)
@@ -94,24 +134,36 @@ impl Position {
 
     fn child(&self, edge: usize) -> Result<Option<Self>, IndexError> {
         match self {
-            Self::Node(shared, offset) => {
-                if let Some(nibble) = shared.node.prefix.get(*offset) {
+            Self::Node(owner, offset) => {
+                if let Some(nibble) = owner.node().prefix.get(*offset) {
                     let next_offset = offset.checked_add(1).ok_or(IndexError::ResourceLimited)?;
                     return Ok((usize::from(*nibble) == edge)
-                        .then(|| Self::Node(Arc::clone(shared), next_offset)));
+                        .then(|| Self::Node(owner.clone_owner(), next_offset)));
                 }
-                Ok(shared
-                    .node
-                    .branches
-                    .get(edge)?
-                    .map(|branch| match branch.value {
-                        BranchValue::Indirect(reference) => Self::Stored(reference),
-                        BranchValue::Terminal(_) => Self::Terminal(Arc::clone(shared), edge, 0),
-                    }))
+                let Some(branch) = owner.node().branches.get(edge)? else {
+                    return Ok(None);
+                };
+                let child = match &branch.value {
+                    BranchValue::Indirect(reference) if !owner.is_packed() => {
+                        Self::Stored(*reference)
+                    }
+                    BranchValue::Terminal(_) => Self::Terminal(owner.clone_owner(), edge, 0),
+                    BranchValue::Packed(packed)
+                        if !owner.is_packed() && branch.prefix.is_empty() =>
+                    {
+                        Self::Node(NodeOwner::Packed(Arc::clone(packed)), 0)
+                    }
+                    BranchValue::Indirect(_) | BranchValue::Packed(_) => {
+                        return Err(IndexError::CorruptObject(
+                            "packed map branch has nested child or external prefix".into(),
+                        ));
+                    }
+                };
+                Ok(Some(child))
             }
-            Self::Terminal(shared, branch_edge, offset) => {
-                let branch = shared
-                    .node
+            Self::Terminal(owner, branch_edge, offset) => {
+                let branch = owner
+                    .node()
                     .branches
                     .get(*branch_edge)?
                     .ok_or_else(invalid_position)?;
@@ -120,7 +172,7 @@ impl Position {
                     .prefix
                     .get(*offset)
                     .filter(|nibble| usize::from(**nibble) == edge)
-                    .map(|_| Self::Terminal(Arc::clone(shared), *branch_edge, next_offset)))
+                    .map(|_| Self::Terminal(owner.clone_owner(), *branch_edge, next_offset)))
             }
             Self::Stored(_) => Err(invalid_position()),
         }

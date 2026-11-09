@@ -39,7 +39,9 @@ pub(crate) use gc_lifetime::tests::fake_gc_delete_ticket;
 use object_reader::ObjectReader;
 pub(crate) use packed_records::MAX_PACKED_RECORDS;
 pub(crate) const MAX_RECORD_GROUP_BYTES: usize = BLOCK_BYTES;
-use prepared_batch::{PendingOutput, PreparedBatch};
+use prepared_batch::{
+    AtomicPhase, BatchInstallProfile, InstallPhase, PendingOutput, PreparedBatch,
+};
 
 pub(crate) use hard_scan_checkpoint::{
     Authority, CandidateWitness, CheckpointPayload, EligibilityWitness, IndependentWindowOracle,
@@ -109,6 +111,8 @@ mod admitted_pool_output_tests {
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
+    use sha2::{Digest as _, Sha256};
+
     use quanta_index_contract::{
         BatchIngestMode, ManifestGeneration, RepoId, RevisionId, SearchCorpusIngestBatch,
         SourcePublicationEvent,
@@ -128,7 +132,7 @@ mod admitted_pool_output_tests {
 
     use super::{
         AttemptBinding, EPOCH_FILE, GATE_FILE, OBJECTS_DIR, ObjectKind, ObjectStore, POOL_DIR,
-        hex_digest,
+        PreparedObject, hex_digest,
     };
 
     const GOLD: &[u8; 24] = b"QLSTOR01\x00\x01\x07\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03abc";
@@ -140,6 +144,9 @@ mod admitted_pool_output_tests {
         race_gate: bool,
         winner_inode: Option<u64>,
         corrupt_pool_object: bool,
+        expect_file_body: bool,
+        dynamic_payload: bool,
+        fail_before_digest: Option<[u8; 32]>,
     }
 
     struct Admission(Arc<Mutex<Calls>>);
@@ -195,6 +202,19 @@ mod admitted_pool_output_tests {
     }
 
     impl Output {
+        fn expected_bytes(&self) -> Result<[u8; 24], CoreError> {
+            let mut expected = *GOLD;
+            if self
+                .calls
+                .lock()
+                .map_err(|error| fixture_io("lock calls", error))?
+                .expect_file_body
+            {
+                expected[10] = ObjectKind::FileBody.code();
+            }
+            Ok(expected)
+        }
+
         fn staging(&self) -> Result<&Path, CoreError> {
             self.staging.as_deref().ok_or_else(unexpected)
         }
@@ -373,8 +393,37 @@ mod admitted_pool_output_tests {
         fn before_replace(&mut self) -> Result<(), CoreError> {
             let bytes = std::fs::read(self.staging()?)
                 .map_err(|error| fixture_io("read staged bytes", error))?;
-            check(bytes.as_slice() == GOLD, "staged fixed bytes")?;
+            let (dynamic, fail_before_digest) = {
+                let calls = self
+                    .calls
+                    .lock()
+                    .map_err(|error| fixture_io("lock calls", error))?;
+                (calls.dynamic_payload, calls.fail_before_digest)
+            };
+            if dynamic {
+                let digest: [u8; 32] = Sha256::digest(&bytes).into();
+                check(
+                    self.target()?.file_name().and_then(|name| name.to_str())
+                        == Some(hex_digest(&digest).as_str()),
+                    "staged digest name",
+                )?;
+            } else {
+                check(
+                    bytes.as_slice() == self.expected_bytes()?.as_slice(),
+                    "staged fixed bytes",
+                )?;
+            }
             check(absent(self.target()?)?, "target absent before rename")?;
+            if fail_before_digest.is_some_and(|digest| {
+                self.target()
+                    .ok()
+                    .and_then(|path| path.file_name())
+                    .and_then(|name| name.to_str())
+                    == Some(hex_digest(&digest).as_str())
+            }) {
+                self.record("before refused")?;
+                return Err(fixture_io("before replace", "injected object failure"));
+            }
             if self
                 .calls
                 .lock()
@@ -402,7 +451,24 @@ mod admitted_pool_output_tests {
             check(width == 24, "committed writer width")?;
             let bytes = std::fs::read(self.target()?)
                 .map_err(|error| fixture_io("read canonical bytes", error))?;
-            check(bytes.as_slice() == GOLD, "canonical fixed bytes")?;
+            if self
+                .calls
+                .lock()
+                .map_err(|error| fixture_io("lock calls", error))?
+                .dynamic_payload
+            {
+                let digest: [u8; 32] = Sha256::digest(&bytes).into();
+                check(
+                    self.target()?.file_name().and_then(|name| name.to_str())
+                        == Some(hex_digest(&digest).as_str()),
+                    "canonical digest name",
+                )?;
+            } else {
+                check(
+                    bytes.as_slice() == self.expected_bytes()?.as_slice(),
+                    "canonical fixed bytes",
+                )?;
+            }
             check(absent(self.staging()?)?, "staging absent after rename")?;
             drop(writer);
             self.record("committed")
@@ -925,6 +991,9 @@ mod admitted_pool_output_tests {
             race_gate: false,
             winner_inode: None,
             corrupt_pool_object: false,
+            expect_file_body: false,
+            dynamic_payload: false,
+            fail_before_digest: None,
         }));
         let store = ObjectStore::open_observed_with_control(
             dir.path(),
@@ -977,6 +1046,9 @@ mod admitted_pool_output_tests {
             race_gate: true,
             winner_inode: None,
             corrupt_pool_object: false,
+            expect_file_body: false,
+            dynamic_payload: false,
+            fail_before_digest: None,
         }));
         let store = ObjectStore::open_observed_with_control(
             dir.path(),
@@ -1215,6 +1287,9 @@ mod admitted_pool_output_tests {
             race_gate: false,
             winner_inode: None,
             corrupt_pool_object: false,
+            expect_file_body: false,
+            dynamic_payload: false,
+            fail_before_digest: None,
         }));
         let store = ObjectStore::open(dir.path())
             .expect("pool")
@@ -1303,6 +1378,157 @@ mod admitted_pool_output_tests {
     }
 
     #[test]
+    fn admitted_batch_later_reservation_refusal_settles_published_prefix_without_adoption() {
+        let dir = tempfile::tempdir().expect("state root");
+        let calls = Arc::new(Mutex::new(Calls {
+            available: 24,
+            expect_file_body: true,
+            ..Calls::default()
+        }));
+        let store = ObjectStore::open(dir.path())
+            .expect("pool")
+            .with_work_output_admission(Some(work_admission(Arc::clone(&calls))));
+        let binding = AttemptBinding {
+            root_incarnation: [1; 16],
+            repository_sha256: [2; 32],
+            revision_sha256: [3; 32],
+            source_event_sha256: [4; 32],
+            target_generation: 1,
+            base_root_sha256: None,
+            operations_sha256: [5; 32],
+            format: 1,
+        };
+        let lease = store.begin_attempt(&binding, &[]).expect("attempt");
+        let attempts = dir.path().join(POOL_DIR).join(super::ATTEMPTS_DIR);
+        let name = binding.identity_name();
+        let journal = attempts.join(super::journal_name(&name));
+        let head = attempts.join(super::journal_head_name(&name));
+        let journal_before = std::fs::read(&journal).expect("initial journal");
+        let head_before = std::fs::read(&head).expect("initial journal head");
+        let mut first = None;
+        let mut second = None;
+        let failed = store.with_adoption_batch(&lease, |scoped| {
+            let file = scoped.put_adopted_object(&lease, ObjectKind::FileBody, &[], b"abc")?;
+            assert_eq!(scoped.read_object(&file, None)?.1, b"abc");
+            first = Some(file);
+            second =
+                Some(scoped.put_adopted_object(&lease, ObjectKind::NativeBody, &[], b"def")?);
+            Ok(())
+        });
+        assert!(matches!(failed, Err(CoreError::Typed { code, message })
+            if code == INGEST_RESOURCE_BUDGET_EXCEEDED_CODE
+                && message == "fixed lexical output allowance exhausted"));
+        let first = first.expect("staged first body");
+        let second = second.expect("staged second body");
+        assert!(store.adopted_roots().expect("adopted roots").is_empty());
+        assert_eq!(
+            std::fs::read(&journal).expect("journal after refusal"),
+            journal_before
+        );
+        assert_eq!(
+            std::fs::read(&head).expect("head after refusal"),
+            head_before
+        );
+        assert_eq!(
+            store.read_object(&first, None).expect("committed prefix").1,
+            b"abc"
+        );
+        let pool_path = |digest: &[u8; 32]| {
+            let name = hex_digest(digest);
+            dir.path()
+                .join(POOL_DIR)
+                .join(OBJECTS_DIR)
+                .join(name.get(..2).expect("digest shard"))
+                .join(name)
+        };
+        assert!(
+            pool_path(&first.sha256).is_file(),
+            "immutable prefix remains"
+        );
+        assert!(absent(&pool_path(&second.sha256)).expect("second body absent"));
+        assert_eq!(calls.lock().expect("output calls").available, 0);
+        assert_eq!(
+            calls.lock().expect("output calls").events,
+            [
+                "reserved",
+                "bound",
+                "started",
+                "created",
+                "before",
+                "refused",
+                "committed"
+            ]
+        );
+        let _gate = store.lock_gate().expect("pool gate released");
+        assert_eq!(
+            store
+                .put_object_locked(ObjectKind::FileBody, &[], b"abc")
+                .expect("verified prefix reuse"),
+            first
+        );
+        assert_eq!(calls.lock().expect("output calls").available, 0);
+    }
+
+    #[test]
+    fn parallel_batch_writer_refusal_settles_sibling_without_adoption() {
+        let dir = tempfile::tempdir().expect("state root");
+        let failed = PreparedObject::new(ObjectKind::Record, &[], &[0, 0, 0])
+            .expect("first object")
+            .reference;
+        let calls = Arc::new(Mutex::new(Calls {
+            available: 18 * 24,
+            dynamic_payload: true,
+            fail_before_digest: Some(failed.sha256),
+            ..Calls::default()
+        }));
+        let store = ObjectStore::open(dir.path())
+            .expect("pool")
+            .with_work_output_admission(Some(work_admission(Arc::clone(&calls))));
+        let binding = AttemptBinding {
+            root_incarnation: [1; 16],
+            repository_sha256: [2; 32],
+            revision_sha256: [3; 32],
+            source_event_sha256: [4; 32],
+            target_generation: 1,
+            base_root_sha256: None,
+            operations_sha256: [5; 32],
+            format: 1,
+        };
+        let lease = store.begin_attempt(&binding, &[]).expect("attempt");
+        let mut sibling = None;
+        let outcome = store.with_adoption_batch(&lease, |scoped| {
+            for value in 0..18_u8 {
+                let reference =
+                    scoped.put_adopted_object(&lease, ObjectKind::Record, &[], &[0, 0, value])?;
+                if value == 1 {
+                    sibling = Some(reference);
+                }
+            }
+            Ok(())
+        });
+        assert!(outcome.is_err());
+        assert!(store.adopted_roots().expect("roots").is_empty());
+        assert_eq!(
+            store
+                .read_journal_head(&binding.identity_name())
+                .expect("head")
+                .committed_length,
+            0
+        );
+        assert_eq!(
+            store
+                .read_object(&sibling.expect("sibling"), None)
+                .expect("settled sibling")
+                .1,
+            [0, 0, 1]
+        );
+        let calls = calls.lock().expect("calls");
+        assert!(calls.events.contains(&"before refused"));
+        assert!(calls.events.contains(&"absent"));
+        assert!(calls.events.contains(&"committed"));
+    }
+
+    #[test]
     fn admitted_batch_rejects_same_width_corruption_on_original_writer_before_adoption() {
         let dir = tempfile::tempdir().expect("state root");
         let calls = Arc::new(Mutex::new(Calls {
@@ -1369,6 +1595,17 @@ enum AtomicSync {
 struct AtomicWriteAdmission {
     pool: Option<Box<dyn quanta_index_core::pool_write_admission::PoolWritePermit>>,
     output: Option<Box<dyn PublicationOutputPermit>>,
+}
+
+struct PreparedPhysicalInstall {
+    directory: File,
+    name: String,
+    admission: AtomicWriteAdmission,
+}
+
+enum PreparedInstall {
+    Reused(ObjectRef),
+    New(PreparedPhysicalInstall),
 }
 
 enum AtomicWriteOutcome {
@@ -1806,13 +2043,17 @@ struct ObjectReadMeter {
 
 type ObjectContents = (Vec<ObjectRef>, Vec<u8>);
 
-// Reuse authenticated metadata within one metered request. Body/block payloads
-// stay outside the shared 4 MiB bound; every new request authenticates again.
+// Reuse authenticated metadata within one metered request. Only packed body
+// roots can occupy the shared 4 MiB cache; standalone bodies and blocks cannot.
 fn request_cache_eligible(kind: ObjectKind) -> bool {
     matches!(
         kind,
         ObjectKind::MapPage | ObjectKind::Record | ObjectKind::Segment | ObjectKind::FilePostings
     )
+}
+
+fn packed_body_kind(kind: ObjectKind) -> bool {
+    matches!(kind, ObjectKind::NativeBody | ObjectKind::FileBody)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1881,7 +2122,7 @@ impl RequestObjectCache {
         Ok(())
     }
 
-    fn get(&mut self, reference: &ObjectRef) -> Result<Option<ObjectContents>, CoreError> {
+    fn get_entry(&mut self, reference: &ObjectRef) -> Result<Option<&CachedObject>, CoreError> {
         if !self.entries.contains_key(reference) {
             return Ok(None);
         }
@@ -1889,7 +2130,40 @@ impl RequestObjectCache {
         let Some(entry) = self.entries.get(reference) else {
             return Err(invalid("request object cache entry disappeared"));
         };
-        Ok(Some((entry.dependencies.clone(), entry.payload.clone())))
+        Ok(Some(entry))
+    }
+
+    fn get(&mut self, reference: &ObjectRef) -> Result<Option<ObjectContents>, CoreError> {
+        Ok(self
+            .get_entry(reference)?
+            .map(|entry| (entry.dependencies.clone(), entry.payload.clone())))
+    }
+
+    fn select_record_group(&mut self, blob: &BlobRef) -> Result<Option<Vec<u8>>, CoreError> {
+        if self
+            .entries
+            .get(&blob.root)
+            .is_none_or(|entry| entry.record_group.is_none())
+        {
+            return Ok(None);
+        }
+        let entry = self
+            .get_entry(&blob.root)?
+            .ok_or_else(|| corrupt("cached record group disappeared"))?;
+        let Some((&2, bytes)) = entry.payload.split_first() else {
+            return Err(corrupt("cached record group has wrong payload tag"));
+        };
+        let index = entry
+            .record_group
+            .as_ref()
+            .ok_or_else(|| corrupt("cached record group has no index"))?;
+        let selected = index.select(bytes, blob.bytes, &blob.sha256)?;
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(selected.len())
+            .map_err(|error| storage("reserve cached logical record", error))?;
+        output.extend_from_slice(selected);
+        Ok(Some(output))
     }
 
     fn get_decoded(&mut self, descriptor: &PageRef) -> Result<Option<Arc<Page>>, CoreError> {
@@ -2273,9 +2547,13 @@ impl BlobCursor {
                         return Err(corrupt("blob cursor node has no payload tag"));
                     };
                     if tag == 2 {
-                        if !root || reference.kind != ObjectKind::Record || !dependencies.is_empty()
+                        if !root
+                            || !packed_records::packed_dependencies_valid(
+                                reference.kind,
+                                &dependencies,
+                            )
                         {
-                            return Err(corrupt("packed record has invalid kind or dependencies"));
+                            return Err(corrupt("packed payload has invalid kind or dependencies"));
                         }
                         let index = store.record_group_index(&reference, rest)?;
                         let selected =
@@ -4098,6 +4376,7 @@ impl ObjectStore {
             purpose,
             AtomicSync::Full,
             AtomicWriteAdmission { pool: None, output },
+            &mut BatchInstallProfile::disabled(),
         )? {
             AtomicWriteOutcome::Completed => Ok(()),
             AtomicWriteOutcome::AwaitingBarrier(_) => {
@@ -4114,6 +4393,7 @@ impl ObjectStore {
         purpose: AtomicPurpose,
         sync: AtomicSync,
         admission: AtomicWriteAdmission,
+        profile: &mut BatchInstallProfile,
     ) -> Result<AtomicWriteOutcome, CoreError> {
         static SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let AtomicWriteAdmission {
@@ -4129,62 +4409,69 @@ impl ObjectStore {
         let temp = format!(".{name}.tmp-{}-{sequence}", std::process::id());
         let encoded_width = u64::try_from(bytes.len())
             .map_err(|_error| invalid("encoded object width exceeds u64"))?;
-        if let Some(permit) = &permit {
-            permit.check_new_file_admitted()?;
-        }
-        let output_paths = if output.is_some() {
-            let directory = match purpose {
-                AtomicPurpose::PoolObject => {
-                    let prefix = name
-                        .get(..2)
-                        .ok_or_else(|| invalid("object digest prefix"))?;
-                    self.state_root
-                        .join(POOL_DIR)
-                        .join(OBJECTS_DIR)
-                        .join(prefix)
-                }
-                AtomicPurpose::Other
-                | AtomicPurpose::AttemptJournal
-                | AtomicPurpose::HardScanCheckpoint => {
-                    if std::ptr::eq(parent, self.pool.as_ref()) {
-                        self.state_root.join(POOL_DIR)
-                    } else if std::ptr::eq(parent, self.attempts.as_ref()) {
-                        self.state_root.join(POOL_DIR).join(ATTEMPTS_DIR)
-                    } else {
-                        return Err(invalid("admitted control parent differs from pool"));
+        let output_paths = profile.measure_atomic(AtomicPhase::Preflight, || {
+            if let Some(permit) = &permit {
+                permit.check_new_file_admitted()?;
+            }
+            let paths = if output.is_some() {
+                let directory = match purpose {
+                    AtomicPurpose::PoolObject => {
+                        let prefix = name
+                            .get(..2)
+                            .ok_or_else(|| invalid("object digest prefix"))?;
+                        self.state_root
+                            .join(POOL_DIR)
+                            .join(OBJECTS_DIR)
+                            .join(prefix)
                     }
-                }
+                    AtomicPurpose::Other
+                    | AtomicPurpose::AttemptJournal
+                    | AtomicPurpose::HardScanCheckpoint => {
+                        if std::ptr::eq(parent, self.pool.as_ref()) {
+                            self.state_root.join(POOL_DIR)
+                        } else if std::ptr::eq(parent, self.attempts.as_ref()) {
+                            self.state_root.join(POOL_DIR).join(ATTEMPTS_DIR)
+                        } else {
+                            return Err(invalid("admitted control parent differs from pool"));
+                        }
+                    }
+                };
+                Some((directory.join(&temp), directory.join(name)))
+            } else {
+                None
             };
-            Some((directory.join(&temp), directory.join(name)))
-        } else {
-            None
-        };
+            Ok::<_, CoreError>(paths)
+        })?;
         if let Some(output) = &mut output {
             let (staging, target) = output_paths
                 .as_ref()
                 .ok_or_else(|| invalid("admitted object paths missing"))?;
-            output.bind_output(staging, target)?;
-            output.creation_started()?;
+            profile.measure_atomic(AtomicPhase::BindOutput, || {
+                output.bind_output(staging, target)
+            })?;
+            profile.measure_atomic(AtomicPhase::CreationStart, || output.creation_started())?;
         }
-        let opened = openat(
-            parent,
-            temp.as_str(),
-            (if matches!(purpose, AtomicPurpose::PoolObject) {
-                OFlags::RDWR
-            } else {
-                OFlags::WRONLY
-            }) | OFlags::CLOEXEC
-                | OFlags::NOFOLLOW
-                | OFlags::CREATE
-                | OFlags::EXCL,
-            Mode::RUSR | Mode::WUSR,
-        );
+        let opened = profile.measure_atomic(AtomicPhase::TempOpen, || {
+            openat(
+                parent,
+                temp.as_str(),
+                (if matches!(purpose, AtomicPurpose::PoolObject) {
+                    OFlags::RDWR
+                } else {
+                    OFlags::WRONLY
+                }) | OFlags::CLOEXEC
+                    | OFlags::NOFOLLOW
+                    | OFlags::CREATE
+                    | OFlags::EXCL,
+                Mode::RUSR | Mode::WUSR,
+            )
+        });
         let mut file = match opened {
             Ok(file) => File::from(file),
             Err(error) => {
                 let mut primary = storage("create object temporary", error);
                 if let Some(output) = &mut output {
-                    let absence = (|| {
+                    let absence = profile.measure_atomic(AtomicPhase::Cleanup, || {
                         match rustix::fs::statat(parent, temp.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
                             Err(rustix::io::Errno::NOENT) => {}
                             Ok(_) => return Err(invalid("failed-create temporary is occupied")),
@@ -4196,7 +4483,7 @@ impl ObjectStore {
                             .sync_all()
                             .map_err(|sync| storage("sync failed-create parent", sync))?;
                         output.confirmed_uncreated_absent_and_synced()
-                    })();
+                    });
                     if let Err(cleanup) = absence {
                         primary = with_custody_context(primary, cleanup);
                     }
@@ -4208,26 +4495,35 @@ impl ObjectStore {
         let mut created_confirmed = false;
         let mut gate_conflict = false;
         let operation = (|| {
-            if let Some(output) = &mut output {
-                let (staging, _target) = output_paths
-                    .as_ref()
-                    .ok_or_else(|| invalid("admitted object paths missing"))?;
-                output.created(&file, staging)?;
-                created_confirmed = true;
-            }
-            if let Some(permit) = &mut permit {
-                permit.temp_created(self.pool_temp_identity(&temp))?;
-            }
+            profile.measure_atomic(AtomicPhase::WriterWitness, || {
+                if let Some(output) = &mut output {
+                    let (staging, _target) = output_paths
+                        .as_ref()
+                        .ok_or_else(|| invalid("admitted object paths missing"))?;
+                    output.created(&file, staging)?;
+                    created_confirmed = true;
+                }
+                if let Some(permit) = &mut permit {
+                    permit.temp_created(self.pool_temp_identity(&temp))?;
+                }
+                Ok::<(), CoreError>(())
+            })?;
             #[cfg(test)]
             reach_atomic_cut(purpose, 0, crate::publication_faults::Side::Before)?;
-            #[cfg(test)]
-            let write = if matches!(purpose, AtomicPurpose::PoolObject) {
-                crate::publication_faults::write_pool_object(&mut file, bytes)
-            } else {
-                file.write_all(bytes)
-            };
-            #[cfg(not(test))]
-            let write = file.write_all(bytes);
+            let write = profile.measure_atomic(AtomicPhase::Write, || {
+                #[cfg(test)]
+                {
+                    if matches!(purpose, AtomicPurpose::PoolObject) {
+                        crate::publication_faults::write_pool_object(&mut file, bytes)
+                    } else {
+                        file.write_all(bytes)
+                    }
+                }
+                #[cfg(not(test))]
+                {
+                    file.write_all(bytes)
+                }
+            });
             write.map_err(|error| storage("write object temporary", error))?;
             #[cfg(test)]
             reach_atomic_cut(purpose, 0, crate::publication_faults::Side::After)?;
@@ -4236,115 +4532,123 @@ impl ObjectStore {
             let batched_data = cfg!(target_vendor = "apple")
                 && matches!(purpose, AtomicPurpose::PoolObject)
                 && matches!(sync, AtomicSync::BatchedPoolData);
-            if batched_data {
-                crate::causal_profile::observed_sync_legacy(
-                    self.sync_totals.as_deref(),
-                    quanta_index_core::DiagnosticSyncLabelV1::PoolDataFilePosix,
-                    || {
-                        #[cfg(test)]
-                        crate::publication_faults::reach(
-                            crate::publication_faults::Cut::PoolObjectFileSyncCall,
-                            crate::publication_faults::Side::Before,
-                        )?;
-                        fsync(&file).map_err(std::io::Error::from)
-                    },
-                )
-                .map_err(|error| storage("sync batched object temporary", error))?;
-            } else {
-                let label = match purpose {
-                    AtomicPurpose::PoolObject => {
-                        quanta_index_core::DiagnosticSyncLabelV1::PoolObjectFileFull
-                    }
-                    AtomicPurpose::AttemptJournal
-                    | AtomicPurpose::HardScanCheckpoint
-                    | AtomicPurpose::Other => {
-                        quanta_index_core::DiagnosticSyncLabelV1::PoolControlFileFull
-                    }
-                };
-                crate::causal_profile::observed_sync_legacy(
-                    self.sync_totals.as_deref(),
-                    label,
-                    || {
-                        #[cfg(test)]
-                        if matches!(purpose, AtomicPurpose::PoolObject) {
+            profile.measure_atomic(AtomicPhase::FileSync, || {
+                if batched_data {
+                    crate::causal_profile::observed_sync_legacy(
+                        self.sync_totals.as_deref(),
+                        quanta_index_core::DiagnosticSyncLabelV1::PoolDataFilePosix,
+                        || {
+                            #[cfg(test)]
                             crate::publication_faults::reach(
                                 crate::publication_faults::Cut::PoolObjectFileSyncCall,
                                 crate::publication_faults::Side::Before,
                             )?;
+                            fsync(&file).map_err(std::io::Error::from)
+                        },
+                    )
+                    .map_err(|error| storage("sync batched object temporary", error))
+                } else {
+                    let label = match purpose {
+                        AtomicPurpose::PoolObject => {
+                            quanta_index_core::DiagnosticSyncLabelV1::PoolObjectFileFull
                         }
-                        file.sync_all()
-                    },
-                )
-                .map_err(|error| storage("sync object temporary", error))?;
-            }
+                        AtomicPurpose::AttemptJournal
+                        | AtomicPurpose::HardScanCheckpoint
+                        | AtomicPurpose::Other => {
+                            quanta_index_core::DiagnosticSyncLabelV1::PoolControlFileFull
+                        }
+                    };
+                    crate::causal_profile::observed_sync_legacy(
+                        self.sync_totals.as_deref(),
+                        label,
+                        || {
+                            #[cfg(test)]
+                            if matches!(purpose, AtomicPurpose::PoolObject) {
+                                crate::publication_faults::reach(
+                                    crate::publication_faults::Cut::PoolObjectFileSyncCall,
+                                    crate::publication_faults::Side::Before,
+                                )?;
+                            }
+                            file.sync_all()
+                        },
+                    )
+                    .map_err(|error| storage("sync object temporary", error))
+                }
+            })?;
             #[cfg(test)]
             reach_atomic_cut(purpose, 1, crate::publication_faults::Side::After)?;
             #[cfg(test)]
             reach_atomic_cut(purpose, 2, crate::publication_faults::Side::Before)?;
             if let Some(output) = &mut output {
-                output.before_replace()?;
-                if matches!(purpose, AtomicPurpose::PoolObject) || name == GATE_FILE {
-                    let rename = rustix::fs::renameat_with(
-                        parent,
-                        temp.as_str(),
-                        parent,
-                        name,
-                        rustix::fs::RenameFlags::NOREPLACE,
-                    );
-                    if name == GATE_FILE && matches!(rename, Err(rustix::io::Errno::EXIST)) {
-                        gate_conflict = true;
+                profile.measure_atomic(AtomicPhase::BeforeReplace, || output.before_replace())?;
+                profile.measure_atomic(AtomicPhase::Rename, || {
+                    if matches!(purpose, AtomicPurpose::PoolObject) || name == GATE_FILE {
+                        let rename = rustix::fs::renameat_with(
+                            parent,
+                            temp.as_str(),
+                            parent,
+                            name,
+                            rustix::fs::RenameFlags::NOREPLACE,
+                        );
+                        if name == GATE_FILE && matches!(rename, Err(rustix::io::Errno::EXIST)) {
+                            gate_conflict = true;
+                        }
+                        rename.map_err(|error| {
+                            storage(
+                                if name == GATE_FILE {
+                                    "publish lifecycle gate"
+                                } else {
+                                    "publish object"
+                                },
+                                error,
+                            )
+                        })
+                    } else {
+                        renameat(parent, temp.as_str(), parent, name)
+                            .map_err(|error| storage("publish control", error))
                     }
-                    rename.map_err(|error| {
-                        storage(
-                            if name == GATE_FILE {
-                                "publish lifecycle gate"
-                            } else {
-                                "publish object"
-                            },
-                            error,
-                        )
-                    })?;
-                } else {
-                    renameat(parent, temp.as_str(), parent, name)
-                        .map_err(|error| storage("publish control", error))?;
-                }
+                })?;
             } else {
-                renameat(parent, temp.as_str(), parent, name)
-                    .map_err(|error| storage("publish object", error))?;
+                profile.measure_atomic(AtomicPhase::Rename, || {
+                    renameat(parent, temp.as_str(), parent, name)
+                        .map_err(|error| storage("publish object", error))
+                })?;
             }
             published = true;
             if let Some(permit) = &mut permit {
-                permit.canonical_renamed()?;
+                profile.measure_atomic(AtomicPhase::PoolCommit, || permit.canonical_renamed())?;
             }
             #[cfg(test)]
             reach_atomic_cut(purpose, 2, crate::publication_faults::Side::After)?;
             #[cfg(test)]
             reach_atomic_cut(purpose, 3, crate::publication_faults::Side::Before)?;
-            if batched_data {
-                crate::causal_profile::observed_sync_legacy(
-                    self.sync_totals.as_deref(),
-                    quanta_index_core::DiagnosticSyncLabelV1::PoolDataShardPosix,
-                    || fsync(parent).map_err(std::io::Error::from),
-                )
-                .map_err(|error| storage("sync batched object directory", error))?;
-            } else {
-                let label = match purpose {
-                    AtomicPurpose::PoolObject => {
-                        quanta_index_core::DiagnosticSyncLabelV1::PoolObjectShardFull
-                    }
-                    AtomicPurpose::AttemptJournal
-                    | AtomicPurpose::HardScanCheckpoint
-                    | AtomicPurpose::Other => {
-                        quanta_index_core::DiagnosticSyncLabelV1::PoolControlParentFull
-                    }
-                };
-                crate::causal_profile::observed_sync_legacy(
-                    self.sync_totals.as_deref(),
-                    label,
-                    || parent.sync_all(),
-                )
-                .map_err(|error| storage("sync object directory", error))?;
-            }
+            profile.measure_atomic(AtomicPhase::ShardSync, || {
+                if batched_data {
+                    crate::causal_profile::observed_sync_legacy(
+                        self.sync_totals.as_deref(),
+                        quanta_index_core::DiagnosticSyncLabelV1::PoolDataShardPosix,
+                        || fsync(parent).map_err(std::io::Error::from),
+                    )
+                    .map_err(|error| storage("sync batched object directory", error))
+                } else {
+                    let label = match purpose {
+                        AtomicPurpose::PoolObject => {
+                            quanta_index_core::DiagnosticSyncLabelV1::PoolObjectShardFull
+                        }
+                        AtomicPurpose::AttemptJournal
+                        | AtomicPurpose::HardScanCheckpoint
+                        | AtomicPurpose::Other => {
+                            quanta_index_core::DiagnosticSyncLabelV1::PoolControlParentFull
+                        }
+                    };
+                    crate::causal_profile::observed_sync_legacy(
+                        self.sync_totals.as_deref(),
+                        label,
+                        || parent.sync_all(),
+                    )
+                    .map_err(|error| storage("sync object directory", error))
+                }
+            })?;
             #[cfg(test)]
             reach_atomic_cut(purpose, 3, crate::publication_faults::Side::After)?;
             #[cfg(not(test))]
@@ -4352,8 +4656,10 @@ impl ObjectStore {
             if matches!(purpose, AtomicPurpose::PoolObject)
                 && (!matches!(sync, AtomicSync::BatchedPoolData) || output.is_none())
             {
-                self.verify_pool_writer(&file, bytes)?;
-                self.verify_pool_writer_name(parent, name, &file)?;
+                profile.measure_atomic(AtomicPhase::Verify, || {
+                    self.verify_pool_writer(&file, bytes)?;
+                    self.verify_pool_writer_name(parent, name, &file)
+                })?;
             }
             Ok::<(), CoreError>(())
         })();
@@ -4369,11 +4675,13 @@ impl ObjectStore {
                     )));
                 }
                 if let Some(admitted) = &mut output {
-                    admitted.committed(file, encoded_width)?;
+                    profile.measure_atomic(AtomicPhase::Commit, || {
+                        admitted.committed(file, encoded_width)
+                    })?;
                 }
                 Ok(AtomicWriteOutcome::Completed)
             }
-            Err(error) => {
+            Err(error) => profile.measure_atomic(AtomicPhase::Cleanup, || {
                 let mut primary = error;
                 if let Some(admitted) = &mut output {
                     let absence = if published {
@@ -4435,7 +4743,7 @@ impl ObjectStore {
                     }
                 }
                 Err(primary)
-            }
+            }),
         }
     }
 
@@ -4445,16 +4753,20 @@ impl ObjectStore {
             .get(..2)
             .ok_or_else(|| invalid("object digest prefix"))?;
         let directory = if create {
-            ensure_dir_with_sync(
-                self.objects.as_ref(),
-                prefix,
-                self.sync_totals.as_deref(),
-                if self.adoption_batch.is_some() {
-                    AtomicSync::BatchedPoolData
-                } else {
-                    AtomicSync::Full
-                },
-            )?
+            match openat(self.objects.as_ref(), prefix, dir_flags(), Mode::empty()) {
+                Ok(opened) => File::from(opened),
+                Err(rustix::io::Errno::NOENT) => ensure_dir_with_sync(
+                    self.objects.as_ref(),
+                    prefix,
+                    self.sync_totals.as_deref(),
+                    if self.adoption_batch.is_some() {
+                        AtomicSync::BatchedPoolData
+                    } else {
+                        AtomicSync::Full
+                    },
+                )?,
+                Err(error) => return Err(storage("open nofollow directory", error)),
+            }
         } else {
             File::from(
                 openat(self.objects.as_ref(), prefix, dir_flags(), Mode::empty()).map_err(
@@ -4593,8 +4905,12 @@ impl ObjectStore {
         } else {
             AtomicSync::Full
         };
-        let (reference, newly_written, pending) =
-            self.install_prepared_object(prepared, dependencies, sync)?;
+        let (reference, newly_written, pending) = self.install_prepared_object(
+            prepared,
+            dependencies,
+            sync,
+            &mut BatchInstallProfile::disabled(),
+        )?;
         if pending.is_some() {
             return Err(invalid("admitted pool output escaped its prepared batch"));
         }
@@ -4606,70 +4922,127 @@ impl ObjectStore {
         prepared: &PreparedObject,
         dependencies: &[ObjectRef],
         sync: AtomicSync,
+        profile: &mut BatchInstallProfile,
     ) -> Result<(ObjectRef, bool, Option<PendingOutput>), CoreError> {
+        let planned = self.prepare_prepared_object_install(prepared, dependencies, profile)?;
+        self.finish_prepared_object_install(prepared, sync, planned, profile)
+    }
+
+    fn prepare_prepared_object_install(
+        &self,
+        prepared: &PreparedObject,
+        dependencies: &[ObjectRef],
+        profile: &mut BatchInstallProfile,
+    ) -> Result<PreparedInstall, CoreError> {
         let reference = &prepared.reference;
-        validate_object_lifetime(
-            self.work_output_admission.as_ref(),
-            self.object_lifetime.as_ref(),
-        )?;
-        if let Some(lifetime) = &self.object_lifetime {
-            lifetime.validate_state_root(&self.state_root)?;
-        }
-        self.reconcile_pending_pool_unlinks_locked()?;
-        let mut permit = self
-            .pool_write_admission
-            .as_ref()
-            .map(|admission| admission.try_reserve(reference.sha256, reference.bytes))
-            .transpose()?;
-        let directory = self.object_dir(&reference.sha256, true)?;
-        let name = hex_digest(&reference.sha256);
-        match rustix::fs::statat(&directory, name.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
-            Ok(_present) => {
-                let (existing, _) = self.read_object_from_pool(reference, None, true, None)?;
-                if existing != canonical_deps(dependencies)? {
-                    return Err(corrupt("existing digest object has different dependencies"));
-                }
-                if let Some(totals) = self.sync_totals.as_deref() {
-                    totals.record_reused_object(diagnostic_object_kind(reference.kind));
-                }
-                if let Some(permit) = &mut permit {
-                    permit.reused_verified()?;
-                }
-                return Ok((reference.clone(), false, None));
+        profile.measure(InstallPhase::Custody, || {
+            validate_object_lifetime(
+                self.work_output_admission.as_ref(),
+                self.object_lifetime.as_ref(),
+            )?;
+            if let Some(lifetime) = &self.object_lifetime {
+                lifetime.validate_state_root(&self.state_root)?;
             }
-            Err(rustix::io::Errno::NOENT) => {}
-            Err(error) => return Err(storage("probe referenced object", error)),
+            self.reconcile_pending_pool_unlinks_locked()
+        })?;
+        let mut permit = profile.measure(InstallPhase::PoolReserve, || {
+            self.pool_write_admission
+                .as_ref()
+                .map(|admission| admission.try_reserve(reference.sha256, reference.bytes))
+                .transpose()
+        })?;
+        let directory = profile.measure(InstallPhase::Shard, || {
+            self.object_dir(&reference.sha256, true)
+        })?;
+        let name = hex_digest(&reference.sha256);
+        let existing = profile.measure(InstallPhase::Probe, || {
+            match rustix::fs::statat(&directory, name.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(_present) => {
+                    let (existing, _) = self.read_object_from_pool(reference, None, true, None)?;
+                    if existing != canonical_deps(dependencies)? {
+                        return Err(corrupt("existing digest object has different dependencies"));
+                    }
+                    if let Some(totals) = self.sync_totals.as_deref() {
+                        totals.record_reused_object(diagnostic_object_kind(reference.kind));
+                    }
+                    if let Some(permit) = &mut permit {
+                        permit.reused_verified()?;
+                    }
+                    Ok(Some(reference.clone()))
+                }
+                Err(rustix::io::Errno::NOENT) => Ok(None),
+                Err(error) => Err(storage("probe referenced object", error)),
+            }
+        })?;
+        if let Some(existing) = existing {
+            return Ok(PreparedInstall::Reused(existing));
         }
-        let output = self
-            .work_output_admission
-            .as_ref()
-            .map(|admission| {
-                admission.reserve(PublicationOutputReservation::new(
-                    PublicationOutputClass::Lexical,
-                    reference.bytes,
-                    1,
-                )?)
+        let output = profile
+            .measure(InstallPhase::OutputReserve, || {
+                self.work_output_admission
+                    .as_ref()
+                    .map(|admission| {
+                        admission.reserve(PublicationOutputReservation::new(
+                            PublicationOutputClass::Lexical,
+                            reference.bytes,
+                            1,
+                        )?)
+                    })
+                    .transpose()
             })
-            .transpose()?;
+            .inspect_err(|error| {
+                if crate::causal_profile::enabled() {
+                    eprintln!(
+                        "QI_CAUSAL_V1 kind=lexical_output_reserve_refused object_kind={:?} error={error:?}",
+                        reference.kind
+                    );
+                }
+            })?;
+        Ok(PreparedInstall::New(PreparedPhysicalInstall {
+            directory,
+            name,
+            admission: AtomicWriteAdmission {
+                pool: permit,
+                output,
+            },
+        }))
+    }
+
+    fn finish_prepared_object_install(
+        &self,
+        prepared: &PreparedObject,
+        sync: AtomicSync,
+        planned: PreparedInstall,
+        profile: &mut BatchInstallProfile,
+    ) -> Result<(ObjectRef, bool, Option<PendingOutput>), CoreError> {
+        let (directory, name, admission) = match planned {
+            PreparedInstall::Reused(reference) => return Ok((reference, false, None)),
+            PreparedInstall::New(PreparedPhysicalInstall {
+                directory,
+                name,
+                admission,
+            }) => (directory, name, admission),
+        };
+        let atomic_started = profile.start();
         let outcome = self.write_atomic_at_inner(
             &directory,
             &name,
             &prepared.encoded,
             AtomicPurpose::PoolObject,
             sync,
-            AtomicWriteAdmission {
-                pool: permit,
-                output,
-            },
-        )?;
+            admission,
+            profile,
+        );
+        profile.record_atomic_total(atomic_started, outcome.is_err());
+        let outcome = outcome?;
         let pending = match outcome {
             AtomicWriteOutcome::Completed => None,
             AtomicWriteOutcome::AwaitingBarrier(pending) => Some(pending),
         };
         if let Some(totals) = self.sync_totals.as_deref() {
-            totals.record_new_object(diagnostic_object_kind(reference.kind));
+            totals.record_new_object(diagnostic_object_kind(prepared.reference.kind));
         }
-        Ok((reference.clone(), true, pending))
+        Ok((prepared.reference.clone(), true, pending))
     }
 
     pub(super) fn record_map_page_mutation(&self) {
@@ -4817,7 +5190,7 @@ impl ObjectStore {
         budget: Option<&RequestBudgetV1>,
     ) -> Result<(Vec<ObjectRef>, Vec<u8>), CoreError> {
         self.require_prepared_batch_open()?;
-        if request_cache_eligible(reference.kind)
+        if (request_cache_eligible(reference.kind) || packed_body_kind(reference.kind))
             && let Some(meter) = &self.read_meter
         {
             checkpoint(budget, "lexical:object:read")?;
@@ -4832,7 +5205,8 @@ impl ObjectStore {
         }
         let result = self.read_object_inner(reference, budget, false, None);
         if let Ok((dependencies, payload)) = &result
-            && request_cache_eligible(reference.kind)
+            && (request_cache_eligible(reference.kind)
+                || packed_body_kind(reference.kind) && payload.first() == Some(&2))
             && let Some(meter) = &self.read_meter
         {
             meter
@@ -5047,6 +5421,19 @@ impl ObjectStore {
         reference: &ObjectRef,
         budget: Option<&RequestBudgetV1>,
     ) -> Result<Vec<ObjectRef>, CoreError> {
+        if (request_cache_eligible(reference.kind) || packed_body_kind(reference.kind))
+            && let Some(meter) = &self.read_meter
+        {
+            self.require_prepared_batch_open()?;
+            checkpoint(budget, "lexical:object:read")?;
+            let mut cache = meter
+                .objects_cache
+                .lock()
+                .map_err(|error| storage("lock request object cache", error))?;
+            if let Some(entry) = cache.get_entry(reference)? {
+                return Ok(entry.dependencies.clone());
+            }
+        }
         let (dependencies, _payload) = self.read_object(reference, budget)?;
         Ok(dependencies)
     }
@@ -5054,10 +5441,11 @@ impl ObjectStore {
     pub(crate) fn object_dependencies_for_closure(
         &self,
         reference: &ObjectRef,
+        budget: Option<&RequestBudgetV1>,
         totals: &mut crate::causal_profile::ClosureReadTotalsV1,
     ) -> Result<Vec<ObjectRef>, CoreError> {
         let (dependencies, _payload) =
-            self.read_object_inner(reference, None, false, Some(totals))?;
+            self.read_object_inner(reference, budget, false, Some(totals))?;
         Ok(dependencies)
     }
 
@@ -5155,6 +5543,22 @@ impl ObjectStore {
         if !blob.root.kind.is_payload() || blob.bytes > max_bytes {
             return Err(invalid("logical blob kind or byte admission exceeded"));
         }
+        if (blob.root.kind == ObjectKind::Record || packed_body_kind(blob.root.kind))
+            && let Some(meter) = &self.read_meter
+        {
+            self.require_prepared_batch_open()?;
+            checkpoint(budget, "lexical:blob:read")?;
+            let cached = meter
+                .objects_cache
+                .lock()
+                .map_err(|error| storage("lock packed record cache", error))?
+                .select_record_group(blob)?;
+            // The cached index was derived from the authenticated immutable
+            // payload and selects by the computed digest and exact length.
+            if let Some(body) = cached {
+                return Ok(body);
+            }
+        }
         let len =
             usize::try_from(blob.bytes).map_err(|error| storage("blob length width", error))?;
         let mut output = Vec::new();
@@ -5232,8 +5636,8 @@ impl ObjectStore {
             return Err(corrupt("blob root has no payload tag"));
         };
         if tag == 2 {
-            if reference.kind != ObjectKind::Record || !deps.is_empty() {
-                return Err(corrupt("packed record has invalid kind or dependencies"));
+            if !packed_records::packed_dependencies_valid(reference.kind, &deps) {
+                return Err(corrupt("packed payload has invalid kind or dependencies"));
             }
             let digest =
                 logical_digest.ok_or_else(|| corrupt("packed record is not a blob root"))?;

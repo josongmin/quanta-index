@@ -3,6 +3,8 @@
 //! Counts bytes returned by Write and the reached sync operations. It does not
 //! measure device traffic, SQL/WAL operation counts, namespace opening or GC.
 //! Custody time includes the reached authority/sink call, not SQL alone.
+//! An atomic advance counts both logical custody sides; its single elapsed
+//! call is attributed to confirm_elapsed, not duplicated in reserve_elapsed.
 //! Snapshots require no operation in flight; invalid/poisoned accounting refuses.
 //! Elapsed call sums exclude collector locking and may overlap across workers.
 
@@ -40,11 +42,13 @@ pub struct ObjectIoSnapshot {
     pub file_sync_elapsed: Duration,
     pub directory_sync_elapsed: Duration,
     pub barrier_elapsed: Duration,
+    /// Logical reservation calls, including the reservation side of an advance.
     pub reserve_calls: u64,
     /// Object entries passed to reached reserve calls, including refusals/replay.
     pub reserve_objects: u64,
     pub single_object_reserves: u64,
     pub failed_reserves: u64,
+    /// Logical confirmation calls, including the confirmation side of an advance.
     pub confirm_calls: u64,
     /// Object entries passed to reached confirm calls, not newly installed files.
     pub confirm_objects: u64,
@@ -178,6 +182,7 @@ enum Operation {
     Write,
     Sync(SyncKind),
     Custody(CustodyKind, usize),
+    Advance { confirmed: usize, next: usize },
 }
 
 fn add(target: &mut u64, amount: u64) -> bool {
@@ -194,6 +199,21 @@ fn add_elapsed(target: &mut Duration, elapsed: Option<Duration>) -> bool {
             *target = next;
             true
         })
+}
+
+fn count_custody_start(totals: &mut ObjectIoSnapshot, kind: CustodyKind, objects: usize) -> bool {
+    match kind {
+        CustodyKind::Reserve => {
+            add(&mut totals.reserve_calls, 1)
+                && u64::try_from(objects).is_ok_and(|count| add(&mut totals.reserve_objects, count))
+                && (objects != 1 || add(&mut totals.single_object_reserves, 1))
+        }
+        CustodyKind::Confirm => {
+            add(&mut totals.confirm_calls, 1)
+                && u64::try_from(objects).is_ok_and(|count| add(&mut totals.confirm_objects, count))
+                && (objects != 1 || add(&mut totals.single_object_confirms, 1))
+        }
+    }
 }
 
 impl ObjectIoObservation {
@@ -226,17 +246,15 @@ impl ObjectIoObservation {
                 }
                 #[cfg(any(target_os = "macos", test))]
                 Operation::Sync(SyncKind::Barrier) => add(&mut state.totals.barrier_calls, 1),
-                Operation::Custody(CustodyKind::Reserve, objects) => {
-                    add(&mut state.totals.reserve_calls, 1)
-                        && u64::try_from(objects)
-                            .is_ok_and(|count| add(&mut state.totals.reserve_objects, count))
-                        && (objects != 1 || add(&mut state.totals.single_object_reserves, 1))
+                Operation::Custody(kind, objects) => {
+                    count_custody_start(&mut state.totals, kind, objects)
                 }
-                Operation::Custody(CustodyKind::Confirm, objects) => {
-                    add(&mut state.totals.confirm_calls, 1)
-                        && u64::try_from(objects)
-                            .is_ok_and(|count| add(&mut state.totals.confirm_objects, count))
-                        && (objects != 1 || add(&mut state.totals.single_object_confirms, 1))
+                Operation::Advance { confirmed, next } => {
+                    let reserve =
+                        count_custody_start(&mut state.totals, CustodyKind::Reserve, next);
+                    let confirm =
+                        count_custody_start(&mut state.totals, CustodyKind::Confirm, confirmed);
+                    reserve && confirm
                 }
             };
             let entered = add(&mut state.in_flight, 1);
@@ -282,6 +300,11 @@ impl ObjectIoObservation {
                 Operation::Custody(CustodyKind::Confirm, _) => {
                     !failed || add(&mut state.totals.failed_confirms, 1)
                 }
+                Operation::Advance { .. } => {
+                    let reserve = !failed || add(&mut state.totals.failed_reserves, 1);
+                    let confirm = !failed || add(&mut state.totals.failed_confirms, 1);
+                    reserve && confirm
+                }
             };
             let timed = match operation {
                 Operation::Write => add_elapsed(&mut state.totals.write_elapsed, elapsed),
@@ -298,7 +321,7 @@ impl ObjectIoObservation {
                 Operation::Custody(CustodyKind::Reserve, _) => {
                     add_elapsed(&mut state.totals.reserve_elapsed, elapsed)
                 }
-                Operation::Custody(CustodyKind::Confirm, _) => {
+                Operation::Custody(CustodyKind::Confirm, _) | Operation::Advance { .. } => {
                     add_elapsed(&mut state.totals.confirm_elapsed, elapsed)
                 }
             };
@@ -326,6 +349,18 @@ impl ObjectIoObservation {
         operation: impl FnOnce() -> Result<(), IndexError>,
     ) -> Result<(), IndexError> {
         self.call(Operation::Custody(kind, objects), operation)
+    }
+
+    /// Observe one atomic authority call as both logical custody sides.
+    /// The single call duration belongs to confirm_elapsed, so the aggregate
+    /// install-call elapsed total does not double-count it.
+    pub(super) fn advance(
+        &self,
+        confirmed: usize,
+        next: usize,
+        operation: impl FnOnce() -> Result<(), IndexError>,
+    ) -> Result<(), IndexError> {
+        self.call(Operation::Advance { confirmed, next }, operation)
     }
 
     fn call(
@@ -746,6 +781,62 @@ mod tests {
         future.write_elapsed = Duration::MAX;
         check!(matches!(
             observer.snapshot()?.checked_since(&future),
+            Err(IndexError::BackendViolation(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn atomic_advance_counts_each_logical_side_and_single_elapsed_call() -> Result<(), IndexError> {
+        let observer = ObjectIoObservation::default();
+        let before = observer.snapshot()?;
+        let started = Instant::now();
+        let delay = Duration::from_millis(2);
+        observer.advance(2, 1, || {
+            check!(matches!(
+                observer.snapshot(),
+                Err(IndexError::InvalidInput(_))
+            ));
+            std::thread::sleep(delay);
+            Ok(())
+        })?;
+        check!(matches!(
+            observer.advance(1, 3, || {
+                std::thread::sleep(delay);
+                Err(IndexError::FenceLost)
+            }),
+            Err(IndexError::FenceLost)
+        ));
+        let wall = Instant::now()
+            .checked_duration_since(started)
+            .ok_or_else(|| IndexError::BackendViolation("fixture clock regressed".into()))?;
+        let sample = observer.snapshot()?.checked_since(&before)?;
+        check!(sample.reserve_calls == 2 && sample.reserve_objects == 4);
+        check!(sample.confirm_calls == 2 && sample.confirm_objects == 3);
+        check!(sample.single_object_reserves == 1 && sample.single_object_confirms == 1);
+        check!(sample.failed_reserves == 1 && sample.failed_confirms == 1);
+        check!(sample.reserve_elapsed == Duration::ZERO);
+        check!(sample.confirm_elapsed >= delay + delay);
+        check!(sample.elapsed_install_call_time()? == sample.confirm_elapsed);
+        check!(sample.elapsed_install_call_time()? <= wall);
+        Ok(())
+    }
+
+    #[test]
+    fn atomic_advance_overflow_preserves_original_failure() -> Result<(), IndexError> {
+        let observer = ObjectIoObservation::default();
+        observer
+            .state
+            .lock()
+            .map_err(|_poison| IndexError::Storage("fixture lock poisoned".into()))?
+            .totals
+            .reserve_objects = u64::MAX;
+        check!(matches!(
+            observer.advance(1, 1, || Err(IndexError::FenceLost)),
+            Err(IndexError::FenceLost)
+        ));
+        check!(matches!(
+            observer.snapshot(),
             Err(IndexError::BackendViolation(_))
         ));
         Ok(())

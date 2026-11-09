@@ -992,7 +992,7 @@ impl LoadedGeneration {
     ) -> Result<Vec<SemanticSearchHit>, CoreError> {
         let lane = self.vector_index.lane_kind();
         let hits = self
-            .run_lane(query_vector, top_k, filter.clone(), watch, lane)
+            .run_lane(query_vector, top_k, filter.clone(), watch, lane, false)
             .await?;
         if lane == DenseLaneKindV1::Exact || hits.len() >= top_k {
             return Ok(hits);
@@ -1008,8 +1008,15 @@ impl LoadedGeneration {
             return Ok(hits);
         }
         watch.tallies.count_exact_completion();
-        self.run_lane(query_vector, top_k, filter, watch, DenseLaneKindV1::Exact)
-            .await
+        self.run_lane(
+            query_vector,
+            top_k,
+            filter,
+            watch,
+            DenseLaneKindV1::Exact,
+            false,
+        )
+        .await
     }
 
     /// One pass through `lane`: the sealed effort pinned for the approximate
@@ -1022,6 +1029,7 @@ impl LoadedGeneration {
         filter: Option<String>,
         watch: DenseLaneBudgetV1<'_>,
         lane: DenseLaneKindV1,
+        canonical_ties: bool,
     ) -> Result<Vec<SemanticSearchHit>, CoreError> {
         let query = self
             .table
@@ -1033,6 +1041,15 @@ impl LoadedGeneration {
             DenseLaneKindV1::Approximate => self.vector_index.apply(query, top_k)?,
             DenseLaneKindV1::Exact => query.bypass_vector_index(),
         };
+        if canonical_ties {
+            vector_query = vector_query.exact_tie_order(&[
+                COLUMN_SOURCE_REPO_ID,
+                COLUMN_REPO_RELATIVE_PATH,
+                COLUMN_START_LINE,
+                COLUMN_END_LINE,
+                COLUMN_EMBEDDING_ID,
+            ]);
+        }
         if let Some(predicate) = filter {
             vector_query = vector_query.only_if(predicate);
         }
@@ -1312,6 +1329,23 @@ impl PersistedSemanticSearcher {
             tallies: &self.tallies,
         }
     }
+
+    fn charge_exact_scan_work(&self, budget: &RequestBudgetV1) -> Result<(), CoreError> {
+        // The seal bounds the physical scan, including rows excluded by a
+        // pushed-down predicate. Charge before Lance starts work.
+        let dimensions = u64::try_from(self.loaded.dimension).map_err(|error| {
+            CoreError::InvalidContract(format!("semantic dimension overflow: {error}"))
+        })?;
+        let work = self
+            .loaded
+            .sealed_row_count
+            .checked_mul(dimensions)
+            .ok_or_else(|| CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SemanticWorkBudgetExceeded,
+                message: "sealed semantic generation exceeds work representation".into(),
+            })?;
+        budget.consume_semantic_work_v1(work)
+    }
 }
 
 fn top_k_limit(top_k: u32) -> Result<usize, CoreError> {
@@ -1376,6 +1410,40 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         .map(LoadedGeneration::map_hits_to_candidates)
     }
 
+    fn search_constrained_canonical_ties(
+        &self,
+        query_vector: &[f32],
+        constraints: &QueryConstraintSetV1,
+        top_k: u32,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        SemanticPolicy::validate_fetch_size(top_k)?;
+        self.loaded.validate_query_vector(query_vector)?;
+        if budget.semantic_work_consumed_v1()?.is_some() {
+            self.charge_exact_scan_work(budget)?;
+        }
+        let limit = top_k_limit(top_k)?;
+        let filter = LoadedGeneration::combine_filters(
+            LoadedGeneration::language_any_of_filter(constraints)
+                .into_iter()
+                .chain(LoadedGeneration::exact_repo_relative_path_filter(
+                    constraints,
+                )),
+        );
+        crate::run_blocking(
+            &self.runtime,
+            self.loaded.run_lane(
+                query_vector,
+                limit,
+                filter,
+                self.watch(budget),
+                DenseLaneKindV1::Exact,
+                true,
+            ),
+        )
+        .map(LoadedGeneration::map_hits_to_candidates)
+    }
+
     fn search_work_bounded_v1(
         &self,
         query_vector: &[f32],
@@ -1393,18 +1461,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
         // The sealed physical row count is checked when the generation opens.
         // Admit every possible vector component score before the exact lane.
         self.loaded.validate_query_vector(query_vector)?;
-        let dimensions = u64::try_from(self.loaded.dimension).map_err(|error| {
-            CoreError::InvalidContract(format!("semantic dimension overflow: {error}"))
-        })?;
-        let work = self
-            .loaded
-            .sealed_row_count
-            .checked_mul(dimensions)
-            .ok_or_else(|| CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::SemanticWorkBudgetExceeded,
-                message: "sealed semantic generation exceeds work representation".into(),
-            })?;
-        budget.consume_semantic_work_v1(work)?;
+        self.charge_exact_scan_work(budget)?;
         crate::run_blocking(
             &self.runtime,
             self.loaded.run_lane(
@@ -1419,6 +1476,7 @@ impl SemanticSearcher for PersistedSemanticSearcher {
                 ),
                 self.watch(budget),
                 DenseLaneKindV1::Exact,
+                false,
             ),
         )
         .map(LoadedGeneration::map_hits_to_candidates)

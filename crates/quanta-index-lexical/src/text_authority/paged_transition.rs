@@ -16,7 +16,7 @@ use crate::lexical_store::{
 };
 use crate::maintenance_merge_facts::{NativeMergeOutputFacts, NativeRunMergeFacts};
 use crate::text_authority::paged_manifest::NativeRoot;
-use crate::text_authority::paged_merge_proof::NativeMergeProof;
+use crate::text_authority::paged_merge_proof::{NativeMergeProof, RouteWitness};
 use crate::text_authority::paged_segment::decode_body_for_preparation;
 use crate::text_authority::paged_wire::{
     CurrentRecord, MAX_BODY_BYTES, NativeSourceEdit, SegmentDescriptor, current_key, encode_source,
@@ -33,58 +33,6 @@ const MAX_RECORD_BYTES: u64 = 64 * 1024;
 // diff or the authenticated closure traversal. Account for B-tree nodes and
 // allocator overhead conservatively; a large transition uses map_get instead.
 const MAX_ROUTE_WITNESS_BYTES: usize = 4 * 1024 * 1024;
-const ROUTE_WITNESS_SEGMENT_CHARGE: usize = 256;
-const ROUTE_WITNESS_OBJECT_CHARGE: usize = 256;
-
-pub(super) struct RouteWitness {
-    roots: BTreeMap<u64, BTreeSet<crate::lexical_store::ObjectRef>>,
-    charged_bytes: usize,
-}
-
-impl RouteWitness {
-    fn new() -> Self {
-        Self {
-            roots: BTreeMap::new(),
-            charged_bytes: 0,
-        }
-    }
-
-    pub(super) fn roots(
-        &self,
-        segment_key: u64,
-    ) -> Option<&BTreeSet<crate::lexical_store::ObjectRef>> {
-        self.roots.get(&segment_key)
-    }
-
-    fn add(
-        &mut self,
-        segment_key: u64,
-        root: &crate::lexical_store::ObjectRef,
-        limit_bytes: usize,
-    ) -> bool {
-        let new_segment = !self.roots.contains_key(&segment_key);
-        let new_object = new_segment
-            || self
-                .roots
-                .get(&segment_key)
-                .is_none_or(|roots| !roots.contains(root));
-        let charge = usize::from(new_segment) * ROUTE_WITNESS_SEGMENT_CHARGE
-            + usize::from(new_object) * ROUTE_WITNESS_OBJECT_CHARGE;
-        let Some(total) = self.charged_bytes.checked_add(charge) else {
-            return false;
-        };
-        if total > limit_bytes {
-            return false;
-        }
-        let _inserted = self
-            .roots
-            .entry(segment_key)
-            .or_default()
-            .insert(root.clone());
-        self.charged_bytes = total;
-        true
-    }
-}
 
 struct CleanSelection {
     segments: BTreeSet<u64>,
@@ -601,7 +549,7 @@ pub(crate) fn verify_transition_for_seal_with_policy(
         } else if segment_key >= first_new_segment_id
             && let Some(witness) = route_witness
                 .as_ref()
-                .filter(|witness| witness.roots(segment_key).is_some())
+                .filter(|witness| witness.pages(segment_key).is_some())
         {
             super::paged_verify::independently_count_segment_index_from_verified_route_diff(
                 store, root, &key, &reference, witness, budget,
@@ -629,7 +577,7 @@ pub(crate) fn verify_transition_for_seal_with_policy(
         selection_progress,
     )?;
     if clean_selection.run_ids.is_empty() {
-        return Ok(NativeMergeProof::without_merge());
+        return Ok(NativeMergeProof::without_merge(route_witness));
     }
     Ok(NativeMergeProof {
         input: NativeRunMergeFacts {
@@ -645,6 +593,7 @@ pub(crate) fn verify_transition_for_seal_with_policy(
         },
         clean_doc_ids,
         new_segment_index_bytes,
+        routes: route_witness,
     })
 }
 
@@ -1500,7 +1449,7 @@ fn verify_route_diff_with_witness_limit(
     budget: Option<&RequestBudgetV1>,
     witness_limit_bytes: usize,
 ) -> Result<Option<RouteWitness>, CoreError> {
-    let mut witness = Some(RouteWitness::new());
+    let mut witness = Some(RouteWitness::new(&root.gram_routes, &root.term_routes));
     for (before, after, kind) in [
         (
             &old.gram_routes,
@@ -1536,7 +1485,7 @@ fn verify_route_diff_with_witness_limit(
                         return Err(corrupt("new route posting kind differs"));
                     }
                     if let Some(retained) = witness.as_mut()
-                        && !retained.add(segment_key, &reference.root, witness_limit_bytes)
+                        && !retained.add(segment_key, key, reference, witness_limit_bytes)?
                     {
                         // Preserve the independent hash/count proof and use
                         // the original point-lookups for this large transition.

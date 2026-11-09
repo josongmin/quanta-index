@@ -530,6 +530,339 @@ fn reserved_output_rejects_other_parent_and_started_ticket_before_path_claim() -
 }
 
 #[test]
+fn private_parent_reserved_output_uses_current_existing_anchor_and_releases_claim() -> TestResult {
+    let (_dir, root, _lease, authority, common) = fixture()?;
+    let original = root.join("private-current");
+    let displaced = root.join("private-displaced");
+    fs::create_dir(&original)?;
+    fs::set_permissions(&original, fs::Permissions::from_mode(0o700))?;
+    fs::rename(&original, &displaced)?;
+    fs::create_dir(&original)?;
+    fs::set_permissions(&original, fs::Permissions::from_mode(0o700))?;
+    let target = original.join("object");
+    let baseline = authority.snapshot()?;
+    let parent = common.reserve_publication_allowance(4, 1)?;
+    let mut ticket = Some(parent.reserve_output(4)?);
+    let mutation = common.begin_create_with_reserved_output_in_private_parent(
+        &target,
+        4,
+        Arc::clone(&parent),
+        &mut ticket,
+    )?;
+    require!(ticket.is_none())?;
+    require_eq!(
+        mutation.anchor.parent.metadata()?.ino(),
+        fs::metadata(&original)?.ino()
+    )?;
+    require_eq!(
+        mutation.anchor.parent.metadata()?.dev(),
+        fs::metadata(&root)?.dev()
+    )?;
+    require_eq!(
+        mutation.anchor.relative.as_path(),
+        Path::new("private-current/object")
+    )?;
+    drop(mutation);
+    drop(parent);
+    require_eq!(authority.snapshot()?, baseline)?;
+    require!(common.is_quiescent()?)?;
+    Ok(())
+}
+
+#[test]
+fn private_parent_swap_between_claim_and_temp_declaration_cannot_adopt_replacement() -> TestResult {
+    let (_dir, root, _lease, authority, common) = fixture()?;
+    let parent_path = root.join("private-swap-temp");
+    let displaced = root.join("private-swap-temp-displaced");
+    fs::create_dir(&parent_path)?;
+    fs::set_permissions(&parent_path, fs::Permissions::from_mode(0o700))?;
+    let target = parent_path.join("object");
+    let temporary = parent_path.join("staging");
+    let baseline = authority.snapshot()?;
+    let parent = common.reserve_publication_allowance(4, 1)?;
+    let mut ticket = Some(parent.reserve_output(4)?);
+    let mut mutation = common.begin_create_with_reserved_output_in_private_parent(
+        &target,
+        4,
+        Arc::clone(&parent),
+        &mut ticket,
+    )?;
+
+    fs::rename(&parent_path, &displaced)?;
+    fs::create_dir(&parent_path)?;
+    fs::set_permissions(&parent_path, fs::Permissions::from_mode(0o700))?;
+    fs::write(parent_path.join("sentinel"), b"keep")?;
+    mutation.declare_temp_path_from_claimed_parent(&temporary)?;
+    let declared = mutation
+        .declared_temp
+        .as_ref()
+        .ok_or("temp anchor missing")?;
+    require_eq!(declared.parent.metadata()?.ino(), fs::metadata(&displaced)?.ino())?;
+    require!(!temporary.exists() && !target.exists())?;
+    require!(matches!(
+        mutation.before_replace(&target),
+        Err(CoreError::InvalidContract(_))
+    ))?;
+    require_eq!(fs::read(parent_path.join("sentinel"))?, b"keep")?;
+    require!(!displaced.join("object").exists())?;
+    drop(mutation);
+    drop(parent);
+    require_eq!(authority.snapshot()?, baseline)?;
+    require!(common.is_quiescent()?)?;
+    Ok(())
+}
+
+#[test]
+fn private_parent_swap_before_replace_refuses_detached_output_anchor() -> TestResult {
+    let (_dir, root, _lease, authority, common) = fixture()?;
+    let parent_path = root.join("private-swap-before");
+    let displaced = root.join("private-swap-before-displaced");
+    fs::create_dir(&parent_path)?;
+    fs::set_permissions(&parent_path, fs::Permissions::from_mode(0o700))?;
+    let target = parent_path.join("object");
+    let baseline = authority.snapshot()?;
+    let parent = common.reserve_publication_allowance(4, 1)?;
+    let mut ticket = Some(parent.reserve_output(4)?);
+    let mutation = common.begin_create_with_reserved_output_in_private_parent(
+        &target,
+        4,
+        Arc::clone(&parent),
+        &mut ticket,
+    )?;
+    fs::rename(&parent_path, &displaced)?;
+    fs::create_dir(&parent_path)?;
+    fs::set_permissions(&parent_path, fs::Permissions::from_mode(0o700))?;
+    fs::write(parent_path.join("sentinel"), b"keep")?;
+    require!(matches!(
+        mutation.before_replace(&target),
+        Err(CoreError::InvalidContract(_))
+    ))?;
+    require!(!target.exists())?;
+    require_eq!(fs::read(parent_path.join("sentinel"))?, b"keep")?;
+    drop(mutation);
+    drop(parent);
+    require_eq!(authority.snapshot()?, baseline)?;
+    require!(common.is_quiescent()?)?;
+    Ok(())
+}
+
+#[test]
+fn private_parent_swap_after_replace_check_cannot_settle_detached_inode() -> TestResult {
+    let (_dir, root, _lease, authority, common) = fixture()?;
+    let parent_path = root.join("private-swap-after");
+    let displaced = root.join("private-swap-after-displaced");
+    fs::create_dir(&parent_path)?;
+    fs::set_permissions(&parent_path, fs::Permissions::from_mode(0o700))?;
+    let target = parent_path.join("object");
+    let temporary = parent_path.join("staging");
+    let baseline = authority.snapshot()?;
+    let parent = common.reserve_publication_allowance(4, 1)?;
+    let mut ticket = Some(parent.reserve_output(4)?);
+    let mut mutation = common.begin_create_with_reserved_output_in_private_parent(
+        &target,
+        4,
+        Arc::clone(&parent),
+        &mut ticket,
+    )?;
+    mutation.declare_temp_path(&temporary)?;
+    mutation.creation_started()?;
+    let mut writer = OpenOptions::new()
+        .write(true)
+        .read(true)
+        .create_new(true)
+        .open(&temporary)?;
+    mutation.created(&writer, &temporary)?;
+    writer.write_all(b"four")?;
+    let born = InodeObservation::from_file(&writer)?;
+    mutation.before_replace(&target)?;
+
+    // The old parent FD remains valid while the canonical pathname names a
+    // different private directory. Publish into the old parent, as the store's
+    // held-FD rename does, and require settlement to reject that incarnation.
+    fs::rename(&parent_path, &displaced)?;
+    fs::create_dir(&parent_path)?;
+    fs::set_permissions(&parent_path, fs::Permissions::from_mode(0o700))?;
+    fs::write(parent_path.join("sentinel"), b"keep")?;
+    fs::rename(displaced.join("staging"), displaced.join("object"))?;
+    writer.sync_all()?;
+    File::open(&displaced)?.sync_all()?;
+    mutation.confirmed_safe_writer_fd_retired(writer)?;
+    require!(matches!(
+        mutation.settle_after_external_file_and_parent_sync(),
+        Err(CoreError::InvalidContract(_))
+    ))?;
+    require!(!target.exists())?;
+    require_eq!(fs::read(parent_path.join("sentinel"))?, b"keep")?;
+    require_eq!(fs::read(displaced.join("object"))?, b"four")?;
+    require!(authority.retained_inode(born.inode, 4)?.is_none())?;
+    drop(mutation);
+    drop(parent);
+    require_eq!(authority.snapshot()?.uncertain_pending, baseline.uncertain_pending + 1)?;
+    require!(!common.is_quiescent()?)?;
+    Ok(())
+}
+
+#[test]
+fn private_parent_reserved_output_creates_missing_nested_parents_with_unstarted_ticket() -> TestResult {
+    let (_dir, root, _lease, authority, common) = fixture()?;
+    let target = root.join("private-cold/deep/object");
+    let baseline = authority.snapshot()?;
+    let parent = common.reserve_publication_allowance(4, 1)?;
+    let mut ticket = Some(parent.reserve_output(4)?);
+    let mutation = common.begin_create_with_reserved_output_in_private_parent(
+        &target,
+        4,
+        Arc::clone(&parent),
+        &mut ticket,
+    )?;
+    require!(ticket.is_none())?;
+    let first = root.join("private-cold");
+    let final_parent = first.join("deep");
+    require!(first.is_dir() && final_parent.is_dir())?;
+    require_eq!(fs::metadata(&first)?.permissions().mode() & 0o777, 0o700)?;
+    require_eq!(
+        fs::metadata(&final_parent)?.permissions().mode() & 0o777,
+        0o700
+    )?;
+    let root_device = fs::metadata(&root)?.dev();
+    require_eq!(fs::metadata(&first)?.dev(), root_device)?;
+    require_eq!(fs::metadata(&final_parent)?.dev(), root_device)?;
+    require_eq!(mutation.anchor.parent.metadata()?.dev(), root_device)?;
+    require_eq!(
+        mutation.anchor.parent.metadata()?.ino(),
+        fs::metadata(&final_parent)?.ino()
+    )?;
+    drop(mutation);
+    drop(parent);
+    require_eq!(authority.snapshot()?, baseline)?;
+    require!(common.is_quiescent()?)?;
+    Ok(())
+}
+
+#[test]
+fn private_parent_device_policy_distinguishes_same_and_foreign_device() -> TestResult {
+    let (_dir, root, _lease, authority, common) = fixture()?;
+    let parent_path = root.join("private-device");
+    fs::create_dir(&parent_path)?;
+    fs::set_permissions(&parent_path, fs::Permissions::from_mode(0o700))?;
+    let parent_metadata = fs::metadata(&parent_path)?;
+    let root_device = fs::metadata(&root)?.dev();
+    require!(private_parent_identity_is_secure(
+        &parent_metadata,
+        Some(root_device)
+    ))?;
+    // A foreign device needs an actual mount for the path-level refusal test;
+    // this exercises the production predicate without mount privileges.
+    require!(!private_parent_identity_is_secure(
+        &parent_metadata,
+        Some(root_device ^ 1)
+    ))?;
+    let baseline = authority.snapshot()?;
+    let parent = common.reserve_publication_allowance(4, 1)?;
+    let mut ticket = Some(parent.reserve_output(4)?);
+    let target = parent_path.join("object");
+    let mutation = common.begin_create_with_reserved_output_in_private_parent(
+        &target,
+        4,
+        Arc::clone(&parent),
+        &mut ticket,
+    )?;
+    require!(ticket.is_none())?;
+    require_eq!(mutation.anchor.parent.metadata()?.dev(), root_device)?;
+    drop(mutation);
+    drop(parent);
+    require_eq!(authority.snapshot()?, baseline)?;
+    require!(common.is_quiescent()?)?;
+    Ok(())
+}
+
+#[test]
+fn private_parent_reserved_output_refuses_bad_ticket_and_unsafe_or_busy_parent_without_leak() -> TestResult {
+    let (dir, root, _lease, authority, common) = fixture()?;
+    let baseline = authority.snapshot()?;
+    let first = common.reserve_publication_allowance(4, 1)?;
+    let second = common.reserve_publication_allowance(4, 1)?;
+    let missing = root.join("bad-ticket-parent/object");
+    let mut absent = None;
+    require!(matches!(
+        common.begin_create_with_reserved_output_in_private_parent(
+            &missing,
+            4,
+            Arc::clone(&second),
+            &mut absent,
+        ),
+        Err(CoreError::InvalidContract(_))
+    ))?;
+    require!(!missing.parent().ok_or("missing parent")?.exists())?;
+    let mut wrong = Some(first.reserve_output(4)?);
+    require!(common
+        .begin_create_with_reserved_output_in_private_parent(
+            &missing,
+            4,
+            Arc::clone(&second),
+            &mut wrong,
+        )
+        .is_err())?;
+    require!(wrong.is_some())?;
+    require!(!missing.parent().ok_or("missing parent")?.exists())?;
+    drop(wrong);
+
+    let outside = dir.path().join("outside-private");
+    fs::create_dir(&outside)?;
+    symlink(&outside, root.join("private-link"))?;
+    let mut link_ticket = Some(first.reserve_output(4)?);
+    require!(common
+        .begin_create_with_reserved_output_in_private_parent(
+            &root.join("private-link/object"),
+            4,
+            Arc::clone(&first),
+            &mut link_ticket,
+        )
+        .is_err())?;
+    require!(link_ticket.is_some())?;
+    require!(!outside.join("object").exists())?;
+    drop(link_ticket);
+
+    let open_parent = root.join("nonprivate-parent");
+    fs::create_dir(&open_parent)?;
+    fs::set_permissions(&open_parent, fs::Permissions::from_mode(0o777))?;
+    let mut open_ticket = Some(first.reserve_output(4)?);
+    require!(common
+        .begin_create_with_reserved_output_in_private_parent(
+            &open_parent.join("object"),
+            4,
+            Arc::clone(&first),
+            &mut open_ticket,
+        )
+        .is_err())?;
+    require!(open_ticket.is_some())?;
+    drop(open_ticket);
+
+    let busy_parent = root.join("busy-private-parent");
+    fs::create_dir(&busy_parent)?;
+    fs::set_permissions(&busy_parent, fs::Permissions::from_mode(0o700))?;
+    let busy_target = busy_parent.join("object");
+    let blocker = common.begin_create(&busy_target)?;
+    let mut busy_ticket = Some(first.reserve_output(4)?);
+    require!(common
+        .begin_create_with_reserved_output_in_private_parent(
+            &busy_target,
+            4,
+            Arc::clone(&first),
+            &mut busy_ticket,
+        )
+        .is_err())?;
+    require!(busy_ticket.is_some())?;
+    drop(blocker);
+    drop(busy_ticket);
+    drop(first);
+    drop(second);
+    require_eq!(authority.snapshot()?, baseline)?;
+    require!(common.is_quiescent()?)?;
+    Ok(())
+}
+
+#[test]
 fn supplied_copy_and_resize_use_parent_without_top_up() -> TestResult {
     let (dir, root, _lease, authority, common) = fixture()?;
     let source_path = dir.path().join("source");

@@ -264,3 +264,197 @@ fn ordered_token_visitor_releases_lookahead_on_cancel_and_callback_error() -> Re
     );
     Ok(())
 }
+
+#[test]
+fn widened_cold_tokens_match_sql_groups_and_packed_wire() -> Result<(), IndexError> {
+    use super::super::super::text_occurrence::block::{BlockDraft, BlockPush, SealedBlock};
+
+    for body_bytes in [4097_usize, 8192, 16_383] {
+        let scratch = TestScratch::default();
+        let (mut work, memory) = funded_group_reader_budget(2_000_000)?;
+        let spool = TextSpool::new(&scratch, &mut work)?;
+        let mut body = "Ab Cd ".repeat(64);
+        body.extend(std::iter::repeat_n(' ', body_bytes - body.len()));
+        check_eq!(body.len(), body_bytes);
+        check!(body.is_ascii());
+        let mut cold = super::super::cold_tokens::ColdTokens::try_new(body.len(), &work)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let indexed = visit_indexed_token_batches(&body, &mut work, |batch, budget| {
+            spool.token_batch(batch, budget)?;
+            cold.push_batch(batch, budget)
+        })?;
+        check_eq!(indexed, 128);
+        cold.sort_and_validate(&work)?;
+
+        let mut sql_groups = Vec::new();
+        let mut sql_draft = BlockDraft::new()?;
+        spool.visit_token_groups(8192, &mut work, |key, positions, budget| {
+            sql_groups.push((key.as_slice().to_vec(), positions.as_slice().to_vec()));
+            check!(matches!(
+                sql_draft.try_push(key, positions, budget)?,
+                BlockPush::Added
+            ));
+            Ok(())
+        })?;
+        let SealedBlock::Packed {
+            payload: sql_wire, ..
+        } = sql_draft.finish(&work)?
+        else {
+            return Err(IndexError::BackendViolation(
+                "SQL groups did not pack".into(),
+            ));
+        };
+
+        let mut cold_groups = Vec::new();
+        let mut cold_draft = BlockDraft::new()?;
+        cold.visit_groups(8192, &mut work, |key, positions, budget| {
+            cold_groups.push((key.as_slice().to_vec(), positions.as_slice().to_vec()));
+            check!(matches!(
+                cold_draft.try_push(key, positions, budget)?,
+                BlockPush::Added
+            ));
+            Ok(())
+        })?;
+        let SealedBlock::Packed {
+            payload: cold_wire, ..
+        } = cold_draft.finish(&work)?
+        else {
+            return Err(IndexError::BackendViolation(
+                "cold groups did not pack".into(),
+            ));
+        };
+        check_eq!(cold_groups, sql_groups);
+        check_eq!(cold_wire.bytes, sql_wire.bytes);
+        check_eq!(cold_groups.len(), 4);
+        drop(cold_wire);
+        drop(sql_wire);
+        drop(cold);
+        drop(spool);
+        check_eq!(memory.live.load(Ordering::Relaxed), 0);
+        check!(!memory.invalid_release.load(Ordering::Relaxed));
+        check!(work.first_denial().is_none());
+    }
+    Ok(())
+}
+
+#[test]
+fn cold_tokens_beyond_u16_key_arena_match_sql_and_packed_wire() -> Result<(), IndexError> {
+    use super::super::super::text_occurrence::block::{
+        BlockDraft, BlockPush, PackedBlockView, SealedBlock, encode_packed,
+    };
+
+    let memory = Arc::new(TokenMemory {
+        ceiling: 5_000_000,
+        ..TokenMemory::default()
+    });
+    let mut work = WorkBudget::new(
+        WorkLimits {
+            reads: 1_000_000,
+            writes: 1_000_000,
+            bytes: 100_000_000,
+            mutations: 1_000_000,
+        },
+        std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(120))
+            .ok_or(IndexError::ResourceLimited)?,
+    );
+    work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+        TokenMemoryScope(Arc::clone(&memory)),
+    ))));
+    let scratch = TestScratch::default();
+    let spool = TextSpool::new(&scratch, &mut work)?;
+    let mut body = String::new();
+    for _ in 0..210 {
+        for suffix in b'a'..=b'e' {
+            body.push_str(&"A".repeat(30));
+            body.push(char::from(suffix));
+            body.push(' ');
+        }
+    }
+    body.extend(std::iter::repeat_n(' ', 102_400 - body.len()));
+    check_eq!(body.len(), 102_400);
+    let mut cold = super::super::cold_tokens::ColdTokens::try_new(body.len(), &work)?
+        .ok_or(IndexError::ResourceLimited)?;
+    check_eq!(
+        visit_indexed_token_batches(&body, &mut work, |batch, budget| {
+            spool.token_batch(batch, budget)?;
+            cold.push_batch(batch, budget)
+        })?,
+        1_050
+    );
+    // Each source token emits two 32-byte keys: 1,050 * 2 * 32 = 67,200.
+    cold.sort_and_validate(&work)?;
+    let mut sql_groups = BTreeMap::new();
+    let mut sql_draft = BlockDraft::new()?;
+    spool.visit_token_groups(8192, &mut work, |key, positions, budget| {
+        check!(
+            sql_groups
+                .insert(key.as_slice().to_vec(), positions.as_slice().to_vec())
+                .is_none()
+        );
+        check!(matches!(
+            sql_draft.try_push(key, positions, budget)?,
+            BlockPush::Added
+        ));
+        Ok(())
+    })?;
+    let SealedBlock::Packed {
+        payload: sql_wire, ..
+    } = sql_draft.finish(&work)?
+    else {
+        return Err(IndexError::BackendViolation(
+            "SQL parity draft did not pack".into(),
+        ));
+    };
+    let mut cold_groups = BTreeMap::new();
+    cold.visit_groups(8192, &mut work, |key, positions, _budget| {
+        check!(
+            cold_groups
+                .insert(key.as_slice().to_vec(), positions.as_slice().to_vec())
+                .is_none()
+        );
+        Ok(())
+    })?;
+    check_eq!(cold_groups, sql_groups);
+    check_eq!(cold_groups.len(), 10);
+    let alias = cold
+        .try_packed_alias(&mut work)?
+        .ok_or(IndexError::ResourceLimited)?;
+    check_eq!(alias.term_count(), 10);
+    check_eq!(alias.vector_count(), 5);
+    let direct = encode_packed(&alias, alias.encoded_len(), &work)?;
+    check_eq!(direct.bytes, sql_wire.bytes);
+    drop(direct);
+    drop(sql_wire);
+    drop(alias);
+    drop(cold);
+    drop(spool);
+    check_eq!(memory.live.load(Ordering::Relaxed), 0);
+    check!(!memory.invalid_release.load(Ordering::Relaxed));
+    check!(work.first_denial().is_none());
+    Ok(())
+}
+
+#[test]
+fn widened_cold_optional_memory_denial_leaves_sql_fallback_fundable() -> Result<(), IndexError> {
+    let body = "Ab Cd";
+    let (mut work, memory) = funded_group_reader_budget(100_000)?;
+    let occupied =
+        work.reserve_memory(40_000, quanta_index_core::index::MemoryLifetime::Temporary)?;
+    check!(super::super::cold_tokens::ColdTokens::try_new(8192, &work)?.is_none());
+    check!(work.first_denial().is_none());
+    drop(occupied);
+    let scratch = TestScratch::default();
+    let spool = TextSpool::new(&scratch, &mut work)?;
+    check_eq!(
+        visit_indexed_token_batches(body, &mut work, |batch, budget| {
+            spool.token_batch(batch, budget)
+        })?,
+        2
+    );
+    check_eq!(observed_token_groups(&spool, &mut work)?.len(), 4);
+    drop(spool);
+    check_eq!(memory.live.load(Ordering::Relaxed), 0);
+    check!(work.first_denial().is_none());
+    Ok(())
+}

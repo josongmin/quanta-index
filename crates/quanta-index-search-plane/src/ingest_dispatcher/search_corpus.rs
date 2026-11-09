@@ -430,32 +430,35 @@ impl MetricSourcePort for DirectSearchCorpusMaterializer {
 impl DirectSearchCorpusMaterializer {
     /// The batch's own shape and surface-mutation authority (QI-BB-029):
     /// storage-free, refused typed.
-    fn validate_batch_shape_v1(batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
-        batch.validate_v1().map_err(|err| CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid,
-            message: format!("direct search-corpus materialize: {err}"),
-        })?;
-        batch.validate_surface_mutations_v1().map_err(|err| {
+    fn validate_batch_shape_v1(
+        batch: &SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+    ) -> Result<(), CoreError> {
+        owner
+            .validate_batch_shape(batch)
+            .map_err(|err| CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid,
+                message: format!("direct search-corpus materialize: {err}"),
+            })?;
+        owner.validate_batch_surface(batch).map_err(|err| {
             CoreError::InvalidContract(format!("direct search-corpus materialize: {err}"))
         })
-    }
-
-    /// Measure `batch` against the envelope (QI-BB-021) without touching the
-    /// tallies: the pure check `publish_batch` repeats under its lock.
-    fn measure_resource_envelope(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
-        self.resource_policy
-            .admit_search_corpus_batch(batch, self.semantic_embedder.dimension())
-            .map(|_footprint| ())
     }
 
     /// Measure `batch` against the envelope and tally the outcome
     /// (QI-BB-021). This is the admission point: it runs once per batch,
     /// in `preflight_batch`, before anything is held; a batch that does not
     /// fit is refused typed here with zero bytes changed and no record.
-    fn admit_resource_envelope(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
-        let outcome = self
-            .resource_policy
-            .admit_search_corpus_batch(batch, self.semantic_embedder.dimension());
+    fn admit_resource_envelope(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        owner: &mut quanta_index_core::PublicationValidationOwner,
+    ) -> Result<(), CoreError> {
+        let outcome = owner.admit_batch_footprint(
+            batch,
+            self.resource_policy,
+            self.semantic_embedder.dimension(),
+        );
         {
             let mut stats = self.resource_stats.lock().map_err(|err| {
                 CoreError::Storage(format!(
@@ -503,8 +506,8 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             diagnostic,
             DiagnosticStageV1::BuildPreflight,
             |diagnostic| {
-                Self::validate_batch_shape_v1(batch)?;
-                self.admit_resource_envelope(batch)?;
+                Self::validate_batch_shape_v1(batch, owner)?;
+                self.admit_resource_envelope(batch, owner)?;
                 let recovering = self.can_recover_completed_target_v1(batch, owner)?;
                 if let Some(base_generation) = batch.base_generation
                     && !recovering
@@ -581,8 +584,10 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                     finalize_ns: None,
                     activation_ns: None,
                 };
-                Self::validate_batch_shape_v1(batch)?;
-                self.measure_resource_envelope(batch)?;
+                Self::validate_batch_shape_v1(batch, owner)?;
+                let dimension = self.semantic_embedder.dimension();
+                let footprint =
+                    owner.admit_batch_footprint(batch, self.resource_policy, dimension)?;
                 let stripe = search_corpus_lock_stripe_v1(&batch.repo_id, &batch.revision_id);
                 let operation_lock = self.operation_locks.get(stripe).ok_or_else(|| {
             CoreError::Storage(format!(
@@ -679,9 +684,11 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                     None
                 };
                 if let Some(admission) = self.publication_admission.as_deref() {
-                    let footprint = self
-                        .resource_policy
-                        .admit_search_corpus_batch(batch, self.semantic_embedder.dimension())?;
+                    if self.semantic_embedder.dimension() != dimension {
+                        return Err(CoreError::InvalidContract(
+                            "publication embedding dimension changed after admission".into(),
+                        ));
+                    }
                     let work = if sealed_plan
                         .as_ref()
                         .is_some_and(SealedGenerationBuildPlanV1::is_finalize_only)
@@ -779,6 +786,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                         self.lexical_incomplete_discard.as_ref(),
                         self.semantic_incomplete_discard.as_ref(),
                         batch,
+                        owner,
                     )?;
                 }
                 // Search-owned semantic derivation is mandatory work for every
@@ -1086,13 +1094,15 @@ impl DirectSearchCorpusMaterializer {
                 ))
             })?
             .fence_search_corpus_history_v1(&batch.repo_id, &batch.revision_id);
-            let retention = self.authority.record_sealed_search_corpus(
-                &batch.repo_id,
-                &batch.revision_id,
-                batch.generation,
-                batch.manifest_digest.as_str(),
-                diagnostic,
-            );
+            let retention = timed_ingest_work("ingest_sealed_retention", || {
+                self.authority.record_sealed_search_corpus(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                    batch.manifest_digest.as_str(),
+                    diagnostic,
+                )
+            });
             let retention = match retention {
                 Ok(receipt) => receipt,
                 Err(error @ (CoreError::Storage(_) | CoreError::StorageIo { .. })) => {

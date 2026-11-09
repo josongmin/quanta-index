@@ -13,7 +13,7 @@ use quanta_index_core::index::{
     },
 };
 
-use super::{Node, charge_key_allocation, decode_node, key_nibbles};
+use super::{Node, charge_key_allocation, decode_node, key_nibbles, original_lookup};
 use crate::FileObjectStore;
 
 const SLOTS: usize = 512;
@@ -212,7 +212,9 @@ impl PersistentMapPort for ScopedReads<'_> {
         values: &mut [Option<MapValue>],
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
-        self.store.lookup_batch(root, keys, values, budget)
+        original_lookup::lookup_batch_with(root, keys, values, budget, |reference, budget| {
+            self.read_node(root, reference, budget)
+        })
     }
 
     fn scan(

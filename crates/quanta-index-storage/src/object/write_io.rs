@@ -4,7 +4,7 @@ use std::{fs::File, path::Path};
 
 use quanta_index_core::index::{IndexError, ObjectWriteTicket};
 
-use super::{TempFile, publish_temp_no_replace};
+use super::{TempFile, publish_temp_no_replace, validate_installed_link};
 
 pub(super) struct ObjectWriter {
     file: Option<File>,
@@ -53,6 +53,23 @@ impl ObjectWriter {
         final_path: &Path,
         written: &std::fs::Metadata,
     ) -> Result<bool, IndexError> {
+        if let Some(ticket) = self.ticket.as_mut() {
+            let writer = self
+                .file
+                .as_ref()
+                .ok_or_else(|| IndexError::BackendViolation("writer FD absent".into()))?;
+            match ticket.publish_declared_temp(writer, final_path)? {
+                Some(true) => {
+                    // The rename consumed the temporary name. Disarm raw
+                    // cleanup before checking the installed pathname.
+                    self.temporary.0.clear();
+                    validate_installed_link(final_path, written)?;
+                    return Ok(true);
+                }
+                Some(false) => return Ok(false),
+                None => {}
+            }
+        }
         publish_temp_no_replace(&mut self.temporary, final_path, written)
     }
 
@@ -131,7 +148,10 @@ mod tests {
             let _previous = self.0.fetch_add(1, Ordering::SeqCst);
             Err(IndexError::ResourceLimited)
         }
-        fn synced(self: Box<Self>) -> Result<(), IndexError> {
+        fn synced(
+            self: Box<Self>,
+            _directories: quanta_index_core::index::ObjectWriteSyncDirectories,
+        ) -> Result<(), IndexError> {
             Err(IndexError::ResourceLimited)
         }
     }

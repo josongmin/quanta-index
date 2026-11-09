@@ -18,6 +18,7 @@ use super::{PendingOperation, PublicationFileDeletions, busy, contract};
 enum Kind {
     Link,
     MoveOverwrite,
+    SidecarMoveOverwrite,
     StagedMove,
     MoveCreate,
     DirectoryMoveOverwrite,
@@ -53,6 +54,24 @@ impl NamespaceOperation {
             Self::Path(ticket) => ticket.perform_and_sync(),
             Self::DirectoryMove(ticket) => ticket.perform_and_sync(),
             Self::DirectoryDelete(ticket) => ticket.perform_and_sync(&mut || Ok(())),
+        }
+    }
+
+    fn perform_move(&mut self) -> Result<(), CoreError> {
+        match self {
+            Self::Path(ticket) => ticket.perform_change(),
+            Self::DirectoryMove(_) | Self::DirectoryDelete(_) => {
+                Err(contract("anchored move requires a regular-file ticket"))
+            }
+        }
+    }
+
+    fn require_source_identity(&self, owned: InodeObservation) -> Result<(), CoreError> {
+        match self {
+            Self::Path(ticket) => ticket.require_source_identity(owned),
+            Self::DirectoryMove(_) | Self::DirectoryDelete(_) => {
+                Err(contract("settled output requires a regular-file move"))
+            }
         }
     }
 
@@ -167,6 +186,20 @@ impl PublicationFileDeletions {
         )
     }
 
+    /// Retain the validated private-parent FDs inside the original Sidecar
+    /// namespace ticket through rename, sync, and uncertain reconciliation.
+    pub(crate) fn begin_sidecar_move(
+        self: &Arc<Self>,
+        from: &Path,
+        to: &Path,
+    ) -> Result<OwnedNamespaceTicket, CoreError> {
+        self.begin_namespace(&[Kind::SidecarMoveOverwrite], from, Some(to), || {
+            self.binder
+                .begin_sidecar_move(from, to)
+                .map(|ticket| (Kind::SidecarMoveOverwrite, NamespaceOperation::Path(ticket)))
+        })
+    }
+
     /// The caller explicitly authorizes discarding its staged hard-link alias
     /// only if this exact move is proved unchanged after a started failure.
     pub fn begin_staged_move(
@@ -259,6 +292,12 @@ impl PublicationFileDeletions {
                 return Err(busy(pending.as_ref()));
             };
             if !permitted.contains(&prior.kind) || prior.from != from || prior.to != to {
+                return Err(busy(pending.as_ref()));
+            }
+            // A fresh Sidecar permit has not authenticated its settled FD yet.
+            // Only the explicit maintenance path may reconcile an abandoned
+            // Sidecar move; same-path construction cannot claim its receipt.
+            if prior.kind == Kind::SidecarMoveOverwrite {
                 return Err(busy(pending.as_ref()));
             }
             if reconcile_pending_namespace(self, &mut pending)? {
@@ -640,13 +679,40 @@ impl OwnedNamespaceTicket {
         self.with_pending(|prior| prior.operation.perform_and_sync())
     }
 
+    /// Perform an anchored regular-file rename while retaining the original
+    /// ticket for the caller's separate sync and settlement phase.
+    pub fn perform_move(&mut self) -> Result<(), CoreError> {
+        if self.completed {
+            return Err(contract("completed namespace operation cannot move again"));
+        }
+        self.with_pending(|prior| {
+            if !matches!(prior.kind, Kind::MoveOverwrite | Kind::SidecarMoveOverwrite) {
+                return Err(contract("anchored move requires a regular-file ticket"));
+            }
+            prior.operation.perform_move()
+        })
+    }
+
+    /// Bind the path ticket's opened source to the permit's settled FD.
+    pub fn require_source_identity(&mut self, owned: InodeObservation) -> Result<(), CoreError> {
+        if self.completed {
+            return Err(contract("completed namespace operation has no source"));
+        }
+        self.with_pending(|prior| {
+            if !matches!(prior.kind, Kind::MoveOverwrite | Kind::SidecarMoveOverwrite) {
+                return Err(contract("settled output requires a regular-file move"));
+            }
+            prior.operation.require_source_identity(owned)
+        })
+    }
+
     /// Start a caller-owned regular-file move before its existing syscall.
     pub fn change_started(&mut self) -> Result<(), CoreError> {
         if self.completed {
             return Err(contract("completed namespace operation cannot start again"));
         }
         self.with_pending(|prior| {
-            if prior.kind != Kind::MoveOverwrite {
+            if !matches!(prior.kind, Kind::MoveOverwrite | Kind::SidecarMoveOverwrite) {
                 return Err(contract("external callback requires a regular-file move"));
             }
             prior.operation.change_started()
@@ -660,9 +726,16 @@ impl OwnedNamespaceTicket {
                 "completed namespace operation cannot settle again",
             ));
         }
-        self.with_pending(|prior| {
-            if prior.kind != Kind::MoveOverwrite {
+        let binder = Arc::clone(&self.owner.binder);
+        self.with_pending(move |prior| {
+            if !matches!(prior.kind, Kind::MoveOverwrite | Kind::SidecarMoveOverwrite) {
                 return Err(contract("external callback requires a regular-file move"));
+            }
+            // The original path ticket can be settled before its final
+            // retirement sweep refuses. Retry only that sweep: the source FD
+            // and namespace claims were already retired by the ticket.
+            if prior.operation.is_settled() {
+                return binder.sweep_retired();
             }
             prior.operation.changed_and_synced()
         })

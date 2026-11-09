@@ -1482,12 +1482,6 @@ fn protection_write_arm(packet: bool) -> Result<[u64; 6], Box<dyn std::error::Er
             }
         })
         .collect();
-    require(spans.len() == 1, "protection arm lacks one write aggregate")?;
-    let span = *spans.first().ok_or("protection write span missing")?;
-    require(
-        rows.iter().filter(|row| matches!(row.kind, DiagnosticEventKindV1::SpanEnd { span_id, outcome: DiagnosticTerminalV1::Ok } if span_id == span)).count() == 1,
-        "protection aggregate did not finish exactly once",
-    )?;
     let keys = [
         DiagnosticCounterV1::SqliteWriteCalls,
         DiagnosticCounterV1::SqliteWriteRequestedBytes,
@@ -1496,6 +1490,30 @@ fn protection_write_arm(packet: bool) -> Result<[u64; 6], Box<dyn std::error::Er
         DiagnosticCounterV1::SqliteMainWriteCalls,
         DiagnosticCounterV1::SqliteOtherWriteCalls,
     ];
+    let Some(&span) = spans.first() else {
+        // COMMIT is outside the observed scope. The scalar arm may finish
+        // its statements without reaching a native write or sync callback.
+        require(
+            !packet
+                && !rows.iter().any(|row| {
+                    matches!(row.kind, DiagnosticEventKindV1::Counter { key, .. } if keys.contains(&key))
+                }),
+            "protection arm lost its write aggregate",
+        )?;
+        drop(rows);
+        fixture
+            .common
+            .require_quiescent("protection discriminator after checked close")?;
+        return Ok([0; 6]);
+    };
+    require(
+        spans.len() == 1,
+        "protection arm duplicated its write aggregate",
+    )?;
+    require(
+        rows.iter().filter(|row| matches!(row.kind, DiagnosticEventKindV1::SpanEnd { span_id, outcome: DiagnosticTerminalV1::Ok } if span_id == span)).count() == 1,
+        "protection aggregate did not finish exactly once",
+    )?;
     let mut counts = [None; 6];
     for row in rows.iter() {
         if let DiagnosticEventKindV1::Counter {

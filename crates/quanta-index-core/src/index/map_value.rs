@@ -110,6 +110,13 @@ impl MapValue {
             Self::Inline(value) => value.single_child(),
         }
     }
+    /// Measure the current wire format without encoding the value.
+    pub fn encoded_len(&self) -> Result<usize, IndexError> {
+        match self {
+            Self::Object(reference) => Ok(1 + reference.0.0.len()),
+            Self::Inline(value) => Ok(3 + value.data()?.len() + 32 * value.children()?.len()),
+        }
+    }
     pub fn encoded(self) -> Result<EncodedMapValue, IndexError> {
         let mut encoded = EncodedMapValue {
             bytes: [0; MAX_MAP_VALUE_WIRE_BYTES],

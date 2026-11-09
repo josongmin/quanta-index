@@ -408,6 +408,7 @@ impl PublicationContext {
     pub(crate) fn begin(
         state_root: &Path,
         batch: &SearchCorpusIngestBatch,
+        operations_sha256: [u8; 32],
         reservation: &LexicalDocumentVersionReservationV1,
         base_directory: Option<&Path>,
         sync_totals: Option<Arc<crate::causal_profile::SyncTotalsV1>>,
@@ -439,10 +440,6 @@ impl PublicationContext {
                 "lexical delta crosses allocation scopes; publish a full replacement".into(),
             ));
         }
-        let operations_sha256 =
-            quanta_index_contract::source_event_payload_sha256(batch).map_err(|error| {
-                CoreError::InvalidContract(format!("lexical publication body: {error}"))
-            })?;
         let base_root_sha256 = if let (Some(file), Some(native)) = (&file_base, &native_base) {
             let mut hash = Sha256::new();
             hash.update(b"lexical-publication-base-roots-v1\0");
@@ -467,12 +464,7 @@ impl PublicationContext {
             target_generation: batch.generation.get(),
             base_root_sha256,
             operations_sha256,
-            format: u16::try_from(
-                crate::lexical_root_names::LEXICAL_SEALED_MANIFEST_FORMAT_VERSION,
-            )
-            .map_err(|_conversion_error| {
-                CoreError::InvalidContract("lexical publication format exceeds u16".into())
-            })?,
+            format: crate::lexical_root_names::LEXICAL_PUBLICATION_ATTEMPT_FORMAT_VERSION,
         };
         let (store, lease) = crate::causal_profile::observe_result(
             diagnostic,

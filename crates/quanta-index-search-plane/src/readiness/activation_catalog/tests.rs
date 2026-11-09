@@ -13,7 +13,9 @@ use super::{
     repository_envelope,
 };
 use crate::readiness::durable_fs::ParentDirectorySyncPort;
-use crate::search_corpus_lifecycle::SearchCorpusPairMutationCoordinator;
+use crate::search_corpus_lifecycle::{
+    ActiveSearchCorpusPinReadPort, SearchCorpusPairMutationCoordinator,
+};
 use quanta_index_contract::{
     BatchPublishReceipt, GenerationPin, GenerationSnapshot, IngestOperationKindV1,
     ManifestGeneration, RepoId, RepoMapTerminalReceiptV2, RevisionId, SearchPlaneTrackKind,
@@ -158,6 +160,45 @@ fn open_catalog(path: &Path) -> Result<ActivationCatalog, CoreError> {
     let catalog = ActivationCatalog::open(path)?;
     configure_catalog(&catalog)?;
     Ok(catalog)
+}
+
+#[test]
+fn retention_pin_reads_refuse_catalog_writer_contention_and_retry() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let catalog = open_catalog(directory.path())?;
+    let repo = RepoId::new("retention-pins")?;
+    let revision = RevisionId::new("revision")?;
+    let pair = catalog.lifecycle_coordinator.lock_pair(&repo, &revision)?;
+    let writer = catalog.entries.write().map_err(|error| {
+        CoreError::Storage(format!("fixture catalog writer poisoned: {error}"))
+    })?;
+    for result in [
+        catalog
+            .active_search_corpus_under_guard_v1(&pair, &repo, &revision)
+            .map(|_active| ()),
+        catalog
+            .unresolved_source_targets_for_pair_v1(&repo, &revision)
+            .map(|_targets| ()),
+    ] {
+        assert!(matches!(
+            result,
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+                ..
+            })
+        ));
+    }
+    drop(writer);
+    assert_eq!(
+        catalog.active_search_corpus_under_guard_v1(&pair, &repo, &revision)?,
+        None
+    );
+    assert!(
+        catalog
+            .unresolved_source_targets_for_pair_v1(&repo, &revision)?
+            .is_empty()
+    );
+    Ok(())
 }
 
 #[test]

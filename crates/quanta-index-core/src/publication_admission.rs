@@ -116,11 +116,33 @@ impl PublicationOutputReservation {
 pub trait PublicationOutputPermit: Send {
     fn bind_output(&mut self, staging: &Path, target: &Path) -> Result<(), CoreError>;
     fn creation_started(&mut self) -> Result<(), CoreError>;
+    /// Create the declared temporary through the admitted parent FD.
+    /// On error, no writer FD transfers to the caller; the runtime retains
+    /// custody of any uncertain physical birth.
+    fn create_staging(&mut self) -> Result<File, CoreError> {
+        Err(CoreError::NotImplemented(
+            "publication output has no anchored temporary create".into(),
+        ))
+    }
     /// Bind the exact returned writer FD and declared temporary pathname before
     /// the first payload write. The runtime keeps an independent FD witness.
     fn created(&mut self, writer: &File, staging: &Path) -> Result<(), CoreError>;
     /// Recheck a possibly replaced old destination inode before rename.
     fn before_replace(&mut self) -> Result<(), CoreError>;
+    /// Rename the witnessed temporary through its held parent FDs. Ok means
+    /// the syscall succeeded; parent sync and settlement are separate. Err
+    /// must never follow a successful rename syscall.
+    fn rename_staging(&mut self, _writer: &File) -> Result<(), CoreError> {
+        Err(CoreError::NotImplemented(
+            "publication output has no anchored temporary rename".into(),
+        ))
+    }
+    /// Sync the actual promoted parents after a successful rename.
+    fn sync_promoted_parents(&mut self) -> Result<(), CoreError> {
+        Err(CoreError::NotImplemented(
+            "publication output has no anchored parent sync".into(),
+        ))
+    }
     /// Authenticate the durable destination, then consume and physically close
     /// the actual writer FD before any settled lease may be transferred.
     fn committed(&mut self, writer: File, actual_encoded_bytes: u64) -> Result<(), CoreError>;
@@ -128,7 +150,8 @@ pub trait PublicationOutputPermit: Send {
     /// or sync. This proves FD retirement only; all physical/pending charges
     /// remain held for independent reconciliation or boot inventory.
     fn retire_writer_preserving_pending(&mut self, writer: File) -> Result<(), CoreError>;
-    /// Cancel a real staged birth whose initial FD registration was rejected.
+    /// Cancel the original staged birth before successful promotion, including
+    /// a managed writer whose initial FD registration already succeeded.
     ///
     /// Authenticate and unlink only its declared temporary, sync the parent,
     /// prove zero links and checked-close the original FD before refund.
@@ -136,6 +159,14 @@ pub trait PublicationOutputPermit: Send {
     fn cancel_rejected_created(&mut self, writer: File) -> Result<(), CoreError>;
     /// Acquire the canonical path ticket before changing the namespace.
     fn rename_started(&mut self, target: &Path) -> Result<(), CoreError>;
+    /// Perform a committed-output move through its owned namespace ticket.
+    /// Ok means the syscall succeeded; parent sync and settlement are separate.
+    /// Err must never follow a successful move syscall.
+    fn move_output(&mut self, _target: &Path) -> Result<(), CoreError> {
+        Err(CoreError::NotImplemented(
+            "publication output has no anchored namespace move".into(),
+        ))
+    }
     /// Authenticate the renamed inode after both affected parents sync.
     fn renamed_and_synced(&mut self) -> Result<(), CoreError>;
     /// Execute removal of this committed output through its retained authority.
@@ -168,12 +199,24 @@ impl PublicationOutputPermit for OwnedPublicationOutputPermit {
         self.child.creation_started()
     }
 
+    fn create_staging(&mut self) -> Result<File, CoreError> {
+        self.child.create_staging()
+    }
+
     fn created(&mut self, writer: &File, staging: &Path) -> Result<(), CoreError> {
         self.child.created(writer, staging)
     }
 
     fn before_replace(&mut self) -> Result<(), CoreError> {
         self.child.before_replace()
+    }
+
+    fn rename_staging(&mut self, writer: &File) -> Result<(), CoreError> {
+        self.child.rename_staging(writer)
+    }
+
+    fn sync_promoted_parents(&mut self) -> Result<(), CoreError> {
+        self.child.sync_promoted_parents()
     }
 
     fn committed(&mut self, writer: File, actual_encoded_bytes: u64) -> Result<(), CoreError> {
@@ -186,6 +229,10 @@ impl PublicationOutputPermit for OwnedPublicationOutputPermit {
 
     fn rename_started(&mut self, target: &Path) -> Result<(), CoreError> {
         self.child.rename_started(target)
+    }
+
+    fn move_output(&mut self, target: &Path) -> Result<(), CoreError> {
+        self.child.move_output(target)
     }
 
     fn renamed_and_synced(&mut self) -> Result<(), CoreError> {

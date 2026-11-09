@@ -14,8 +14,9 @@ import math
 import sys
 from pathlib import Path
 
+from tools.benchmark import evidence as benchmark_evidence
 from tools.benchmark.evidence import parse_json, read_control
-from tools.benchmark.retrieval import evaluator, run
+from tools.benchmark.retrieval import evaluator, go_trace_review_receipt, query_plan, run
 from tools.benchmark.retrieval.evaluator import qualified_query_family_ci
 from tools.benchmark.retrieval.finite_json import is_finite_json_number
 
@@ -957,23 +958,408 @@ def build_decision(repo: Path, suite: Path, manifest_path: Path, policy_path: Pa
     }
 
 
+def evaluate_go_trace_file_holdout(
+    plan_path: Path, judgments_path: Path, out_path: Path | None = None
+) -> dict:
+    """Score complete, source-bound Go SDK files without granting default adoption.
+
+    Incomplete labels or attempts refuse before any aggregate is returned. The
+    older known-file diagnostic remains a separate descriptive artifact.
+    """
+    from tools.benchmark.retrieval.arb_official_score import read_strict
+
+    plan, plan_raw = read_strict(plan_path)
+    judgments, judgments_raw = read_strict(judgments_path)
+    if not isinstance(plan, dict) or not isinstance(judgments, dict):
+        raise DecisionError("Go trace plan and judgments must be objects")
+    plan_status = plan.get("status")
+    if not isinstance(plan_status, str) or plan_status not in {
+        "FROZEN_GO_TRACE_HOLDOUT",
+        "FROZEN_GO_TRACE_HOLDOUT_REVIEWED_V1",
+    }:
+        raise DecisionError("Go trace plan has no frozen holdout admission")
+    reviewed = plan_status == "FROZEN_GO_TRACE_HOLDOUT_REVIEWED_V1"
+    denominator = judgments.get("recall_denominator")
+    if not isinstance(denominator, dict) or denominator.get("genuinely_exhaustive") is not True:
+        raise DecisionError("Go trace recall denominator is not exhaustive")
+    source_head = _name(plan.get("source_head"), "Go trace policy source head")
+    if not run._is_hex(source_head, 40):
+        raise DecisionError("Go trace policy source head is invalid")
+    build_binding = plan.get("build_binding_sha256")
+    if not run._is_hex(build_binding, 64):
+        raise DecisionError("Go trace plan lacks a frozen build binding")
+    if not run._is_hex(plan.get("input_sha256"), 64):
+        raise DecisionError("Go trace plan lacks frozen input identity")
+    plans = plan.get("plans")
+    cases = judgments.get("cases")
+    if not isinstance(plans, list) or not plans or not isinstance(cases, list):
+        raise DecisionError("Go trace plan or judgments lacks cases")
+    judged = {}
+    for row in cases:
+        if not isinstance(row, dict):
+            raise DecisionError("Go trace judgment case is malformed")
+        judged[_name(row.get("task_id"), "Go trace judgment task ID")] = row
+    if len(judged) != len(cases):
+        raise DecisionError("Go trace judgments have duplicate or malformed task IDs")
+    observed_tasks: set[str] = set()
+    observed_repos: set[str] = set()
+    tracked = {
+        plan_path: hashlib.sha256(plan_raw).hexdigest(),
+        judgments_path: hashlib.sha256(judgments_raw).hexdigest(),
+    }
+    rows = []
+    for case in plans:
+        if not isinstance(case, dict):
+            raise DecisionError("Go trace plan case is malformed")
+        repo = _name(case.get("repo_id"), "Go trace repository")
+        task_ids = case.get("task_ids")
+        if repo in observed_repos or not isinstance(task_ids, list) or len(task_ids) != 1:
+            raise DecisionError("Go trace needs one unique task per repository")
+        observed_repos.add(repo)
+        task_id = _name(task_ids[0], "Go trace task ID")
+        if task_id in observed_tasks or task_id not in judged:
+            raise DecisionError("Go trace task is duplicate or lacks judgments")
+        observed_tasks.add(task_id)
+        judgment = judged[task_id]
+        if judgment.get("source_commit") != case.get("commit") or judgment.get(
+            "source_manifest_sha256"
+        ) != case.get("manifest_sha256"):
+            raise DecisionError(f"Go trace judgment source/manifest drift: {task_id}")
+        if judgment.get("recall_denominator_exhaustive") is not True:
+            raise DecisionError(f"Go trace task has incomplete qrels: {task_id}")
+        gold = judgment.get("direct_production_gold")
+        if not isinstance(gold, list) or not gold:
+            raise DecisionError(f"Go trace task lacks exhaustive production gold: {task_id}")
+        directory = _absolute_path(case.get("directory"), "Go trace case directory")
+        if not run._is_hex(case.get("manifest_sha256"), 64) or not run._is_hex(
+            case.get("pack_sha256"), 64
+        ):
+            raise DecisionError(f"Go trace case lacks pinned manifest or pack: {task_id}")
+
+        def bound(name: str, digest: str | None = None, directory: Path = directory) -> dict:
+            path = directory / name
+            value, raw = read_strict(path, digest)
+            if not isinstance(value, dict):
+                raise DecisionError(f"Go trace {name} must be an object")
+            tracked[path] = hashlib.sha256(raw).hexdigest()
+            return value
+
+        manifest = bound("manifest.json", case.get("manifest_sha256"))
+        pack = bound("pack.json", case.get("pack_sha256"))
+        if (
+            manifest.get("repository_commit") != case.get("commit")
+            or pack.get("repository_commit") != case.get("commit")
+            or manifest.get("files") != pack.get("file_universe")
+        ):
+            raise DecisionError(f"Go trace corpus/pack drift: {task_id}")
+        manifest_files = manifest.get("files")
+        if not isinstance(manifest_files, list) or any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("path"), str)
+            or not run._is_hex(item.get("file_sha256"), 64)
+            for item in manifest_files
+        ):
+            raise DecisionError(f"Go trace manifest file inventory is malformed: {task_id}")
+        universe = {item["path"] for item in manifest_files}
+        if len(universe) != len(manifest_files):
+            raise DecisionError(f"Go trace manifest repeats a source file: {task_id}")
+        gold_paths = [item.get("path") for item in gold if isinstance(item, dict)]
+        if (
+            len(gold_paths) != len(gold)
+            or not all(isinstance(path, str) and path in universe for path in gold_paths)
+            or len(set(gold_paths)) != len(gold_paths)
+        ):
+            raise DecisionError(f"Go trace gold lacks distinct source files: {task_id}")
+        if reviewed:
+            try:
+                tracked.update(
+                    go_trace_review_receipt.validate(
+                        directory, case, judgment, denominator, manifest, pack
+                    )
+                )
+            except (ValueError, OSError) as exc:
+                raise DecisionError(f"Go trace source-only review invalid: {task_id}: {exc}") from exc
+        execution = bound("execution.json")
+        if (
+            execution.get("status") != "VERIFIED"
+            or execution.get("execution_source_head") != source_head
+            or execution.get("policy_frozen_source_head") != source_head
+            or execution.get("build_binding_sha256") != build_binding
+        ):
+            raise DecisionError(f"Go trace SDK attempt or policy source drift: {task_id}")
+        if not run._is_hex(execution.get("paired_sha256"), 64):
+            raise DecisionError(f"Go trace SDK attempt lacks paired capture: {task_id}")
+        paired = bound("paired.json", execution["paired_sha256"])
+        canonical_pack = benchmark_evidence.canonical_json(pack)
+        if paired.get("pack_sha256") != hashlib.sha256(canonical_pack.encode()).hexdigest():
+            raise DecisionError(f"Go trace paired pack identity drift: {task_id}")
+        generation = paired.get("generation")
+        if (
+            not isinstance(generation, dict)
+            or generation.get("repo_id") != repo
+            or generation.get("revision_id") != case.get("commit")
+            or type(generation.get("manifest_generation")) is not int
+            or generation["manifest_generation"] <= 0
+        ):
+            raise DecisionError(f"Go trace paired generation drift: {task_id}")
+        tasks = paired.get("tasks")
+        pack_tasks = pack.get("tasks")
+        if (
+            not isinstance(tasks, list)
+            or len(tasks) != 1
+            or not isinstance(tasks[0], dict)
+            or tasks[0].get("task_id") != task_id
+            or not isinstance(pack_tasks, list)
+            or len(pack_tasks) != 1
+            or not isinstance(pack_tasks[0], dict)
+            or pack_tasks[0].get("task_id") != task_id
+        ):
+            raise DecisionError(f"Go trace paired task drift: {task_id}")
+        task = tasks[0]
+        semantic_input = pack_tasks[0].get("semantic_input")
+        identity = task.get("query_identity")
+        try:
+            semantic_digest = query_plan.go_trace_semantic_digest(semantic_input)
+        except query_plan.QueryPlanError as exc:
+            raise DecisionError(f"Go trace semantic input drift: {task_id}: {exc}") from exc
+        if (
+            not isinstance(pack_tasks[0].get("query"), str)
+            or pack_tasks[0].get("query_sha256")
+            != hashlib.sha256(pack_tasks[0]["query"].encode()).hexdigest()
+            or not isinstance(identity, dict)
+            or identity.get("original_query_sha256") != pack_tasks[0].get("query_sha256")
+            or identity.get("semantic_text_sha256") != semantic_digest
+            or not run._is_hex(identity.get("effective_lexical_request_sha256"), 64)
+        ):
+            raise DecisionError(f"Go trace query/pack identity drift: {task_id}")
+        trace = task.get("trace_files")
+        context = trace.get("source_context") if isinstance(trace, dict) else None
+        if (
+            not isinstance(trace, dict)
+            or trace.get("profile") != "go_trace_file_rrf_v1"
+            or not isinstance(context, dict)
+            or not isinstance(context.get("mode"), str)
+            or context.get("mode") not in {
+                "unowned", "explicit_pilot_owner_v1", "frozen_module_panic_v1"
+            }
+            or context.get("pilot_plan_sha256") != tracked[plan_path]
+            or context.get("pilot_inputs_sha256") != plan.get("input_sha256")
+            or context.get("manifest_sha256") != case.get("manifest_sha256")
+            or context.get("pack_file_sha256") != case.get("pack_sha256")
+            or trace.get("failure_excerpt_sha256") != semantic_input.get("failure_excerpt_sha256")
+        ):
+            raise DecisionError(f"Go trace SDK source-context binding is missing: {task_id}")
+        if (
+            context["mode"] in {"explicit_pilot_owner_v1", "frozen_module_panic_v1"}
+            and context.get("failure_source_repo_id") != repo
+        ) or (context["mode"] == "unowned" and context.get("failure_source_repo_id") is not None):
+            raise DecisionError(f"Go trace failure-source owner drift: {task_id}")
+        if context["mode"] == "frozen_module_panic_v1":
+            if not reviewed:
+                raise DecisionError(f"Go trace module frame requires reviewed holdout: {task_id}")
+            try:
+                tracked.update(
+                    go_trace_review_receipt.validate_module_frame(
+                        directory, case, plan, pack, manifest, context, trace
+                    )
+                )
+            except (ValueError, OSError) as exc:
+                raise DecisionError(f"Go trace module frame invalid: {task_id}: {exc}") from exc
+        comparison = pack.get("comparison_contract")
+        if (
+            paired.get("lane_top_k") != 100
+            or not isinstance(comparison, dict)
+            or comparison.get("top_k") != 100
+        ):
+            raise DecisionError(f"Go trace SDK lane budget drift: {task_id}")
+
+        def complete_window(
+            value: object, where: str, count: int | None = None, task_id: str = task_id
+        ) -> None:
+            if (
+                not isinstance(value, dict)
+                or not isinstance(value.get("outcome"), dict)
+                or value["outcome"].get("kind") not in {"exact_exhausted", "lower_bound"}
+                or (
+                    value["outcome"].get("kind") == "lower_bound"
+                    and value["outcome"].get("continuation") is not True
+                )
+                or type(value.get("returned")) is not int
+                or not 0 <= value["returned"] <= 100
+                or (count is not None and value["returned"] != count)
+            ):
+                raise DecisionError(f"Go trace {where} window is incomplete: {task_id}")
+
+        for route in ("lexical", "semantic", "hybrid"):
+            capture = task.get(route)
+            if not isinstance(capture, dict) or not isinstance(capture.get("candidates"), list):
+                raise DecisionError(f"Go trace {route} capture is missing: {task_id}")
+            complete_window(capture.get("window"), route, len(capture["candidates"]))
+        complete_window(trace.get("lexical_window"), "trace lexical")
+        complete_window(trace.get("dense_window"), "trace dense")
+        labels = [{"path": path, "grade": 1} for path in gold_paths]
+        metrics = {}
+        for route in ("lexical", "hybrid", "trace_files"):
+            capture = task.get(route)
+            candidates = capture.get("candidates") if isinstance(capture, dict) else None
+            if not isinstance(candidates, list):
+                raise DecisionError(f"Go trace {route} capture is missing: {task_id}")
+            distinct = []
+            seen = set()
+            for candidate in candidates:
+                if not isinstance(candidate, dict):
+                    raise DecisionError(f"Go trace {route} candidate is malformed: {task_id}")
+                path = candidate.get("path")
+                if (
+                    not isinstance(path, str)
+                    or path not in universe
+                    or candidate.get("source_repo_id") != repo
+                ):
+                    raise DecisionError(
+                        f"Go trace {route} candidate lacks source provenance: {task_id}"
+                    )
+                if route == "trace_files":
+                    file = candidate.get("file")
+                    if (
+                        not isinstance(file, dict)
+                        or file.get("repo_relative_path") != path
+                        or file.get("source_repo_id") != repo
+                        or path in seen
+                        or not is_finite_json_number(candidate.get("file_rrf_score"))
+                        or type(candidate.get("source_frame")) is not bool
+                        or candidate.get("production_source")
+                        != (path.endswith(".go") and not path.endswith("_test.go"))
+                    ):
+                        raise DecisionError(f"Go trace file rank provenance is invalid: {task_id}")
+                    for lane in ("lexical", "dense"):
+                        witness = candidate.get(lane)
+                        if witness is not None and (
+                            not isinstance(witness, dict)
+                            or witness.get("path") != path
+                            or witness.get("source_repo_id") != repo
+                        ):
+                            raise DecisionError(f"Go trace {lane} witness drift: {task_id}")
+                    if candidate.get("lexical") is None and candidate.get("dense") is None:
+                        raise DecisionError(f"Go trace file lacks lane witness: {task_id}")
+                if path not in seen:
+                    seen.add(path)
+                    distinct.append({"path": path})
+            if route == "trace_files" and len(distinct) > 20:
+                raise DecisionError(f"Go trace file result exceeds top-20: {task_id}")
+            promoted = sum(item.get("source_frame") is True for item in candidates)
+            if (
+                route == "trace_files"
+                and promoted
+                and (
+                    promoted != 1
+                    or context["mode"] not in {
+                        "explicit_pilot_owner_v1", "frozen_module_panic_v1"
+                    }
+                    or trace.get("frame_class") != "exact"
+                )
+            ):
+                raise DecisionError(f"Go trace frame was promoted without exact owner: {task_id}")
+            metrics[route] = {
+                "Recall@20": evaluator.file_recall_at_k_judged(distinct, labels, 20),
+                "MRR@20": evaluator.file_mrr_at_k_judged(distinct, labels, 20),
+            }
+        rows.append({"repo_id": repo, "task_id": task_id, "metrics": metrics})
+    if observed_tasks != set(judged):
+        raise DecisionError("Go trace judgments and SDK task denominator differ")
+    for path, digest in tracked.items():
+        if hashlib.sha256(read_control(path)).hexdigest() != digest:
+            raise DecisionError("Go trace inputs changed during replay")
+    if out_path is not None:
+        target = out_path.resolve()
+        if (
+            target in {path.resolve() for path in tracked}
+            or out_path.exists()
+            or out_path.is_symlink()
+        ):
+            raise DecisionError("Go trace output must be a new path outside its inputs")
+    aggregate = {
+        route: {
+            metric: sum(row["metrics"][route][metric] for row in rows) / len(rows)
+            for metric in ("Recall@20", "MRR@20")
+        }
+        for route in ("lexical", "hybrid", "trace_files")
+    }
+    return {
+        "status": (
+            "scored_complete_denominator_no_default_decision"
+            if reviewed
+            else "scored_exploratory_unqualified_no_default_decision"
+        ),
+        "product_default_decision": False,
+        "review_receipts_verified": reviewed,
+        "plan_sha256": tracked[plan_path],
+        "judgments_sha256": tracked[judgments_path],
+        "source_head": source_head,
+        "denominator": len(rows),
+        "metric_denominator": "exhaustive_positive_repository_tasks",
+        "rows": rows,
+        "aggregate": aggregate,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    for key in ("repo", "suite", "run-manifest", "policy", "out"):
-        parser.add_argument(f"--{key}", required=True)
+    for key in (
+        "repo",
+        "suite",
+        "run-manifest",
+        "policy",
+        "out",
+        "go-trace-plan",
+        "go-trace-judgments",
+    ):
+        parser.add_argument(f"--{key}")
     args = parser.parse_args(argv)
     try:
-        decision = build_decision(
-            Path(args.repo), Path(args.suite), Path(args.run_manifest), Path(args.policy)
-        )
+        if args.go_trace_plan or args.go_trace_judgments:
+            if (
+                not args.go_trace_plan
+                or not args.go_trace_judgments
+                or not args.out
+                or any((args.repo, args.suite, args.run_manifest, args.policy))
+            ):
+                raise DecisionError("Go trace evaluation needs only plan, judgments and out")
+            decision = evaluate_go_trace_file_holdout(
+                Path(args.go_trace_plan), Path(args.go_trace_judgments), Path(args.out)
+            )
+        else:
+            if not all((args.repo, args.suite, args.run_manifest, args.policy, args.out)):
+                raise DecisionError(
+                    "default decision requires repo, suite, run-manifest, policy and out"
+                )
+            decision = build_decision(
+                Path(args.repo), Path(args.suite), Path(args.run_manifest), Path(args.policy)
+            )
     except (DecisionError, run.RunError, ValueError, OSError, KeyError, TypeError) as exc:
-        print(f"ERROR: default decision refused: {exc}", file=sys.stderr)
+        scope = (
+            "Go trace evaluation"
+            if args.go_trace_plan or args.go_trace_judgments
+            else "default decision"
+        )
+        print(f"ERROR: {scope} refused: {exc}", file=sys.stderr)
         return 2
-    Path(args.out).write_text(
-        json.dumps(decision, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    if args.go_trace_plan:
+        with Path(args.out).open("x", encoding="utf-8") as output:
+            output.write(json.dumps(decision, indent=2, sort_keys=True) + "\n")
+    else:
+        Path(args.out).write_text(
+            json.dumps(decision, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    print(json.dumps({"status": decision["status"], "reasons": decision.get("reasons", [])}))
+    return (
+        0
+        if decision["status"] in {
+            "admit",
+            "scored_complete_denominator_no_default_decision",
+            "scored_exploratory_unqualified_no_default_decision",
+        }
+        else 1
     )
-    print(json.dumps({"status": decision["status"], "reasons": decision["reasons"]}))
-    return 0 if decision["status"] == "admit" else 1
 
 
 if __name__ == "__main__":

@@ -40,9 +40,9 @@ schema = 2
 [[artifact]]
 id = "native-index-state"
 owner = "quanta-index-searchd-runtime"
-path = "state_root/{.native-index-v18,catalog/catalog-v1.sqlite,native-objects,native-scratch-v1}"
+path = "state_root/{.native-index-v19,catalog/catalog-v1.sqlite,native-objects,native-scratch-v1}"
 reproduction = "producer-rebuild"
-notes = "Opt-in native service format v18. Bounded map values retain at most 32 inline data bytes and up to five explicit real children; Source path owners, eligible Text contributions and source-only pending coverage, plus singleton/tree posting metadata avoid separate wrapper objects. Bounded Text entry maps inline small inventories and posting memberships in their owning metadata; larger maps use the same COW port. QIMAP004 stores exact value kinds and direct child custody; prior QIMAP001/002/003 refuse. Persisted operation source intent and producer-wide epoch authority are atomically bound to baseline publication. Source-event capture v2 binds canonical logical mutation count/digest separately from exact execution ViewRef/SourceCut and physical mutation layout. Catalog stores and verifies the shared state/capture version plus hash domain and once-issued 32-byte root nonce plus a bounded selected boot manifest/digest in the existing singleton before any initialization/recovery, including in-process consumers. Prior v1-v17 markers and an unstamped Native Catalog refuse and require explicit rebuild/new incarnation; no old-format relabel, startup backfill or compatibility reader. Existing legacy backup/restore and launcher do not qualify native restore or event-claim migration."
+notes = "Opt-in native service format v19. Bounded map values retain at most 32 inline data bytes and up to five explicit real children; Source path owners, eligible Text contributions and source-only pending coverage, plus singleton/tree posting metadata avoid separate wrapper objects. Bounded Text entry maps inline small inventories and posting memberships in their owning metadata; larger maps use the same COW port. QIMAP004 stores exact value kinds and direct child custody. The Native Text terms and Source path roots can use QIMAP005 to embed one level of terminal-only branching children under the same physical edge and payload bounds. The current object decoder reads both formats and refuses prior QIMAP001/002/003. The v19 root marker and Catalog stamp prevent a v18 binary from serving a namespace with QIMAP005 objects. Persisted operation source intent and producer-wide epoch authority are atomically bound to baseline publication. Source-event capture v2 binds canonical logical mutation count/digest separately from exact execution ViewRef/SourceCut and physical mutation layout. Catalog stores and verifies the shared state/capture version plus hash domain and once-issued 32-byte root nonce plus a bounded selected boot manifest/digest in the existing singleton before any initialization/recovery, including in-process consumers. Prior v1-v18 markers and an unstamped Native Catalog refuse and require explicit rebuild/new incarnation; no old-format relabel, startup backfill or compatibility reader. Existing legacy backup/restore and launcher do not qualify native restore or event-claim migration."
 
 [[tool_artifact]]
 id = "proof-manifest-v1"
@@ -368,10 +368,14 @@ id = "lexical-sealed-manifest"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Format 22 binds compact File and Native roots, including their run registries and posting authority, with canonical QLMAP002 leaf value dictionaries and single-surface NFC Native bodies. Shared object dependencies, identity digest, normalizer, Tantivy components, live BM25 statistics, overlays, source coverage and ranked keys remain authenticated. Selected shared objects authenticate on use; full shared closure validation belongs to offline scrub. Older sealed formats require a producer rebuild."
+notes = "Format 23 permits packed File and Native body references in the sealed generation closure. The decoder also accepts format 22 with unpacked bodies. Both bind the authority roots, shared dependencies, identity digest, normalizer, Tantivy components, live BM25 statistics, overlays, source coverage and ranked keys. Selected shared objects authenticate on use; full shared closure validation belongs to offline scrub. Other sealed formats require a producer rebuild."
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/lexical_root_names.rs"
 name = "LEXICAL_SEALED_MANIFEST_FORMAT_VERSION"
+value = 23
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/lexical_root_names.rs"
+name = "LEXICAL_UNPACKED_BODY_MANIFEST_FORMAT_VERSION"
 value = 22
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
@@ -483,6 +487,17 @@ notes = "Object format 1 binds typed kind, dependency references, payload length
 file = "crates/quanta-index-lexical/src/lexical_store/store.rs"
 name = "OBJECT_FORMAT"
 value = 1
+
+[[artifact]]
+id = "lexical-publication-attempt"
+owner = "quanta-index-lexical"
+path = "state_root/indexes/lexical/lexical-object-pool/attempts/<attempt-id>.cbor with .log and .head sidecars"
+reproduction = "current-format-backup"
+notes = "Format 22 is the publication attempt binding. Its journal protects inherited roots and binds the target generation to the root incarnation, repository, revision, source event, base roots and operations. Publication and pending-batch recovery use the same attempt format across the sealed manifest change to 23."
+[[artifact.version_constants]]
+file = "crates/quanta-index-lexical/src/lexical_root_names.rs"
+name = "LEXICAL_PUBLICATION_ATTEMPT_FORMAT_VERSION"
+value = 22
 
 [[artifact]]
 id = "lexical-hard-scan-checkpoint"

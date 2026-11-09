@@ -6,7 +6,7 @@ use std::fs::{self, File, TryLockError};
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use quanta_index_core::index::ports::CatalogReadPort;
@@ -15,6 +15,7 @@ use quanta_index_core::index::{
     ReadTicketLease, SlotId, TenantId, TicketRecord, ViewSelection, WorkBudget, WorkUsage,
     WorktreeId, validate_read_ticket_lease,
 };
+use quanta_index_core::{DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1};
 use rusqlite::{Connection, OptionalExtension as _, params};
 use rustix::fs::{Mode, OFlags, open};
 
@@ -29,13 +30,21 @@ const SESSION_DIRECTORY: &str = "native-read-sessions";
 
 // Each ID is an array of 16 u8 values; all-255 has the widest canonical JSON encoding.
 pub(super) fn max_workspace_key_bytes() -> Result<i64, IndexError> {
+    static MAX_BYTES: OnceLock<i64> = OnceLock::new();
+    if let Some(bytes) = MAX_BYTES.get() {
+        return Ok(*bytes);
+    }
     let widest = WorkspaceKey {
         tenant: TenantId([u8::MAX; 16]),
         collection: CollectionId([u8::MAX; 16]),
         worktree: WorktreeId([u8::MAX; 16]),
         slot: SlotId([u8::MAX; 16]),
     };
-    i64::try_from(workspace_key(widest)?.len()).map_err(|_error| IndexError::ResourceLimited)
+    let bytes = i64::try_from(workspace_key(widest)?.len())
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    // Cache only a successful encoding. A transient encoding failure can retry.
+    let _installed = MAX_BYTES.set(bytes);
+    Ok(bytes)
 }
 
 pub(super) type SessionRow = (i64, i64, Vec<u8>, Vec<u8>, Vec<u8>);
@@ -401,27 +410,27 @@ pub(super) fn checked_session(
     connection: &Connection,
     binding: ReadSessionRef,
 ) -> Result<SessionRow, IndexError> {
-    let row = connection
-        .query_row(
-            "SELECT id,fence,
+    let row = cached_query_row(
+        connection,
+        "SELECT id,fence,
              CASE WHEN typeof(device)='blob' AND length(device)=8 THEN device END,
              CASE WHEN typeof(inode)='blob' AND length(inode)=8 THEN inode END,
              CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN row_digest END
              FROM native_read_session_v1 WHERE id=?1",
-            params![int(binding.id)?],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get::<_, Option<Vec<u8>>>(2)?,
-                    row.get::<_, Option<Vec<u8>>>(3)?,
-                    row.get::<_, Option<Vec<u8>>>(4)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(|error| sql(&error))?
-        .ok_or(IndexError::SnapshotUnavailable)?;
+        params![int(binding.id)?],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get::<_, Option<Vec<u8>>>(2)?,
+                row.get::<_, Option<Vec<u8>>>(3)?,
+                row.get::<_, Option<Vec<u8>>>(4)?,
+            ))
+        },
+    )
+    .optional()
+    .map_err(|error| sql(&error))?
+    .ok_or(IndexError::SnapshotUnavailable)?;
     let (Some(device), Some(inode), Some(digest)) = (row.2, row.3, row.4) else {
         return Err(IndexError::Storage(
             "native read session row shape mismatch".into(),
@@ -441,10 +450,17 @@ pub(super) fn checked_session(
     Ok(row)
 }
 
+pub(super) struct AuthenticatedSessionIdentity<'a> {
+    pub(super) binding: ReadSessionRef,
+    pub(super) inode: (Vec<u8>, Vec<u8>),
+    // The checked identity must remain scoped to the original lock owner.
+    _lease: &'a CatalogSessionLease,
+}
+
 pub(super) fn guard<'a>(
     catalog: &SqliteCatalog,
     lease: &'a dyn ReadSessionLease,
-) -> Result<&'a CatalogSessionLease, IndexError> {
+) -> Result<AuthenticatedSessionIdentity<'a>, IndexError> {
     let any: &dyn Any = lease;
     let concrete = any.downcast_ref::<CatalogSessionLease>().ok_or_else(|| {
         IndexError::InvalidInput("read session guard is not catalog owned".into())
@@ -457,7 +473,9 @@ pub(super) fn guard<'a>(
     let directory = session_directory(catalog)?;
     let path = lock_path(&directory, concrete.binding.id);
     let fresh = open_lock(catalog, &path, false)?;
-    if inode(&fresh)? != inode(&concrete.file)? {
+    let fresh_inode = inode(&fresh)?;
+    let held_inode = inode(&concrete.file)?;
+    if fresh_inode != held_inode {
         return Err(IndexError::Storage(
             "read session lock inode changed".into(),
         ));
@@ -466,7 +484,11 @@ pub(super) fn guard<'a>(
     // owns it. File descriptors copied from another process cannot synthesize
     // this private concrete type.
     match fresh.file()?.try_lock() {
-        Err(TryLockError::WouldBlock) => Ok(concrete),
+        Err(TryLockError::WouldBlock) => Ok(AuthenticatedSessionIdentity {
+            binding: concrete.binding,
+            inode: held_inode,
+            _lease: concrete,
+        }),
         Ok(()) => Err(IndexError::Storage("read session OS lock was lost".into())),
         Err(TryLockError::Error(error)) => Err(io_error("probe guard lock", &path, &error)),
     }
@@ -486,31 +508,31 @@ pub(super) fn checked_pin(
     ticket: ReadTicketLease,
 ) -> Result<PinRow, IndexError> {
     let max_workspace_bytes = max_workspace_key_bytes()?;
-    let row: PinRow = connection
-        .query_row(
-            "SELECT ticket,session_id,session_fence,fence,expires_at_ms,
+    let row: PinRow = cached_query_row(
+        connection,
+        "SELECT ticket,session_id,session_fence,fence,expires_at_ms,
          CASE WHEN typeof(workspace)='blob' AND length(workspace) BETWEEN 1 AND ?2 THEN workspace END,
          epoch,sequence,
          CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN row_digest END
          FROM native_pin_v1 WHERE ticket=?1",
-            params![ticket_to_integer(ticket.id)?, max_workspace_bytes],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                    row.get(7)?,
-                    row.get(8)?,
-                ))
-            },
-        )
-        .optional()
-        .map_err(|error| sql(&error))?
-        .ok_or(IndexError::SnapshotUnavailable)?;
+        params![ticket_to_integer(ticket.id)?, max_workspace_bytes],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
+            ))
+        },
+    )
+    .optional()
+    .map_err(|error| sql(&error))?
+    .ok_or(IndexError::SnapshotUnavailable)?;
     if row.5.is_empty()
         || row.5.len()
             > usize::try_from(max_workspace_bytes).map_err(|_error| IndexError::ResourceLimited)?
@@ -610,14 +632,13 @@ impl SqliteCatalog {
             ));
         };
         let concrete = guard(self, session)?;
-        let guard_inode = inode(&concrete.file)?;
         let milliseconds = validate_read_ticket_lease(lease)?;
         let mut connection = self
             .lock()
             .map_err(|error| IndexError::Storage(error.to_string()))?;
         let tx = begin(&mut connection)?;
         let session_row = checked_session(&tx, concrete.binding)?;
-        if (session_row.2, session_row.3) != guard_inode {
+        if (session_row.2, session_row.3) != concrete.inode {
             return Err(IndexError::Storage("read session inode mismatch".into()));
         }
         let now = catalog_now_ms(&tx, self.clock.now_unix_ms())?;
@@ -663,6 +684,125 @@ impl SqliteCatalog {
         drop(connection);
         Ok(ticket)
     }
+}
+
+// SqliteWork lanes 200-205 observe session guard, connection acquisition,
+// BEGIN, authenticated rows, durable clock and COMMIT, in that order.
+fn observe_ticket_validation<T>(
+    budget: Option<&WorkBudget>,
+    lane: u16,
+    work: impl FnOnce() -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    let span = crate::io_admission::catalog_work_span(
+        budget.and_then(|budget| budget.request().diagnostic_context()),
+        DiagnosticStageV1::SqliteWork,
+        DiagnosticLaneV1(lane),
+    );
+    let result = work();
+    if let Some(span) = span {
+        let _finished = span.finish(DiagnosticTerminalV1::from_result(&result));
+    }
+    result
+}
+
+fn validate_live_ticket(
+    catalog: &SqliteCatalog,
+    session: &dyn ReadSessionLease,
+    ticket: ReadTicketLease,
+    budget: Option<&WorkBudget>,
+) -> Result<(), IndexError> {
+    let concrete = observe_ticket_validation(budget, 200, || guard(catalog, session))?;
+    if ticket.session != concrete.binding {
+        return Err(IndexError::SnapshotUnavailable);
+    }
+    let mut connection = observe_ticket_validation(budget, 201, || {
+        budget.map_or_else(
+            || {
+                catalog
+                    .lock()
+                    .map_err(|error| IndexError::Storage(error.to_string()))
+            },
+            |budget| catalog.lock_native_budget(budget),
+        )
+    })?;
+    let connection_for_begin = &mut *connection;
+    let tx = observe_ticket_validation(budget, 202, move || begin(connection_for_begin))?;
+    let pin = observe_ticket_validation(budget, 203, || {
+        let session_row = checked_session(&tx, concrete.binding)?;
+        if (session_row.2, session_row.3) != concrete.inode {
+            return Err(IndexError::Storage("read session inode mismatch".into()));
+        }
+        checked_pin(&tx, ticket)
+    })?;
+    let now = observe_ticket_validation(budget, 204, || {
+        catalog_now_ms(&tx, catalog.clock.now_unix_ms())
+    })?;
+    if now >= uint(pin.4)? {
+        return Err(IndexError::SnapshotUnavailable);
+    }
+    if let Some(budget) = budget {
+        budget.checkpoint()?;
+    }
+    let result =
+        observe_ticket_validation(budget, 205, || tx.commit().map_err(|error| sql(&error)));
+    drop(connection);
+    result
+}
+
+fn renew_live_ticket(
+    catalog: &SqliteCatalog,
+    session: &dyn ReadSessionLease,
+    ticket: ReadTicketLease,
+    lease: Duration,
+    budget: Option<&WorkBudget>,
+) -> Result<ReadTicketLease, IndexError> {
+    let concrete = guard(catalog, session)?;
+    if ticket.session != concrete.binding {
+        return Err(IndexError::SnapshotUnavailable);
+    }
+    let milliseconds = validate_read_ticket_lease(lease)?;
+    let mut connection = match budget {
+        Some(budget) => catalog.lock_native_budget(budget)?,
+        None => catalog
+            .lock()
+            .map_err(|error| IndexError::Storage(error.to_string()))?,
+    };
+    let tx = begin(&mut connection)?;
+    let session_row = checked_session(&tx, concrete.binding)?;
+    if (session_row.2, session_row.3) != concrete.inode {
+        return Err(IndexError::Storage("read session inode mismatch".into()));
+    }
+    let pin = checked_pin(&tx, ticket)?;
+    let now = catalog_now_ms(&tx, catalog.clock.now_unix_ms())?;
+    if now >= uint(pin.4)? {
+        return Err(IndexError::SnapshotUnavailable);
+    }
+    let next = ReadTicketLease {
+        fence: next_fence(&tx)?,
+        expires_at_ms: now
+            .checked_add(milliseconds)
+            .ok_or(IndexError::ResourceLimited)?,
+        ..ticket
+    };
+    let updated: PinRow = (
+        pin.0,
+        pin.1,
+        pin.2,
+        int(next.fence)?,
+        int(next.expires_at_ms)?,
+        pin.5,
+        pin.6,
+        pin.7,
+        None,
+    );
+    let changed = tx.execute("UPDATE native_pin_v1 SET fence=?2,expires_at_ms=?3,row_digest=?4 WHERE ticket=?1 AND fence=?5",params![updated.0,updated.3,updated.4,pin_digest(&updated)?,pin.3]).map_err(|error| sql(&error))?;
+    exactly_one(changed, "renew read pin")?;
+    if let Some(budget) = budget {
+        budget.checkpoint()?;
+    }
+    tx.commit().map_err(|error| sql(&error))?;
+    drop(connection);
+    Ok(next)
 }
 
 impl CatalogReadPort for SqliteCatalog {
@@ -751,12 +891,11 @@ impl CatalogReadPort for SqliteCatalog {
         budget: &WorkBudget,
     ) -> Result<TicketRecord, IndexError> {
         let concrete = guard(self, session)?;
-        let guard_inode = inode(&concrete.file)?;
         let milliseconds = validate_read_ticket_lease(lease)?;
         let mut connection = self.lock_native_budget(budget)?;
         let tx = begin(&mut connection)?;
         let session_row = checked_session(&tx, concrete.binding)?;
-        if (session_row.2, session_row.3) != guard_inode {
+        if (session_row.2, session_row.3) != concrete.inode {
             return Err(IndexError::Storage("read session inode mismatch".into()));
         }
         let now = catalog_now_ms(&tx, self.clock.now_unix_ms())?;
@@ -773,48 +912,17 @@ impl CatalogReadPort for SqliteCatalog {
         ticket: ReadTicketLease,
         lease: Duration,
     ) -> Result<ReadTicketLease, IndexError> {
-        let concrete = guard(self, session)?;
-        let guard_inode = inode(&concrete.file)?;
-        if ticket.session != concrete.binding {
-            return Err(IndexError::SnapshotUnavailable);
-        }
-        let milliseconds = validate_read_ticket_lease(lease)?;
-        let mut connection = self
-            .lock()
-            .map_err(|error| IndexError::Storage(error.to_string()))?;
-        let tx = begin(&mut connection)?;
-        let session_row = checked_session(&tx, concrete.binding)?;
-        if (session_row.2, session_row.3) != guard_inode {
-            return Err(IndexError::Storage("read session inode mismatch".into()));
-        }
-        let pin = checked_pin(&tx, ticket)?;
-        let now = catalog_now_ms(&tx, self.clock.now_unix_ms())?;
-        if now >= uint(pin.4)? {
-            return Err(IndexError::SnapshotUnavailable);
-        }
-        let next = ReadTicketLease {
-            fence: next_fence(&tx)?,
-            expires_at_ms: now
-                .checked_add(milliseconds)
-                .ok_or(IndexError::ResourceLimited)?,
-            ..ticket
-        };
-        let updated: PinRow = (
-            pin.0,
-            pin.1,
-            pin.2,
-            int(next.fence)?,
-            int(next.expires_at_ms)?,
-            pin.5,
-            pin.6,
-            pin.7,
-            None,
-        );
-        let changed = tx.execute("UPDATE native_pin_v1 SET fence=?2,expires_at_ms=?3,row_digest=?4 WHERE ticket=?1 AND fence=?5",params![updated.0,updated.3,updated.4,pin_digest(&updated)?,pin.3]).map_err(|error| sql(&error))?;
-        exactly_one(changed, "renew read pin")?;
-        tx.commit().map_err(|error| sql(&error))?;
-        drop(connection);
-        Ok(next)
+        renew_live_ticket(self, session, ticket, lease, None)
+    }
+
+    fn renew_ticket_for_request(
+        &self,
+        session: &dyn ReadSessionLease,
+        ticket: ReadTicketLease,
+        lease: Duration,
+        budget: &WorkBudget,
+    ) -> Result<ReadTicketLease, IndexError> {
+        renew_live_ticket(self, session, ticket, lease, Some(budget))
     }
 
     fn validate_ticket(
@@ -822,27 +930,16 @@ impl CatalogReadPort for SqliteCatalog {
         session: &dyn ReadSessionLease,
         ticket: ReadTicketLease,
     ) -> Result<(), IndexError> {
-        let concrete = guard(self, session)?;
-        let guard_inode = inode(&concrete.file)?;
-        if ticket.session != concrete.binding {
-            return Err(IndexError::SnapshotUnavailable);
-        }
-        let mut connection = self
-            .lock()
-            .map_err(|error| IndexError::Storage(error.to_string()))?;
-        let tx = begin(&mut connection)?;
-        let session_row = checked_session(&tx, concrete.binding)?;
-        if (session_row.2, session_row.3) != guard_inode {
-            return Err(IndexError::Storage("read session inode mismatch".into()));
-        }
-        let pin = checked_pin(&tx, ticket)?;
-        let now = catalog_now_ms(&tx, self.clock.now_unix_ms())?;
-        if now >= uint(pin.4)? {
-            return Err(IndexError::SnapshotUnavailable);
-        }
-        tx.commit().map_err(|error| sql(&error))?;
-        drop(connection);
-        Ok(())
+        validate_live_ticket(self, session, ticket, None)
+    }
+
+    fn validate_ticket_for_request(
+        &self,
+        session: &dyn ReadSessionLease,
+        ticket: ReadTicketLease,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        validate_live_ticket(self, session, ticket, Some(budget))
     }
 
     fn release_ticket(
@@ -851,7 +948,6 @@ impl CatalogReadPort for SqliteCatalog {
         ticket: ReadTicketLease,
     ) -> Result<(), IndexError> {
         let concrete = guard(self, session)?;
-        let guard_inode = inode(&concrete.file)?;
         if ticket.session != concrete.binding {
             return Err(IndexError::SnapshotUnavailable);
         }
@@ -860,7 +956,7 @@ impl CatalogReadPort for SqliteCatalog {
             .map_err(|error| IndexError::Storage(error.to_string()))?;
         let tx = begin(&mut connection)?;
         let session_row = checked_session(&tx, concrete.binding)?;
-        if (session_row.2, session_row.3) != guard_inode {
+        if (session_row.2, session_row.3) != concrete.inode {
             return Err(IndexError::Storage("read session inode mismatch".into()));
         }
         let pin = checked_pin(&tx, ticket)?;

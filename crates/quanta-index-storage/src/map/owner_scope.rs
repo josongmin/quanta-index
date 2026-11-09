@@ -8,10 +8,9 @@ use quanta_index_core::index::{
     RegisteredObject, RegisteredObjectBatch, StagedMapRoots, StagedObjectReferences, StoredObject,
     WorkBudget,
     ports::{
-        ImmutableObjectPort, MAX_MAP_LOOKUP_BATCH, MAX_OWNER_MAP_BATCH_OBJECTS,
-        MAX_OWNER_MAP_BATCH_ROOTS, MapDiffRange, MapDiffVisitor, MapEditCursor, ObjectMapBatchPort,
-        ObjectWriteSink, OwnerMapCompletion, PersistentMapPort, PreparedObjectMapBatch,
-        PreparedOwnerMapScope,
+        ImmutableObjectPort, MAX_OWNER_MAP_BATCH_OBJECTS, MAX_OWNER_MAP_BATCH_ROOTS, MapDiffRange,
+        MapDiffVisitor, MapEditCursor, ObjectMapBatchPort, ObjectWriteSink, OwnerMapCompletion,
+        PersistentMapPort, PreparedObjectMapBatch, PreparedOwnerMapScope,
     },
 };
 
@@ -583,29 +582,9 @@ impl PersistentMapPort for OwnerScope {
         values: &mut [Option<MapValue>],
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
-        if keys.len() > MAX_MAP_LOOKUP_BATCH || keys.len() != values.len() {
-            return Err(IndexError::InvalidInput(
-                "map lookup batch shape exceeds bound".into(),
-            ));
-        }
-        budget.charge(quanta_index_core::index::WorkUsage {
-            bytes: u64::try_from(
-                keys.len()
-                    .checked_mul(std::mem::size_of::<Option<MapValue>>())
-                    .ok_or(IndexError::ResourceLimited)?,
-            )
-            .map_err(|_error| IndexError::ResourceLimited)?,
-            ..quanta_index_core::index::WorkUsage::default()
-        })?;
-        let mut lookup = original_lookup::OriginalLookup::new();
-        for (key, value) in keys.iter().zip(values) {
-            charge_key_allocation(key, budget)?;
-            let nibbles = key_nibbles(key, budget)?;
-            *value = lookup.lookup_with(root, &nibbles, budget, |reference, budget| {
-                self.read_node(reference, budget)
-            })?;
-        }
-        Ok(())
+        original_lookup::lookup_batch_with(root, keys, values, budget, |reference, budget| {
+            self.read_node(reference, budget)
+        })
     }
     fn scan(
         &self,

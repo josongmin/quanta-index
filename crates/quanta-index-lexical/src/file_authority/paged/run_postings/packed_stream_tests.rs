@@ -1,6 +1,81 @@
 use super::packed_stream::{PackedEdits, RecordEdit};
 use super::*;
 
+fn interleaved_domain_pack(wide: bool) -> usize {
+    let dir = tempfile::tempdir().expect("directory");
+    let store = ObjectStore::open(dir.path()).expect("store");
+    let binding = crate::lexical_store::AttemptBinding {
+        root_incarnation: [1; 16],
+        repository_sha256: [2; 32],
+        revision_sha256: [3; 32],
+        source_event_sha256: [4; 32],
+        target_generation: 1,
+        base_root_sha256: None,
+        operations_sha256: [5; 32],
+        format: 1,
+    };
+    let lease = store.begin_attempt(&binding, &[]).expect("attempt");
+    let rows = (0..384_u32)
+        .map(|number| {
+            let bytes = number.to_be_bytes();
+            let gram = [bytes[1], bytes[2], bytes[3]];
+            let key = run_page_key(1, gram, u64::from(number % 4) << ID_BUCKET_BITS)
+                .expect("page key")
+                .to_vec();
+            RecordEdit {
+                key,
+                bytes: format!("body-{number:04}").into_bytes(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let source = rows.iter().map(|row| {
+        Ok(RecordEdit {
+            key: row.key.clone(),
+            bytes: row.bytes.clone(),
+        })
+    });
+    let packed = PackedEdits::new(&store, &lease, source);
+    let packed = if wide {
+        packed.fresh_leaf_lookahead()
+    } else {
+        packed
+    };
+    let root = store.map_bootstrap(&lease, packed).expect("map");
+    let cold = ObjectStore::open(dir.path()).expect("cold store");
+    let mut root_domain = BTreeMap::new();
+    for row in &rows {
+        let reference = cold
+            .map_get(&root, &row.key, None)
+            .expect("map lookup")
+            .expect("record route");
+        assert_eq!(
+            cold.read_blob(&reference, 128, None).expect("cold record"),
+            row.bytes
+        );
+        let domain = [
+            row.key[0],
+            row.key[4],
+            row.key[5],
+            row.key[6],
+            row.key[7],
+            row.key[8],
+            row.key[9],
+            row.key[10],
+            row.key[11],
+        ];
+        if let Some(prior) = root_domain.insert(reference.root.sha256, domain) {
+            assert_eq!(prior, domain, "a Record root crossed a restricted bucket");
+        }
+    }
+    root_domain.len()
+}
+
+#[test]
+fn fresh_leaf_lookahead_packs_interleaved_buckets_without_crossing_boundaries() {
+    assert_eq!(interleaved_domain_pack(false), 16);
+    assert_eq!(interleaved_domain_pack(true), 4);
+}
+
 #[test]
 fn deleting_pack_members_keeps_the_surviving_whole_inode_in_the_run_ledger() {
     let dir = tempfile::tempdir().expect("directory");

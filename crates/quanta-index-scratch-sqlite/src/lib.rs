@@ -12,7 +12,10 @@ mod connection;
 mod edit_page;
 mod edit_write;
 pub use edit_page::{MapEditPage, read_map_edit_budgeted};
-pub use edit_write::write_map_edit_batch;
+pub use edit_write::{
+    MapEditFields, max_supported_wide_edit_batch_rows, write_map_edit_batch,
+    write_map_edit_fields_batch, write_map_edit_fields_batch_wide,
+};
 pub mod physical;
 pub mod retention;
 pub use connection::{ScratchConnection, ScratchConnectionScope, storage_error};
@@ -26,6 +29,8 @@ const PAGE_BYTES: u64 = 4096;
 const GROWTH_BYTES: u64 = 256 * 1024;
 const WRITE_HEADROOM: u64 = 64 * 1024;
 pub const MAX_WRITE_BATCH_ROWS: usize = 64;
+/// Posting-only opt-in width. Ordinary edit packets retain the 64-row cap.
+pub const MAX_WIDE_WRITE_BATCH_ROWS: usize = 128;
 
 /// Borrow a `SQLite` BLOB after checking its bound, before an owned Rust copy.
 /// This does not constrain `SQLite`'s own allocation of the row or page cache.
@@ -150,12 +155,12 @@ fn install_limit(db: &Connection, allocation: &dyn ScratchAllocation) -> Result<
     Ok(())
 }
 
-fn verify_limit(db: &Connection, allocation: &dyn ScratchAllocation) -> Result<(), IndexError> {
+fn verify_limit(db: &Connection, reserved: u64) -> Result<(), IndexError> {
     if pragma(db, "PRAGMA main.page_size")? != PAGE_BYTES
         || pragma(db, "PRAGMA main.max_page_count")?
             .checked_mul(PAGE_BYTES)
             .ok_or(IndexError::ResourceLimited)?
-            > allocation.reserved_bytes()?
+            > reserved
     {
         return Err(IndexError::Storage(
             "scratch main-file page limit exceeds reservation".into(),
@@ -194,7 +199,8 @@ pub fn reserve_for_write(
         .max(current);
     let reserved = allocation.reserved_bytes()?;
     if required <= reserved {
-        verify_limit(db, allocation)?;
+        // The live allocation's reservation cannot shrink while the DB is open.
+        verify_limit(db, reserved)?;
         return Ok(());
     }
     if required > allocation.max_bytes() {
@@ -225,7 +231,17 @@ pub fn reserve_for_write_batch(
     row_bytes: &[u64],
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    if row_bytes.is_empty() || row_bytes.len() > MAX_WRITE_BATCH_ROWS {
+    reserve_for_write_batch_with_limit(db, allocation, row_bytes, MAX_WRITE_BATCH_ROWS, budget)
+}
+
+pub(crate) fn reserve_for_write_batch_with_limit(
+    db: &Connection,
+    allocation: &dyn ScratchAllocation,
+    row_bytes: &[u64],
+    max_rows: usize,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    if row_bytes.is_empty() || row_bytes.len() > max_rows {
         return Err(IndexError::ResourceLimited);
     }
     let incoming = row_bytes.iter().try_fold(0u64, |sum, row| {
@@ -427,6 +443,105 @@ mod tests {
             reserve_for_write_batch(&db, &allocation, &[1], &mut budget()?),
             Err(IndexError::Storage(_))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn wide_edit_packet_runs_once_and_refuses_unsupported_variable_limit_before_effects()
+    -> Result<(), IndexError> {
+        use rusqlite::{StatementStatus, limits::Limit, types::ValueRef};
+
+        const PREFIX: &str = "INSERT INTO rows(partition,k,p,n) VALUES ";
+        let allocation = TestAllocation::new(256 * 1024, 4 * 1024 * 1024, false)?;
+        let db = allocation.open()?;
+        configure(&db, &allocation)?;
+        db.execute_batch(
+            "CREATE TABLE rows(partition INTEGER NOT NULL,k BLOB NOT NULL,p BLOB,n BLOB,
+             PRIMARY KEY(partition,k)) WITHOUT ROWID;",
+        )
+        .map_err(|error| sql(&error))?;
+        if max_supported_wide_edit_batch_rows(&db)? == MAX_WIDE_WRITE_BATCH_ROWS {
+            let keys = (0_u16..128).map(u16::to_be_bytes).collect::<Vec<_>>();
+            let next = MapValue::Object(ObjectRef(Digest([7; 32])));
+            let mut budget = WorkBudget::new(
+                WorkLimits {
+                    reads: 0,
+                    writes: 128,
+                    bytes: 1_000_000,
+                    mutations: 0,
+                },
+                Instant::now()
+                    .checked_add(Duration::from_secs(10))
+                    .ok_or(IndexError::ResourceLimited)?,
+            );
+            write_map_edit_fields_batch_wide(
+                &db,
+                &allocation,
+                PREFIX,
+                4096,
+                &[1024; 128],
+                |slot| {
+                    Ok((
+                        ValueRef::Integer(7),
+                        MapEditFields {
+                            key: keys.get(slot).ok_or(IndexError::ResourceLimited)?,
+                            expected: None,
+                            next: Some(&next),
+                        },
+                        0,
+                    ))
+                },
+                &mut budget,
+            )?;
+            let query = format!(
+                "{PREFIX}{}",
+                std::iter::repeat_n("(?,?,?,?)", 128)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            let statement = db.prepare_cached(&query).map_err(|error| sql(&error))?;
+            check_eq!(statement.get_status(StatementStatus::Run), 1);
+            drop(statement);
+            check_eq!(budget.usage().writes, 128);
+            const FIXED_BYTES: u64 = 4096 + 128 * 108;
+            let expected = u64::try_from(query.len())
+                .map_err(|_error| IndexError::ResourceLimited)?
+                .checked_add(FIXED_BYTES)
+                .ok_or(IndexError::ResourceLimited)?;
+            check_eq!(budget.usage().bytes, expected);
+            let count: i64 = db
+                .query_row("SELECT COUNT(*) FROM rows", [], |row| row.get(0))
+                .map_err(|error| sql(&error))?;
+            check_eq!(count, 128);
+            let capped = main_page_cap(&db)?
+                .checked_mul(PAGE_BYTES)
+                .ok_or(IndexError::ResourceLimited)?;
+            check!(capped <= allocation.reserved_bytes()?);
+        }
+
+        let _prior_limit = db
+            .set_limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER, 511)
+            .map_err(|error| sql(&error))?;
+        check_eq!(
+            max_supported_wide_edit_batch_rows(&db)?,
+            MAX_WRITE_BATCH_ROWS
+        );
+        let prior_changes = db.total_changes();
+        let mut refused = budget()?;
+        check!(matches!(
+            write_map_edit_fields_batch_wide(
+                &db,
+                &allocation,
+                PREFIX,
+                4096,
+                &[1024; 128],
+                |_slot| Err(IndexError::BackendViolation("wide callback ran".into())),
+                &mut refused,
+            ),
+            Err(IndexError::ResourceLimited)
+        ));
+        check_eq!(refused.usage().writes, 0);
+        check_eq!(db.total_changes(), prior_changes);
         Ok(())
     }
 

@@ -13,7 +13,9 @@ use quanta_index_ipc::{DispatchContextV1, IpcDispatcher, IpcError, IpcPlane, Str
 
 use crate::native::{NativeDispatcher, wire_error};
 use crate::native_reply::NativeReply;
-use crate::native_work_diagnostic::{self, DiscardFailureStage};
+use crate::native_work_diagnostic::{
+    self, DiscardFailureStage, ReadFailureRoute, ReadFailureStage,
+};
 
 impl NativeDispatcher {
     fn canonical_response(
@@ -219,10 +221,21 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 query,
             } => {
                 let mut work = WorkBudget::with_request(self.limits, budget.clone());
-                work.checkpoint().and_then(|()| {
-                    self.search_text(selection, instance, &query, &mut work)
+                let mut stage = ReadFailureStage::Checkpoint;
+                let result = work.checkpoint().and_then(|()| {
+                    self.search_text(selection, instance, &query, &mut work, &mut stage)
                         .map(NativeReply::Text)
-                })
+                });
+                if let Err(error) = &result {
+                    native_work_diagnostic::record_read_error_if_enabled(
+                        context,
+                        ReadFailureRoute::OrdinarySearch,
+                        stage,
+                        &work,
+                        error,
+                    );
+                }
+                result
             }
             NativeIndexRequest::SearchSemantic {
                 selection,
@@ -257,8 +270,10 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
             | NativeIndexRequest::RenewWork { .. }
             | NativeIndexRequest::WorkStatus(_)) => {
                 let is_discard = matches!(&other, NativeIndexRequest::DiscardInput(_));
+                let is_read_view = matches!(&other, NativeIndexRequest::ReadView(_));
                 let mut work = WorkBudget::with_request(self.limits, budget.clone());
-                (|| {
+                let mut read_view_stage = ReadFailureStage::Checkpoint;
+                let result = (|| {
                     work.checkpoint().inspect_err(|error| {
                         if is_discard {
                             native_work_diagnostic::record_discard_if_enabled(
@@ -274,27 +289,40 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                             | NativeIndexRequest::WorkStatus(_)
                             | NativeIndexRequest::RenewWork { .. }
                     );
-                    let (scheduler, need) = if control {
-                        (&self.control_scheduler, self.control_need)
+                    read_view_stage = ReadFailureStage::InteractiveAdmission;
+                    let admission = if control {
+                        ReservationGuard::try_acquire(
+                            Arc::clone(&self.control_scheduler),
+                            self.control_need,
+                        )
+                        .ok_or_else(|| self.control_scheduler.denial())
                     } else {
-                        (&self.interactive_scheduler, self.interactive_need)
+                        self.interactive_scheduler
+                            .acquire_interactive_for_request(self.interactive_need, &work)
                     };
-                    let Some(reservation) =
-                        ReservationGuard::try_acquire(Arc::clone(scheduler), need)
-                    else {
-                        let error = scheduler.denial();
+                    let reservation = admission.inspect_err(|error| {
                         if is_discard {
                             native_work_diagnostic::record_discard_if_enabled(
                                 DiscardFailureStage::SchedulerAdmission,
                                 &work,
-                                &error,
+                                error,
                             );
                         }
-                        return Err(error);
-                    };
+                    })?;
                     work.bind_memory_scope(reservation.memory_scope());
+                    read_view_stage = ReadFailureStage::ViewCustody;
                     self.execute(other, &mut work)
-                })()
+                })();
+                if is_read_view && let Err(error) = &result {
+                    native_work_diagnostic::record_read_error_if_enabled(
+                        context,
+                        ReadFailureRoute::ReadView,
+                        read_view_stage,
+                        &work,
+                        error,
+                    );
+                }
+                result
             }
         };
         match result {

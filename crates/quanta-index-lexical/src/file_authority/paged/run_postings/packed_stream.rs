@@ -8,6 +8,8 @@ use crate::lexical_store::{
 };
 use quanta_index_core::CoreError;
 
+pub(super) const FRESH_LEAF_LOOKAHEAD_GROUPS: usize = 8;
+
 pub(super) struct RecordEdit {
     pub(super) key: Vec<u8>,
     pub(super) bytes: Vec<u8>,
@@ -17,6 +19,8 @@ pub(super) struct PackedEdits<'a, I> {
     store: &'a ObjectStore,
     lease: &'a AttemptLease,
     source: I,
+    lookahead_records: usize,
+    lookahead_bytes: usize,
     pending: Option<RecordEdit>,
     ready: VecDeque<MapEdit>,
     failed: bool,
@@ -29,6 +33,8 @@ impl<'a, I: Iterator<Item = Result<RecordEdit, CoreError>>> PackedEdits<'a, I> {
             store,
             lease,
             source,
+            lookahead_records: MAX_PACKED_RECORDS,
+            lookahead_bytes: MAX_RECORD_GROUP_BYTES,
             pending: None,
             ready: VecDeque::new(),
             failed: false,
@@ -36,11 +42,50 @@ impl<'a, I: Iterator<Item = Result<RecordEdit, CoreError>>> PackedEdits<'a, I> {
         }
     }
 
+    /// Collect more sorted fresh-leaf edits before partitioning by the same
+    /// surface and logical-ID bucket. Physical groups keep the store's limits.
+    #[cfg(test)]
+    pub(super) fn fresh_leaf_lookahead(mut self) -> Self {
+        self.lookahead_records = MAX_PACKED_RECORDS * FRESH_LEAF_LOOKAHEAD_GROUPS;
+        self.lookahead_bytes = MAX_RECORD_GROUP_BYTES * FRESH_LEAF_LOOKAHEAD_GROUPS;
+        self
+    }
+
+    fn publish_group(
+        &mut self,
+        indices: &[usize],
+        records: &[Vec<u8>],
+        references: &mut [Option<crate::lexical_store::BlobRef>],
+    ) -> Result<(), CoreError> {
+        let mut members = Vec::new();
+        members
+            .try_reserve_exact(indices.len())
+            .map_err(|e| CoreError::Storage(format!("reserve Record members: {e}")))?;
+        for &index in indices {
+            members.push(
+                records
+                    .get(index)
+                    .ok_or_else(|| corrupt("packed Record member absent"))?
+                    .as_slice(),
+            );
+        }
+        let packed = self.store.put_record_group(self.lease, &members)?;
+        if packed.len() != indices.len() {
+            return Err(corrupt("packed reference count differs"));
+        }
+        for (&index, reference) in indices.iter().zip(packed) {
+            *references
+                .get_mut(index)
+                .ok_or_else(|| corrupt("packed reference slot absent"))? = Some(reference);
+        }
+        Ok(())
+    }
+
     fn fill(&mut self) -> Result<(), CoreError> {
         let mut keys = Vec::new();
         let mut records = Vec::new();
         let mut width = 3_usize;
-        for _ in 0..MAX_PACKED_RECORDS {
+        for _ in 0..self.lookahead_records {
             let row = match self.pending.take() {
                 Some(row) => Some(row),
                 None => self.source.next().transpose()?,
@@ -53,7 +98,7 @@ impl<'a, I: Iterator<Item = Result<RecordEdit, CoreError>>> PackedEdits<'a, I> {
                 .checked_add(2)
                 .and_then(|n| n.checked_add(row.bytes.len()))
                 .ok_or_else(|| invalid("Record group width overflow"))?;
-            if !records.is_empty() && next_width > MAX_RECORD_GROUP_BYTES {
+            if !records.is_empty() && next_width > self.lookahead_bytes {
                 self.pending = Some(row);
                 break;
             }
@@ -101,26 +146,29 @@ impl<'a, I: Iterator<Item = Result<RecordEdit, CoreError>>> PackedEdits<'a, I> {
             .map_err(|e| CoreError::Storage(format!("reserve Record references: {e}")))?;
         references.resize_with(keys.len(), || None);
         for indices in domains.values() {
-            let mut members = Vec::new();
-            members
-                .try_reserve_exact(indices.len())
-                .map_err(|e| CoreError::Storage(format!("reserve Record members: {e}")))?;
-            for &index in indices {
-                members.push(
-                    records
+            let mut start = 0;
+            while start < indices.len() {
+                let mut end = start;
+                let mut width = 3_usize;
+                while let Some(&index) = indices.get(end) {
+                    if end - start == MAX_PACKED_RECORDS {
+                        break;
+                    }
+                    let record = records
                         .get(index)
-                        .ok_or_else(|| corrupt("packed Record member absent"))?
-                        .as_slice(),
-                );
-            }
-            let packed = self.store.put_record_group(self.lease, &members)?;
-            if packed.len() != indices.len() {
-                return Err(corrupt("packed reference count differs"));
-            }
-            for (&index, reference) in indices.iter().zip(packed) {
-                *references
-                    .get_mut(index)
-                    .ok_or_else(|| corrupt("packed reference slot absent"))? = Some(reference);
+                        .ok_or_else(|| corrupt("packed Record member absent"))?;
+                    let next_width = width
+                        .checked_add(2)
+                        .and_then(|n| n.checked_add(record.len()))
+                        .ok_or_else(|| invalid("Record group width overflow"))?;
+                    if end > start && next_width > MAX_RECORD_GROUP_BYTES {
+                        break;
+                    }
+                    width = next_width;
+                    end += 1;
+                }
+                self.publish_group(&indices[start..end], &records, &mut references)?;
+                start = end;
             }
         }
         for (key, reference) in keys.into_iter().zip(references) {

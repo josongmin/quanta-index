@@ -1,8 +1,8 @@
 use std::{
     error::Error,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        Arc, RwLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -94,7 +94,9 @@ fn registered_entry(
         open_key: [7; 32],
         selection,
         lifecycle: AtomicUsize::new(0),
-        inner: Mutex::new(EntryState {
+        renew_waiters: AtomicUsize::new(0),
+        uncertain: AtomicBool::new(false),
+        inner: RwLock::new(EntryState {
             status: Some(NativeReadSessionStatus {
                 session: id,
                 view: ViewRef {
@@ -281,6 +283,173 @@ fn cancelled_open_after_real_pin_replays_one_ticket_and_releases_it() -> TestRes
     check_eq!(released.state, NativeReadSessionState::Released);
     check!(!remaining);
     check_eq!(pin_count()?, 0);
+    let released_replay = registry.open(42, [7; 32], selection(1), &budget(), |_selected| {
+        let _prior = pin_calls.fetch_add(1, Ordering::Relaxed);
+        Err(IndexError::BackendViolation(
+            "released replay attempted a second Catalog pin".into(),
+        ))
+    })?;
+    check_eq!(released_replay, released);
+    check_eq!(pin_calls.load(Ordering::Relaxed), 1);
+    check_eq!(pin_count()?, 0);
+
+    let query_ticket = registry.open(42, [8; 32], selection(1), &budget(), |selected| {
+        kernel.pin_view(selected, &budget())
+    })?;
+    check_eq!(pin_count()?, 1);
+    let query_id = query_ticket.session;
+    let release_queries = AtomicBool::new(false);
+    thread::scope(|scope| -> TestResult {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let mut workers = Vec::new();
+        for _ in 0..2 {
+            let entered = entered_tx.clone();
+            let release = &release_queries;
+            let registry_ref = &registry;
+            workers.push(scope.spawn(move || {
+                registry_ref.with_ticket(
+                    42,
+                    query_id,
+                    &budget(),
+                    || Ok(()),
+                    |_ticket, ()| {
+                        entered.send(()).map_err(|error| {
+                            IndexError::BackendViolation(format!(
+                                "concurrent read observation failed: {error}"
+                            ))
+                        })?;
+                        let deadline = Instant::now()
+                            .checked_add(Duration::from_secs(4))
+                            .ok_or(IndexError::ResourceLimited)?;
+                        while !release.load(Ordering::Acquire) {
+                            if Instant::now() >= deadline {
+                                return Err(IndexError::ResourceLimited);
+                            }
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        Ok(())
+                    },
+                )
+            }));
+        }
+        drop(entered_tx);
+        let both_entered = entered_rx.recv_timeout(Duration::from_secs(3)).is_ok()
+            && entered_rx.recv_timeout(Duration::from_secs(3)).is_ok();
+        release_queries.store(true, Ordering::Release);
+        for worker in workers {
+            worker
+                .join()
+                .map_err(|_panic| "concurrent query worker panicked")??;
+        }
+        check!(both_entered);
+        Ok(())
+    })?;
+    let renewed = registry.renew(42, query_ticket.session, query_ticket.revision, &budget())?;
+    check_eq!(renewed.revision, query_ticket.revision + 1);
+    check_eq!(renewed.state, NativeReadSessionState::Active);
+    check_eq!(pin_count()?, 1);
+    check_eq!(
+        registry.renew(42, query_ticket.session, query_ticket.revision, &budget())?,
+        renewed
+    );
+    let interrupted = budget();
+    check_eq!(
+        registry.with_ticket(
+            42,
+            query_ticket.session,
+            &interrupted,
+            || Ok(()),
+            |_ticket, ()| {
+                interrupted.request().cancel_handle().cancel();
+                Ok(())
+            }
+        ),
+        Err(IndexError::Cancelled)
+    );
+    check_eq!(
+        registry.status(42, query_ticket.session, &budget())?,
+        renewed
+    );
+    check_eq!(pin_count()?, 1);
+    let unavailable: Result<(), IndexError> = registry.with_ticket(
+        42,
+        query_ticket.session,
+        &budget(),
+        || Ok(()),
+        |_ticket, ()| Err(IndexError::SnapshotUnavailable),
+    );
+    check_eq!(unavailable, Err(IndexError::SnapshotUnavailable));
+    check_eq!(
+        registry.status(42, query_ticket.session, &budget())?,
+        renewed
+    );
+    check_eq!(pin_count()?, 1);
+    let query_error = IndexError::InvalidInput("reader refused the query".into());
+    let outcome: Result<(), IndexError> = registry.with_ticket(
+        42,
+        query_ticket.session,
+        &budget(),
+        || Ok(()),
+        |_ticket, ()| Err(query_error.clone()),
+    );
+    check_eq!(outcome, Err(query_error));
+    check_eq!(
+        registry.status(42, query_ticket.session, &budget())?,
+        renewed
+    );
+    let entry = registry.lookup(42, query_ticket.session, &budget())?;
+    {
+        let mut guard = entry.inner.write().map_err(|error| {
+            std::io::Error::other(format!("read-session entry poisoned: {error}"))
+        })?;
+        guard
+            .ticket
+            .as_mut()
+            .ok_or("fixture lost ticket")?
+            .try_release()?;
+    }
+    let invalid: Result<(), IndexError> = registry.with_ticket(
+        42,
+        query_ticket.session,
+        &budget(),
+        || Ok(()),
+        |_ticket, ()| Ok(()),
+    );
+    check_eq!(invalid, Err(IndexError::SnapshotUnavailable));
+    check_eq!(
+        registry.status(42, query_ticket.session, &budget())?.state,
+        NativeReadSessionState::Unknown
+    );
+    check_eq!(pin_count()?, 0);
+    Ok(())
+}
+
+#[test]
+fn retained_terminal_open_replay_preserves_state_and_selection() -> TestResult {
+    for state in [
+        NativeReadSessionState::Closing,
+        NativeReadSessionState::Released,
+        NativeReadSessionState::Unknown,
+    ] {
+        let registry =
+            NativeReadSessions::new_unfunded_for_test(NativeReadSessionConfig::default())?;
+        let entry = registered_entry(&registry, state)?;
+        let expected = registry.status(42, entry.id, &budget())?;
+        let replay = registry.open(42, [7; 32], selection(1), &budget(), |_selected| {
+            Err(IndexError::BackendViolation(
+                "terminal replay attempted a Catalog pin".into(),
+            ))
+        })?;
+        check_eq!(replay, expected);
+        check_eq!(
+            registry.open(42, [7; 32], selection(2), &budget(), |_selected| {
+                Err(IndexError::BackendViolation(
+                    "conflicting terminal replay attempted a Catalog pin".into(),
+                ))
+            }),
+            Err(IndexError::Conflict)
+        );
+    }
     Ok(())
 }
 
@@ -359,11 +528,11 @@ fn release_intent_blocks_new_query_before_waiting_and_survives_cancellation() ->
     );
     check!(!entry.is_closing());
 
-    // Holding the ticket mutex models an in-flight query. Release must
+    // Holding shared ticket custody models an in-flight query. Release must
     // publish Closing without waiting for that query to finish.
     let guard = entry
         .inner
-        .lock()
+        .read()
         .map_err(|error| std::io::Error::other(format!("read-session entry poisoned: {error}")))?;
     check_eq!(entry.require_active_query(&guard), Ok(()));
     let release_budget = budget();
@@ -390,19 +559,39 @@ fn release_intent_blocks_new_query_before_waiting_and_survives_cancellation() ->
     }
     let lifecycle_while_query_held = entry.lifecycle.load(Ordering::Acquire);
     let status_while_query_held = entry.status(&guard).map(|status| status.state);
+    let waiting_status = registry.status(
+        42,
+        id,
+        &WorkBudget::with_request(
+            WorkLimits {
+                reads: 1,
+                writes: 1,
+                bytes: 1,
+                mutations: 1,
+            },
+            RequestBudgetV1::for_duration(Duration::from_millis(5)),
+        ),
+    );
     // The same post-lock predicate is used by with_ticket, closing the race
     // where a query passed its first check before Release published intent.
     let post_lock_query = entry.require_active_query(&guard);
-    let new_query: Result<(), IndexError> = registry.with_ticket(42, id, &budget(), |_ticket| {
-        Err(IndexError::BackendViolation(
-            "new query reached the held ticket".into(),
-        ))
-    });
+    let new_query: Result<(), IndexError> = registry.with_ticket(
+        42,
+        id,
+        &budget(),
+        || Ok(()),
+        |_ticket, ()| {
+            Err(IndexError::BackendViolation(
+                "new query reached the held ticket".into(),
+            ))
+        },
+    );
     cancel_release.cancel();
     let timed_out = worker.join().map_err(|_panic| "Release worker panicked")?;
     drop(guard);
     check_eq!(lifecycle_while_query_held, CLOSING_BIT | RELEASE_WAITER);
     check_eq!(status_while_query_held, Ok(NativeReadSessionState::Closing));
+    check_eq!(waiting_status, Err(IndexError::ResourceLimited));
     check_eq!(post_lock_query, Err(IndexError::SnapshotUnavailable));
     check_eq!(new_query, Err(IndexError::SnapshotUnavailable));
     check_eq!(timed_out, Err(IndexError::Cancelled));
@@ -450,7 +639,7 @@ fn maintenance_defers_closing_entry_while_public_release_owns_the_ack() -> TestR
     }
     let guard = entry
         .inner
-        .lock()
+        .read()
         .map_err(|error| std::io::Error::other(format!("entry poisoned: {error}")))?;
     check_eq!(entry.status(&guard)?.state, NativeReadSessionState::Closing);
     Ok(())
@@ -462,7 +651,7 @@ fn maintenance_released_tombstone_cannot_replay_public_release_ack_or_settlement
     let entry = registered_entry(&registry, NativeReadSessionState::Released)?;
     let id = entry.id;
     {
-        let mut guard = entry.inner.lock().map_err(|error| {
+        let mut guard = entry.inner.write().map_err(|error| {
             std::io::Error::other(format!("read-session entry poisoned: {error}"))
         })?;
         guard.has_remaining_target_pins = Some(false);
@@ -488,7 +677,7 @@ fn maintenance_released_tombstone_cannot_replay_public_release_ack_or_settlement
         });
     check_eq!(settlement, Err(IndexError::SnapshotUnavailable));
     {
-        let mut guard = entry.inner.lock().map_err(|error| {
+        let mut guard = entry.inner.write().map_err(|error| {
             std::io::Error::other(format!("read-session entry poisoned: {error}"))
         })?;
         guard.public_release_ack = true;

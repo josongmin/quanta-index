@@ -29,6 +29,7 @@ fn managed_writes_refuse_changed_root_and_objects_before_physical_io()
                 let authority: Arc<dyn ManagedObjectAuthority> = Arc::new(TraceAuthority {
                     fail_confirmation: false,
                     inputs: count,
+                    pair: None,
                 });
                 let observer = Arc::new(ObjectIoObservation::default());
                 let store = FileObjectStore::open_managed_with_scratch(&root, scratch, authority)?

@@ -566,5 +566,3 @@ is repaired as a batch, unrelated old greens are not rerun merely due HEAD drift
 No 100% code or release claim until original exit conditions are met. Update the
 existing RFC requirement ledger/VALIDATION/README; no repeated planning-only wave
 without an explicit contract blocker or new material evidence.
-
-

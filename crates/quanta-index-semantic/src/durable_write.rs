@@ -55,6 +55,7 @@ static ATOMIC_WRITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub(crate) struct AtomicOutput {
     path: PathBuf,
     permit: Option<Box<dyn PublicationOutputPermit>>,
+    rename_settlement_pending: bool,
 }
 
 impl AtomicOutput {
@@ -64,6 +65,22 @@ impl AtomicOutput {
 
     /// Transfer the same committed output to a new path, then sync both parents.
     pub(crate) fn rename_to(&mut self, target: &Path, action: &str) -> Result<(), CoreError> {
+        if let Some(permit) = self.permit.as_deref_mut() {
+            if self.rename_settlement_pending {
+                if target != self.path {
+                    return Err(CoreError::InvalidContract(
+                        "sidecar must settle its move before changing targets".into(),
+                    ));
+                }
+            } else {
+                permit.move_output(target)?;
+                self.path = target.to_path_buf();
+                self.rename_settlement_pending = true;
+            }
+            permit.renamed_and_synced()?;
+            self.rename_settlement_pending = false;
+            return Ok(());
+        }
         let source = self.path.clone();
         let source_parent = source.parent().ok_or_else(|| {
             CoreError::Storage(format!(
@@ -77,9 +94,6 @@ impl AtomicOutput {
                 target.display()
             ))
         })?;
-        if let Some(permit) = self.permit.as_deref_mut() {
-            permit.rename_started(target)?;
-        }
         fs::rename(&source, target).map_err(|error| fs_err(action, target, &error))?;
         self.path = target.to_path_buf();
         File::open(source_parent)
@@ -89,9 +103,6 @@ impl AtomicOutput {
             File::open(target_parent)
                 .and_then(|directory| directory.sync_all())
                 .map_err(|error| fs_err(action, target_parent, &error))?;
-        }
-        if let Some(permit) = self.permit.as_deref_mut() {
-            permit.renamed_and_synced()?;
         }
         Ok(())
     }
@@ -184,107 +195,91 @@ pub(crate) fn write_atomic_with_reserved_permit(
     let actual_bytes = u64::try_from(bytes.len()).map_err(|error| {
         CoreError::InvalidContract(format!("semantic: {action} payload width: {error}"))
     })?;
-    if let Some(permit) = permit.as_deref_mut() {
-        permit.bind_output(&staging, path)?;
-    }
-
-    // The exact sidecar width is known before the first create. The child
-    // reservation above holds that full bound, including a possible short write.
-    if let Some(permit) = permit.as_deref_mut() {
-        permit.creation_started()?;
-    }
-    let mut file = match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staging)
-    {
-        Ok(file) => file,
-        Err(err) => {
-            return Err(settle_uncreated_temporary(
-                &staging,
-                parent,
-                fs_err(action, &staging, &err),
-                &mut permit,
-            ));
+    if let Some(output) = permit.as_deref_mut() {
+        output.bind_output(&staging, path)?;
+        let mut file = output.create_staging()?;
+        let renamed = (|| {
+            output.created(&file, &staging)?;
+            write_staging_bytes(&mut file, &staging, bytes, action)?;
+            output.rename_staging(&file)
+        })();
+        if let Err(primary) = renamed {
+            return Err(match output.cancel_rejected_created(file) {
+                Ok(()) => primary,
+                Err(error) => with_cleanup_context(primary, error),
+            });
         }
-    };
-    if let Some(output) = permit.as_deref_mut()
-        && let Err(err) = output.created(&file, &staging)
-    {
-        return Err(cleanup_atomic_temporary(
-            &staging,
-            parent,
-            err,
-            &mut permit,
-            Some(file),
-        ));
-    }
-    if let Err(err) = file.write_all(bytes) {
-        return Err(cleanup_atomic_temporary(
-            &staging,
-            parent,
-            fs_err(action, &staging, &err),
-            &mut permit,
-            Some(file),
-        ));
-    }
-    if let Err(err) = file.sync_all() {
-        return Err(cleanup_atomic_temporary(
-            &staging,
-            parent,
-            fs_err(action, &staging, &err),
-            &mut permit,
-            Some(file),
-        ));
-    }
-
-    #[cfg(test)]
-    if should_fail_atomic_write_before_rename(action) {
-        return Err(cleanup_atomic_temporary(
-            &staging,
-            parent,
-            CoreError::Storage(format!("semantic: injected {action} failure before rename")),
-            &mut permit,
-            Some(file),
-        ));
-    }
-
-    if let Some(output) = permit.as_deref_mut()
-        && let Err(err) = output.before_replace()
-    {
-        return Err(cleanup_atomic_temporary(
-            &staging,
-            parent,
-            err,
-            &mut permit,
-            Some(file),
-        ));
-    }
-    if let Err(err) = fs::rename(&staging, path) {
-        return Err(cleanup_atomic_temporary(
-            &staging,
-            parent,
-            fs_err(action, path, &err),
-            &mut permit,
-            Some(file),
-        ));
-    }
-    if let Err(error) = File::open(parent).and_then(|directory| directory.sync_all()) {
-        return Err(retire_uncertain_writer(
-            fs_err(action, parent, &error),
-            &mut permit,
-            Some(file),
-        ));
-    }
-    if let Some(permit) = permit.as_deref_mut() {
-        permit.committed(file, actual_bytes)?;
+        if let Err(primary) = output.sync_promoted_parents() {
+            return Err(match output.retire_writer_preserving_pending(file) {
+                Ok(()) => primary,
+                Err(error) => with_cleanup_context(primary, error),
+            });
+        }
+        output.committed(file, actual_bytes)?;
     } else {
-        drop(file);
+        let mut file = create_unmanaged_staging(&staging, parent, action)?;
+        let renamed = write_staging_bytes(&mut file, &staging, bytes, action).and_then(|()| {
+            fs::rename(&staging, path).map_err(|error| fs_err(action, path, &error))
+        });
+        if let Err(primary) = renamed {
+            return Err(match cleanup_unmanaged_temporary(&staging, parent) {
+                Ok(()) => primary,
+                Err(error) => with_cleanup_context(primary, error),
+            });
+        }
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| fs_err(action, parent, &error))?;
     }
     Ok(AtomicOutput {
         path: path.to_path_buf(),
         permit,
+        rename_settlement_pending: false,
     })
+}
+
+fn write_staging_bytes(
+    file: &mut File,
+    staging: &Path,
+    bytes: &[u8],
+    action: &str,
+) -> Result<(), CoreError> {
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|error| fs_err(action, staging, &error))?;
+    #[cfg(test)]
+    if should_fail_atomic_write_before_rename(action) {
+        return Err(CoreError::Storage(format!(
+            "semantic: injected {action} failure before rename"
+        )));
+    }
+    Ok(())
+}
+
+fn create_unmanaged_staging(
+    staging: &Path,
+    parent: &Path,
+    action: &str,
+) -> Result<File, CoreError> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(staging)
+        .map_err(|error| {
+            let primary = fs_err(action, staging, &error);
+            // An occupied name may belong to another invocation.
+            let absence = match fs::symlink_metadata(staging) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    File::open(parent).and_then(|directory| directory.sync_all())
+                }
+                Err(error) => Err(error),
+                Ok(_) => Ok(()),
+            };
+            match absence {
+                Ok(()) => primary,
+                Err(error) => with_cleanup_context(primary, error),
+            }
+        })
 }
 
 pub(crate) fn with_cleanup_context(
@@ -305,81 +300,23 @@ pub(crate) fn with_cleanup_context(
     primary
 }
 
-fn cleanup_atomic_temporary(
-    staging: &Path,
-    parent: &Path,
-    primary: CoreError,
-    permit: &mut Option<Box<dyn PublicationOutputPermit>>,
-    writer: Option<File>,
-) -> CoreError {
-    let absence = (|| -> std::io::Result<()> {
-        match fs::remove_file(staging) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-        match fs::symlink_metadata(staging) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-            Ok(_) => {
-                return Err(std::io::Error::other(format!(
-                    "temporary {} still exists",
-                    staging.display()
-                )));
-            }
-        }
-        File::open(parent).and_then(|directory| directory.sync_all())
-    })();
-    if let Err(error) = absence {
-        return retire_uncertain_writer(with_cleanup_context(primary, error), permit, writer);
+fn cleanup_unmanaged_temporary(staging: &Path, parent: &Path) -> std::io::Result<()> {
+    match fs::remove_file(staging) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
     }
-    if let Some(permit) = permit.as_deref_mut() {
-        let result = match writer {
-            Some(writer) => permit.confirmed_safe_absent_after_writer_close(writer),
-            None => permit.confirmed_uncreated_absent_and_synced(),
-        };
-        if let Err(error) = result {
-            return with_cleanup_context(primary, error);
-        }
-    }
-    primary
-}
-
-fn settle_uncreated_temporary(
-    staging: &Path,
-    parent: &Path,
-    primary: CoreError,
-    permit: &mut Option<Box<dyn PublicationOutputPermit>>,
-) -> CoreError {
-    // A failed create returned no owned FD. An occupied name can belong to
-    // another invocation and must never be unlinked as our temporary file.
     match fs::symlink_metadata(staging) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return with_cleanup_context(primary, error),
-        Ok(_) => return primary,
+        Err(error) => return Err(error),
+        Ok(_) => {
+            return Err(std::io::Error::other(format!(
+                "temporary {} still exists",
+                staging.display()
+            )));
+        }
     }
-    if let Err(error) = File::open(parent).and_then(|directory| directory.sync_all()) {
-        return with_cleanup_context(primary, error);
-    }
-    if let Some(permit) = permit.as_deref_mut()
-        && let Err(error) = permit.confirmed_uncreated_absent_and_synced()
-    {
-        return with_cleanup_context(primary, error);
-    }
-    primary
-}
-
-fn retire_uncertain_writer(
-    primary: CoreError,
-    permit: &mut Option<Box<dyn PublicationOutputPermit>>,
-    writer: Option<File>,
-) -> CoreError {
-    if let (Some(permit), Some(writer)) = (permit.as_deref_mut(), writer)
-        && let Err(retirement) = permit.retire_writer_preserving_pending(writer)
-    {
-        return with_cleanup_context(primary, retirement);
-    }
-    primary
+    File::open(parent).and_then(|directory| directory.sync_all())
 }
 
 #[cfg(test)]
@@ -426,13 +363,13 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let occupied = directory.path().join(".sidecar.tmp-foreign");
         fs::write(&occupied, b"foreign-winner")?;
-        let error = settle_uncreated_temporary(
-            &occupied,
-            directory.path(),
-            CoreError::Storage("create returned no FD".into()),
-            &mut None,
-        );
-        check!(matches!(error, CoreError::Storage(message) if message == "create returned no FD"));
+        check!(matches!(
+            create_unmanaged_staging(&occupied, directory.path(), "create staging"),
+            Err(CoreError::StorageIo {
+                kind: std::io::ErrorKind::AlreadyExists,
+                ..
+            })
+        ));
         check!(fs::read(&occupied)? == b"foreign-winner");
         Ok(())
     }
@@ -542,6 +479,12 @@ mod tests {
     }
 
     impl TestOutput {
+        fn staging(&self) -> Result<&Path, CoreError> {
+            self.staging.as_deref().ok_or_else(|| {
+                CoreError::InvalidContract("test output has no bound staging path".into())
+            })
+        }
+
         fn record(&self, event: Event) -> Result<(), CoreError> {
             self.events
                 .lock()
@@ -566,10 +509,13 @@ mod tests {
 
     impl PublicationOutputPermit for TestOutput {
         fn cancel_rejected_created(&mut self, writer: std::fs::File) -> Result<(), CoreError> {
-            self.retire_writer_preserving_pending(writer)?;
-            Err(CoreError::InvalidContract(
-                "unqualified fixture cannot prove rejected birth cancellation".into(),
-            ))
+            let staging = self.staging()?;
+            let parent = staging
+                .parent()
+                .ok_or_else(|| CoreError::InvalidContract("test staging has no parent".into()))?;
+            cleanup_unmanaged_temporary(staging, parent)
+                .map_err(|error| fs_err("test cancel staging", staging, &error))?;
+            self.confirmed_safe_absent_after_writer_close(writer)
         }
         fn retire_writer_preserving_pending(&mut self, writer: File) -> Result<(), CoreError> {
             // Explicitly unqualified sequencing fixture; physical FD custody
@@ -599,6 +545,15 @@ mod tests {
             self.record(Event::Started)
         }
 
+        fn create_staging(&mut self) -> Result<File, CoreError> {
+            self.creation_started()?;
+            let staging = self.staging()?;
+            let parent = staging
+                .parent()
+                .ok_or_else(|| CoreError::InvalidContract("test staging has no parent".into()))?;
+            create_unmanaged_staging(staging, parent, "test create staging")
+        }
+
         fn created(&mut self, writer: &File, staging: &Path) -> Result<(), CoreError> {
             check_eq!(self.staging.as_deref(), Some(staging));
             check!(writer.metadata().is_ok());
@@ -607,6 +562,22 @@ mod tests {
 
         fn before_replace(&mut self) -> Result<(), CoreError> {
             Ok(())
+        }
+
+        fn rename_staging(&mut self, _writer: &File) -> Result<(), CoreError> {
+            self.before_replace()?;
+            fs::rename(self.staging()?, &self.target)
+                .map_err(|error| fs_err("test rename staging", &self.target, &error))
+        }
+
+        fn sync_promoted_parents(&mut self) -> Result<(), CoreError> {
+            let parent = self
+                .target
+                .parent()
+                .ok_or_else(|| CoreError::InvalidContract("test target has no parent".into()))?;
+            File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|error| fs_err("test sync", parent, &error))
         }
 
         fn committed(&mut self, writer: File, actual_encoded_bytes: u64) -> Result<(), CoreError> {
@@ -644,16 +615,21 @@ mod tests {
             Ok(())
         }
 
+        fn move_output(&mut self, target: &Path) -> Result<(), CoreError> {
+            self.rename_started(target)?;
+            fs::rename(&self.target, target)
+                .map_err(|error| fs_err("test move output", target, &error))
+        }
+
         fn renamed_and_synced(&mut self) -> Result<(), CoreError> {
+            if std::mem::take(&mut self.rename_finish_error) {
+                return Err(CoreError::Storage("fixed rename settlement error".into()));
+            }
             self.target = self
                 .pending_target
                 .take()
                 .ok_or_else(|| CoreError::InvalidContract("test rename target missing".into()))?;
-            self.record(Event::Renamed)?;
-            if self.rename_finish_error {
-                return Err(CoreError::Storage("fixed rename settlement error".into()));
-            }
-            Ok(())
+            self.record(Event::Renamed)
         }
 
         fn delete_file_and_sync(&mut self) -> Result<(), CoreError> {
@@ -956,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn post_rename_settlement_error_keeps_moved_identity_and_charge() -> TestResult {
+    fn post_rename_settlement_error_retries_only_the_original_move() -> TestResult {
         let directory = tempfile::tempdir()?;
         let staged = directory.path().join("staged-contract");
         let target = directory.path().join("contract");
@@ -990,6 +966,15 @@ mod tests {
             (observed.dev(), observed.ino()),
             (identity.dev(), identity.ino())
         );
+        let foreign = directory.path().join("foreign");
+        check!(matches!(
+            output.rename_to(&foreign, "change pending target"),
+            Err(CoreError::InvalidContract(_))
+        ));
+        check!(!foreign.exists());
+        output.rename_to(&target, "settle contract promotion")?;
+        check_eq!(output.path(), target);
+        check_eq!(fs::metadata(&target)?.ino(), identity.ino());
         drop(output);
         check_eq!(
             events_snapshot(&events)?,

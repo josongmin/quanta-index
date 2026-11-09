@@ -1790,15 +1790,15 @@ impl SearchdRuntime {
         // identities it retains are the serving boundary, and the inventory
         // below is measured against them — a sealed directory the history
         // does not retain is an orphan, not a seed.
-        trace_boot_phase(
+        trace_boot_phase_with_context(
             diagnostic_capture.as_ref(),
             DiagnosticStageV1::BootRestore,
-            || {
+            |diagnostic| {
                 let mut guard = ledger.write().map_err(|err| {
                     anyhow::anyhow!("ledger poisoned during search-corpus history bootstrap: {err}")
                 })?;
                 aux_authority_store
-                    .restore_into(&mut guard)
+                    .restore_into_with_diagnostic(&mut guard, diagnostic)
                     .map_err(anyhow::Error::from)?;
                 Ok::<(), anyhow::Error>(())
             },

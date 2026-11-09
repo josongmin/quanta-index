@@ -376,7 +376,7 @@ pub(crate) fn measure_unique_closure_bytes(
             let mut batch_expanded_rows = 0_u64;
             for reference in batch {
                 let children = if observe_sql {
-                    store.object_dependencies_for_closure(&reference, &mut totals)?
+                    store.object_dependencies_for_closure(&reference, None, &mut totals)?
                 } else {
                     store.object_dependencies(&reference, None)?
                 };

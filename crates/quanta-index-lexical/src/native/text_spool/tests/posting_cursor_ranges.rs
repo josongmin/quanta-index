@@ -41,6 +41,182 @@ fn range_runs(spool: &TextSpool, budget: &WorkBudget) -> Result<i64, IndexError>
         })
 }
 
+fn statement_runs(spool: &TextSpool, query: &str, budget: &WorkBudget) -> Result<i32, IndexError> {
+    let db = spool.db.scoped(budget)?;
+    let statement = db.prepare_cached(query).map_err(|error| sql(&error))?;
+    Ok(statement.get_status(rusqlite::StatementStatus::Run))
+}
+
+#[test]
+fn sparse_posting_prepass_preserves_selected_roots_and_dense_fallback() -> Result<(), IndexError> {
+    let mut setup = budget()?;
+    let spool = TextSpool::new(&TestScratch, &mut setup)?;
+    let reference = ObjectRef(quanta_index_core::index::Digest([91; 32]));
+    for (term, owners) in [
+        (b"\0a".as_slice(), &[1_u16, 2][..]),
+        (b"\0b".as_slice(), &[3_u16, 4, 5, 6, 7, 8, 9, 10, 11][..]),
+        (b"\0c".as_slice(), &[12_u16][..]),
+    ] {
+        for index in owners {
+            spool.posting_batch(
+                &[(
+                    term.to_vec(),
+                    MapEdit {
+                        key: owner(*index),
+                        expected: None,
+                        next: Some(MapValue::Object(reference)),
+                    },
+                )],
+                &mut setup,
+            )?;
+        }
+    }
+    let mut work = scan(100)?;
+    let terms = spool.posting_term_page(None, &mut work)?;
+    check_eq!(terms.len(), 3);
+    let before_sparse = statement_runs(&spool, POSTING_SPARSE_PAGE_SQL, &setup)?;
+    let before_root = statement_runs(&spool, POSTING_ROOT_FIRST_SQL, &setup)?;
+    let mut roots = spool.posting_root_cursors(&terms, &[true, false, true], &mut work)?;
+    check_eq!(
+        statement_runs(&spool, POSTING_SPARSE_PAGE_SQL, &setup)?
+            .checked_sub(before_sparse)
+            .ok_or(IndexError::ResourceLimited)?,
+        1
+    );
+    check_eq!(
+        statement_runs(&spool, POSTING_ROOT_FIRST_SQL, &setup)?,
+        before_root
+    );
+    for (slot, indexes) in [(0, &[1_u16, 2][..]), (2, &[12_u16][..])] {
+        let mut cursor = roots.cursor(
+            slot,
+            terms
+                .get(slot)
+                .ok_or(IndexError::ResourceLimited)?
+                .as_slice(),
+        )?;
+        check!(matches!(&cursor, PostingRootCursor::Prefetched { .. }));
+        for index in indexes {
+            let edit = cursor
+                .next_edit(&mut work)?
+                .ok_or(IndexError::ResourceLimited)?;
+            check_eq!(edit.root, 0);
+            check_eq!(edit.edit.key, owner(*index));
+            check_eq!(edit.edit.next, Some(MapValue::Object(reference)));
+        }
+        check!(cursor.next_edit(&mut work)?.is_none());
+    }
+    check_eq!(
+        statement_runs(&spool, POSTING_ROOT_FIRST_SQL, &setup)?,
+        before_root
+    );
+    check!(matches!(
+        roots.cursor(
+            0,
+            terms.get(2).ok_or(IndexError::ResourceLimited)?.as_slice()
+        ),
+        Err(IndexError::CorruptObject(_))
+    ));
+    let mut dense = roots.cursor(
+        1,
+        terms.get(1).ok_or(IndexError::ResourceLimited)?.as_slice(),
+    )?;
+    check!(matches!(&dense, PostingRootCursor::Spool(_)));
+    for index in 3_u16..=11 {
+        let edit = dense
+            .next_edit(&mut work)?
+            .ok_or(IndexError::ResourceLimited)?;
+        check_eq!(edit.root, 0);
+        check_eq!(edit.edit.key, owner(index));
+    }
+    check!(dense.next_edit(&mut work)?.is_none());
+    check!(statement_runs(&spool, POSTING_ROOT_FIRST_SQL, &setup)? > before_root);
+    drop(dense);
+    drop(roots);
+
+    let mut global = spool.posting_cursor(terms);
+    for (root, indexes) in [
+        (0_u32, &[1_u16, 2][..]),
+        (1, &[3_u16, 4, 5, 6, 7, 8, 9, 10, 11][..]),
+        (2, &[12_u16][..]),
+    ] {
+        for index in indexes {
+            let edit = global
+                .next_edit(&mut work)?
+                .ok_or(IndexError::ResourceLimited)?;
+            check_eq!(edit.root, root);
+            check_eq!(edit.edit.key, owner(*index));
+        }
+    }
+    check!(global.next_edit(&mut work)?.is_none());
+    Ok(())
+}
+
+#[test]
+fn sparse_posting_prepass_over_eight_rows_returns_original_root_cursors() -> Result<(), IndexError>
+{
+    let mut setup = budget()?;
+    let spool = TextSpool::new(&TestScratch, &mut setup)?;
+    let reference = ObjectRef(quanta_index_core::index::Digest([92; 32]));
+    for index in 0_u16..9 {
+        spool.posting_batch(
+            &[(
+                b"\0a".to_vec(),
+                MapEdit {
+                    key: owner(index),
+                    expected: None,
+                    next: Some(MapValue::Object(reference)),
+                },
+            )],
+            &mut setup,
+        )?;
+    }
+    spool.posting_batch(
+        &[(
+            b"\0b".to_vec(),
+            MapEdit {
+                key: owner(10),
+                expected: None,
+                next: Some(MapValue::Object(reference)),
+            },
+        )],
+        &mut setup,
+    )?;
+    let mut work = scan(100)?;
+    let terms = spool.posting_term_page(None, &mut work)?;
+    check_eq!(terms.len(), 2);
+    let before_sparse = statement_runs(&spool, POSTING_SPARSE_PAGE_SQL, &setup)?;
+    let mut roots = spool.posting_root_cursors(&terms, &[true, true], &mut work)?;
+    check_eq!(
+        statement_runs(&spool, POSTING_SPARSE_PAGE_SQL, &setup)?
+            .checked_sub(before_sparse)
+            .ok_or(IndexError::ResourceLimited)?,
+        1
+    );
+    for (slot, indexes) in [
+        (0, &[0_u16, 1, 2, 3, 4, 5, 6, 7, 8][..]),
+        (1, &[10_u16][..]),
+    ] {
+        let mut cursor = roots.cursor(
+            slot,
+            terms
+                .get(slot)
+                .ok_or(IndexError::ResourceLimited)?
+                .as_slice(),
+        )?;
+        check!(matches!(&cursor, PostingRootCursor::Spool(_)));
+        for index in indexes {
+            let edit = cursor
+                .next_edit(&mut work)?
+                .ok_or(IndexError::ResourceLimited)?;
+            check_eq!(edit.root, 0);
+            check_eq!(edit.edit.key, owner(*index));
+        }
+        check!(cursor.next_edit(&mut work)?.is_none());
+    }
+    Ok(())
+}
+
 #[test]
 fn posting_range_129_terms_preserves_raw_pk_tuples_and_ordinal_gold() -> Result<(), IndexError> {
     let mut setup = budget()?;
@@ -530,6 +706,137 @@ fn posting_range_rejects_empty_owner_key_in_first_term() -> Result<(), IndexErro
     let mut cursor = spool.posting_cursor(terms);
     check!(matches!(
         cursor.next_edit(&mut work),
+        Err(IndexError::CorruptObject(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn paired_case_pages_keep_boundary_pair_and_full_census_with_exact_consumers()
+-> Result<(), IndexError> {
+    let mut setup = budget()?;
+    let spool = TextSpool::new(&TestScratch, &mut setup)?;
+    let reference = ObjectRef(quanta_index_core::index::Digest([81; 32]));
+    let mut expected = Vec::new();
+    for index in 0_u16..63 {
+        expected.push((format!("\0a{index:03}").into_bytes(), index));
+    }
+    expected.extend([
+        (b"\0m".to_vec(), 63),
+        (b"\x01m".to_vec(), 64),
+        (b"\x01n".to_vec(), 65),
+        ("\0é".as_bytes().to_vec(), 66),
+    ]);
+    let rows = expected
+        .iter()
+        .map(|(term, index)| {
+            (
+                term.clone(),
+                MapEdit {
+                    key: owner(*index),
+                    expected: None,
+                    next: Some(MapValue::Object(reference)),
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    for batch in rows.chunks(quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS) {
+        spool.posting_batch(batch, &mut setup)?;
+    }
+
+    let mut pages = PostingCasePages::new();
+    let mut work = scan(1_000)?;
+    let mut observed = Vec::new();
+    let mut page_sizes = Vec::new();
+    loop {
+        let page = pages.next(&spool, &mut work)?;
+        if page.is_empty() {
+            break;
+        }
+        page_sizes.push(page.len());
+        if page_sizes.len() == 1 {
+            check_eq!(page.len(), 63);
+            check!(!page.case_ranges);
+        } else if page_sizes.len() == 2 {
+            check_eq!(page.len(), 4);
+            check!(page.case_ranges);
+            check!(page.iter().any(|term| term.as_slice() == b"\0m"));
+            check!(page.iter().any(|term| term.as_slice() == b"\x01m"));
+            check!(page.iter().any(|term| term.as_slice() == b"\x01n"));
+            check!(page.iter().any(|term| term.as_slice() == "\0é".as_bytes()));
+        }
+        let keys = page
+            .iter()
+            .map(|term| term.as_slice().to_vec())
+            .collect::<Vec<_>>();
+        let cardinalities = spool.posting_cardinalities(&page, &mut work)?;
+        let mut cursor = spool.posting_cursor(page);
+        for (slot, term) in keys.iter().enumerate() {
+            check_eq!(cardinalities.df(slot, 0)?, 1);
+            let edit = cursor
+                .next_edit(&mut work)?
+                .ok_or(IndexError::ResourceLimited)?;
+            check_eq!(
+                edit.root,
+                u32::try_from(slot).map_err(|_error| IndexError::ResourceLimited)?
+            );
+            check_eq!(edit.edit.expected, None);
+            check_eq!(edit.edit.next, Some(MapValue::Object(reference)));
+            let expected_owner = expected
+                .iter()
+                .find(|(key, _index)| key == term)
+                .map(|(_key, index)| owner(*index))
+                .ok_or_else(|| IndexError::BackendViolation("expected case term absent".into()))?;
+            check_eq!(edit.edit.key, expected_owner);
+            observed.push(term.clone());
+        }
+        check!(cursor.next_edit(&mut work)?.is_none());
+    }
+    check_eq!(page_sizes, vec![63, 4]);
+    check_eq!(pages.next(&spool, &mut work)?.len(), 0);
+    let mut expected_keys = expected
+        .into_iter()
+        .map(|(key, _index)| key)
+        .collect::<Vec<_>>();
+    expected_keys.sort();
+    observed.sort();
+    check_eq!(observed, expected_keys);
+    Ok(())
+}
+
+#[test]
+fn paired_case_pages_reject_outside_surface_blob_before_emitting_a_page() -> Result<(), IndexError>
+{
+    let mut setup = budget()?;
+    let spool = TextSpool::new(&TestScratch, &mut setup)?;
+    let reference = ObjectRef(quanta_index_core::index::Digest([82; 32]));
+    for term in [b"\0valid".as_slice(), b"\x01valid".as_slice()] {
+        spool.posting_batch(
+            &[(
+                term.to_vec(),
+                MapEdit {
+                    key: owner(1),
+                    expected: None,
+                    next: Some(MapValue::Object(reference)),
+                },
+            )],
+            &mut setup,
+        )?;
+    }
+    let db = spool.db.scoped(&setup)?;
+    let encoded = MapValue::Object(reference).encoded()?;
+    let inserted = db
+        .execute(
+            "INSERT INTO posting(term,k,p,n) VALUES(?1,?2,NULL,?3)",
+            params![b"\x02outside".as_slice(), owner(2), encoded.as_slice()?],
+        )
+        .map_err(|error| sql(&error))?;
+    check_eq!(inserted, 1);
+    drop(db);
+    let mut work = scan(100)?;
+    let mut pages = PostingCasePages::new();
+    check!(matches!(
+        pages.next(&spool, &mut work),
         Err(IndexError::CorruptObject(_))
     ));
     Ok(())

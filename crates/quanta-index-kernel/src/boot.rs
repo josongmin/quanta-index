@@ -43,7 +43,8 @@ pub fn verify_native_boot_inputs(
         || decoded.kind.source_mode() != operation.source_mode
         || decoded.expected_view.workspace != operation.key.workspace
         || decoded.expected_view.epoch != operation.key.epoch
-        || (exact_base && decoded.expected_view.sequence >= publication.identity.sequence)
+        || (exact_base
+            && decoded.expected_view.sequence.checked_add(1) != Some(publication.identity.sequence))
         || request.registration.children.as_slice()
             != request_preparation::children(&decoded).as_slice()
     {
@@ -203,6 +204,64 @@ mod tests {
                 &AdapterRegistry::new(),
                 &mut budget()?,
             )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn non_materialize_requires_exact_next_sequence_and_rejects_overflow()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for request in request_rows()
+            .into_iter()
+            .filter(|request| !matches!(request.kind, UpdateKind::Materialize { .. }))
+        {
+            let (operation, publication, stored_request, stored_profile) = fixture(&request)?;
+            // Fixed request sequence 7 accepts publication 8. The same and
+            // skipped publication sequences must both be refused.
+            require(request.expected_view.sequence == 7)?;
+            require(publication.identity.sequence == 8)?;
+            verify_native_boot_inputs(
+                &operation,
+                &publication,
+                &stored_request,
+                &stored_profile,
+                &AdapterRegistry::new(),
+                &mut budget()?,
+            )?;
+            for sequence in [7, 9] {
+                let mut wrong_publication = publication.clone();
+                wrong_publication.identity.sequence = sequence;
+                wrong_publication.identity.digest = wrong_publication.identity_digest()?;
+                require(matches!(
+                    verify_native_boot_inputs(
+                        &operation,
+                        &wrong_publication,
+                        &stored_request,
+                        &stored_profile,
+                        &AdapterRegistry::new(),
+                        &mut budget()?,
+                    ),
+                    Err(IndexError::CorruptObject(_))
+                ))?;
+            }
+            let mut overflow = request.clone();
+            overflow.expected_view.sequence = u64::MAX;
+            let overflow_request = object(
+                operation.request,
+                serde_json::to_vec(&overflow)?,
+                request_preparation::children(&overflow).as_slice().to_vec(),
+            )?;
+            require(matches!(
+                verify_native_boot_inputs(
+                    &operation,
+                    &publication,
+                    &overflow_request,
+                    &stored_profile,
+                    &AdapterRegistry::new(),
+                    &mut budget()?,
+                ),
+                Err(IndexError::CorruptObject(_))
+            ))?;
         }
         Ok(())
     }

@@ -9,6 +9,8 @@ mod map;
 mod store;
 
 #[cfg(test)]
+pub(crate) use map::LEAF_DEPENDENCIES as MAP_LEAF_MAX_DEPENDENCIES;
+#[cfg(test)]
 pub(crate) use store::fake_gc_delete_ticket;
 
 pub(crate) use codec::{BlobRef, MapEdit, MapRoot, ObjectKind, ObjectRef};

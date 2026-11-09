@@ -686,10 +686,17 @@ fn source_path_cycle_crosses_mutation_cursor_pages() -> TestResult {
         )?,
         &mut budget(),
     ))?)?;
-    assert_eq!(
-        path_owner(&objects, source(&engine, first)?, "file-001.rs")?,
-        owner(1)
-    );
+    let first_cut = source(&engine, first)?;
+    assert_eq!(path_owner(&objects, first_cut, "file-001.rs")?, owner(1));
+    let mut path_nodes = vec![first_cut.paths.0.ok_or("source path root absent")?];
+    let mut contains_packed_node = false;
+    while let Some(reference) = path_nodes.pop() {
+        let node = objects.get(reference, &mut budget())?;
+        contains_packed_node |= node.payload.starts_with(b"QIMAP005");
+        // Path owner values have no object children, so these edges are nodes.
+        path_nodes.extend(node.registration.children.iter().copied());
+    }
+    assert!(contains_packed_node);
 
     let mut cycle = Vec::new();
     for id in 1..=OWNERS {
@@ -6435,7 +6442,7 @@ impl ImmutableObjectPort for UpdateCostSpy {
             && !inputs.is_empty()
             && inputs
                 .iter()
-                .all(|input| input.payload.starts_with(b"QITXEM01"))
+                .all(|input| input.payload.starts_with(b"QITXEM02"))
         {
             if confirmed.len() != inputs.len() {
                 return Err(IndexError::BackendViolation(
@@ -6460,10 +6467,7 @@ impl ImmutableObjectPort for UpdateCostSpy {
                     .ok_or(IndexError::ResourceLimited)?;
                 let ten_row_inputs = inputs
                     .iter()
-                    .filter(|input| {
-                        input.payload.get(8..10) == Some([0, 10].as_slice())
-                            && input.children.len() == 10
-                    })
+                    .filter(|input| input.payload.get(8..10) == Some([0, 10].as_slice()))
                     .count();
                 state.inventory_block_ten_row_inputs = state
                     .inventory_block_ten_row_inputs

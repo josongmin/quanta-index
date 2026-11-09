@@ -1178,7 +1178,10 @@ impl PublicationAllowance {
             return Err(invalid(&mut state, "output parent already closed"));
         }
         if parent.free_bytes < max_bytes || parent.free_files == 0 {
-            return Err(capacity("output exceeds held publication allowance"));
+            return Err(capacity(&format!(
+                "output exceeds held publication allowance: requested_bytes={max_bytes} free_bytes={} free_files={}",
+                parent.free_bytes, parent.free_files
+            )));
         }
         if u64::try_from(state.tickets.len())
             .map_err(|error| capacity(&format!("ticket count conversion: {error}")))?
@@ -1891,6 +1894,46 @@ mod tests {
         authority.confirmed_last_reference_removed_and_synced(retained, 9)?;
         check_eq!(authority.snapshot()?.used_bytes, 7);
         check_eq!(authority.snapshot()?.used_files, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn output_byte_refusal_reports_locked_allowance_without_mutation() -> Result<(), CoreError> {
+        let authority = PublicationCapacityLedger::new(8, 2, 2)?.seal_boot()?;
+        let parent = authority.reserve_publication(8, 2)?;
+        let held = parent.reserve_output(6)?;
+        check_eq!(parent.available_capacity()?, (2, 1));
+        let before = authority.snapshot()?;
+        check!(matches!(
+            parent.reserve_output(3),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+                message,
+            }) if message == "publication physical capacity: output exceeds held publication allowance: requested_bytes=3 free_bytes=2 free_files=1"
+        ));
+        check_eq!(parent.available_capacity()?, (2, 1));
+        check_eq!(authority.snapshot()?, before);
+        drop(held);
+        Ok(())
+    }
+
+    #[test]
+    fn output_file_refusal_reports_locked_allowance_without_mutation() -> Result<(), CoreError> {
+        let authority = PublicationCapacityLedger::new(8, 1, 2)?.seal_boot()?;
+        let parent = authority.reserve_publication(8, 1)?;
+        let held = parent.reserve_output(2)?;
+        check_eq!(parent.available_capacity()?, (6, 0));
+        let before = authority.snapshot()?;
+        check!(matches!(
+            parent.reserve_output(1),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+                message,
+            }) if message == "publication physical capacity: output exceeds held publication allowance: requested_bytes=1 free_bytes=6 free_files=0"
+        ));
+        check_eq!(parent.available_capacity()?, (6, 0));
+        check_eq!(authority.snapshot()?, before);
+        drop(held);
         Ok(())
     }
 

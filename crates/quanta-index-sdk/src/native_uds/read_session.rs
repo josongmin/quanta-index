@@ -29,6 +29,8 @@ fn binding(
 impl<P: AsRef<Path>> NativeUdsClient<P> {
     /// Retry an uncertain Open with the same key and selection. This is an
     /// explicit lease, not a socket lifetime or an automatically renewed pin.
+    /// A retained replay returns the existing session's current state,
+    /// including its state after closing or release.
     pub fn open_read_session(
         &self,
         selection: ViewSelection,
@@ -52,7 +54,6 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             || status.session == NativeReadSessionId([0; 32])
             || status.revision == 0
             || status.expires_at_ms == 0
-            || status.state != NativeReadSessionState::Active
         {
             return Err(NativeUdsError::Protocol(
                 "read session open binding differs".into(),

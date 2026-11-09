@@ -8,8 +8,10 @@ use std::{fs, os::unix::fs::MetadataExt as _};
 use quanta_index_core::index::IndexError;
 
 #[cfg(target_os = "macos")]
-use super::sync_directory_plain;
-use super::{FileObjectStore, ObjectWriter, SyncKind, storage_error, sync_directory};
+use super::sync_directory_plain_witness;
+use super::{
+    FileObjectStore, ObjectWriter, SyncKind, SyncedDirectory, storage_error, sync_directory_witness,
+};
 
 pub(super) struct ScalarSync {
     #[cfg(target_os = "macos")]
@@ -40,13 +42,16 @@ impl ScalarSync {
         }
     }
 
-    pub(super) fn sync_objects(&self, store: &FileObjectStore) -> Result<(), IndexError> {
-        store.sync_observed(SyncKind::Directory, || {
+    pub(super) fn sync_objects(
+        &self,
+        store: &FileObjectStore,
+    ) -> Result<SyncedDirectory, IndexError> {
+        store.sync_observed_witness(|| {
             #[cfg(target_os = "macos")]
             if let Some(device) = self.shared_device {
-                return sync_directory_plain(&store.objects, device);
+                return sync_directory_plain_witness(&store.objects, device);
             }
-            sync_directory(&store.objects)
+            sync_directory_witness(&store.objects)
         })
     }
 
@@ -54,6 +59,7 @@ impl ScalarSync {
         &mut self,
         store: &FileObjectStore,
         writer: &ObjectWriter,
+        objects_witness: &mut SyncedDirectory,
     ) -> Result<(), IndexError> {
         #[cfg(target_os = "macos")]
         if let Some(device) = self.shared_device
@@ -66,11 +72,12 @@ impl ScalarSync {
         {
             // A mount changed after shard inspection. Restore the original
             // root full sync before the scalar file and shard full syncs.
-            store.sync_observed(SyncKind::Directory, || sync_directory(&store.objects))?;
+            *objects_witness =
+                store.sync_observed_witness(|| sync_directory_witness(&store.objects))?;
             self.shared_device = None;
         }
         #[cfg(not(target_os = "macos"))]
-        let _ = (store, writer);
+        let _ = (store, writer, objects_witness);
         Ok(())
     }
 
@@ -97,14 +104,16 @@ impl ScalarSync {
         &self,
         store: &FileObjectStore,
         shard: &Path,
-    ) -> Result<(), IndexError> {
-        store.sync_observed(SyncKind::Directory, || {
-            #[cfg(target_os = "macos")]
-            if let Some(device) = self.shared_device {
-                return sync_directory_plain(shard, device);
-            }
-            sync_directory(shard)
-        })
+    ) -> Result<quanta_index_core::publication_capacity::InodeKey, IndexError> {
+        store
+            .sync_observed_witness(|| {
+                #[cfg(target_os = "macos")]
+                if let Some(device) = self.shared_device {
+                    return sync_directory_plain_witness(shard, device);
+                }
+                sync_directory_witness(shard)
+            })
+            .map(|witness| witness.identity)
     }
 
     pub(super) fn finish_barrier(

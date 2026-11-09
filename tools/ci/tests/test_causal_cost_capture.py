@@ -22,7 +22,7 @@ import pytest
 
 from tools.benchmark import producer_execution
 from tools.benchmark.producer_execution import _execute_owned
-from tools.benchmark.retrieval import causal_cost_capture, linux_process
+from tools.benchmark.retrieval import causal_cost_capture, causal_cost_profile, linux_process
 from tools.benchmark.retrieval.causal_cost_capture import (
     _history_inputs,
     _scale_command,
@@ -1353,6 +1353,33 @@ def test_native_capture_replays_real_product_and_canonical_validators(
     )
     assert status["execution"]["native_child_inputs"] == result["native_child_inputs"]
     assert not (args.out_root / "causal-profile.json").exists()
+
+
+def test_native_capture_parses_each_child_once_in_product_validator(
+    native_capture_fixture: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    child_parses = []
+    capture_parse = causal_cost_capture.parse_timeline_stream
+    profile_parse = causal_cost_profile.parse_timeline_stream
+    directory = native_capture_fixture.args.out_root / "causal-timeline.jsonl.native-small-children"
+
+    def counted(parser):
+        def parse(stream, **kwargs):
+            opened = os.fstat(stream.fileno())
+            for name in ("first.jsonl", "reopen.jsonl"):
+                path = directory / name
+                if path.exists():
+                    child = path.stat()
+                    if (opened.st_dev, opened.st_ino) == (child.st_dev, child.st_ino):
+                        child_parses.append(name)
+            return parser(stream, **kwargs)
+        return parse
+
+    monkeypatch.setattr(causal_cost_capture, "parse_timeline_stream", counted(capture_parse))
+    monkeypatch.setattr(causal_cost_profile, "parse_timeline_stream", counted(profile_parse))
+    result = capture(native_capture_fixture.args)
+    assert result["product_status"] == "PRODUCT_ARTIFACT_VERIFIED", result.get("reason")
+    assert sorted(child_parses) == ["first.jsonl", "reopen.jsonl"]
 
 
 @pytest.mark.parametrize(

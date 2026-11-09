@@ -476,11 +476,11 @@ mod tests {
     #[test]
     fn fixed_nonce_stamp_has_independent_golden() -> Result<(), Box<dyn Error>> {
         // Independently computed SHA-256 of the stamp domain and canonical
-        // JSON [1,18,2,byte-array hash domain,1,[7;32]] with compact separators.
+        // JSON [1,19,2,byte-array hash domain,1,[7;32]] with compact separators.
         const GOLDEN: [u8; 32] = [
-            0xd2, 0x40, 0xff, 0x88, 0x00, 0xf7, 0xb6, 0xaf, 0x11, 0x48, 0x74, 0x1d, 0xde, 0xce,
-            0xb2, 0xe1, 0x0f, 0x3c, 0x88, 0x7f, 0x15, 0x15, 0x19, 0x50, 0x88, 0x95, 0xb9, 0x2e,
-            0x2d, 0xa6, 0xd1, 0xda,
+            0xca, 0x63, 0x27, 0x79, 0x0e, 0xcb, 0xf8, 0x95, 0x62, 0xa0, 0x62, 0x08, 0xa1, 0xf4,
+            0x33, 0x4f, 0xa0, 0x1b, 0x7b, 0xba, 0x50, 0xa2, 0x01, 0xcb, 0x75, 0x70, 0x57, 0xfd,
+            0x38, 0x39, 0x3b, 0x03,
         ];
         let actual = super::expected_digest(&[7; 32])?;
         check_eq!(actual.as_slice(), GOLDEN.as_slice());
@@ -638,6 +638,11 @@ mod tests {
     fn corrupt_or_missing_capture_stamp_refuses_before_recovery() -> Result<(), Box<dyn Error>> {
         for mutation in [
             "DELETE FROM native_capture_format_v1",
+            // The fully authenticated predecessor must refuse before DDL or
+            // recovery. A v18 root is rebuilt in a separate v19 incarnation.
+            "UPDATE native_capture_format_v1 SET state_version=18,
+             root_nonce=x'0707070707070707070707070707070707070707070707070707070707070707',
+             row_digest=x'd240ff8800f7b6af1148741ddeceb2e10f3c887f151519508895b92e2da6d1da'",
             // Authenticated previous17 must refuse before recovery, too.
             "UPDATE native_capture_format_v1 SET state_version=17,
              root_nonce=x'0707070707070707070707070707070707070707070707070707070707070707',
@@ -665,10 +670,10 @@ mod tests {
             "UPDATE native_capture_format_v1 SET hash_domain=x'01'",
             "UPDATE native_capture_format_v1 SET row_digest=x'01'",
             "UPDATE native_capture_format_v1 SET root_nonce=zeroblob(32)",
-            // Independent SHA-256 for zero nonce with otherwise valid v18
+            // Independent SHA-256 for zero nonce with otherwise valid v19
             // stamp: nonzero identity must refuse even when checksum matches.
             "UPDATE native_capture_format_v1 SET root_nonce=zeroblob(32),
-             row_digest=x'291662fe726c4b25d2457d176b9e3cc31a1cd8feb7d77edfcba9bb465865ef12'",
+             row_digest=x'e5b493a2896ae3234e0078b22a628f0cd2dc2fb06a8585bf76c6c2c57a7c004d'",
             "UPDATE native_capture_format_v1 SET root_nonce=randomblob(32)",
             "PRAGMA ignore_check_constraints=ON;
              UPDATE native_capture_format_v1 SET root_nonce=x'01'",

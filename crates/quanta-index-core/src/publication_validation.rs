@@ -4,7 +4,8 @@ use std::any::Any;
 use std::sync::Arc;
 
 use quanta_index_contract::{
-    ManifestGeneration, SearchCorpusIngestBatch, SearchPlaneTrackKind, SourcePublicationBinding,
+    ManifestGeneration, SearchCorpusBatchShapeErrorV1, SearchCorpusIngestBatch,
+    SearchCorpusSurfaceMutationConflictV1, SearchPlaneTrackKind, SourcePublicationBinding,
 };
 
 use crate::publication_admission::{
@@ -12,7 +13,7 @@ use crate::publication_admission::{
     PublicationOutputPermit, PublicationOutputReservation, PublicationResourceAdmissionPort,
     PublicationResourcePermit,
 };
-use crate::{CoreError, IngestBatchFootprint, RequestBudgetV1};
+use crate::{CoreError, IngestBatchFootprint, IngestResourcePolicy, RequestBudgetV1};
 
 /// One caller-owned publication scope, never a process or query cache.
 ///
@@ -23,6 +24,7 @@ use crate::{CoreError, IngestBatchFootprint, RequestBudgetV1};
 /// The owner is deliberately not Clone, serializable, or part of an IPC DTO.
 #[derive(Default)]
 pub struct PublicationValidationOwner {
+    scoped_batch: Option<ScopedPublicationBatch>,
     binding: Option<PublicationBodyBinding>,
     prepare_request_budget: Option<RequestBudgetV1>,
     source_allocation: Option<crate::SourceEventAllocationV1>,
@@ -33,6 +35,14 @@ pub struct PublicationValidationOwner {
     // adapter proofs and body custody are released before provisional capacity.
     publication_resources: Option<PublicationResourceState>,
     publication_control: Option<Arc<dyn PublicationResourcePermit>>,
+}
+
+struct ScopedPublicationBatch {
+    batch: Arc<SearchCorpusIngestBatch>,
+    shape_validated: bool,
+    surface_validated: bool,
+    bound: bool,
+    footprint: Option<(IngestResourcePolicy, usize, IngestBatchFootprint)>,
 }
 
 struct PublicationResourceState {
@@ -50,6 +60,85 @@ struct PublicationBodyBinding {
 }
 
 impl PublicationValidationOwner {
+    /// Share the dispatcher's immutable request for the lifetime of this attempt.
+    /// The retained allocation makes reference identity safe to reuse. An
+    /// independent batch, including an equal clone, still runs its own checks.
+    #[must_use]
+    pub fn for_request(batch: Arc<SearchCorpusIngestBatch>) -> Self {
+        Self {
+            scoped_batch: Some(ScopedPublicationBatch {
+                batch,
+                shape_validated: false,
+                surface_validated: false,
+                bound: false,
+                footprint: None,
+            }),
+            ..Self::default()
+        }
+    }
+
+    fn scoped_batch_for(
+        &mut self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Option<&mut ScopedPublicationBatch> {
+        self.scoped_batch
+            .as_mut()
+            .filter(|scope| std::ptr::eq(scope.batch.as_ref(), batch))
+    }
+
+    /// Validate the shape and event commitment, reusing only this request's proof.
+    pub fn validate_batch_shape(
+        &mut self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<(), SearchCorpusBatchShapeErrorV1> {
+        let Some(scope) = self.scoped_batch_for(batch) else {
+            return batch.validate_v1();
+        };
+        if !scope.shape_validated {
+            batch.validate_v1()?;
+            scope.shape_validated = true;
+        }
+        Ok(())
+    }
+
+    /// Validate the storage-independent surface mutation contract.
+    pub fn validate_batch_surface(
+        &mut self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<(), SearchCorpusSurfaceMutationConflictV1> {
+        let Some(scope) = self.scoped_batch_for(batch) else {
+            return batch.validate_surface_mutations_v1();
+        };
+        if !scope.surface_validated {
+            batch.validate_surface_mutations_v1()?;
+            scope.surface_validated = true;
+        }
+        Ok(())
+    }
+
+    /// Measure and admit the batch under the exact composition's limits.
+    pub fn admit_batch_footprint(
+        &mut self,
+        batch: &SearchCorpusIngestBatch,
+        policy: IngestResourcePolicy,
+        dimension: usize,
+    ) -> Result<IngestBatchFootprint, CoreError> {
+        let Some(scope) = self.scoped_batch_for(batch) else {
+            return policy.admit_search_corpus_batch(batch, dimension);
+        };
+        if let Some((measured_policy, measured_dimension, footprint)) = scope.footprint {
+            if (policy, dimension) != (measured_policy, measured_dimension) {
+                return Err(CoreError::InvalidContract(
+                    "publication footprint policy changed within one request".into(),
+                ));
+            }
+            return Ok(footprint);
+        }
+        let footprint = policy.admit_search_corpus_batch(batch, dimension)?;
+        scope.footprint = Some((policy, dimension, footprint));
+        Ok(footprint)
+    }
+
     /// Retain the control allowance before the outer journal's first write.
     ///
     /// The dispatcher invokes this after terminal inspection and before
@@ -262,27 +351,49 @@ impl PublicationValidationOwner {
     /// publication owner for another body is a contract error, even when the
     /// two bodies happen to name the same generation.
     pub fn bind_batch(&mut self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
-        // The declared transport token alone cannot bind direct adapter calls.
-        // Hash the actual mutation payload using its canonical contract owner;
-        // containing target/base/seal fields are bound separately here.
+        self.bind_batch_payload_sha256(batch).map(|_| ())
+    }
+
+    /// The canonical payload digest for the body this owner has actually bound.
+    pub fn bind_batch_payload_sha256(
+        &mut self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<[u8; 32], CoreError> {
+        let payload_sha256 = match self.scoped_batch_for(batch) {
+            Some(scope) if scope.bound => {
+                return self
+                    .binding
+                    .as_ref()
+                    .map(|binding| binding.payload_sha256)
+                    .ok_or_else(|| {
+                        CoreError::InvalidContract("publication batch binding is absent".into())
+                    });
+            }
+            // Shape validation computed and checked the canonical event digest.
+            Some(scope) if scope.shape_validated => batch.source_event.payload_sha256,
+            _ => quanta_index_contract::source_event_payload_sha256(batch).map_err(|error| {
+                CoreError::InvalidContract(format!("publication validation body: {error}"))
+            })?,
+        };
         let binding = PublicationBodyBinding {
             publication: SourcePublicationBinding::for_batch(batch),
             base_generation: batch.base_generation,
             seal: batch.seal,
-            payload_sha256: quanta_index_contract::source_event_payload_sha256(batch).map_err(
-                |error| CoreError::InvalidContract(format!("publication validation body: {error}")),
-            )?,
+            payload_sha256,
         };
         match &self.binding {
-            Some(previous) if previous != &binding => Err(CoreError::InvalidContract(
-                "publication validation owner belongs to another source-corpus batch".into(),
-            )),
-            Some(_) => Ok(()),
-            None => {
-                self.binding = Some(binding);
-                Ok(())
+            Some(previous) if previous != &binding => {
+                return Err(CoreError::InvalidContract(
+                    "publication validation owner belongs to another source-corpus batch".into(),
+                ));
             }
+            Some(_) => {}
+            None => self.binding = Some(binding),
         }
+        if let Some(scope) = self.scoped_batch_for(batch) {
+            scope.bound = true;
+        }
+        Ok(payload_sha256)
     }
 
     /// Adapter-local, opaque proof custody. The adapter's concrete type and
@@ -319,8 +430,9 @@ mod tests {
         PublicationResourcePermit,
     };
     use crate::{
-        CoreError, INGEST_RESOURCE_BUDGET_EXCEEDED_CODE, IngestBatchFootprint, RequestBudgetV1,
-        SourceEventAllocationRequestV1, SourceEventAllocationV1,
+        CoreError, INGEST_RESOURCE_BUDGET_EXCEEDED_CODE, IngestBatchFootprint,
+        IngestResourcePolicy, RequestBudgetV1, SourceEventAllocationRequestV1,
+        SourceEventAllocationV1,
     };
     use quanta_index_contract::{
         BatchIngestMode, ManifestGeneration, RepoId, RevisionId, SearchCorpusIngestBatch,
@@ -1095,6 +1207,49 @@ mod tests {
                 if message.contains("belongs to another source-corpus batch"))
             );
         }
+    }
+
+    #[test]
+    fn request_batch_proof_reuses_only_the_owned_body_and_exact_policy() {
+        let mut original = batch();
+        let digest =
+            quanta_index_contract::source_event_payload_sha256(&original).expect("event digest");
+        original.source_event.payload_sha256 = digest;
+        let original = Arc::new(original);
+        let mut owner = PublicationValidationOwner::for_request(Arc::clone(&original));
+        owner.validate_batch_shape(&original).expect("valid shape");
+        owner
+            .validate_batch_surface(&original)
+            .expect("valid surface");
+        for _ in 0..2 {
+            assert_eq!(
+                owner.bind_batch_payload_sha256(&original).expect("bound"),
+                digest
+            );
+        }
+
+        let policy = IngestResourcePolicy::DEFAULT;
+        let footprint = owner
+            .admit_batch_footprint(&original, policy, 32)
+            .expect("admitted");
+        assert_eq!(
+            owner
+                .admit_batch_footprint(&original, policy, 32)
+                .expect("reused"),
+            footprint
+        );
+        assert!(owner.admit_batch_footprint(&original, policy, 64).is_err());
+
+        let mut changed = original.as_ref().clone();
+        changed.bundle_payload = Some(b"different mutation bytes".to_vec());
+        assert!(owner.validate_batch_shape(&changed).is_err());
+        assert!(owner.bind_batch(&changed).is_err());
+        assert_eq!(
+            owner
+                .bind_batch_payload_sha256(&original)
+                .expect("original retained"),
+            digest
+        );
     }
 
     #[test]

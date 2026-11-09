@@ -1,23 +1,31 @@
 //! Bounded custody for byte-gram generation and unchanged-body reuse.
 
+#[cfg(test)]
 use std::collections::BTreeSet;
 
-use quanta_index_core::index::{IndexError, MemoryLease, MemoryLifetime, WorkBudget, WorkUsage};
+use quanta_index_core::index::IndexError;
+#[cfg(test)]
+use quanta_index_core::index::{MemoryLease, MemoryLifetime, WorkBudget, WorkUsage};
 
 pub(super) const MAX_GRAMS: usize = 262_144;
+#[cfg(test)]
 const FIRST_CAPACITY: usize = 8;
 // Existing logical tree allowance; not an allocator or RSS guarantee.
+#[cfg(test)]
 const TREE_BYTES_PER_GRAM: u64 = 128;
 // Capacities 2^3 through 2^18 need sixteen incremental credits, held inline.
+#[cfg(test)]
 const CREDIT_LEVELS: usize = 16;
 
 pub(super) struct PreparedGrams {
     grams: Vec<[u8; 3]>,
+    #[cfg(test)]
     memory: Option<MemoryLease>,
     maximum: usize,
 }
 
 impl PreparedGrams {
+    #[cfg(test)]
     pub(super) fn copy(grams: &[[u8; 3]], budget: &WorkBudget) -> Result<Self, IndexError> {
         let mut prepared = Self::allocate(grams.len(), budget)?;
         prepared.grams.extend_from_slice(grams);
@@ -25,6 +33,7 @@ impl PreparedGrams {
         Ok(prepared)
     }
 
+    #[cfg(test)]
     pub(super) fn allocate(count: usize, budget: &WorkBudget) -> Result<Self, IndexError> {
         budget.checkpoint()?;
         if count > MAX_GRAMS {
@@ -62,11 +71,13 @@ impl PreparedGrams {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn into_parts(self) -> (Vec<[u8; 3]>, Option<MemoryLease>) {
         (self.grams, self.memory)
     }
 }
 
+#[cfg(test)]
 struct GramTree {
     grams: BTreeSet<[u8; 3]>,
     credits: [Option<MemoryLease>; CREDIT_LEVELS],
@@ -74,6 +85,7 @@ struct GramTree {
     next_credit: usize,
 }
 
+#[cfg(test)]
 impl GramTree {
     fn new() -> Self {
         Self {
@@ -125,6 +137,7 @@ impl GramTree {
     }
 }
 
+#[cfg(test)]
 pub(super) fn build(bytes: &[u8], budget: &mut WorkBudget) -> Result<PreparedGrams, IndexError> {
     budget.checkpoint()?;
     let mut tree = GramTree::new();

@@ -2,8 +2,8 @@
 
 use super::{FileMapReadContext, FilePathPage, FilePathQuery, NativeFileMap, query_paths};
 use quanta_index_core::index::{
-    IndexError, IndexQueryPort, MAX_SOURCE_PATH_BYTES, MemberBinding, QueryOutcome,
-    QueryReadContext, effort::ResourceNeed, member_map_key, ports::IndexBuildPort,
+    IndexError, IndexQueryPort, MAX_SOURCE_PATH_BYTES, QueryOutcome, QueryReadContext,
+    effort::ResourceNeed, ports::IndexBuildPort,
 };
 
 const MAX_PAGE: u32 = 128;
@@ -62,36 +62,6 @@ impl NativePathReader {
             need,
         })
     }
-
-    fn pinned_member(context: &mut QueryReadContext<'_>) -> Result<MemberBinding, IndexError> {
-        let key = member_map_key(context.instance.instance);
-        let reference = context
-            .maps
-            .lookup_object(context.ticket.view.members, &key, context.budget)?
-            .ok_or(IndexError::SnapshotUnavailable)?;
-        let stored = context.objects.get(reference, context.budget)?;
-        let member =
-            quanta_index_core::index::decode_member_binding(&stored.payload, context.budget)?;
-        let children = [Some(member.artifact), member.input.root.0];
-        if stored.registration.reference != reference
-            || !stored
-                .registration
-                .children
-                .iter()
-                .copied()
-                .eq(children.into_iter().flatten())
-            || member.instance != context.instance.instance
-            || member.format != context.instance.format
-            || member.input.schema != context.instance.schema
-            || member.input.policy != context.instance.policy
-            || member.input.root != context.ticket.view.source.owners
-        {
-            return Err(IndexError::CorruptObject(
-                "native file member differs from selected ticket or instance".into(),
-            ));
-        }
-        Ok(member)
-    }
 }
 
 impl IndexQueryPort<PathReadRequest, FilePathPage> for NativePathReader {
@@ -115,7 +85,7 @@ impl IndexQueryPort<PathReadRequest, FilePathPage> for NativePathReader {
         self.validate_instance(context.instance)?;
         let _need = self.reservation(request)?;
         context.budget.checkpoint()?;
-        let member = Self::pinned_member(context)?;
+        let member = context.source_member_binding()?;
         let page = query_paths(
             &FilePathQuery {
                 member: &member,

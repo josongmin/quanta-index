@@ -126,6 +126,8 @@ pub(crate) struct RecordingSemanticState {
     /// The sealed digest the opened handle claims to have proved; `None`
     /// claims the fixture's `manifest-digest-9`.
     pub(crate) manifest_digest: Option<String>,
+    /// The opened generation's dense index contract; default is exact/sealed.
+    pub(crate) dense_lane: Option<DenseLaneContractV1>,
 }
 
 pub(crate) struct RecordingSemanticSearcher {
@@ -133,6 +135,7 @@ pub(crate) struct RecordingSemanticSearcher {
     /// Read once at open from the state's `manifest_digest`, so the
     /// borrow the trait hands out needs no lock.
     pub(crate) manifest_digest: String,
+    pub(crate) dense_lane: DenseLaneContractV1,
 }
 
 impl RecordingSemanticSearcher {
@@ -255,6 +258,35 @@ impl SemanticSearcher for RecordingSemanticSearcher {
             return Ok(rows);
         }
         Ok(vec![candidate("semantic-inline", 1.0)])
+    }
+
+    fn search_constrained_canonical_ties(
+        &self,
+        query_vector: &[f32],
+        constraints: &QueryConstraintSetV1,
+        top_k: u32,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        let configured = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
+            state.search_vectors.push(query_vector.to_vec());
+            state.search_constraints.push(constraints.clone());
+            state.search_top_ks.push(top_k);
+            state.constrained_search_results.clone()
+        };
+        self.observe_budget(budget)?;
+        let Some(mut rows) = configured else {
+            return Ok(vec![candidate("semantic-inline", 1.0)]);
+        };
+        rows.sort_by(|left, right| left.order_key().order(&right.order_key()));
+        rows.truncate(
+            usize::try_from(top_k)
+                .map_err(|err| CoreError::InvalidContract(format!("stub top_k overflow: {err}")))?,
+        );
+        Ok(rows)
     }
 
     fn search_hits(
@@ -439,10 +471,7 @@ impl SemanticSearcher for RecordingSemanticSearcher {
     }
 
     fn dense_lane(&self) -> DenseLaneContractV1 {
-        DenseLaneContractV1 {
-            index: DenseIndexV1::Exact,
-            attestation: DenseLaneAttestationV1::Sealed,
-        }
+        self.dense_lane.clone()
     }
 }
 
@@ -457,7 +486,7 @@ impl SemanticIndexOpenPort for RecordingSemanticOpener {
         revision: &RevisionId,
         generation: ManifestGeneration,
     ) -> Result<Box<dyn SemanticSearcher>, CoreError> {
-        let manifest_digest = {
+        let (manifest_digest, dense_lane) = {
             let mut state = self
                 .state
                 .lock()
@@ -465,14 +494,18 @@ impl SemanticIndexOpenPort for RecordingSemanticOpener {
             state
                 .cluster_membership_opened_pins
                 .push((repo.clone(), revision.clone(), generation));
-            state
-                .manifest_digest
-                .clone()
-                .unwrap_or_else(|| "manifest-digest-9".to_string())
+            (
+                state
+                    .manifest_digest
+                    .clone()
+                    .unwrap_or_else(|| "manifest-digest-9".to_string()),
+                state.dense_lane.clone().unwrap_or_else(exact_dense_lane),
+            )
         };
         Ok(Box::new(RecordingSemanticSearcher {
             state: Arc::clone(&self.state),
             manifest_digest,
+            dense_lane,
         }))
     }
 

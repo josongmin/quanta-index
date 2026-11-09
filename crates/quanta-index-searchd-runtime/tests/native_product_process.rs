@@ -2661,7 +2661,7 @@ fn occupied_native_socket_is_preserved_and_initialized_root_reopens() -> TestRes
     let foreign_connection = UnixStream::connect(&socket)?;
     drop(foreign_connection);
     require(
-        fs::read(root.join(".native-index-v18"))? == b"quanta-index-native-state-v18\n",
+        fs::read(root.join(".native-index-v19"))? == b"quanta-index-native-state-v19\n",
         "bind failure did not leave the current initialized format",
     )?;
     drop(foreign);

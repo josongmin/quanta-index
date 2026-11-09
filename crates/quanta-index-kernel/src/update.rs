@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use quanta_index_core::DiagnosticStageV1;
 use quanta_index_core::index::{
@@ -23,6 +26,9 @@ use quanta_index_core::index::{
         PersistentMapPort, SourceAuthorityPort, WorkClaimPort,
     },
     validate_read_ticket_lease,
+};
+use quanta_index_core::index::{
+    MAX_NATIVE_STAGE_SOURCES_INPUTS, MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES,
 };
 
 use crate::{
@@ -186,8 +192,11 @@ impl ObjectWriteSink for GenesisSink<'_> {
     }
 }
 
-const MAX_SOURCE_BATCH_INPUTS: usize = 32;
-const MAX_SOURCE_BATCH_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SOURCE_BATCH_OBJECT_BYTES: usize = 8 * 1024 * 1024;
+const _: () = assert!(
+    2 * MAX_NATIVE_STAGE_SOURCES_INPUTS
+        <= quanta_index_core::index::ports::MAX_OBJECT_INSTALL_BATCH
+);
 
 fn source_record_payload(
     path: &str,
@@ -211,7 +220,7 @@ fn source_record_payload(
         byte_len: u64::try_from(byte_len).map_err(|_error| IndexError::ResourceLimited)?,
         text,
     };
-    crate::staging_payload::encode(&record, MAX_SOURCE_BATCH_BYTES, budget)
+    crate::staging_payload::encode(&record, MAX_SOURCE_BATCH_OBJECT_BYTES, budget)
 }
 
 fn source_batch_metadata_bytes(count: usize) -> Result<u64, IndexError> {
@@ -278,6 +287,9 @@ pub struct PinnedQuerySession<'a, C: ControlCatalog + 'static> {
 enum SessionTicket<'a> {
     Owned(ReadTicket),
     Borrowed(&'a mut ReadTicket),
+    // Only the one-stage facade constructs this variant. It cannot renew or
+    // release the caller's lease while other readers share the ticket.
+    Shared(&'a ReadTicket),
 }
 
 impl std::ops::Deref for SessionTicket<'_> {
@@ -287,24 +299,27 @@ impl std::ops::Deref for SessionTicket<'_> {
         match self {
             Self::Owned(ticket) => ticket,
             Self::Borrowed(ticket) => ticket,
-        }
-    }
-}
-
-impl std::ops::DerefMut for SessionTicket<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            Self::Owned(ticket) => ticket,
-            Self::Borrowed(ticket) => ticket,
+            Self::Shared(ticket) => ticket,
         }
     }
 }
 
 impl SessionTicket<'_> {
+    fn renew_for_request(&mut self, budget: &WorkBudget) -> Result<(), IndexError> {
+        match self {
+            Self::Owned(ticket) => ticket.renew_for_request(budget),
+            Self::Borrowed(ticket) => ticket.renew_for_request(budget),
+            Self::Shared(_) => Err(IndexError::InvalidInput(
+                "shared read ticket cannot renew its lease".into(),
+            )),
+        }
+    }
+
     fn close(self) -> Result<(), IndexError> {
         match self {
             Self::Owned(ticket) => ticket.release(),
             Self::Borrowed(_ticket) => Ok(()),
+            Self::Shared(_ticket) => Ok(()),
         }
     }
 
@@ -316,7 +331,15 @@ impl SessionTicket<'_> {
         match self {
             Self::Owned(ticket) => ticket.finish(result, budget),
             Self::Borrowed(ticket) => {
-                let validated = ticket.validate().and_then(|()| budget.checkpoint());
+                let validated = ticket
+                    .validate_for_request(budget)
+                    .and_then(|()| budget.checkpoint());
+                result.and_then(|value| validated.map(|()| value))
+            }
+            Self::Shared(ticket) => {
+                let validated = ticket
+                    .validate_for_request(budget)
+                    .and_then(|()| budget.checkpoint());
                 result.and_then(|value| validated.map(|()| value))
             }
         }
@@ -359,7 +382,7 @@ impl<'a, C: ControlCatalog + 'static> PinnedQuerySession<'a, C> {
     ) -> Result<IndexInstanceId, IndexError> {
         let resolved = (|| {
             self.budget.checkpoint()?;
-            self.ticket.validate()?;
+            self.ticket.validate_for_request(self.budget)?;
             let mut selected = None;
             let mut ambiguous = false;
             for instance in &self.profile.instances {
@@ -380,7 +403,7 @@ impl<'a, C: ControlCatalog + 'static> PinnedQuerySession<'a, C> {
             selected.ok_or(IndexError::SnapshotUnavailable)
         })();
         self.budget.checkpoint()?;
-        self.ticket.validate()?;
+        self.ticket.validate_for_request(self.budget)?;
         self.budget.checkpoint()?;
         resolved
     }
@@ -389,9 +412,9 @@ impl<'a, C: ControlCatalog + 'static> PinnedQuerySession<'a, C> {
     /// This never acquires a new ticket or changes the selected view.
     pub fn renew(&mut self) -> Result<(), IndexError> {
         self.budget.checkpoint()?;
-        self.ticket.renew()?;
+        self.ticket.renew_for_request(self.budget)?;
         self.budget.checkpoint()?;
-        self.ticket.validate()?;
+        self.ticket.validate_for_request(self.budget)?;
         self.budget.checkpoint()
     }
 
@@ -417,9 +440,22 @@ impl<'a, C: ControlCatalog + 'static> PinnedQuerySession<'a, C> {
         instance_id: IndexInstanceId,
         request: Q,
     ) -> Result<Option<FrozenQuery<Q, R>>, IndexError> {
+        let entry = self
+            .budget
+            .checkpoint()
+            .and_then(|()| self.ticket.validate_for_request(self.budget));
+        self.resolve_optional_stage_after_entry(registry, instance_id, request, entry)
+    }
+
+    fn resolve_optional_stage_after_entry<Q, R>(
+        &self,
+        registry: &crate::QueryAdapterRegistry<Q, R>,
+        instance_id: IndexInstanceId,
+        request: Q,
+        entry: Result<(), IndexError>,
+    ) -> Result<Option<FrozenQuery<Q, R>>, IndexError> {
         let resolved = (|| {
-            self.budget.checkpoint()?;
-            self.ticket.validate()?;
+            entry?;
             let Some(instance) = self
                 .profile
                 .instances
@@ -442,7 +478,7 @@ impl<'a, C: ControlCatalog + 'static> PinnedQuerySession<'a, C> {
             }))
         })();
         self.budget.checkpoint()?;
-        self.ticket.validate()?;
+        self.ticket.validate_for_request(self.budget)?;
         self.budget.checkpoint()?;
         resolved
     }
@@ -499,6 +535,15 @@ pub struct PreparedQueryStage<'s, 'a, C: ControlCatalog + 'static, Q, R> {
     diagnostic_context: Option<quanta_index_core::DiagnosticContextV1>,
 }
 
+/// Optional per-call timings for a retained query execution. Missing durations
+/// indicate that an earlier step refused before the measured call began.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct QueryExecutionTimings {
+    pub before_ticket_validation: Option<Duration>,
+    pub reader_query: Option<Duration>,
+    pub after_ticket_validation: Option<Duration>,
+}
+
 impl<C: ControlCatalog + 'static, Q, R> PreparedQueryStage<'_, '_, C, Q, R> {
     /// Parent this execution to an already opened diagnostic stage.
     /// The original ticket, request budget, custody and outcome remain unchanged.
@@ -516,6 +561,12 @@ impl<C: ControlCatalog + 'static, Q, R> PreparedQueryStage<'_, '_, C, Q, R> {
         self.query.need
     }
 
+    /// Original request budget for admission before starting the stage.
+    #[must_use]
+    pub fn admission_budget(&self) -> &WorkBudget {
+        self.session.budget
+    }
+
     /// Abandon this stage without releasing its retained session.
     pub fn abort(self) {}
 
@@ -529,7 +580,76 @@ impl<C: ControlCatalog + 'static, Q, R> PreparedQueryStage<'_, '_, C, Q, R> {
             diagnostic_context,
         } = self;
         let mut budget = session.budget.scoped_diagnostic_context(diagnostic_context);
-        execute_pinned_query(session.kernel, &session.ticket, &query, &mut budget, guard)
+        execute_pinned_query(
+            session.kernel,
+            &session.ticket,
+            &query,
+            &mut budget,
+            guard,
+            None,
+        )
+    }
+
+    /// Execute the canonical stage with timings enabled only for an explicitly
+    /// selected diagnostic request. Refusal and final validation stay identical.
+    pub fn execute_with_timings<S: quanta_index_core::index::effort::ResourceScheduler>(
+        self,
+        guard: &quanta_index_core::index::effort::ReservationGuard<S>,
+        timings: &mut QueryExecutionTimings,
+    ) -> Result<quanta_index_core::index::QueryOutcome<R>, IndexError> {
+        *timings = QueryExecutionTimings::default();
+        let PreparedQueryStage {
+            session,
+            query,
+            diagnostic_context,
+        } = self;
+        let mut budget = session.budget.scoped_diagnostic_context(diagnostic_context);
+        execute_pinned_query(
+            session.kernel,
+            &session.ticket,
+            &query,
+            &mut budget,
+            guard,
+            Some(timings),
+        )
+    }
+
+    /// Prepare an owned response while execution memory is live, then release
+    /// execution before the final ticket check.
+    ///
+    /// The projection must have no externally observable effects. It runs
+    /// before final ticket validation and may be discarded. Any memory
+    /// returned by the projection must be covered by retained leases. A
+    /// fallible projection may return its error inside the projected value.
+    pub fn execute_projected<S, T>(
+        self,
+        reservation: quanta_index_core::index::effort::ReservationGuard<S>,
+        mut timings: Option<&mut QueryExecutionTimings>,
+        project: impl FnOnce(quanta_index_core::index::QueryOutcome<R>, &WorkBudget) -> T,
+    ) -> Result<T, IndexError>
+    where
+        S: quanta_index_core::index::effort::ResourceScheduler,
+    {
+        if let Some(timings) = timings.as_deref_mut() {
+            *timings = QueryExecutionTimings::default();
+        }
+        let PreparedQueryStage {
+            session,
+            query,
+            diagnostic_context,
+        } = self;
+        let mut budget = session.budget.scoped_diagnostic_context(diagnostic_context);
+        let result = execute_pinned_reader(
+            session.kernel,
+            &session.ticket,
+            &query,
+            &mut budget,
+            &reservation,
+            timings.as_deref_mut(),
+        );
+        let projected = result.map(|outcome| project(outcome, &budget));
+        drop(reservation);
+        finish_pinned_query(projected, &session.ticket, &budget, timings)
     }
 
     /// Provider IO retains the same admitted stage grant through physical
@@ -550,7 +670,14 @@ impl<C: ControlCatalog + 'static, Q, R> PreparedQueryStage<'_, '_, C, Q, R> {
             .budget
             .with_provider_attempt_custody(custody, |budget| {
                 let mut budget = budget.scoped_diagnostic_context(diagnostic_context);
-                execute_pinned_query(session.kernel, &session.ticket, &query, &mut budget, guard)
+                execute_pinned_query(
+                    session.kernel,
+                    &session.ticket,
+                    &query,
+                    &mut budget,
+                    guard,
+                    None,
+                )
             })
     }
 }
@@ -566,6 +693,12 @@ impl<C: ControlCatalog + 'static, Q, R> PreparedQuery<'_, C, Q, R> {
     #[must_use]
     pub const fn required_resources(&self) -> quanta_index_core::index::effort::ResourceNeed {
         self.query.need
+    }
+
+    /// Original request budget for admission before starting the query.
+    #[must_use]
+    pub fn admission_budget(&self) -> &WorkBudget {
+        self.session.budget
     }
 
     /// Release a prepared query which could not obtain execution capacity.
@@ -584,6 +717,7 @@ impl<C: ControlCatalog + 'static, Q, R> PreparedQuery<'_, C, Q, R> {
             &query,
             &mut *session.budget,
             guard,
+            None,
         );
         // Cleanup can wait for Catalog IO as well. Check the original budget
         // after release, without preventing cleanup of an already cancelled read.
@@ -604,7 +738,7 @@ impl<C: ControlCatalog + 'static, Q, R> PreparedQuery<'_, C, Q, R> {
         let result = session
             .budget
             .with_provider_attempt_custody(custody, |budget| {
-                execute_pinned_query(session.kernel, &session.ticket, &query, budget, guard)
+                execute_pinned_query(session.kernel, &session.ticket, &query, budget, guard, None)
             });
         let PinnedQuerySession { ticket, budget, .. } = session;
         ticket.finish(result, budget)
@@ -622,107 +756,147 @@ fn execute_pinned_query<
     query: &FrozenQuery<Q, R>,
     budget: &mut WorkBudget,
     guard: &quanta_index_core::index::effort::ReservationGuard<S>,
+    mut timings: Option<&mut QueryExecutionTimings>,
 ) -> Result<quanta_index_core::index::QueryOutcome<R>, IndexError> {
-    let result = (|| {
-        budget.bind_memory_scope(guard.memory_scope());
-        budget.checkpoint()?;
-        ticket.validate()?;
-        budget.checkpoint()?;
-        if guard.need() != query.need || query.reader.reservation(&query.request)? != query.need {
-            return Err(IndexError::BackendViolation(
-                "query capability differs from the held service reservation".into(),
+    let result =
+        execute_pinned_reader(kernel, ticket, query, budget, guard, timings.as_deref_mut());
+    finish_pinned_query(result, ticket, budget, timings)
+}
+
+fn execute_pinned_reader<
+    C: ControlCatalog + 'static,
+    Q,
+    R,
+    S: quanta_index_core::index::effort::ResourceScheduler,
+>(
+    kernel: &Kernel<C>,
+    ticket: &ReadTicket,
+    query: &FrozenQuery<Q, R>,
+    budget: &mut WorkBudget,
+    guard: &quanta_index_core::index::effort::ReservationGuard<S>,
+    mut timings: Option<&mut QueryExecutionTimings>,
+) -> Result<quanta_index_core::index::QueryOutcome<R>, IndexError> {
+    budget.bind_memory_scope(guard.memory_scope());
+    budget.checkpoint()?;
+    let started = timings.as_ref().map(|_| Instant::now());
+    let validation = ticket.validate_for_request(budget);
+    if let (Some(timings), Some(started)) = (timings.as_deref_mut(), started) {
+        timings.before_ticket_validation = Some(started.elapsed());
+    }
+    validation?;
+    budget.checkpoint()?;
+    if guard.need() != query.need || query.reader.reservation(&query.request)? != query.need {
+        return Err(IndexError::BackendViolation(
+            "query capability differs from the held service reservation".into(),
+        ));
+    }
+    // This window borrows the original map port for this one funded call.
+    // Its DATA is dropped before final ticket validation and cannot escape
+    // into another stage, request or pin. Independent checks still run.
+    let scoped_maps = kernel.services.maps.scoped_reads(budget)?;
+    let maps = scoped_maps
+        .as_deref()
+        .unwrap_or_else(|| kernel.services.maps.as_ref());
+    if query.instance.activation == GroupActivation::CoreRequired
+        && let InputDomain::Projection {
+            projection: projection_id,
+            producer,
+        } = query.instance.input_domain
+    {
+        let reference = maps
+            .lookup_object(
+                ticket.view().projections,
+                &projection::projection_key(projection_id),
+                budget,
+            )?
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        let binding = projection::read_binding_from(
+            reference,
+            projection_id,
+            kernel.services.objects.as_ref(),
+            budget,
+        )?;
+        if binding.producer != producer || binding.schema != query.instance.schema {
+            return Err(IndexError::CorruptObject(
+                "selected projection differs from reader profile".into(),
             ));
         }
-        // This window borrows the original map port for this one funded call.
-        // Its DATA is dropped before final ticket validation and cannot escape
-        // into another stage, request or pin. Independent checks still run.
-        let scoped_maps = kernel.services.maps.scoped_reads(budget)?;
-        let maps = scoped_maps
-            .as_deref()
-            .unwrap_or_else(|| kernel.services.maps.as_ref());
-        if query.instance.activation == GroupActivation::CoreRequired
-            && let InputDomain::Projection {
-                projection: projection_id,
-                producer,
-            } = query.instance.input_domain
-        {
+        if binding.source != ticket.view().source {
+            return Err(IndexError::SnapshotUnavailable);
+        }
+    }
+    let started = timings.as_ref().map(|_| Instant::now());
+    let outcome = query.reader.query(
+        &query.request,
+        &mut quanta_index_core::index::QueryReadContext {
+            ticket: ticket.record(),
+            instance: &query.instance,
+            objects: kernel.services.objects.as_ref(),
+            maps,
+            budget: &mut *budget,
+        },
+    );
+    if let (Some(timings), Some(started)) = (timings, started) {
+        timings.reader_query = Some(started.elapsed());
+    }
+    let outcome = outcome?;
+    if outcome.view() != ticket.view().identity {
+        return Err(IndexError::BackendViolation(
+            "query result differs from the selected view".into(),
+        ));
+    }
+    match (query.instance.activation, outcome.coverage()) {
+        (GroupActivation::CoreRequired, quanta_index_core::index::QueryCoverage::Core) => {}
+        (
+            GroupActivation::AsyncCoverage,
+            quanta_index_core::index::QueryCoverage::Async(binding),
+        ) => {
             let reference = maps
                 .lookup_object(
-                    ticket.view().projections,
-                    &projection::projection_key(projection_id),
+                    ticket.view().coverage,
+                    &member_key(query.instance.instance),
                     budget,
                 )?
                 .ok_or(IndexError::SnapshotUnavailable)?;
-            let binding = projection::read_binding_from(
-                reference,
-                projection_id,
-                kernel.services.objects.as_ref(),
-                budget,
-            )?;
-            if binding.producer != producer || binding.schema != query.instance.schema {
-                return Err(IndexError::CorruptObject(
-                    "selected projection differs from reader profile".into(),
+            let stored = kernel.services.objects.get(reference, budget)?;
+            let expected =
+                quanta_index_core::index::decode_coverage_binding(&stored.payload, budget)?;
+            if stored.registration.reference != reference
+                || stored.registration.children.as_slice()
+                    != coverage_children(&expected).as_slice()
+                || expected.instance != query.instance.instance
+                || expected != **binding
+            {
+                return Err(IndexError::BackendViolation(
+                    "query coverage differs from the selected stored coverage".into(),
                 ));
             }
-            if binding.source != ticket.view().source {
-                return Err(IndexError::SnapshotUnavailable);
-            }
         }
-        let outcome = query.reader.query(
-            &query.request,
-            &mut quanta_index_core::index::QueryReadContext {
-                ticket: ticket.record(),
-                instance: &query.instance,
-                objects: kernel.services.objects.as_ref(),
-                maps,
-                budget: &mut *budget,
-            },
-        )?;
-        if outcome.view() != ticket.view().identity {
+        (GroupActivation::CoreRequired, quanta_index_core::index::QueryCoverage::Async(_))
+        | (GroupActivation::AsyncCoverage, quanta_index_core::index::QueryCoverage::Core) => {
             return Err(IndexError::BackendViolation(
-                "query result differs from the selected view".into(),
+                "query coverage differs from the selected activation".into(),
             ));
         }
-        match (query.instance.activation, outcome.coverage()) {
-            (GroupActivation::CoreRequired, quanta_index_core::index::QueryCoverage::Core) => {}
-            (
-                GroupActivation::AsyncCoverage,
-                quanta_index_core::index::QueryCoverage::Async(binding),
-            ) => {
-                let reference = maps
-                    .lookup_object(
-                        ticket.view().coverage,
-                        &member_key(query.instance.instance),
-                        budget,
-                    )?
-                    .ok_or(IndexError::SnapshotUnavailable)?;
-                let stored = kernel.services.objects.get(reference, budget)?;
-                let expected =
-                    quanta_index_core::index::decode_coverage_binding(&stored.payload, budget)?;
-                if stored.registration.reference != reference
-                    || stored.registration.children.as_slice()
-                        != coverage_children(&expected).as_slice()
-                    || expected.instance != query.instance.instance
-                    || expected != **binding
-                {
-                    return Err(IndexError::BackendViolation(
-                        "query coverage differs from the selected stored coverage".into(),
-                    ));
-                }
-            }
-            (GroupActivation::CoreRequired, quanta_index_core::index::QueryCoverage::Async(_))
-            | (GroupActivation::AsyncCoverage, quanta_index_core::index::QueryCoverage::Core) => {
-                return Err(IndexError::BackendViolation(
-                    "query coverage differs from the selected activation".into(),
-                ));
-            }
-        }
-        budget.checkpoint()?;
-        Ok(outcome)
-    })();
+    }
+    budget.checkpoint()?;
+    Ok(outcome)
+}
+
+fn finish_pinned_query<T>(
+    result: Result<T, IndexError>,
+    ticket: &ReadTicket,
+    budget: &WorkBudget,
+    timings: Option<&mut QueryExecutionTimings>,
+) -> Result<T, IndexError> {
     // Preserve a reader's typed failure while still completing final lease
     // validation. A successful read must pass both checks before it escapes.
-    let validated = ticket.validate().and_then(|()| budget.checkpoint());
+    let started = timings.as_ref().map(|_| Instant::now());
+    let validated = ticket.validate_for_request(budget);
+    if let (Some(timings), Some(started)) = (timings, started) {
+        timings.after_ticket_validation = Some(started.elapsed());
+    }
+    let validated = validated.and_then(|()| budget.checkpoint());
     result.and_then(|outcome| validated.map(|()| outcome))
 }
 
@@ -806,7 +980,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         self.stage_object(ingress, &encoded.bytes, &[content], budget)
     }
 
-    /// Installs up to 32 source files under one ingress custody batch. All
+    /// Installs a bounded set of source files under one ingress custody batch. All
     /// source bodies precede their records, so repeated bodies can be deduped
     /// without changing the returned record order.
     pub fn stage_sources(
@@ -816,7 +990,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         budget: &mut WorkBudget,
     ) -> Result<StagedObjectReferences, IndexError> {
         budget.checkpoint()?;
-        if inputs.is_empty() || inputs.len() > MAX_SOURCE_BATCH_INPUTS {
+        if inputs.is_empty() || inputs.len() > MAX_NATIVE_STAGE_SOURCES_INPUTS {
             return Err(IndexError::ResourceLimited);
         }
         let mut preflight_bytes = 0_usize;
@@ -827,7 +1001,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                 .and_then(|bytes| bytes.checked_add(input.bytes.len()))
                 .and_then(|bytes| bytes.checked_add(256))
                 .ok_or(IndexError::ResourceLimited)?;
-            if preflight_bytes > MAX_SOURCE_BATCH_BYTES {
+            if preflight_bytes > MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES {
                 return Err(IndexError::ResourceLimited);
             }
             if matches!(input.text, SourceTextAdmission::Utf8 { .. })
@@ -914,7 +1088,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                 .and_then(|bytes| bytes.checked_add(record.bytes))
                 .ok_or(IndexError::ResourceLimited)?;
             if wire_bytes
-                > u64::try_from(MAX_SOURCE_BATCH_BYTES)
+                > u64::try_from(MAX_SOURCE_BATCH_OBJECT_BYTES)
                     .map_err(|_error| IndexError::ResourceLimited)?
             {
                 return Err(IndexError::ResourceLimited);
@@ -1188,14 +1362,14 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         budget.checkpoint()?;
         let ticket = self.pin_view(selection, budget)?;
         let profile = (|| {
-            ticket.validate()?;
+            ticket.validate_for_request(budget)?;
             let profile = load_profile_object(
                 ticket.view().profile,
                 self.services.objects.as_ref(),
                 budget,
             )?;
             budget.checkpoint()?;
-            ticket.validate()?;
+            ticket.validate_for_request(budget)?;
             budget.checkpoint()?;
             Ok(profile)
         })();
@@ -1218,22 +1392,64 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         ticket: &'a mut ReadTicket,
         budget: &'a mut WorkBudget,
     ) -> Result<PinnedQuerySession<'a, C>, IndexError> {
+        let profile = self.load_borrowed_query_profile(ticket, budget)?;
+        Ok(PinnedQuerySession {
+            kernel: self,
+            ticket: SessionTicket::Borrowed(ticket),
+            profile,
+            budget,
+        })
+    }
+
+    fn load_borrowed_query_profile(
+        &self,
+        ticket: &ReadTicket,
+        budget: &mut WorkBudget,
+    ) -> Result<LoadedProfile, IndexError> {
         budget.checkpoint()?;
         self.require_read_ticket_owner(ticket)?;
-        ticket.validate()?;
+        ticket.validate_for_request(budget)?;
         let profile = load_profile_object(
             ticket.view().profile,
             self.services.objects.as_ref(),
             budget,
         )?;
         budget.checkpoint()?;
-        ticket.validate()?;
+        ticket.validate_for_request(budget)?;
         budget.checkpoint()?;
-        Ok(PinnedQuerySession {
+        Ok(profile)
+    }
+
+    /// Prepare the first stage of a request on a shared ticket. Profile
+    /// completion also gates stage resolution, with no caller work between
+    /// that validation and reader resolution. Subsequent stages use their
+    /// own entry check through `PinnedQuerySession`.
+    pub fn with_prepared_stage_for_ticket<'a, Q, R, T>(
+        &'a self,
+        registry: &crate::QueryAdapterRegistry<Q, R>,
+        ticket: &'a ReadTicket,
+        instance_id: IndexInstanceId,
+        request: Q,
+        budget: &'a mut WorkBudget,
+        run: impl FnOnce(PreparedQueryStage<'_, 'a, C, Q, R>) -> Result<T, IndexError>,
+    ) -> Result<T, IndexError> {
+        let profile = self.load_borrowed_query_profile(ticket, budget)?;
+        let mut session = PinnedQuerySession {
             kernel: self,
-            ticket: SessionTicket::Borrowed(ticket),
+            ticket: SessionTicket::Shared(ticket),
             profile,
             budget,
+        };
+        // Share the Catalog validation, while still observing interruption
+        // at stage entry before invoking the adapter.
+        let entry = session.budget.checkpoint();
+        let query = session
+            .resolve_optional_stage_after_entry(registry, instance_id, request, entry)?
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        run(PreparedQueryStage {
+            session: &mut session,
+            query,
+            diagnostic_context: None,
         })
     }
 
@@ -2042,7 +2258,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             | UpdateKind::Reconfigure { .. }
             | UpdateKind::Materialize { .. } => 0,
         };
-        let reads = crate::attempt_reads::AttemptObjectReads::new(
+        let reads = crate::attempt_reads::AttemptObjectReads::for_source_attempt(
             self.services.objects.as_ref(),
             source_count,
         )?;
@@ -2123,12 +2339,12 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         {
             UpdateKind::SourceAdvance(transition) | UpdateKind::SourceResync { transition, .. } => {
                 let delta = source::apply_source(
-                    attempt.operation,
                     base.identity,
                     base.source,
                     transition,
                     request.kind.source_mode(),
                     self.services.catalog.as_ref(),
+                    &reads,
                     &mut context,
                 )?;
                 (

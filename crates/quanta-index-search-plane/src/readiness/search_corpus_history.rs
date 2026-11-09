@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::MutexGuard;
+use std::sync::{MutexGuard, TryLockError};
 use std::time::Duration;
 use std::{fmt, fs};
 
@@ -129,11 +129,18 @@ impl AuxiliaryAuthorityStore {
                     Some,
                 )
         });
-        let guard = self.search_corpus_root_lock.lock().map_err(|err| {
-            CoreError::Storage(format!(
-                "search-corpus authority: state-root retention lock poisoned: {err}"
-            ))
-        });
+        let guard = self
+            .search_corpus_root_lock
+            .try_lock()
+            .map_err(|error| match error {
+                TryLockError::WouldBlock => CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+                    message: "search-corpus authority: state-root retention lock is busy".into(),
+                },
+                TryLockError::Poisoned(error) => CoreError::Storage(format!(
+                    "search-corpus authority: state-root retention lock poisoned: {error}"
+                )),
+            });
         if let Some(wait) = wait {
             let _trace_completion = wait.finish(DiagnosticTerminalV1::from_result(&guard));
         }
@@ -289,13 +296,15 @@ impl AuxiliaryAuthorityStore {
         pair_checkpoint(budget, "retention-record:before-locks")?;
         let pair_guard =
             self.lifecycle_coordinator
-                .lock_pair_observed(repo_id, revision_id, diagnostic)?;
+                .try_lock_pair_observed(repo_id, revision_id, diagnostic)?;
+        pair_checkpoint(budget, "retention-record:pair-lock-acquired")?;
         let active = self.active_pins.active_search_corpus_under_guard_v1(
             &pair_guard,
             repo_id,
             revision_id,
         )?;
         let _root_guard = self.lock_search_corpus_root_observed(diagnostic)?;
+        pair_checkpoint(budget, "retention-record:root-lock-acquired")?;
         let pair_dir = self.search_corpus_pair_dir(repo_id, revision_id);
         let mut root_snapshot = observe_retention_result(
             diagnostic,
@@ -1119,13 +1128,17 @@ impl AuxiliaryAuthorityStore {
     pub(super) fn restore_search_corpus_history_into(
         &self,
         ledger: &mut Ledger,
+        diagnostic: Option<&DiagnosticContextV1>,
     ) -> Result<(), CoreError> {
         let _root_guard = self.search_corpus_root_lock.lock().map_err(|err| {
             CoreError::Storage(format!(
                 "search-corpus authority: restore state-root retention lock poisoned: {err}"
             ))
         })?;
-        let snapshot = self.load_search_corpus_root_snapshot_v1()?;
+        let snapshot =
+            observe_retention_result(diagnostic, DiagnosticStageV1::RetentionRootSnapshot, |_| {
+                self.load_search_corpus_root_snapshot_v1()
+            })?;
         let active_corpora = self
             .active_pins
             .all_active_search_corpora_for_bootstrap_v1()?;
@@ -1187,12 +1200,18 @@ impl AuxiliaryAuthorityStore {
                     revision_id.as_str(),
                 )));
             }
-            let measured = self.index_bytes.measure_index_bytes(
-                &repo_id,
-                &revision_id,
-                &generations,
-                &pair_budget,
-                None,
+            let measured = observe_retention_result(
+                diagnostic,
+                DiagnosticStageV1::RetentionMeasure,
+                |child| {
+                    self.index_bytes.measure_index_bytes(
+                        &repo_id,
+                        &revision_id,
+                        &generations,
+                        &pair_budget,
+                        child,
+                    )
+                },
             );
             let plan = match measured {
                 Ok(measured) if measured.absent.is_empty() => {
@@ -1216,7 +1235,7 @@ impl AuxiliaryAuthorityStore {
                             None,
                             active,
                             &pair_budget,
-                            None,
+                            diagnostic,
                         )?
                     }
                 }
@@ -1251,7 +1270,7 @@ impl AuxiliaryAuthorityStore {
                         Some(physical) => physical,
                         None => match self
                             .index_bytes
-                            .measure_state_root_index_bytes(&pair_budget, None)?
+                            .measure_state_root_index_bytes(&pair_budget, diagnostic)?
                         {
                             Some(physical) => {
                                 physical_bound_for_unverified_pair = Some(physical);
@@ -1286,7 +1305,7 @@ impl AuxiliaryAuthorityStore {
                         .index_bytes
                         .measurement_policy()
                         .physical_scan_budget()?,
-                    None,
+                    diagnostic,
                 )?
                 .unwrap_or(projected_total_bytes),
         };
@@ -1306,7 +1325,7 @@ impl AuxiliaryAuthorityStore {
                 &pair_path,
                 observed,
                 &plan,
-                None,
+                diagnostic,
             )?;
             for authority in enforced.retained {
                 let record = authority.record;

@@ -1,20 +1,34 @@
 //! One bounded entry-map representation for Text inventories and memberships.
 
+use super::{dense_posting, posting_witness::OccurrenceDigestWitness};
 use quanta_index_core::index::{
-    IndexError, MapPage, MapRoot, MemoryLifetime, ObjectRef, WorkBudget, WorkUsage,
+    IndexError, MapPage, MapRoot, MapValue, MemoryLifetime, ObjectRef, WorkBudget, WorkUsage,
     ports::{ImmutableObjectPort, PersistentMapPort},
 };
 
 pub(super) mod block;
+pub(super) mod occurrence;
 pub(super) use block::BlockDraft;
 
 pub(super) const LAYOUT_POLICY: &[u8] =
-    b"entry-map:inventory-small8-32/positional-QITXEM01-512-16384-1024;posting-small8-32/tree\0";
+    b"entry-map:inventory-small8-32/dictionary-QITXEM02-512-16384-1024/direct-QITXOC01-512-8192;posting-small8-32/tree-digest-witness32-childless-v1/pages-QITXDD01-QITXDP01-256-256-8192/repack-tree6144\0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum EntryMapUse {
     Inventory,
+    ColdInventory,
     Posting,
+    PackedPosting,
+}
+
+impl EntryMapUse {
+    pub(super) fn is_inventory(self) -> bool {
+        matches!(self, Self::Inventory | Self::ColdInventory)
+    }
+
+    pub(super) fn is_posting(self) -> bool {
+        matches!(self, Self::Posting | Self::PackedPosting)
+    }
 }
 
 pub(super) const INLINE_ENTRIES: usize = 8;
@@ -144,10 +158,12 @@ pub(in crate::native) enum EntryMap {
     Small(SmallMap),
     Block(ObjectRef),
     Tree(ObjectRef),
+    OccurrenceBlock(ObjectRef),
+    PostingPages(ObjectRef),
 }
 quanta_index_contract::native_serde_enum!(EntryMap {
     units { }
-    newtypes { Small = 0 => SmallMap, Block = 1 => ObjectRef, Tree = 2 => ObjectRef }
+    newtypes { Small = 0 => SmallMap, Block = 1 => ObjectRef, Tree = 2 => ObjectRef, OccurrenceBlock = 3 => ObjectRef, PostingPages = 4 => ObjectRef }
     records { }
 });
 impl Default for EntryMap {
@@ -173,37 +189,90 @@ impl EntryMap {
     pub(super) fn inline_map(&self) -> Option<SmallMap> {
         match self {
             Self::Small(small) => Some(*small),
-            Self::Block(_) | Self::Tree(_) => None,
+            Self::Block(_) | Self::Tree(_) | Self::OccurrenceBlock(_) | Self::PostingPages(_) => {
+                None
+            }
         }
     }
     pub(super) fn tree_base(&self) -> MapRoot {
         MapRoot(match self {
             Self::Tree(reference) => Some(*reference),
-            Self::Small(_) | Self::Block(_) => None,
+            Self::Small(_) | Self::Block(_) | Self::OccurrenceBlock(_) | Self::PostingPages(_) => {
+                None
+            }
         })
     }
     pub(super) fn validate(&self) -> Result<(), IndexError> {
         match self {
             Self::Small(small) => small.validate(),
-            Self::Block(_) | Self::Tree(_) => Ok(()),
+            Self::Block(_) | Self::Tree(_) | Self::OccurrenceBlock(_) | Self::PostingPages(_) => {
+                Ok(())
+            }
         }
     }
     pub(super) fn validate_for(&self, usage: EntryMapUse) -> Result<(), IndexError> {
         self.validate()?;
-        if usage == EntryMapUse::Posting && matches!(self, Self::Block(_)) {
+        if usage.is_posting() && matches!(self, Self::Block(_) | Self::OccurrenceBlock(_)) {
             return Err(IndexError::CorruptObject(
-                "block inventory is not a posting representation".into(),
+                "inventory block is not a posting representation".into(),
+            ));
+        }
+        if usage.is_inventory() && matches!(self, Self::PostingPages(_)) {
+            return Err(IndexError::CorruptObject(
+                "posting pages are not an inventory representation".into(),
             ));
         }
         Ok(())
+    }
+
+    /// Posting Small retains physical occurrence children. Posting Tree stores
+    /// only comparison data; its actual occurrence reference comes from the
+    /// selected owner's inventory under the same pinned root.
+    pub(super) fn posting_witness(
+        &self,
+        value: MapValue,
+    ) -> Result<OccurrenceDigestWitness, IndexError> {
+        self.validate_for(EntryMapUse::Posting)?;
+        match self {
+            Self::Small(_) => Ok(OccurrenceDigestWitness::from_reference(value.object_ref()?)),
+            Self::Tree(_) | Self::PostingPages(_) => OccurrenceDigestWitness::from_value(value),
+            Self::Block(_) | Self::OccurrenceBlock(_) => Err(IndexError::CorruptObject(
+                "inventory block is not a posting representation".into(),
+            )),
+        }
+    }
+
+    pub(super) fn posting_lookup(
+        &self,
+        objects: &dyn ImmutableObjectPort,
+        maps: &dyn PersistentMapPort,
+        key: &[u8],
+        df: u64,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<OccurrenceDigestWitness>, IndexError> {
+        self.validate_for(EntryMapUse::Posting)?;
+        let value = match self {
+            Self::Small(_) => self.lookup(objects, maps, key, budget)?.map(MapValue::from),
+            Self::Tree(reference) => maps.lookup(MapRoot(Some(*reference)), key, budget)?,
+            Self::PostingPages(reference) => {
+                return dense_posting::read::lookup(objects, *reference, key, df, budget);
+            }
+            Self::Block(_) | Self::OccurrenceBlock(_) => {
+                return Err(IndexError::CorruptObject(
+                    "inventory block is not a posting representation".into(),
+                ));
+            }
+        };
+        value.map(|value| self.posting_witness(value)).transpose()
     }
     pub(super) fn children(&self) -> Result<impl Iterator<Item = ObjectRef>, IndexError> {
         self.validate()?;
         let (root, small) = match self {
             Self::Small(small) => (None, *small),
-            Self::Block(reference) | Self::Tree(reference) => {
-                (Some(*reference), SmallMap::default())
-            }
+            Self::Block(reference)
+            | Self::Tree(reference)
+            | Self::OccurrenceBlock(reference)
+            | Self::PostingPages(reference) => (Some(*reference), SmallMap::default()),
         };
         Ok(root
             .into_iter()
@@ -224,6 +293,14 @@ impl EntryMap {
                 return maps.lookup_object(MapRoot(Some(*reference)), key, budget);
             }
             Self::Block(reference) => return block::lookup(objects, *reference, key, budget),
+            Self::OccurrenceBlock(reference) => {
+                return occurrence::lookup(objects, *reference, key, budget);
+            }
+            Self::PostingPages(_) => {
+                return Err(IndexError::CorruptObject(
+                    "posting witness is not an occurrence reference".into(),
+                ));
+            }
         };
         budget.checkpoint()?;
         small.validate()?;
@@ -260,6 +337,12 @@ impl EntryMap {
             }
             Self::Block(reference) => {
                 return block::scan(objects, *reference, after, limit, budget);
+            }
+            Self::OccurrenceBlock(reference) => {
+                return occurrence::scan(objects, *reference, after, limit, budget);
+            }
+            Self::PostingPages(reference) => {
+                return dense_posting::read::scan(objects, *reference, after, limit, budget);
             }
         };
         budget.checkpoint()?;

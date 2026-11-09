@@ -159,6 +159,7 @@ NATIVE_IO_FIELDS = frozenset(
     }
 )
 NATIVE_U64_MAX = (1 << 64) - 1
+MAX_NATIVE_MAP_ROOT_SUMMARY_REQUESTS = 128
 
 
 def _native_hex(value: object, width: int, label: str) -> str:
@@ -462,7 +463,8 @@ def _native_mixed_load(value: object, sequence: int) -> None:
         or set(value) != {"scope", "warmup", "measure", "retained_read"}
         or value["scope"]
         != (
-            "Native UDS mixed offered load with product retained-read witness; "
+            "Native UDS mixed offered load on one continuous 960-second epoch "
+            "with product retained-read witness; "
             "sampled resource observations are not continuous peaks"
         )
     ):
@@ -477,6 +479,7 @@ def _native_mixed_load(value: object, sequence: int) -> None:
         "initial_revision",
         "final_revision",
         "initial_expiry_ms",
+        "load_start_ms",
         "renewals_ms",
         "renewal_expiries_ms",
         "held_queries",
@@ -530,12 +533,14 @@ def _native_mixed_load(value: object, sequence: int) -> None:
             raise ValueError("native mixed retained read expiry did not advance")
         previous_expiry = expiry
     for field in (
+        "load_start_ms",
         "first_release_attempt_ms",
         "confirmed_release_ms",
         "settled_ms",
         "last_held_query_ms",
     ):
         _native_nonnegative_ms(held[field], f"mixed held {field}")
+    load_start = held["load_start_ms"]
     first_release = held["first_release_attempt_ms"]
     confirmed = held["confirmed_release_ms"]
     settled = held["settled_ms"]
@@ -549,10 +554,11 @@ def _native_mixed_load(value: object, sequence: int) -> None:
         any(
             after <= before or after - before > 180_000 for before, after in zip(clocks, clocks[1:])
         )
-        or first_release < 600_000
+        or first_release - load_start < 600_000
         or not last_query <= first_release <= last_query + 2_000
         or not first_release <= confirmed <= first_release + 2_000
         or not confirmed <= settled <= first_release + 60_000
+        or settled - load_start > 960_000
         or _native_u64(held["held_queries"], "mixed held query count") != len(renewals) + 2
     ):
         raise ValueError("native mixed retained read duration, renewal, or settlement differs")
@@ -904,22 +910,25 @@ def _native_linux_resource_observation(value: object) -> dict:
 
 
 def _native_child_trace(
-    trace: dict,
+    trace: dict | None,
     raw: RawFile,
     *,
     publication: bool,
     trace_max_output_bytes: int | None = None,
 ) -> dict:
-    if not isinstance(raw, RawFile) or not isinstance(trace, dict):
+    if not isinstance(raw, RawFile) or (trace is not None and not isinstance(trace, dict)):
         raise ValueError("native child trace custody is malformed")
     bound = trace_max_output_bytes if trace_max_output_bytes is not None else 67_108_864
-    if not 0 < raw.size <= bound or trace.get("sha256") != raw.sha256.removeprefix("sha256:"):
+    if not 0 < raw.size <= bound or (
+        trace is not None and trace.get("sha256") != raw.sha256.removeprefix("sha256:")
+    ):
         raise ValueError("native child trace raw bytes or digest differ")
     actual = raw.consume_seekable(
         lambda handle: parse_timeline_stream(handle, max_capture_bytes=bound)
     )
-    if actual != trace:
+    if trace is not None and actual != trace:
         raise ValueError("native child parsed capture differs from committed raw bytes")
+    trace = actual
     header = trace.get("header")
     footer = trace.get("footer")
     capture_id = _native_hex(trace.get("capture_id"), 32, "child capture ID")
@@ -1002,7 +1011,7 @@ def _native_child_trace(
         raise ValueError("native child IO operation lacks successful runtime boot")
     if sync["sync_failures"] != 0 or (publication and sync["sync_calls"] == 0):
         raise ValueError("native child install IO failed or first publication has no calls")
-    result = {"capture_id": capture_id, "sync": sync}
+    result = {"capture_id": capture_id, "clock_domain": trace["clock_domain"], "sync": sync}
     requests: dict[int, dict] = {}
     for span in spans.values():
         observed = set(span["counters"]) & TEXT_OCCURRENCE_DIFF_COUNTERS
@@ -1033,7 +1042,73 @@ def _native_child_trace(
         result["text_occurrence_diff"] = {
             "requests": [requests[span_id] for span_id in sorted(requests)]
         }
+    map_root_staged = _native_map_root_staged(trace, spans, identified)
+    if map_root_staged is not None:
+        result["map_root_staged"] = map_root_staged
     return result
+
+
+def _native_map_root_staged(trace: dict, spans: dict, identified: set[int]) -> dict | None:
+    """Summarize the two logical roots, without assigning physical batch cost."""
+    counter_occurrences: dict[int, int] = {}
+    scoped_batches: dict[int, tuple[dict, dict[int, int]]] = {}
+    for span in spans.values():
+        if span.get("stage") != "map_apply" or span.get("lane_id") not in (6, 7):
+            continue
+        install = spans.get(span.get("parent_span_id"))
+        if not install or install.get("stage") != "map_apply" or install.get("lane_id") != 5:
+            continue
+        root = spans.get(install.get("parent_span_id"))
+        if not root or root.get("stage") != "map_apply" or root.get("lane_id") != 0:
+            continue
+        posting = spans.get(root.get("parent_span_id"))
+        if not posting or posting.get("stage") != "native_text_postings" or posting.get("lane_id") != 39:
+            continue
+        counts = scoped_batches.setdefault(install["span_id"], (posting, {}))[1]
+        lane = span["lane_id"]
+        if lane in counts:
+            raise ValueError("native posting Map root count is duplicated or absent")
+        counts[lane] = _native_u64(
+            span["counters"].get("new_objects"), "posting Map staged objects"
+        )
+        counter_occurrences[span["span_id"]] = 0
+    if not scoped_batches:
+        return None
+    for row in trace["counters"]:
+        if row["key"] == "new_objects" and row["span_id"] in counter_occurrences:
+            counter_occurrences[row["span_id"]] += 1
+    if any(count != 1 for count in counter_occurrences.values()):
+        raise ValueError("native posting Map root count is duplicated or absent")
+    per_request: dict[int, dict] = {}
+    observed_batches = 0
+    for posting, counts in scoped_batches.values():
+        if set(counts) != {6, 7}:
+            raise ValueError("native posting Map root count pair is incomplete")
+        owner_id = _native_ancestor_root(spans, posting, identified)
+        if owner_id is None:
+            raise ValueError("native posting Map root count lacks request ancestry")
+        request = per_request.setdefault(
+            owner_id,
+            {
+                "request_span_id": owner_id,
+                "request_identity": spans[owner_id]["request_identity"].copy(),
+                "map_batches": 0,
+                "terms_staged_objects": 0,
+                "owners_staged_objects": 0,
+            },
+        )
+        request["map_batches"] = _native_u64(request["map_batches"] + 1, "Map batches")
+        for lane, field in ((6, "terms_staged_objects"), (7, "owners_staged_objects")):
+            request[field] = _native_u64(request[field] + counts[lane], field)
+        observed_batches = _native_u64(observed_batches + 1, "Map batches")
+    selected = sorted(per_request)[:MAX_NATIVE_MAP_ROOT_SUMMARY_REQUESTS]
+    return {
+        "scope": "native_text_postings/39->map_apply/0->map_apply/5; staged_counts_not_physical_writes",
+        "observed_batches": observed_batches,
+        "observed_requests": len(per_request),
+        "omitted_requests": len(per_request) - len(selected),
+        "requests": [per_request[span_id] for span_id in selected],
+    }
 
 
 def _native_beneath_roots(spans: dict, span: dict, roots: set) -> bool:
@@ -1541,8 +1616,9 @@ def validate_native_product_artifacts(
     """Validate one Native product and any separately clocked raw children.
 
     Corpus/config digests are bound recorded values, not an independent
-    regeneration of the source fixture. `child_records` is prepared from the
-    same run and owns immutable RawFile commitments plus parsed trace values.
+    regeneration of the source fixture. `child_records` owns immutable RawFile
+    commitments. A supplied parsed trace must match the strict raw parse;
+    capture callers may omit it to parse once inside this validator.
     """
     _native_hex(source_revision, 40, "source revision")
     _native_hex(expected_daemon_sha256, 64, "expected daemon SHA")
@@ -1781,11 +1857,13 @@ def validate_native_product_artifacts(
     if linux_resource_observation is not None:
         product["linux_resource_observation"] = deepcopy(linux_resource_observation)
     if expected_mixed_load:
-        required_ms = (
-            sum(mixed[name]["queries"]["drain_secs"] for name in ("warmup", "measure")) * 1000
-        )
+        warmup_queries = mixed["warmup"]["queries"]
+        measure_queries = mixed["measure"]["queries"]
+        combined_drain = warmup_queries["window_seconds"] + measure_queries["drain_secs"]
+        required_ms = combined_drain * 1000
         if (
-            detail["total_ms"] < required_ms
+            warmup_queries["drain_secs"] > combined_drain
+            or detail["total_ms"] < required_ms
             or resource_observation["epochs"][0]["observed_elapsed_ms"] < required_ms
         ):
             raise ValueError("native mixed-load duration is outside its process observation")
@@ -1844,7 +1922,15 @@ def validate_native_product_artifacts(
     verified_children = {}
     for role, entry in zip(("first", "reopen"), entries, strict=True):
         record = child_records[role]
-        if not isinstance(record, dict) or set(record) != {"trace_file", "trace", "stderr_file"}:
+        if (
+            not isinstance(record, dict)
+            or set(record)
+            not in (
+                {"trace_file", "stderr_file"},
+                {"trace_file", "trace", "stderr_file"},
+            )
+            or ("trace" in record and not isinstance(record["trace"], dict))
+        ):
             raise ValueError(f"native {role} raw record malformed")
         trace_file = record["trace_file"]
         stderr_file = record["stderr_file"]
@@ -1868,7 +1954,7 @@ def validate_native_product_artifacts(
         ):
             raise ValueError(f"native {role} child raw file is not private and singular")
         child = _native_child_trace(
-            record["trace"],
+            record.get("trace"),
             trace_file,
             publication=role == "first",
             trace_max_output_bytes=expected_trace_max_output_bytes,
@@ -1891,7 +1977,7 @@ def validate_native_product_artifacts(
                 raise ValueError(f"native {role} {key} differs between child and stderr")
         verified_children[role] = {
             "capture_id": child["capture_id"],
-            "clock_domain": record["trace"]["clock_domain"],
+            "clock_domain": child["clock_domain"],
             "trace_sha256": trace_file.sha256,
             "trace_bytes": trace_file.size,
             "stderr_sha256": stderr_file.sha256,
@@ -1901,6 +1987,8 @@ def validate_native_product_artifacts(
         }
         if "text_occurrence_diff" in child:
             verified_children[role]["text_occurrence_diff"] = child["text_occurrence_diff"]
+        if "map_root_staged" in child:
+            verified_children[role]["map_root_staged"] = child["map_root_staged"]
     if verified_children["first"]["capture_id"] == verified_children["reopen"]["capture_id"]:
         raise ValueError("native reopened child reused first capture identity")
     product["children"] = verified_children

@@ -578,6 +578,28 @@ pub(crate) fn finish_phase(label: &'static str, started: Option<Instant>) {
     }
 }
 
+/// Report sparse progress from a completed prefix of a diagnostic phase.
+#[expect(clippy::print_stderr, reason = "Opt-in publication phase diagnosis.")]
+pub(crate) fn phase_progress(
+    label: &'static str,
+    started: Option<Instant>,
+    completed: usize,
+    body_bytes: Option<u64>,
+) {
+    if let Some(started) = started {
+        match body_bytes {
+            Some(body_bytes) => eprintln!(
+                "QI_INGEST_PHASE_V1 label={label} event=progress completed={completed} body_bytes={body_bytes} elapsed_ns={}",
+                started.elapsed().as_nanos()
+            ),
+            None => eprintln!(
+                "QI_INGEST_PHASE_V1 label={label} event=progress completed={completed} body_bytes=unavailable elapsed_ns={}",
+                started.elapsed().as_nanos()
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;

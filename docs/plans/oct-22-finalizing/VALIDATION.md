@@ -31884,34 +31884,419 @@ body result and is undergoing canonical recovery; stale RUNNING is not treated
 as a live code task. Supplier reports a new154611 successor after Docker/VM
 restart; the restart cause is unknown, not evidence of a source bug.
 
-A real TEST CODE residual was previously grouped too broadly under execution
-waiting. Existing `ifx150_restart_recovery_product_owner.rs` has FULL→DELTA,
-DELTA→DELTA, Source-pointer faults, the five Facts/FULL cuts and DELTA ACKed cold
-retry. In `native_checked_delta_v3.rs:157-172`, the writer hook explicitly ignores
-all cuts except V9AckedBeforeSdkReturn; the reader rejects any producer reentry,
-which is the correct existing ACKed oracle but cannot itself implement earlier
-pending/claim/dispatch/published recovery scenarios. No DELTA-specific driver or
-selector for the four earlier cuts, and no pinned old-view assertion across G2
-process recovery, was found in the targeted current owner source/registry search.
-The SDK process driver has0 matching active source claims at this audit.
+The initial residual estimate below was superseded by direct caller tracing at
+01:54 and the final production-path audit. Facts2 already implements genuine
+DELTA persist/claim cuts; no four-test work packet remains. Only two Q process
+cuts were added, together with the actual unbound DELTA production repair.
+Existing Runtime5/SDK1 mounting and their missing body proof remain separate.
 
-Remaining implementation is one existing-driver extension with four exact test
-selectors plus required suite/consumer wiring: genuine G2 persist→claim,
-claim→V9, stage→binding and Q Published→ACK cases; exact same operation/
-attempt/target, allowed per-phase resume, no duplicate publication/retake, pinned
-G1 old-view/reopen and existing last-refund oracle. Reuse the ACKed cold writer/
-reader, native fault enum, signed supplier and existing target/suite consumers;
-do not recreate the existing FULL5 or DELTA ACKed scenarios. This is missing
-coverage code, not a proven new production defect. Runtime5/SDK1 are already
-mounted, registered and consumed; their missing runtime proof is separate.
+**DELTA process source completion / audit correction — 2026-11-07 01:54 KST:**
 
-Remaining order: D admits the existing producer/consumer SDK cut plus the8-file
-coordination repair, then proves the unchanged existing Runtime pair/retained
-requests and Runtime5. RQR-E supplies qualified image/SHA and daemon in parallel
-under its own resource admission, followed by SDK1 and original CP3
-same-operation/target fault/restart/final-drop acceptance. Existing tests and
-code are reused; source presence and this6-test subset do not close the original
-E02/CP3 obligations, full suite, performance or release. SourceReady=false.
+The prior00:53 remaining-code audit overcounted the missing cuts. Direct caller
+tracing proved that Facts2 already invokes `pending_change_event_v3` after a real
+Java G1 FULL/ACK and sends the exact Native G2 change event; it is genuine DELTA
+persist/claim recovery. Root did not add duplicate selectors for those two cases.
+The remaining QStage/QPublished scenarios are now implemented in the existing
+ifx150 target with the same fault enum/fixture/actual producer and signed inputs.
+
+- New Linux selectors are native_delta_keeps_unbound_dispatch_pending_after_stage_crash_v3
+  and native_delta_recovers_q_publication_before_terminal_ack_v3. Parent and SDK
+  export chain, required exact1 suite rows and literal existing Justfile consumer
+  are present. The canonical registry/source scanner finds each once. Both
+  `tools/testing/run-suite-v1.sh <new-suite-id> --resolve-only` commands exit0
+  with expected_tests1. No new compile class or parallel execution queue exists.
+- Private durable_cuts_v3 child reuses the actual G1→G2 writer, exact request/
+  target/attempt marker, V9 readback, Source identity and original reader refund.
+  Stage is tested as unbound Dispatching/Q Unknown with an Err-only retained
+  SDK terminal packet, typed exact-restore stage and original cause-bank
+  Pending refusal; a generic message or JSON-only rejection cannot pass. The
+  existing Original retirement probe proves live custody before drop and Source
+  release/seven live-budget axes zero after error/client drop. Published
+  cut must reconcile to Acked with the same Q operation/view/source and no
+  fresh pair/member/submit/V9 insert. The selected writer hook requires actual
+  producer entry evidence before recording the process-exit marker.
+- Final production RCA found a real DELTA-only hole: FULL's exact-resume guard
+  rejects unbound Dispatching, but DELTA proceeded through required-custody
+  reconstruction, lease recovery/takeover and lexical dispatch. Replay's Native
+  preparation could be rebuilt; a missing binding selected stage again, before
+  the old missing-binding diagnostic could ever be reached. A foreign live
+  lease could instead refuse earlier, making the previous cause expectation
+  timing-dependent. This is a statically reachable restage/lease-write path,
+  not an observed runtime duplicate. Added a phase/binding guard immediately
+  after exact admitted readback in reconcile_exact_native_delta_to_acked_v3,
+  before transfer reconciliation/lease/preparation, preserving the row and
+  returning Original-funded `Native DELTA unbound Dispatching remains pending`.
+  Bound Published and other phases keep their existing paths. The new process
+  test requires that exact retained Runtime cause via borrowed query_failed_parts_v3
+  (RUNTIME.QUERY_FAILED / retrieval_port_snapshot_build / exact Pending message),
+  without formatting or accepting generic diagnostics; observed RED is NOT_RUN.
+- A feature-gated SDK test observer thinly forwards the existing terminal
+  cause-bank HRTB loan. No DATA extraction, clone, owner retain, Source opening,
+  wire schema or authority was added. The original public error intentionally
+  says `Original whole failure retained`; the test must inspect the retained
+  cause rather than expect its private text in the public message. The prior
+  missing-binding-only expectation was corrected from actual call order.
+- Parent old_view_v3 opens an actual G1 Catalog read session before allowing G2
+  dispatch. Fixed old rendered/App hit and absent changed, then G2 changed/App
+  hit distinguish an old retained view from a live-current shortcut. The keeper
+  renews8s/2s under the existing30s lease even while SQL diagnostic calls block;
+  last acknowledged Copy status and sticky typed errors are retained. Explicit
+  release stops/wakes/joins first, checks Active→Released and no remaining pin.
+  Drop performs bounded best-effort cleanup without replacing a primary panic.
+  The parent child poll cleans the complete child process group before rethrowing
+  callback panics. Handshake files are scheduling signals, not issued authority.
+- Current Q Main7a16 parser requires maintenance.wal_reclaim and
+  resources.catalog_writer_cache_kib; the shared SDK native fixture omitted
+  both. Added canonical8MiB/1000ms WAL policy and8192KiB Catalog writer cache,
+  matching the existing Q product-process fixture. The cache reserves8MiB from
+  the existing64MiB retained headroom; work/resource capacity is unchanged.
+  These config requirements were added after committed de16, so the new fixture
+  and accepting Q daemon must be captured coherently; an older de16 binary
+  with deny_unknown_fields is not a compatible substitute. No fallback parser,
+  runtime budget increase or worker rebuild is introduced. Read-session admission is
+  enabled only for the two new cases with the existing Q defaults64/16/300000/8.
+  Native128MiB/Original budgets and production carrier/wire/CAS paths are unchanged.
+- Final owned Rust syntax11/11, new leaf rustfmt2/2, scoped diff-check and25/25
+  impacted boundary preflight pass. These are VERIFIED static checks, not Rust
+  typecheck/body results. No Root Cargo or benchmark/process run was issued.
+- Topology contract freshness was actually FAILED: manifest_set_digest,
+  cargo_lock_digest, registry_membership_digest and source_tree_digest drift.
+  Stored target roster lacks the new2 functions. check-roster success only binds
+  two old stored artifacts. The generator has no selected-path mode; global
+  integration must run `bash tools/ci/lint/lint-topology-contracts.sh --regenerate`
+  once on coordinated stable Main, updating inventory/roster/admission/plan/ledger
+  together. Root did not hand-edit generated data or absorb unrelated baseline.
+
+**Final source/owner refresh — 2026-11-07 01:59 KST:** Q Main is now7a16f48; the SDK read-session contract/client have no diff from de16, while Native config added mandatory writer-cache/WAL policy and retained-cache admission. The fixture now supplies both under the existing capacity; this is not whole-source qualification. S remains9bb0431 dirty Main. Direct D26 PAIR state reports runtime RUNNING and live rustc PID63507 has accumulated CPU time; the earlier D25-only recovery wording is historical. RQR-E progress records canonical resource yield and waits for D26 host-slot return while investigating C03 artifact provenance. Root started no duplicate build/process and neither owner has supplied a new body acceptance verdict.
+
+**Source handoff closed — 2026-11-07 02:15 KST:** D01a1899f and RQR-E01a17e63 received the final self-contained source/config handoff. D owns the next thirteen-path coherent SDK/Runtime admission, two new process bodies and coordinated global topology refresh; RQR-E keeps supplier provenance/original installed acceptance. Root source claim QIDX-E02-DELTA-DURABLE-CUT-COVERAGE-20261107 was released successfully. No owning runtime result is implied by message delivery or claim release; current D26 execution was not interrupted.
+
+The next coherent SDK source capture must include the parent mounts and all
+three new untracked Rust children: old_view_v3, durable_cuts_v3 and cold_writer_v3.
+The original thirteen-path packet is superseded by the fourteen-path source set.
+Actual owning compile, installed process cuts, final acceptance and SourceReady
+remain incomplete. Existing D queue owns proof and global topology integration;
+RQR-E keeps the supplier build and original SDK/daemon acceptance. The earlier
+four-missing-cut statement is superseded, not a new four-test work packet.
+
+**Read-only CODE audit — 2026-11-07 02:52 KST (superseded by the repair checkpoint below):** Three independent read-only
+source audits plus Root caller/claim review found two direct Root repair bundles
+in two existing SDK files. The earlier source handoff is not code-complete:
+
+1. SDK Cargo declares quanta_contract_types_core only (Cargo.toml886), but
+   native_checked_delta_v3.rs2686/2689/2690 and durable_cuts_v3.rs69/71/73 name
+   undeclared quanta_contract_types. No alias exists through their parent mount.
+   Use the existing core dependency/API; do not add a duplicate dependency.
+   This is a statically confirmed name-resolution defect; compiler NOT_RUN.
+2. QPublished writer exits inside dispatch_native_lexical_terminal_v1 before
+   its return/member receipt persistence. Cold resume legitimately invokes the
+   same member, OperationSubmit observation and Published hook again; transport
+   uses the exact same operation and reuses its Published view. The child hook
+   and all-zero counter oracle currently reject that valid replay. Fix only
+   the existing test oracle, retaining no Source stage/no foreign operation/
+   no new pair/member/V9 insert, exact Q evidence, ACK and refund. Static call
+   order confirms the oracle contradiction; observed failing body NOT_RUN.
+
+No additional carrier/persist/claim/grant/V9/opaque ACK/startup implementation
+hunk was confirmed in this bounded audit. Committed semantic inventory/lender
+is also present: change_event_handoff_stage_v16.rs201 calls finish_committed_v3;
+sdk_successor_v3.rs304-337 authenticates Source/world/inventory/paid alias;
+product_v11/target_v11.rs569 supplies the real terminal and semantic data.
+E02's former current-tense committed-input-absent statement was stale and has
+been replaced, not reissued as new work. Facts2/ACKed/QStage/config repairs,
+registry/mounts and current P07 Original feature forwarding are reused.
+
+D26 now has actual Runtime23 results20 pass/3 fail at its prior source cohort,
+not the current SDK. All three panic at item_index_tests.rs81 while producing
+empty dirty units before the selector oracle. Current Main has the same helper.
+D is already doing RCA; this is one shared fixture repair/investigation bundle,
+not three proven production bugs or a new Root writer. Its existing owner and
+queue are unchanged. C02 Full Native request copy/required-shadow caller work
+is separately claimed by its active owner; Native ShadowSourceCopyRequired is
+still in that path. Solver structural code and P07 feature forwarding already
+exist and are not reopened. Generated topology refresh, installed artifacts,
+Rust/process acceptance and release are recorded separately from code residuals.
+No source edits, new Rust run, new chat or external-chat message was issued by
+this audit; only this existing SSOT/contract/validation record was updated.
+
+**Audit/repair checkpoint — 2026-11-07 03:21 KST / active $ss goal:**
+
+- Root repaired the two confirmed code bundles in existing SDK owners. All six
+  undeclared crate references now use quanta_contract_types_core; two comparisons
+  on Clone/Copy/Debug-only NativeFreshDeltaEntryV3 use matches rather than require
+  a new PartialEq API. A too-wide private reexport introduced during extraction
+  was narrowed to a private use after independent review.
+- QPublished now installs once-only actual G2 operation/closeout/attempt identity.
+  Same-operation bound submit and Published observation are exactly one each;
+  expected entries are [0,0,1,0]. Unbound stage remains all-zero. Source staging,
+  missing/foreign operation and fresh pair/member/V9 insert still fail. Existing
+  Q evidence equality, old G1 pin, V9 ACK, same-key retry and original refund
+  assertions remain. No new scenario/producer or product authority was created.
+- Three private test leaves were made structurally bounded. The shared genuine
+  G1→G2 writer is one producer in cold_writer_v3, reused by ACKed None and both
+  Q cuts. Explicit ACK/prior reader drop, G2 fsync→parent pin→hooks→dispatch order
+  is preserved. Old-view acquisition and its repeated sticky renewal checks
+  were factored without changing the session/view or release/drop behavior.
+- Actual God check was FAILED31 at first: parent HEAD already25, new durable
+  child6. The final three-new-leaf canonical God command is PASS with zero
+  finding/allow/baseline changes; parent canonical scan is24 pre-existing
+  findings, down from25, lines2716 vs HEAD2758. Comparing current/HEAD via the
+  same native scanner reports no new/worsened parent finding. The combined
+  parent+leaf gate remains FAILED24 and is not qualified by the leaf PASS.
+- Verification commands on dirty S9bb0431: rustfmt --emit stdout with
+  skip_children=true on the four touched Rust files exits0; rustfmt --check and
+  no-index full-file whitespace inspection on all three new leaves pass; parent
+  diff-check passes. Four-path boundary preflight passes13/13 policies. The two
+  canonical run-suite-v1.sh <new-suite> --resolve-only requests exit0, exact1
+  each, class quanta-sdk-runtime-executor.default.2b760a3bf098. These are static/
+  selector checks only; Rust compile and process bodies remain NOT_RUN.
+- Independent broader source review covered original carrier/persist/claim/
+  grant/V9/opaque ACK/startup, committed inventory/lender, public phase/tail
+  cause visitation and its SDK consumer, actual API/cfg/return types, read-session
+  lifetime and configuration. No further confirmed production hunk was found in
+  that bounded review. Static review is not execution proof or a global claim.
+- Existing D fixture repair is now observed in current Main: three unchanged
+  selector tests use actual Delete/Upsert dirty input while preserving their
+  original assertions. D26 stays historical20/23. D27's old-cache reuse refused
+  foreign Git registration before Rust; D records no live Cargo/rustc and prepares
+  a fresh normally registered Main input. Root did not duplicate its fixture or
+  execution, modify the old snapshot/Git registration, or bypass admission.
+
+**Final revised source handoff — 2026-11-07 03:24 KST:** D01a1899f received the repaired fourteen-path packet with the four latest files and all three untracked child mounts. Root claim QIDX-E02-DELTA-ORACLE-REF-AUDIT-20261107 was released successfully. The fourteen paths are the prior thirteen plus cold_writer_v3; four are latest Root edits and the other ten remain part of the original coherent cut. Delivery and claim release do not prove compiler, body or installed acceptance. Active goal remains incomplete.
+
+**Verification/input audit continuation — 2026-11-07 03:41 KST:**
+
+- Previous goal turn is PROGRESS (four code files repaired/refactored). This turn
+  adds actual current-source tooling evidence and a concrete SDK intake finding;
+  D's known live owner handle was observed rather than inferred from RUNNING.
+- Current S9bb0431 dirty helper proof: PYTHONDONTWRITEBYTECODE=1
+  PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /Users/songmin/.local/bin/python3.12 -m pytest
+  -q -p no:cacheprovider tools/testing/tests/test_run_suite_repo_root_custody_v1.py
+  tools/testing/tests/test_qbc_suite_completion_v1.py exits0 with68 passed progress
+  witnesses (68 collected; no skip/fail). The exact owner parser test
+  tools/quanta-build-cli/test_native_owner_command_qbc_v1.py::test_owner_run_parser_accepts_explicit_snapshot_for_existing_batch
+  with the same pytest options and -o addopts= exits0/1 passed. Disabling cache
+  provider emits the existing config's unknown cache_dir warning; no repo cache
+  or runtime evidence artifact was created. No Rust/Cargo was invoked.
+- PYTHONDONTWRITEBYTECODE=1 /Users/songmin/.local/bin/python3.12
+  tools/testing/suite_registry_v1.py --self-test exits0, self-test OK(65 checks).
+  These are scanner selfchecks, not65 Rust bodies or whole-registry acceptance.
+  Independent source review confirms snapshot-source parsing, validation and
+  both command/receipt propagation. No additional tool implementation was needed.
+- D28 is SUPERSEDED_NOT_LAUNCHED. D29's actual execution root is the admitted
+  Main-registered base77+ovl69141fc8 snapshot (Q dependency de16); runtime23 is
+  active, other requests remain prepared. Owner PID79313 and Cargo85878 are live;
+  actual rustc descendants changed93531→8696 while compiling. No restart or
+  duplicate Root execution was issued. This is a verified wait for that scope.
+- Direct frozen/current byte comparison proves D29 does not contain the latest
+  Root14-path cut. Three new SDK children are absent; SDK parent/support/exports/
+  config and Runtime guard/visitor differ. SDK class435 and new2 registry rows
+  are absent. The frozen class2b76 alone is not source/body proof. Frozen SDK
+  parent2661/2664/2665 still references undeclared quanta_contract_types; its
+  integration-test-support transitively mounts IFX, so queued retained class177
+  also needs the corrected coherent SDK source before compilation. Root sent D
+  this concrete prerequisite once, preserving the active Runtime run/old inputs/
+  validators and existing owner queue. No instruction to modify old snapshots,
+  suppress tests, reuse a foreign registration or create another lane was issued.
+- Post-refactor semantic review confirms pin Open→keeper→fixed G1 queries→writer
+  signal, actual view/session validation, sticky renewal refusal, explicit join/
+  release and primary-panic preservation. Parent/reader observation structs do
+  not issue authority or extract a paid record. The existing retirement probe
+  does open one additional Source loan on the SAME installed Original, consuming
+  one work unit; it does not install a payer/session or refill funding. Sticky/
+  cancelled probes must be captured earlier. The thin cause visitor itself does
+  not open Source. This diagnostic cost is not production O(delta)/performance
+  proof and was not hidden by a new budget allowance.
+
+**Owner proof-scope clarification — 2026-11-07 03:50 KST:**
+D29 owner79313/Cargo85878 remain live; rustc dependency progressed from taint
+solver25781 to Runtime Analysis33210. The actual PAIR has11 requests/39 expected
+bodies: Runtime23, capsule2, retained selected1, invalid projection1, bootstrap2,
+three rebind1 each, inventory1, SDK retained projection1(class177), Runtime phase
+cause5(class5b). These counts are read from PAIR, not summed from old narratives.
+Root's SDK phase1(class435) and two new process cases are separate obligations.
+D's retained class177 can be validated under its original scope using a new
+fixed input with the three existing SDK alias references corrected; requiring
+all Root Native14 changes for that unrelated body would unnecessarily expand
+that scope. D explicitly reported preparing that bounded input without Main
+redevelopment. Such a result cannot qualify Root14's guard/visitor/helper/new2
+or class435. Root did not request a new parallel execution or alter old source.
+The Root14/current-Q intake remains mandatory for the Root SDK/process claims.
+This resolves the ambiguity of the name SDK1 in prior closeout prose and does
+not drop either SDK obligation or reduce the original39 queue.
+
+Remaining order: D completes fresh registered source admission for its existing
+39-body queue, then consumes the coherent fourteen-path SDK/Runtime source set.
+All three untracked children must accompany their parent mounts; the original
+thirteen-path capture is incomplete after cold_writer extraction. Root's four
+latest files must be captured together, including private import and core alias
+repairs. D keeps Runtime5/SDK1 and Linux process new2 proof ownership, plus the
+coordinated global topology refresh. RQR-E keeps actual immutable SQL/searchd
+supplier/receipt/SHA/ABI and original installed CP3 at the same operation/target/
+Original budgets. No Root Cargo, new lane, benchmark or duplicate process run
+was issued. Missing compiler/body/installed proof and current-source coherence
+remain incomplete; full suite/performance/release are not closed. SourceReady=false.
+
+**Code-only remainder audit — 2026-11-07 04:05 KST:**
+Current Q HEAD is7a16f48a and S HEAD is9bb0431d, both dirty Main. Three
+independent read-only audits and direct caller reads distinguish two remaining
+code bundles from already-applied code and unexecuted acceptance. No named
+workflow was invoked for this current audit request; no Rust command, product
+source edit, new worker, external chat message or new execution queue was issued.
+
+- The test-only public DELTA terminal cause visitor delegates to a blocking
+  private visitor. Its callback can reenter through the same actual SDK custody
+  reference and relock the same Mutex. Static reachability is confirmed; an
+  observed hang/RED body is NOT_RUN. The existing SDK durable-cuts reader does
+  not currently reenter. Remaining repair is a nonblocking public test loan with
+  explicit busy and a nested-borrow/revisit assertion in that existing genuine
+  packet oracle. Production diagnostics and typed cause/poison retention remain
+  the same contract. Runtime helper and SDK child have no observed active writer;
+  D retains its separate parent alias hunk.
+- Existing work-refusal commit-not-attempted/row0, readback total_changes,
+  post-refusal UDS accept and post-write same-M COMMIT assertions are different
+  scopes. They do not jointly prove the actual DELTA publication caller performs
+  no further SQL write/RPC after each work/memory/cancel/late Source/unwind cut.
+  Remaining test-code work uses that caller's Original checkpoint/lease progress
+  and Kernel first ReadView boundary with the existing UDS harness. Counters must
+  cover actual execution after the fault, not a different connection's SQLite
+  total_changes or merely unchanged final rows. No production illegal write/RPC
+  has been observed. Exact source claims are rechecked before implementation.
+- Carrier/persist/claim/grant, Native refusal of Ordinary transfer, opaque ACK,
+  actual DELTA sealed member issuer/final/ACK tail, the unbound recovery guard,
+  SDK phase regression and two new process selectors are source-present. The
+  contradictory caller-absent/SDK-regression-absent sentences in E02 were
+  corrected. They are not fresh implementation tasks. Current compiler/body and
+  installed acceptance remain NOT_RUN; D29 does not contain Root14/current-Q.
+- D owns the existing39 queue and coordinated topology refresh. RQR-E owns the
+  missing qualified immutable SQL/searchd supplier. Main's active D SDK claim is
+  the parent native_checked_delta_v3.rs alias hunk; P07's active SDK/transport
+  hunks remain outside this audit's repair set. No duplicate assignment was made.
+  Only the existing README current table owns residual status; no new tracker or
+  per-run evidence file was created.
+
+**Terminal diagnostic reentry repair — 2026-11-07 04:14 KST:**
+The previous goal turn made progress by establishing the two code residuals and
+correcting stale implementation TODOs. This continuation invokes the requested
+ss execution workflow and repairs the first bundle on dirty S9bb0431d. Root's
+QIDX-E02-TERMINAL-LOAN-REENTRY-20261107 claim owns only the Runtime terminal
+helper and SDK durable-cuts child; D's parent alias hunk is independent.
+
+The feature-gated public helper returns must-use bool: false only for WouldBlock,
+true after a completed visit including an empty bank. Both InitialAuthorityPrepared
+and RestoredTerminal use try_lock; poison recovers the same guard and typed cause
+bank. Existing visit_failure_causes remains the only cause enumeration. The
+production private blocking diagnostic visitor is unchanged. The real retained
+SDK packet oracle now demands nested false/callback0, outer true/exact Pending
+cause1, and two successful loans of the same typed cause address. It creates no
+new Source, paid owner, authority, fixture, selector or budget allowance.
+
+Static commands: rustfmt --edition2021 --config skip_children=true --emit stdout
+on the Runtime file exits0 (parse only); rustfmt --check on durable_cuts exits0
+after formatting its changed hunk. Initial check emitted a formatting diff, then
+the same file was corrected. git diff --check for Runtime exits0; full no-index
+whitespace check for the untracked SDK child emits no diagnostics (exit1 denotes
+the added file). The canonical lint-god-surface.sh --files durable_cuts exits0
+with no finding/allow/baseline change. Boundary preflight on the exact two paths
+passes22/22 before and after the repair. Independent static review found no
+remaining type/lifetime/callback/guard issue, but this is not compiler proof.
+Behavioral RED and repaired installed process body are NOT_RUN: the existing
+owning executor is still active and the qualified installed supplier is missing.
+No proxy Mutex test or zero-body result is substituted for that actual SDK proof.
+
+The second bundle's write boundary is clarified to commands newly issued by the
+same publication after refusal. It does not add a requirement to count unrelated
+maintenance/previously-issued SQLite VFS writes. The current agent traces the
+existing SQL-worker/UDS dispatch seams before adding the narrow real-caller
+oracle; a separate connection's total_changes is insufficient. No duplicate
+worker/transport/producer implementation has been added.
+
+**Current DELTA CP2 source checkpoint — 2026-11-07 19:26 KST.**
+Q main7a16f48a and S main9bb0431d remain dirty. The prior SDK observer
+baseline was polluted by pre-dispatch Q status lookups. The final SDK oracle
+records G1 positive controls, a separate baseline after those lookups and
+before G2 dispatch, and the exact refusal baseline. Its guard is consumed at
+return so an old guard cannot retire a subsequent observation. The signed
+AST transport child reuses the original frame, admission, reply and finish
+logic for both transactions and statements.
+
+A caller search found no invocation of the previously considered
+complete_delta_terminal_after_members_v3 helper. The real FULL-to-G2
+path is final_input_v3 -> with_prior_source_checkpoint_v3 -> the FULL
+predecessor manifest loan. After its authenticated Output returns and before
+the same Source finisher, the existing test-support rail now exercises
+WorkArithmeticOverflow, MemoryLimitExceeded and cancellation on the original
+admitted request. The callback finishes normally. The enclosing Source
+finisher records the refusal and the FULL predecessor reader selects the
+Original checkpoint error before the static manifest diagnostic. The SDK
+fixture checks actual target/lease, typed primary writer and retained bank,
+forward SQL/Q count equality after the cut, retained partial charges and
+last-alias refund on all seven axes. No request policy or worker wire changed.
+The existing required exact1 now includes eight fresh fixtures. The SQL
+counter measures new logical transaction begin, writing AST and commit
+attempts. SQL reads, rollback/finish and physical worker writes are outside
+that counter. The Q counter observes send attempts on the common client rail.
+
+Static verification on this dirty source: rustfmt parse/leaf format and
+scoped git diff --check passed. The four changed/new private leaves passed
+lint-god-surface.sh --files. Comparing the native structural scanner against
+HEAD found no new or worsened finding in the touched parents. Existing
+parent findings remain. Scoped boundary-guard preflight passed 57 policies on
+12 paths. tools/testing/run-suite-v1.sh
+ifx150-native-checked-delta-second-terminal-product-owner --resolve-only
+exited0, expected1 and class2b760a3bf098. This is registration/selection,
+not compilation or test execution. Current Rust/installed bodies NOT_RUN.
+
+D30's actual stdout confirms 33 passed across nine original requests on
+its immutable source. D31 retained SDK1 exit101 is a Runtime lib compile
+failure. D32 Runtime5 exit130 did not execute those bodies. D33 was live
+(owner85076) on its retained SDK1 and Runtime5 immutable input, which
+contains the earlier reader child and IPC observer. Its reader/child, SDK
+parent and Source custody differ from current Main and it lacks the latest
+Source fixture child. Preserve D's existing execution scope. The final
+owner capture must include both Q IPC and S Runtime/SDK/SQL observers, Cargo
+feature forwarding and all newly mounted leaves. Installed Linux acceptance
+still requires the RQR-E qualified supplier and the existing selectors.
+
+**E02 session hardening — 2026-11-07 20:36 KST.**
+Audited the W2-02 Native carrier, admitted SQL readback/grant/V9/ACK, startup
+discovery and exact DELTA restore, both installed cold cuts, old view and
+refund, and Source finisher/IPC/AST observers. Q main7a16f48a and S main9bb0431d
+are dirty. Earlier carrier/ACK work is in S HEAD and has shared ancestry.
+Attribution for the correction below is exact. Other dirty hunks and archived
+owner proof were preserved.
+
+Introduced test defect: the G1 positive counters were read after
+read_published_evidence_v3, which independently sends Q Status and ReadView.
+Those two sends can satisfy the UDS positivity assertion without a send from
+the fixture's SDK FULL call. The existing native_checked_delta_v3.rs driver
+now checks the counters immediately after the successful SDK call, before
+those observations. The G2 baseline remains after the pre-dispatch negative
+queries. The installed owner remains the same registered exact1. No additional
+fixture or test selector was needed. The bound-recovery reader refund oracle
+asserts Weak expiry and IntermediateBytes baseline; the Stage and Source
+failure cases assert their own seven axes.
+
+Static source order assertion on S9bb0431d dirty: before repair exit1
+(diagnostic calls preceded the G1 counter assertion), after repair exit0.
+rustfmt parse, scoped diff check and boundary preflight (13/13 policies)
+exit0. tools/testing/run-suite-v1.sh
+ifx150-native-checked-delta-second-terminal-product-owner --resolve-only
+exit0, expected1, class2b760a3bf098. Behavioral RED and repaired installed
+execution NOT_RUN. The separate Q command
+CARGO_BUILD_JOBS=1 ./scripts/cargow test --locked -p quanta-index-ipc
+--features native-send-observer-v1 --lib server::admitted_client_tests::
+-- --test-threads=1 exited130 before admission (approximately173s waiting
+behind an existing benchmark build). No Cargo or test body was started by
+this probe.
+
+D33 SDK retained request 86f5e6dcf63a265189e9c47999bbb220 ended exit101 with
+52 Runtime lib compiler diagnostics and SDK body0. E02 Runtime5 remained
+NOT_RUN. This frozen input predates the final Source finisher and G1 oracle.
+The examined diagnostics did not locate a defect in the scoped E02
+carrier/DELTA/ACK/observer files. D30's exact33 remain VERIFIED on its own
+input. Use the existing D queue and qualified Linux supplier for the final
+current source proof.
 
 **Phase-cause implementation checkpoint — 2026-11-06 KST.** The active `$ss`
 goal authorized repair of the confirmed diagnostic hole. Root changed the
@@ -32683,7 +33068,7 @@ The current Provider scopes in13 existing related documents were updated: five e
 ### Excluded work and document authority
 P05 now has SDK seed -> collector -> canonical pair -> installer -> terminal calls. Actual prior request identity and current-Source revalidation remain DELTA Root/B work; L1 A-D own selector/plan/bank/QBC,L2 Graph,L3 genuine DELTA observers/fixtures,L4 Watch. A call chain is not proof those semantic/runtime obligations are complete. C does not recreate or execute those lanes. Parent idle does not transfer child ownership.
 
-Current references: [Provider ownership](OWNERSHIP.md#e02-provider-c-boundary-20261030), [production contract](E02-publication-recovery.md#configured-native-provider-status-20261030-c), [P07 packet](/Users/songmin/Documents/code-new/quanta-index/docs/plans/oct-28-e02-native-closeout/tickets/P07-native-provider.md), [P05 existing owner](/Users/songmin/Documents/code-new/quanta-index/docs/plans/oct-28-e02-native-closeout/tickets/P05-successor-supply.md), [C contract](/Users/songmin/.codex/artifacts/qidx-e02-native-chat-lanes-20261029/C-PROVIDER/OWN.md), [C handoff](/Users/songmin/.codex/artifacts/qidx-e02-native-chat-lanes-20261029/C-PROVIDER/HANDOFF.md). The user's explicit final-audit/doc request authorizes these Provider-specific document corrections; no peer messages/reassignment or duplicate work were issued.
+Current references: [Provider ownership](OWNERSHIP.md#e02-provider-c-boundary-20261030), [production contract](E02-publication-recovery.md#configured-native-provider-status-20261030-c), [P07 packet](/Users/songmin/Documents/code-new/quanta-index/docs/plans/oct-28-e02-native-closeout/tickets/P07-native-provider.md), [P05 existing owner](E02-publication-recovery.md#l3-source-only-closeout-20261030), [C contract](/Users/songmin/.codex/artifacts/qidx-e02-native-chat-lanes-20261029/C-PROVIDER/OWN.md), [C handoff](/Users/songmin/.codex/artifacts/qidx-e02-native-chat-lanes-20261029/C-PROVIDER/HANDOFF.md). The user's explicit final-audit/doc request authorizes these Provider-specific document corrections; no peer messages/reassignment or duplicate work were issued.
 
 <a id="e02-independent-finish-dispatch-20261030-b"></a>
 <a id="e07-search-benchmark-rca-20261105"></a>
@@ -33155,8 +33540,712 @@ changed-segment verification does not complete. These are individual observed
 runs, not a controlled speedup or successful transfer comparison. The next
 repair reuses a forward authenticated route cursor inside that verifier while
 retaining body-derived expected bytes, exact route membership, page hashes and
-the separate verification store. Its focused tests and fresh SDK qualification
-remain **NOT_RUN** until terminal results are available.
+the separate verification store. G47's four focused cursor/seal bodies pass.
+G48 `d59efb966de0f7b9b82bafd20d09464f46e43fa1` also preserves the cursor's prior
+lower bound on allocation refusal and adds an actual Native publish/seal/scrub
+oracle for 245/246/256-byte terms, including an authenticated missing-route
+corruption case. Five selected bodies and the normal three-target bench build
+are **VERIFIED**. Actual-daemon SDK verification is also **VERIFIED**, three
+selected/executed/passed bodies covering real publication/query, the runner's
+bound record and foreign same-path Go ownership. The new same-limit Caddy 0
+publication is **FAILED**, IPC 60-second timeout, 64.183 seconds overall. Its
+separate diagnostic completes Native transition in 3.001 seconds, changed
+segments in 3.634 and Native index coverage in 0.012. Across its two changed
+segments, document/body rederivation took 2.368 seconds, expected encoding and
+inventory 0.191, route walks 0.891 and posting-page comparison 0.180. The next
+File transition/segment proof does not complete at timeout. Native text takes
+18.369 seconds and File publication 26.476 in that diagnostic; nested spans
+must not be summed. It remains **DIAGNOSTIC_UNQUALIFIED**, not a controlled
+speedup or successful transfer comparison. File segment term proof already
+uses an ordered cursor; a duplicate bulk-map rewrite is not justified.
+Transfer SDK quality and complete Gin/transfer comparison remain **NOT_RUN**.
+
+The current G48 Python portion of `retrieval-contract-local` is **VERIFIED**:
+`python -m pytest -p no:cacheprovider tools/ci/tests/test_retrieval_benchmark.py
+tools/ci/tests/test_source_oracle_suite.py tools/ci/tests/test_holdout_review.py
+tools/ci/tests/test_completed_response_timing.py -q` executes 806 passing bodies
+in 552.75 seconds. This four-file scope does not relabel the earlier failed
+five-file run or claim that recipe's separate Rust portion. Logs remain outside
+the checkout under `g48/python-retrieval-contract.{stdout,stderr}`.
+
+G49 `fb647bcde9a4088e05181ca7f80536148e991d88` adds only opt-in File seal
+subphase markers and fixed-size physical install phase aggregation. It records
+existing disjoint install intervals even without request diagnostic context;
+one line per bounded batch names its physical terminal status, not Catalog or
+publication success. No binder, durability, byte/FD limit or verification rule
+changes. The separate fixed-context diagnostic path retains its event/span
+contract. Compile/body checks are **VERIFIED**, 13 selected/executed/passed;
+the normal three-target build passes. The same-limit Caddy diagnostic is
+**FAILED**, 64.558 seconds overall. It completes Native text in 19.318 seconds,
+File publication in 24.694, Native transition in 3.367 and changed segments in
+4.449, then starts File source-edit verification without completing it. This
+does not establish the cost of later File verification blocks.
+
+The added storage physical observer emits zero records on that actual path;
+its timings provide no attribution. Source tracing shows lexical publication
+uses `quanta-index-lexical::lexical_store::ObjectStore`, its
+`store/prepared_batch.rs::install_prepared_batch`, `install_prepared_object`,
+`write_atomic_at_inner`, pool barrier and pending-output verification/commit.
+It does not call `quanta-index-storage::FileObjectStore`'s batch installer.
+The unused observer/test changes are removed from Main against the G48
+baseline; immutable G49 source and results remain retained. Follow-up timing
+must attach to this exercised lexical owner, preserving its 128-reference /
+2-MiB adoption cap, original FD verification and data-before-control ordering.
+
+G50 `818efcf99fda00be64931e805e3eb7196fc4f330` attaches timing to that lexical
+prepared-batch owner and adds sparse completed-prefix File source verification
+progress. Nine focused File/prepared-batch bodies are **VERIFIED**, including
+barrier failure, private-before-adoption and pre-creation byte/count limits.
+Its runtime is **NOT_RUN**: integration review first found current Main Native
+code absent from the older snapshot. Of 45 inventory differences, 22 are
+permission-only (`0600` versus `0644`) with identical benchmark/harness payloads;
+23 are actual Catalog/Native source changes, including seven new files. No
+benchmark protocol/scorer content change is inferred from permission drift.
+
+The complete Native change includes checked Catalog registration, the new
+occurrence block/dictionary producer-reader pair, retained-read cache semantics,
+recipe policy, memory/spool accounting and matching kernel lifecycle oracles.
+It must be integrated with Main's dirty caller/test hunks as one cohort. G51
+capture is **FAILED** because one occurrence-block test changed during capture;
+no compile/runtime result is promoted from it. G52
+`29d8948a3c02939984ffa548b5558657eba58667` re-captures successfully against Main
+`7a16f48a20e2af2a37ed16847509bf6208dc8a6b`: source bytes, file modes and executable
+bits match with zero remaining differences and no changes during capture
+(Markdown/docs excluded). Its source inventory and Main integration metadata
+are bound outside the checkout. The 23 imported source paths are timestamped
+before first build to prevent stale mtime-based Cargo artifact reuse. Catalog
+and lexical recompile successfully. The integrated Native/Catalog selection is
+**VERIFIED**, 268 selected/executed/passed. Four actual managed-store kernel
+lifecycle bodies are **VERIFIED** on the canonical test profile, covering block
+Delta/reopen, old-selection preservation and exact pin/reclaim. The earlier
+bench-profile kernel inventory was deliberately interrupted (exit 143) before
+body execution after exposing its large cold semantic dev-dependency closure;
+it is not a passing test result. The normal three-target bench build and three
+actual-daemon SDK bodies are **VERIFIED** on G52.
+
+G52 fresh Caddy 0 is **FAILED**, original IPC limit 60 seconds, 63.723 seconds
+overall. The separate same-limit diagnostic is **FAILED/DIAGNOSTIC_UNQUALIFIED**.
+It now observes 120 completed lexical batches and 13,208 objects: total batch
+wall time 20.616 seconds, including atomic write 14.177, custody 1.266, shard
+setup 1.437, output reservation 0.858, barrier 1.807 and settlement 0.802.
+The matching pool-data POSIX file/shard sync markers sum to 0.752 seconds;
+they are nested inside atomic write, not additive. Atomic write includes
+binding, temporary creation, writer witness, write, sync, rename and quota
+transition, so it cannot yet be attributed entirely to binder traversal.
+
+This diagnostic completes Native text in 17.803 seconds, File publication in
+19.572, Native transition in 3.907, changed segments in 3.236 and File proof in
+6.874. File source edits finish all 600 entries/3,331,869 bytes in 0.847 seconds;
+maps/registry take 0.570, created segments 1.010 and run postings 4.445. Changed
+run pages take 2.907 seconds and counts 1.090. Source finalization also completes,
+but there is no successful publication/activation response or benchmark record.
+No later success is invented after the timeout. Nested phase times are not
+summed as independent totals. The standalone daemon rail is currently executing
+322 bodies across five actual Cargo test binaries (25 catalog rows); no verdict
+is assigned before its terminal machine result.
+
+The first Semantica canonical owner attempt is **BLOCKED** at source capture:
+three capture attempts observed a moving untracked
+`sdk/taint_builder/execute_determinism_verification/native_shadow_v4.rs`.
+No Rust body ran. Its stderr is retained outside the checkout; the Gin parent
+lane is registered and the next attempt must reuse it without another family.
+The source-file caller, kernel, Native handoff and document owner scopes remain
+**NOT_RUN** until an admitted coherent snapshot executes nonzero bodies. A
+second tokenless capture on the registered Gin lane also refuses moving tracked
+taint files; it runs zero Rust bodies and does not overwrite the first attempt.
+
+G52 canonical daemon execution is **FAILED**, exit 100: 322 selected, 59 terminal
+executions, 58 passed, one failed and 263 not started. The failed Large-corpus
+restart test reaches `seal`, returns held-output allowance exhaustion, then
+teardown exits 70 with 83 pending lexical paths/reserved inodes. This is a
+distinct capacity/custody defect, not a ranking score or proven IPC-timeout
+cause. The fixture uses 4,096 sources and the unchanged test physical Work
+parent (4 GiB, 30,000 files); the original generic refusal does not establish
+which dimension was exhausted. No cap is raised. Classification and raw
+events remain under `g52/daemon-failure-classification.json` and `daemon-proof/`.
+
+G53 `6feb874545332e9f62283e8b924aeef8127c01aa` proves fresh-run gram counts
+while the independently validated page/bucket stream is live. One gram total
+and one authenticated count cursor replace the second leaf pass; exact count
+map exhaustion and logical per-reference byte accounting remain. Existing-run
+Delta and independent cold scrub paths remain. Its 17 focused count/page,
+NOREPLACE, barrier and admission bodies are **VERIFIED**. The count cursor adds
+at most 13 decoded frames; no corpus-sized cache or cap change is introduced.
+
+The failed-prefix fix completes the full pool barrier and settles queued known
+published original writers against retained exact bytes before closing a failed
+batch. It writes no adoption journal/head and returns the original reservation
+error. A refused barrier retains pending custody; uncertain output is never
+unlinked by digest name. Core refusal detail now reports requested bytes and
+locked free-byte/file values without changing admission. G54 compilation is
+**FAILED**, zero bodies, for a duplicate test-only trait import. G55
+`c4f74ed3f0fdaf9e26d2509afa5bbfc428c862d6` corrects that import; 73 selected /
+executed / passed capacity, prepared-batch, independent count, and real Native
+Sidecar settlement bodies are **VERIFIED**. The real Sidecar test proves zero
+pending/reserved inode slots and retained paid output after a later refusal.
+
+G56 `404a4f367bdccdf6081c8ef95f8618bfb49f8f68` additionally drives the actual
+lexical `with_adoption_batch` loop through a later reservation refusal. Four
+focused bodies are **VERIFIED**: original error, original-writer commitment,
+unchanged journal/head, retained authenticated prefix, and reuse without another
+reservation. G56 also captures a concurrent Main storage-map delta; its focused
+review/proof is tracked separately before promoting current-Main qualification.
+Normal three-target benchmark build and three actual-daemon SDK bodies are
+**VERIFIED** on G56. The unchanged Caddy primary attempt is **FAILED** at
+63.187 seconds; this is not a completed retrieval comparison. Its separate
+instrumented diagnostic completes 120 lexical batches / 13,208 objects, with
+28.763 seconds of batch time and 20.313 seconds nested atomic-write time.
+Nested atomic children include bind-output 7.174, before-replace 3.641,
+temp-open 1.206, write 1.287, file-sync 2.957, shard-sync 1.902 and rename
+1.421 seconds. These are diagnosis, not an uninstrumented speedup claim.
+
+G56's exact Large restart reproducer is **FAILED**: one selected / executed,
+zero passed, 201.009 seconds. The locked refusal reports
+`requested_bytes=3054 free_bytes=4228295646 free_files=0`, establishing Work
+file-slot exhaustion rather than byte exhaustion under the unchanged
+4-GiB / 30,000-file parent. All four ingest windows return; seal fails before
+activation/restart/query. Teardown now succeeds: the error follows the
+`(Err(fixture_error), Ok(()))` closeout branch, with `diagnostic close: None`
+and no prior 83-pending-path / exit-70 secondary failure. This proves the
+failed-prefix cleanup behavior in the actual reproducer while preserving the
+primary capacity failure. Raw inventory/events remain outside the checkout
+under `/Users/songmin/.codex/a88-gq0uxqug/g56/large-capacity-*`.
+
+G56's concurrent storage-map change passes its four selected/executed conflict,
+sorted bootstrap/replay and admitted-allocation bodies. G57
+`954e69149fe195ee636066b42cc163b100a91d86` matches the captured Main source
+payload/modes and passes 74 binder/Sidecar/catalog bodies. The existing-private-
+parent path uses one read-only nofollow walk; a missing parent retains the
+original create/reopen protocol. A borrowed unstarted ticket survives a parent
+refusal, and a real Sidecar repair/retry/publication test covers that contract.
+
+The follow-up audit identifies a pre-existing current-namespace gap: a held
+parent FD could survive a same-path private-directory replacement, while
+settlement checked only that held path and the root. G58
+`bf7795a579fe89a65cdbde0d5ffaf16cf2e39132` checks held/current parent device,
+inode, leaf and relative path before replace and again after sync before Core
+commit. Fresh observer FDs are checked-closed; failure remains charged/pending.
+Its 87 selected/executed binder, Sidecar, catalog and lexical-prefix bodies are
+**VERIFIED**, including deterministic swaps before replace and after the prior
+replace check. Normal three-target benchmark build and three actual-daemon SDK
+bodies are **VERIFIED**. The unchanged Caddy primary publication is **FAILED**,
+exit 2 at 64.027 seconds: IPC read timeout at 60,000 ms, no benchmark record.
+It is not retried or promoted from a later diagnostic. The captured
+unregistered foreign `native/text/posting_witness.rs` has no module/caller and
+its two test definitions are not executed by this result. Later foreign Main
+Native edits are not promoted into the G58 source binding.
+
+G58's opt-in Large kind diagnostic is **FAILED** (one selected/executed, zero
+passed, 161.526 seconds); its V5 trace is complete with 16,838 events, no
+dropped/unwritten records, no open spans or health/orphan findings. The sole
+LexicalBuild span returns error and has no duplicate kind aggregates. It
+observes 29,970 newly linked authenticated pool objects: Record 18,637,
+FileBody 4,096, NativeBody 4,096, MapPage 1,871, NativePositions 450,
+NativeTrigrams 310, AttemptBatch 267, BlobBlock 106, Segment 69 and FilePostings
+68; reused objects total 243. The refused installation is a Record with
+`requested_bytes=3054 free_bytes=4228277213 free_files=0`. Record fanout is
+therefore the measured structural target. The 30-slot difference between the
+30,000 Work allowance and 29,970 new pool objects is not assigned to another
+producer without its ledger evidence. This complete diagnostic is not a
+successful Large publication or a qualified performance comparison. The
+trace/classification are outside the checkout under `g58/large-kind-*`.
+
+The next producer repair groups dependency-free File LiveDoc locators within
+their original at-most-64-document segment, and dependency-free Native source
+Records within one source repository/attempt. Both use the existing format-22
+Record pack (at most 96 members / 32 KiB physical payload); each logical
+BlobRef retains its own SHA and length. Body-dependent SourceHead/CurrentRecord
+objects are unchanged. File uses individual records when its original segment
+scratch ceiling has less than the conservative 256-KiB pack reserve; no ceiling
+is raised. This decision inherits the existing gram scratch's Vec-capacity
+dependence, so cross-allocator physical-root equivalence is not claimed. Native
+replaces two digest sets with one borrowed `(RepoId, digest)` index and reuses
+the private source-map slots for prebirth collision checks. Input order cannot
+fragment same-owner packs; allocator failure does not select a different layout.
+Native retains at most 32 KiB of boxed logical input plus bounded pack metadata
+and encoding overlap; it adds bounded producer peak memory and has no existing
+source ScratchLease to claim as unchanged admission.
+
+Independent source review finds no duplicate physical-slot charge: map refs
+share one physical Record admission, MapPage summaries count only pages, and
+GC walks deduplicate the shared ObjectRef. The existing FileRun per-reference
+posting ledger is unchanged. These are static results, not allowance/runtime
+qualification. G59 `167631b58b84e9ff1080c1ace34ca2afaf0d4481` inventory
+compilation is **FAILED**, exit 101 / zero bodies, for eight unconsumed test
+`BTreeSet::insert` results. G60 captures their fixes with **NOT_RUN** Rust.
+G61 `dd650f12ebf1a5a9c254e9918f6918627bb9d826` additionally makes the Native
+cold test reopen ObjectStore from disk. Its 95 selected/executed bodies are
+**FAILED** overall: 90 passed and five existing Native fairness fixtures failed;
+all three new File locator and both new Native source pack tests passed. The
+unchanged 1,025-segment File bootstrap also passes at 315.038 seconds. The five
+Native failures are fixture preconditions (`anchor > young pair`, prefix
+ineligible, and fixed rewritten segment 1) rather than pack identity assertions.
+
+G62 `84009b8aff5b536f055af68d54ed91c158412d53` restores only the pre-pack
+G58 Native writer on the same remaining G61 source. It is a diagnostic
+counterfactual, not current-Main qualification. The identical five selectors
+execute and all fail in 32.653 seconds with exactly the same primary errors;
+the create-only external `g62/fairness-controlled-comparison.json` verifies the
+case/error equality. The source pack is therefore not the cause of these five
+failures. Fixture raw-body filler does not guarantee the required posting-index
+cost ordering, and automatic due compaction does not guarantee segment 1
+survives a descriptor retirement. Their original policy/oracle intent must be
+restored without changing production caps or weakening success assertions.
+Large success and current full SDK comparisons remain unproved until terminal
+results.
+
+G64 `0102423a69c2b6541998d09c5fd56f77dd8d22a7` executes the repaired Native
+fairness scope. Seven of eight tests pass, including both source pack tests,
+the three bounded fairness fixtures and descriptor-only charge proof. The
+remaining hard-pressure fixture executes its intended pair selection and
+fails the run census, actual 33 versus expected 34. The production registry
+removes runs 33 and 34 and assigns the append and merge segments to one new
+run. The next fixture revision checks `34 - 2 + 1 = 33` and authenticates
+both new member keys from that run. Its Rust proof is **NOT_RUN**. G64's
+three-target benchmark build and all three actual-daemon SDK bodies are
+**VERIFIED**. Both prepared plans bind the same binaries, sources, pinned
+model and physical limits for 11 transfer cases and 57 Gin universes / 88
+queries.
+
+G64 Caddy ordinal 0 is **FAILED** at 62.885 seconds (runner exit 2 and IPC
+read timeout at 60,000 ms). No benchmark record was emitted. Its separate
+causal replay also times out, during File created-segment content-term
+verification. It observes 110 lexical batches and 12,028 inputs, compared to
+120 and 13,208 in the G56 causal run. Inclusive measured times are 26.536 s
+for batch install, including 16.218 s atomic write, 5.071 s bind output and
+3.689 s settlement. Native authority publish takes 17.740 s. File authority
+publish takes 25.216 s, including 16.755 s run postings, with 10.572 s leaf
+maps and 3.957 s counts. Native transition and changed-segment verification
+take 2.587 s and 4.860 s. Timings across diagnostic runs vary and these
+inclusive phases must not be added to their children. The original failure
+receipt and separate diagnostic remain under `g64/fresh11-transfer` and
+`g64/causal-arms/caddy0` outside the checkout.
+
+The G64 Large reproducer is **FAILED** (one selected/executed, 314.161 s).
+The 4,096-source preparation completes seal, activation and in-process
+teardown under the original Work allowance, then launches the pinned daemon
+binary. Its first OS-process restart fails `searchd binary did not open
+query/control/ingest sockets within 30s`. The prior `free_files=0` seal error
+does not recur. This verifies the formerly failing publication scope, while
+the restart and ranking-page scopes remain unresolved. The test uses its
+existing 300 s preparation IPC deadline and 30 s socket deadline. See
+`g64/large-capacity-events.*` outside the checkout.
+
+G65 adds three Caddy latency changes with separate ownership: typed counts
+from the just-encoded producer page, one ordered bootstrap per fresh run
+route surface, and same-parent temp declaration from the claimed FD during
+Sidecar bind. The original overflow cold reread, nonempty/delta route path,
+cross-parent/control recovery path and independent post-write parent checks
+remain. Safe settlement checks the original observed inode at the fresh
+current pathname after sync. These changes and the corrected hard-pressure
+run census are pending focused execution on frozen G65.
+
+G65 `c0bbcebff5c0a831c3a62f431275f6c4eea1c56d` inventory compilation is
+**FAILED** with zero test bodies. Two test references need `super::segment_key`
+and the concurrently edited Native spool assigns `Option<MemoryLease>` to
+another `Some`. Main already contains the direct Option assignment. G66
+`4a4ef5a87c36f8d9ba4e234358fcf5f4736908ab` captures both fixes. All eight
+File producer, cold count parity, hard-pressure membership and posting-witness
+bodies are **VERIFIED** on G66. Four binder/Sidecar bodies, the three-target
+benchmark build and three actual-daemon SDK roundtrip bodies are **VERIFIED**.
+The frozen Caddy ordinal 0 primary is **FAILED** at 63.435 s, runner exit 2,
+60,000 ms IPC read timeout and no record.
+
+G66 targeted Gin execution is **VERIFIED** for five fresh commit universes and
+eight actual SDK queries (ordinals 4, 6, 32, 50, 58, 69, 71 and 84). Publication
+receipts for previously failed 4 and 6 now verify. The four observed trace
+queries have lexical Recall@20/MRR@20 0.2500/0.0417, generic hybrid
+0.5000/0.0667, and explicit trace-file hybrid 0.7500/0.2262. Generic hybrid
+still loses recall on all three targeted controls: 58 (0.5→0), 69 (1→0),
+71 (1→0.5). Across all eight observed queries, lexical 0.5625/0.0729, generic
+hybrid 0.4375/0.0673, and selected trace-file hybrid with generic controls
+0.5625/0.1470. `g66/fresh57-88/score-partial-8.json` binds the exact source,
+binaries, source oracle and query receipts. Its full-88 comparison is
+**FAILED** for missing denominators; it does not fill missing rows with zeros.
+The G66 full publication attempt is **FAILED** (57 attempted, 56 verified,
+one failed). Ordinal 25 / `3cb30679b5e3021db16c776ed7e70d380586e9ce` returns
+runner exit 2 at 63.011 s and the original 60,000 ms IPC read timeout. All
+three universes that failed in G41 now verify, including shared ordinals
+41/81. Across the 56 successful publication commands, median elapsed time
+is 24.113 s and nearest-rank p95 is 40.524 s. These are command durations.
+
+The actual G66 SDK executes and verifies all 87 available queries. Missing
+ordinal 25 remains `NOT_RUN`; the full 88-case comparison stays **FAILED**.
+On the 55 observed trace queries, Recall@20/MRR@20 are lexical
+0.42727273/0.08287393, generic hybrid 0.26363636/0.03406048, and explicit
+Go trace-file hybrid 0.83636364/0.31320647. Over all 87 observed queries,
+lexical is 0.47892720/0.10299094, generic hybrid 0.38697318/0.08747681,
+and trace-file hybrid plus generic controls 0.74904215/0.26394841. All 15
+code2test and 17 edit2ripple queries executed. Code2test generic hybrid
+recall is 0.36666667 versus lexical 0.26666667, while edit2ripple generic
+hybrid recall is 0.80392157 versus lexical 0.83333333. The complete
+source-bound observations are in external `g66/fresh57-88/score-partial-87.json`.
+The resumed query pass wrote a separate status receipt bound to the original
+write-once script/plan and eight-case receipt. No historical scores were
+merged or missing values zero-imputed.
+
+The separate G66 Caddy causal execution also times out. It observes 109
+batches / 11,932 inputs, 24.781 s inclusive install and 3.724 s bind output.
+File publish takes 20.941 s, of which the run-postings leaf maps take 8.924 s
+and counts 2.631 s. Native publish takes 19.493 s and its two seal proofs take
+2.603 s and 4.863 s. File source edits finish and the maps/registry phase
+begins before timeout. These are phase observations from a separate run.
+
+A separate G66 ordinal-25 causal run exits 0 at 23.383 s with the original
+input, policy and binaries. Its instrumentation and output root differ from
+the primary. This rules out a deterministic refusal for those inputs on the
+observed execution but does not explain the primary latency or amend its
+failure. The 87-query score remains as originally bound.
+
+G67 `127bc06e5362a931fd5db29732318495767b7368` changes only the Large fixture
+to attach distinct opt-in trace paths to its two restarted children. The
+production tree matches G66. The fixture keeps its original deadlines and
+validates each diagnostic path is fresh and outside the checkout. An
+incomplete child capture can identify the last recorded phase but cannot
+establish a successful restart.
+
+G67 execution is **FAILED** (one selected/executed, 377.123 s). The parent
+fixture's 300,000 ms seal IPC deadline expires before child launch. The
+complete parent trace has 31,107 events, no dropped/unwritten records, and
+no open spans. Its backend terminal is ok but the request is cancelled,
+with 355.24 s inclusive backend time. LexicalBuild takes 260.05 s inclusive
+and LexicalSeal 105.22 s; a later retention pair/root lock hold takes 46.22 s.
+No child trace was created. The observed result does not establish a boot
+phase or attribute all timing change to the capture itself.
+
+G68 `8512c90d5fbf889e033c44cd04e3281e63dff31b` is a targeted diagnostic cut.
+It adds the lexical object's existing-shard open-first path and separates
+the boot trace opt-in from the parent fixture trace. Its child-only attempt
+uses the optimized bench test profile with the original fixture inputs,
+physical caps and 300 s / 30 s deadlines. It does not change the G66
+benchmark receipts or replace the standard test-profile result.
+
+G68 shard hot-path checks are **VERIFIED** (4 selected, executed and passed).
+The optimized Large process-restart diagnostic is **VERIFIED** (1 selected,
+executed and passed, 228.354 s). All 4,096 independent source identities and
+the ranked pages survive both process restarts under the original caps. The
+two child captures are partial (337 events each, no loss footer). Their
+completed `runtime_boot` spans take 20.508 s and 27.259 s. `boot_restore`
+accounts for 18.747 s and 25.441 s within those spans. These observations
+locate the dominant measured startup phase on G68. The restore call does
+not propagate the capture context to its pair-level retention measurement
+or state-root scan, so the subphase costs are unresolved. The earlier G64
+socket timeout and standard-profile result keep their original verdicts.
+
+P02 uses a separate source-bound regression pair. G69
+`0de446b4e9757025d18c98138f45f540e846f91c` runs one selected Go dispatcher
+body over the previous route and fails with `InvalidRequest` because the same
+chunk ID names two source files (exit 100). G70
+`32e87aabaffe9f210e388a8950fccb790c961677` separates shared chunk acquisition
+from the two ranking paths. The two selected rails are **VERIFIED** with
+39/39 dispatcher bodies and 2/2 runtime-risk bodies. Go reports
+`go_test_trace_file_rrf` and `go_test_trace.file_results=5` for the regression
+fixture. The runtime Hybrid scenarios check `rrf`, `hybrid.fused_results=2`,
+and `CountReached` where the observed chunk universe exceeds the page.
+The P02 receipts are separate from the G66 SDK score.
+
+G71 retention verification selected and executed six bodies. Five passed,
+including multi-batch rollback and retry. The closure diagnostic body failed
+because its expected SQLite query count still reflected `LIMIT 1`. G72
+`cbfc0657e6b864e71ec4c408448017fc4436e8f7` corrects that oracle and passes
+all six bodies. The three-target build and three real SDK/daemon roundtrips
+are **VERIFIED**.
+
+G72 verifies 57/57 fresh Gin publications and 88/88 SDK queries at the
+original inputs, limits and scoring contract. Ordinal 25 publication and
+query both pass. The 57 command durations have median 19.570 s, nearest-rank
+p95 23.228 s and maximum 27.954 s. On all 88, Recall@20/MRR@20 are lexical
+0.48484848/0.10285365, ordinary Hybrid 0.39393939/0.08724033, and explicit
+Go trace-file with generic controls 0.75189394/0.27325960. On the 56 trace
+queries the respective values are 0.43750000/0.08301741,
+0.27678571/0.03464274, and 0.83928571/0.32695874. The complete result is in
+external `g72/fresh57-88/score-88.json`. The observed command times do not
+isolate the effect of one source change from host scheduling.
+
+G72 Caddy/etcd transfer completes one of eleven publications. Caddy 0
+passes in 58.277 s. Ordinals 1–10 all return the 60,000 ms IPC read timeout
+and their SDK queries are `NOT_RUN`. The first Caddy 0 validation fails at
+decimal equality of CLI and SDK witness scores. The preserved outputs agree
+on all 40 witness scores as IEEE binary32 bits, along with file order, RRF
+and lane windows. A separate validator and fresh SDK/CLI query directory
+verify Caddy 0 against its original publication receipt and plan hash. The
+full transfer comparison remains **FAILED** at 1/11. See external
+`g72/fresh11-transfer-f32/score-partial.json`.
+
+Separate G72 transfer captures keep their diagnostic status. Caddy 1
+completes Native publication in 26.719 s and File source/segment work in
+14.052 s, then starts the File run leaf maps with no completion event. Its
+runner reaches the outer 180 s deadline across the overnight run. The
+last observed stage provides no elapsed-time attribution. Etcd 7 hits
+the 60 s IPC deadline with only lexical batch coverage planning recorded.
+
+The G72 standard test-profile Large body is **FAILED** (one selected and
+executed, 445.069 s). The fixture seal reaches its 300 s IPC deadline before
+the first restart. Teardown also returns 70 with unfinished `ingest-accept`.
+No child trace is present. G68's optimized diagnostic remains independently
+**VERIFIED** for the two process restarts and rank pages.
+
+Semantica owner attempt 02 is **BLOCKED** before Rust. QBC exits 1 after
+three exact-snapshot materialization attempts because the untracked
+`native_working_output_v4.rs` changes between capture and copy. Contract
+test bodies executed zero times. The remaining three owner requests are
+`NOT_RUN`.
+
+For the three control losses, G66 and G24 have the same bound query pack and
+ordered top-100 candidate IDs, paths and scores per lane. A separate file
+projection of the two lanes and k=60 RRF places the affected gold at ranks
+24 (58), 20 (69), and 23 (71). The generic request carries lexical query,
+semantic text, generation selection and top K. The benchmark caller flattens
+structured implementation or anchor paths before sending it. An explicit
+source-bound file-purpose profile would require typed caller inputs and
+matching score/explain validation. The generic public RRF contract remains
+the basis of the control comparison.
+
+The same three control queries have identical ordered top-100 lane
+candidates and scores on G72. Across the 87 queries shared with G66, all
+generic route metrics agree. Trace-file ordinal 28 moves the gold file from
+rank four to three after the dense top-100 boundary drops the old witness
+for `mode.go`. The captures locate that input change without establishing
+its source-level cause.
+
+#### G73 and later follow-up on remaining E07 failures
+
+The boot runtime now forwards its existing diagnostic context through
+history restore into pair retention, physical census and retention
+enforcement. Eight selected history restore bodies execute and pass on
+G73. G74 adds the Large test's default real SDK preparation and targeted
+transfer phase observations. Its daemon build succeeds. The Large test
+target fails to compile with E0508 and executes zero bodies.
+
+G75 `2bb4c7af8f48fe9d383a8f852b5134b9c7e710c2` fixes the fixture's slice
+match and serializes borrowed lexical replacement and tombstone scopes
+without cloning them. Four File Authority and publication-plan bodies
+execute and pass, and the three-target build succeeds. The standard test
+profile starts the actual SDK preparation daemon. Its single selected
+Large body fails in 314.827 s because SDK publication exceeds the original
+300 s IPC deadline before either restart. The ingest event tail shows all
+four embedding windows returning by 13.768 s and no backend terminal.
+This isolates the observed delay after embedding even when preparation is
+out of process. It does not identify a completed downstream hot phase.
+
+The G75 optimized profile executes and passes the same Large body in
+285.765 s, including actual SDK preparation and both cold restarts of
+4,096 source identities and ranked pages. The two partial captures expose
+completed boot spans of 29.902 s and 29.668 s. BootRestore accounts for
+27.010 s and 26.599 s. Its lexical closure read accounts for 26.222 s and
+25.635 s, with the same 28,145 authenticated objects and 41,795 dependency
+edges in each. SQLite work is 5.432 s and 5.009 s within those closure
+spans. The root-level physical lexical census takes 0.629 s and 0.794 s.
+The completed nested spans locate the cost without claiming the captures
+have a complete loss footer.
+
+G76 `20465a1acfeb77499fa224f3d4375202f9cc3ab0` reuses bounded SQLite
+prepared statements during lexical closure measurement and avoids rereading
+the descriptor of a newly inserted object. A reused digest still requires
+the exact kind and width. The rollback regression supplies a conflicting
+width for an existing digest and verifies refusal followed by a successful
+retry. All six selected retention bodies pass and the three-target build
+succeeds. The standard Large test fails at the 300 s IPC deadline in
+316.154 s. The optimized body fails in 174.112 s during SDK preparation
+with `SearchCorpusHistoryRetentionExhausted` at `lexical:object:read`.
+That checkpoint observes the service-owned 60 s deadline shared by the
+retention record. It identifies where exhaustion surfaced. Neither restart
+starts, so G76 provides no measurement of the SQLite change's boot impact.
+
+G77 `328cbcacabf723217813f259a1125f4d484edb2d` forwards the existing
+request budget into observed closure-object reads. Ordinary and observed
+reads now return the same deadline error on an expired budget, and the
+regression checks that the observed read charges zero objects. All six
+selected retention bodies pass.
+
+G78 `4a82b90e38a60136fb7ec15e333bf9a09ed13c56` adds a separate, opt-in
+diagnostic path for the real SDK preparation daemon. The optimized Large
+body fails in 186.659 s with the same typed service deadline and never
+reaches either restart. The partial preparation trace contains two
+completed pair closures of 23.382 s and 25.417 s. Each authenticates the
+same 28,145 objects and 41,795 edges. The root measurement returns an
+error immediately after each closure, and the next attempt starts a new
+pair plan. The third closure reaches 9,809 authenticated objects before
+the common deadline expires after another 10.439 s. A long maintenance
+tick overlaps each root failure. The trace establishes repeated closure
+work and the timing of the overlap. It does not identify which low-level
+custody check returned busy.
+
+The lexical maintenance change uses nonblocking generation and lifecycle
+acquisition for scheduled scrub and adoption-recovery collection. Busy
+collection keeps its journal for the next tick. Busy scrub before the
+quarantine callback defers without recording an integrity error. A
+deferred cursor remains bound to its exact candidate, and other candidates
+retain a turn. The durable admission and its original deadline, root
+fence, retry snapshot, and filesystem authentication remain in force.
+G79 `633e1330643f0fead113205c2ce44c28f4a381e9` passes the two
+selected maintenance bodies. Runtime verification moves to the cut
+that also covers fair deferred-cursor scheduling and the adapter's
+single-live-cursor contract. G81
+`ee74615205e4de2998c5f6abf13d69fe66bcb63f` passes 16 maintenance
+bodies, including the real lexical pending-adoption fixture and
+the same-adapter cursor ownership regression. The three-target build passes.
+The optimized G81 Large test completes SDK publication. It makes one
+successful pair closure of 47.193 s over the same 28,145 objects and
+41,795 edges. Root measurement succeeds in 0.409 s and the authority
+write completes. The test fails in 293.563 s at its first 30 s restart
+socket deadline. The partial restart trace reaches BootRestore and the
+lexical closure, with no terminal closure or socket readiness. This
+run verifies removal of the repeated publication scan in the observed
+execution. It leaves cold restart under the original limit unverified.
+One same-source rerun completes SDK publication again with one pair
+closure of 23.140 s. The first restart completes boot in 26.894 s and
+its full 4,096-source observation finishes. The second restart reaches
+the lexical closure but exceeds the unchanged 30 s socket deadline.
+The Large body fails in 227.137 s. The partial captures distinguish
+completed spans from the second restart's unfinished closure.
+
+At original transfer limits, G75's separately instrumented Caddy 1 and
+etcd 7 runs both exit 2 on a 60 s IPC read timeout. Etcd completes its
+BeforeIntent and UnderOperationLock File preflight in 0.618 s and 0.559 s.
+The last interval includes lexical object installation and no completed
+Native publication. Caddy completes Native publication in 23.425 s and
+File sources/segments in 13.061 s. The first leaf cursor open is 0.642 ms.
+The first leaf group then reports 1,024 successful pack calls and
+4,785,944 logical payload bytes at 7.018 s, with no group completion.
+These are opt-in diagnostics, with no throughput qualification or repair
+of the G72 1/11 transfer verdict. G78 repeats Caddy 1 and etcd 7 with
+profiling disabled and the original model, fixture and limits. Both
+return exit 2 on the same 60 s SDK IPC read deadline, in 65.323 s and
+66.338 s respectively. No SDK query is reached for either case. The
+other nine cases are not run in this two-case confirmation.
+
+The G81 non-instrumented confirmation also fails both publications on
+the original 60 s SDK read deadline. Caddy 1 exits 2 in 64.998 s and
+etcd 7 exits 2 in 64.203 s. The SDK query phase reaches no case. The G81
+source already includes Native source Record packing and the File
+first-pass optimizations, so these failures do not call for reapplying
+those changes.
+
+#### G85 closure and Native term construction
+
+The closure candidate runs at most four scoped object readers with one
+bounded pending batch at a time. Worker results contain dependencies and
+diagnostic totals. The owner authenticates all objects through the same
+budgeted store API, applies SQLite work in the original digest order,
+and joins the readers before committing or rolling back the savepoint.
+Small pre-pool batches preserve the direct read-and-apply path. G83
+stops at a test-only mutable-borrow compile error. G84's first attempt
+stops at resource admission. Its second executes seven bodies and fails
+one fixture whose expected absent-closure behavior disagreed with the
+existing typed refusal.
+
+Native fresh segment construction used to tokenize each source twice
+for both raw and folded term membership, once in independent canonical
+posting verification and again to populate the posting writer. The
+writer now consumes source-derived IDs only after that term's full byte
+verification, in the same sorted surface and term order. G85
+`55e7932271728f502c0a53fa553eec38c80367a3` passes all ten selected
+retention and Native term bodies, including fixed Unicode posting
+bytes and rejection of altered positions before the visitor runs.
+The three product files are applied to the shared checkout using exact
+G81 preimages. Opt-in phase probes stay in the proof cohort.
+
+The G85 three-target build and optimized Large test pass. The actual
+SDK prepares and activates the same 4,096-source fixture, then both
+independent daemon restarts pass the identity, source-hash and full
+ranked-page checks within the original socket deadline. The test body
+takes 314.151 s including preparation and both restarts. Completed boot
+spans take 12.032 s and 16.443 s. Their lexical closures take 8.581 s
+and 12.446 s while authenticating the same 28,145 objects and 41,795
+edges each. Preparation likewise authenticates one closure in
+11.256 s. Object I/O counters sum worker spans and may exceed wall
+time. The partial trace files contain terminal boot/closure spans and
+no final loss footer. The exact end-to-end result is a functional
+readiness proof, not a quiet-host latency estimate.
+
+The G85 non-instrumented transfer publications still fail on the original
+60 s SDK read deadline. Caddy 1 exits 2 in 65.162 s and etcd 7 exits 2
+in 67.125 s. The two publications produce no SDK query result. The other
+nine cases are not executed in this targeted transfer rerun.
+
+The separate G85 diagnostics also time out. Etcd 7 completes three
+Native segment builds totaling 4.440 s and three segment writes totaling
+20.907 s. Two map stages complete in 4.867 s total, and the third does
+not finish. Native publication has no terminal success. Caddy 1 finishes
+Native publication in 21.818 s and File publication in 21.320 s, then
+reaches seal and stops inside the second changed-route verification.
+The File leaf group finishes 2,261 pack calls in 7.425 s. At 2,048 calls,
+the source iterator accounts for 0.131 s and `put_record_group` for
+5.184 s within 6.845 s wall. This isolates physical record installation
+as the larger observed leaf cost. The shared source/capacity owner must
+preserve publication FD custody, authenticated dependency verification
+and the durability barrier when addressing that cost. The development
+tokenization change does not resolve transfer acceptance.
+
+The edit-to-ripple adapter diagnostic uses the G72 sealed universes and
+binaries with a separately bound input rule. It prioritizes the existing
+anchor diff's changed lines within the original 32-term cap. All 17 SDK
+queries execute. An actual 17-by-4 SDK/CLI replay reproduces both diagonal
+candidate sequences, scores and windows before checking the crossed
+lexical/dense inputs. Recall@20/MRR@20 are old/old 0.80392/0.27920,
+old lexical/new dense 0.83333/0.27332, new lexical/old dense
+0.80392/0.28361, and new/new 0.83333/0.25595. In case 71 the changed
+dense input recovers Recall@20 from 0.5 to 1.0 with either lexical input.
+For case 83 the same dense-input change moves the gold file from rank 2 to
+10 with old lexical input, while the lexical witness stays at rank 11 and
+the dense witness falls from rank 9 to 44. The dense-only candidate
+trades a small mean MRR loss for recall and has no independent holdout
+result. See external
+`edit-diff-first-v1/attribution-2x2/score-17.json`.
+
+#### Independent two-repository Go trace pilot
+
+The inspected ARB trace intake has 101 cases. Its 67 Go cases are all
+previously exposed Gin, Caddy and etcd cases. This pilot instead binds
+the original failure reports from chi #336 and testify #1139 to separate
+clean, pinned pre-issue Go checkouts and the existing G81 model/binaries.
+The query adapter uses only the original command and excerpt. The chi
+transcript includes a reporter-local reproduction frame. Its checkout
+is a pre-issue tag rather than a confirmed exact reporter revision.
+
+Two separate AI reviewer executions and a third AI adjudicator review
+all 92 tracked Go files against the same blinded request. The reviewers
+do not receive issue links, route identity, order, scores or SDK results.
+The adjudicator resolves two differences and leaves no unknown file.
+The pilot records raw judgments and source hashes separately from the
+input and paired SDK captures.
+
+Both repositories publish and reopen in the actual SDK runner with the
+original top-100 lane, 60 s SDK IPC and 180 s runner limits. The first
+driver attempt stopped at argument validation because it omitted the
+required refusal output. The successful run uses byte-identical input
+packs and manifests, with the refusal and symbol-preflight paths set.
+Distinct-file Recall@20 / MRR@20 are lexical 0.6667 / 0.5385, ordinary
+Hybrid 0.4167 / 0.4167, and Go trace-file Hybrid 1.0000 / 0.3750. These
+are descriptive pilot results over two repositories with AI judgments.
+The CLI parity check matches both SDK file orders, witnesses and
+windows. Witness scores match their f32 bits across CLI shortest-decimal
+and SDK f64-projected representations.
+The run uses isolated pilot process ownership on a shared host and
+provides no latency qualification. It does not issue a default winner.
+See external `c-holdout-20261108/pilot-score.json` and `hp2/plan.json`.
+
+The Semantica producer's third canonical QBC attempt materializes source
+digest `c90b1bdb0839d668baed06f645ca8932d2447e647465bebce73242fed18d79d9`.
+Its contract request executes and passes all 15 selected planner bodies.
+The SDK no-op request on the same snapshot stops at disk admission with
+46.6 GiB and 2.5% free, below the required 50 GiB and 2.75%, with zero
+executed bodies. Parent source and document requests are not reached in
+that attempt. A fourth attempt reuses the same immutable source and
+contract result after disk recovery. Its SDK kernel request executes and
+passes 173 bodies. The Native handoff request fails at compilation with
+E0412 and zero bodies. Two methods in
+`alias_consumer_live_execution_v1.rs` refer to
+`ProductCleanFullSolveAliasExecutionPortV1` outside the
+`memssa-runtime` feature that defines it. The sequence stops before the
+document request.
+
+For the exposed code-to-test controls a separate file-order feasibility
+check improves Recall@20 from 0.3667 to 0.8333 on 15 queries. Its declared
+implementation paths were extracted from the same PR as the reference
+tests, so that diagnostic does not establish independent pre-outcome
+input authority. The default-adoption gate remains **BLOCKED**.
 
 Separate instrumented G41 Gin 4/6 diagnostic publication attempts succeeded,
 but changed scheduling/observation and do not repair the failed primary run.

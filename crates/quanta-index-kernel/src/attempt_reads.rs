@@ -15,16 +15,19 @@ use quanta_index_core::index::{
 };
 
 const MAX_SLOTS: u64 = 32_768;
-const MAX_RETAINED_BYTES: u64 = 4 * 1024 * 1024;
+const SOURCE_RECORD_RESERVE: u64 = 2 * 1024 * 1024;
+const MAX_RETAINED_BYTES: u64 = 2 * SOURCE_RECORD_RESERVE;
 
 struct Entry {
     object: StoredObject,
     bytes: u64,
+    source_record: bool,
 }
 
 struct Window {
     slots: Vec<Option<Entry>>,
     retained: u64,
+    general_retained: u64,
     // Backing and shared object DATA drop before their table reservation.
     memory: Option<MemoryLease>,
 }
@@ -34,10 +37,20 @@ pub(crate) struct AttemptObjectReads<'a> {
     selected: Option<&'a StoredObject>,
     slot_limit: usize,
     byte_limit: u64,
+    source_record_reserve: u64,
     window: Mutex<Window>,
 }
 
 impl<'a> AttemptObjectReads<'a> {
+    pub(crate) fn for_source_attempt(
+        objects: &'a dyn ImmutableObjectPort,
+        slot_hint: u64,
+    ) -> Result<Self, IndexError> {
+        let mut reads = Self::new(objects, slot_hint)?;
+        reads.source_record_reserve = SOURCE_RECORD_RESERVE;
+        Ok(reads)
+    }
+
     pub(crate) fn new(
         objects: &'a dyn ImmutableObjectPort,
         slot_hint: u64,
@@ -65,9 +78,11 @@ impl<'a> AttemptObjectReads<'a> {
             selected: None,
             slot_limit: slots,
             byte_limit: bytes,
+            source_record_reserve: 0,
             window: Mutex::new(Window {
                 slots: Vec::new(),
                 retained: 0,
+                general_retained: 0,
                 memory: None,
             }),
         }
@@ -79,9 +94,11 @@ impl<'a> AttemptObjectReads<'a> {
             selected: Some(object),
             slot_limit: 0,
             byte_limit: 0,
+            source_record_reserve: 0,
             window: Mutex::new(Window {
                 slots: Vec::new(),
                 retained: 0,
+                general_retained: 0,
                 memory: None,
             }),
         }
@@ -122,7 +139,12 @@ impl<'a> AttemptObjectReads<'a> {
         Ok([primary, primary ^ ((alternate & mask) | (mask & 1))])
     }
 
-    fn retain(&self, object: &StoredObject, budget: &WorkBudget) -> Result<(), IndexError> {
+    fn retain(
+        &self,
+        object: &StoredObject,
+        source_record: bool,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
         let bytes = object.memory_bytes().map_or_else(
             || {
                 StoredObject::allocation_bytes(
@@ -137,7 +159,6 @@ impl<'a> AttemptObjectReads<'a> {
         }
         let reference = object.registration.reference;
         let candidates = self.slots(reference)?;
-        let [primary, _] = candidates;
         let mut window = self.lock()?;
         let same = candidates.into_iter().find(|&slot| {
             window
@@ -149,29 +170,45 @@ impl<'a> AttemptObjectReads<'a> {
         let vacant = candidates
             .into_iter()
             .find(|&slot| window.slots.get(slot).is_none_or(Option::is_none));
-        let mut slot = same.or(vacant).unwrap_or(primary);
-        let retained_after = |slot: usize| {
-            let old_bytes = window
-                .slots
-                .get(slot)
-                .and_then(Option::as_ref)
-                .map_or(0, |entry| entry.bytes);
-            window
+        let general_limit = self.byte_limit.saturating_sub(self.source_record_reserve);
+        let mut admission = None;
+        for slot in vacant.into_iter().chain(candidates) {
+            if same.is_some_and(|existing| existing != slot) {
+                continue;
+            }
+            let prior = window.slots.get(slot).and_then(Option::as_ref);
+            if prior.is_some_and(|entry| entry.source_record) {
+                // Keep the authenticated source records until their consumers
+                // finish. A collision may cause a later physical read only.
+                continue;
+            }
+            let prior_bytes = prior.map_or(0, |entry| entry.bytes);
+            let retained = window
                 .retained
-                .checked_sub(old_bytes)
+                .checked_sub(prior_bytes)
                 .and_then(|used| used.checked_add(bytes))
-                .ok_or(IndexError::ResourceLimited)
-        };
-        let mut retained = retained_after(slot)?;
-        if retained > self.byte_limit && same.is_none() && slot != primary {
-            // A vacant alternate must not make the old primary-replacement
-            // path lose an object that still fits within the same byte cap.
-            slot = primary;
-            retained = retained_after(slot)?;
+                .ok_or(IndexError::ResourceLimited)?;
+            let general = window
+                .general_retained
+                .checked_sub(prior_bytes)
+                .and_then(|used| used.checked_add(if source_record { 0 } else { bytes }))
+                .ok_or(IndexError::ResourceLimited)?;
+            let records = retained
+                .checked_sub(general)
+                .ok_or(IndexError::ResourceLimited)?;
+            // A single large body can still use unused record capacity. The
+            // overall DATA cap remains authoritative for both classes.
+            if retained <= self.byte_limit
+                && records <= self.source_record_reserve
+                && (source_record || general <= general_limit || bytes > general_limit)
+            {
+                admission = Some((slot, retained, general));
+                break;
+            }
         }
-        if retained > self.byte_limit {
+        let Some((slot, retained, general)) = admission else {
             return Ok(());
-        }
+        };
         if window.slots.is_empty() {
             let bytes = self
                 .slot_limit
@@ -195,10 +232,20 @@ impl<'a> AttemptObjectReads<'a> {
             .ok_or(IndexError::ResourceLimited)? = Some(Entry {
             object: object.clone(),
             bytes,
+            source_record,
         });
         window.retained = retained;
+        window.general_retained = general;
         drop(window);
         Ok(())
+    }
+
+    pub(crate) fn get_source_record(
+        &self,
+        reference: ObjectRef,
+        budget: &mut WorkBudget,
+    ) -> Result<StoredObject, IndexError> {
+        self.get_with_retention(reference, true, budget)
     }
 }
 
@@ -245,6 +292,35 @@ impl ImmutableObjectPort for AttemptObjectReads<'_> {
         reference: ObjectRef,
         budget: &mut WorkBudget,
     ) -> Result<StoredObject, IndexError> {
+        self.get_with_retention(reference, false, budget)
+    }
+
+    fn read_retained(
+        &self,
+        object: &StoredObject,
+        budget: &mut WorkBudget,
+    ) -> Result<StoredObject, IndexError> {
+        // The caller already owns this DATA within the protected attempt. Do
+        // not make its reuse depend on whether the bounded lookup window kept
+        // the slot. The selected port retains its original charge and refusal.
+        budget.checkpoint()?;
+        let retained = self.objects.read_retained(object, budget)?;
+        if retained.registration.reference != object.registration.reference {
+            return Err(IndexError::CorruptObject(
+                "retained object reference mismatch".into(),
+            ));
+        }
+        Ok(retained)
+    }
+}
+
+impl AttemptObjectReads<'_> {
+    fn get_with_retention(
+        &self,
+        reference: ObjectRef,
+        source_record: bool,
+        budget: &mut WorkBudget,
+    ) -> Result<StoredObject, IndexError> {
         if let Some(selected) = self.selected {
             if selected.registration.reference != reference {
                 return self.objects.get(reference, budget);
@@ -270,15 +346,18 @@ impl ImmutableObjectPort for AttemptObjectReads<'_> {
                 .get(slot)
                 .and_then(Option::as_ref)
                 .filter(|entry| entry.object.registration.reference == reference)
-                .map(|entry| entry.object.clone())
+                .map(|entry| (entry.object.clone(), entry.source_record))
         });
         drop(window);
-        if let Some(object) = hit {
+        if let Some((object, already_source_record)) = hit {
             let object = self.objects.read_retained(&object, budget)?;
             if object.registration.reference != reference {
                 return Err(IndexError::CorruptObject(
                     "retained object reference mismatch".into(),
                 ));
+            }
+            if source_record && !already_source_record {
+                self.retain(&object, true, budget)?;
             }
             return Ok(object);
         }
@@ -288,26 +367,8 @@ impl ImmutableObjectPort for AttemptObjectReads<'_> {
                 "object read returned another identity".into(),
             ));
         }
-        self.retain(&object, budget)?;
+        self.retain(&object, source_record, budget)?;
         Ok(object)
-    }
-
-    fn read_retained(
-        &self,
-        object: &StoredObject,
-        budget: &mut WorkBudget,
-    ) -> Result<StoredObject, IndexError> {
-        // The caller already owns this DATA within the protected attempt. Do
-        // not make its reuse depend on whether the bounded lookup window kept
-        // the slot. The selected port retains its original charge and refusal.
-        budget.checkpoint()?;
-        let retained = self.objects.read_retained(object, budget)?;
-        if retained.registration.reference != object.registration.reference {
-            return Err(IndexError::CorruptObject(
-                "retained object reference mismatch".into(),
-            ));
-        }
-        Ok(retained)
     }
 }
 

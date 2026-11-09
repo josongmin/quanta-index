@@ -2709,6 +2709,8 @@ pub fn send_stream_request<RequestEnvelopeT: serde::Serialize>(
         .map_err(|error| classify_client_io_error(error, IpcIoOperation::Connect, io_policy))?;
     let mut stream = DeadlineStream::new(stream, deadline);
     stream.budget = Some(budget.clone());
+    #[cfg(feature = "native-send-observer-v1")]
+    crate::native_send_observer_v1::observe_v1();
     stream
         .write_all(&frame)
         .map_err(|error| classify_client_io_error(error, IpcIoOperation::Write, io_policy))?;
@@ -2853,6 +2855,8 @@ where
         if let Some(probe_deadline) = probe_deadline {
             stream.deadline = probe_deadline;
             let negotiated: std::io::Result<bool> = (|| {
+                #[cfg(feature = "native-send-observer-v1")]
+                crate::native_send_observer_v1::observe_v1();
                 stream.write_all(&diagnostic_preface(capture_id))?;
                 let mut ack = [0_u8; DIAGNOSTIC_ACK_BYTES];
                 stream.read_exact(&mut ack)?;
@@ -2898,6 +2902,8 @@ where
         frame
     };
     let write_started = timing.as_ref().map(|_| Instant::now());
+    #[cfg(feature = "native-send-observer-v1")]
+    crate::native_send_observer_v1::observe_v1();
     stream
         .write_all(frame.as_slice())
         .map_err(|error| classify_client_io_error(error, IpcIoOperation::Write, io_policy))?;

@@ -36,6 +36,108 @@ fn push_fixed(
 }
 
 #[test]
+fn packed_alias_accepts_cold_ordinals_beyond_sql_page_and_refuses_window_end()
+-> Result<(), IndexError> {
+    let mut fixture = visitor_fixture()?;
+    fixture.objects.install_outputs = Some(vec![reference(90), reference(91)]);
+    let scratch = TestScratch::default();
+    let custody = TestCustody;
+    let mut work = budget()?;
+    let spool = TextSpool::new(&scratch, &mut work)?;
+    let mut writes = OccurrenceWrites::new();
+    let mut edits = InventoryEdits::new(0)?;
+    let mut last_slot = None;
+    for (ordinal, identified, position) in [(64, reference(90), 0), (127, reference(91), 1)] {
+        let payload = super::super::super::text_memory::encode(
+            &FixedOccurrence {
+                positions: [position],
+            },
+            &work,
+        )?;
+        let slot = writes.push_with_slot(
+            OccurrenceEdit {
+                ordinal,
+                key: PreparedKey::copy(b"\0a", &work)?,
+                prior: None,
+                identified,
+            },
+            payload,
+            &spool,
+            &mut edits,
+            &mut work,
+        )?;
+        last_slot = Some(slot);
+        writes.push_block_alias(
+            ordinal,
+            PreparedKey::copy(b"\0b", &work)?,
+            slot,
+            &spool,
+            &mut edits,
+            &mut work,
+        )?;
+    }
+    let last_slot = last_slot.ok_or(IndexError::ResourceLimited)?;
+    check!(matches!(
+        writes.push_block_alias(
+            256,
+            PreparedKey::copy(b"\0c", &work)?,
+            last_slot,
+            &spool,
+            &mut edits,
+            &mut work,
+        ),
+        Err(IndexError::BackendViolation(_))
+    ));
+    let rows_before = edits.rows.len();
+    check!(matches!(
+        writes.push_block_alias(
+            127,
+            PreparedKey::copy(b"\0c", &work)?,
+            PendingOccurrenceSlot {
+                index: 0,
+                identified: reference(91),
+            },
+            &spool,
+            &mut edits,
+            &mut work,
+        ),
+        Err(IndexError::BackendViolation(_))
+    ));
+    check_eq!(edits.rows.len(), rows_before);
+    check_eq!(writes.pending.len(), 2);
+    check_eq!(writes.fanout_rows, 4);
+    let mut confirmed = ConfirmedOccurrences::new(0)?;
+    let mut context = AttemptContext {
+        attempt: test_attempt(fixture.ticket.view.identity.workspace),
+        objects: &fixture.objects,
+        maps: &fixture.maps,
+        custody: &custody,
+        scratch: &scratch,
+        budget: &mut work,
+    };
+    writes.flush(&mut context, &spool, &mut confirmed, &mut edits)?;
+    check_eq!(fixture.objects.install_batches.load(Ordering::Relaxed), 1);
+    check_eq!(
+        fixture.objects.install_batch_inputs.load(Ordering::Relaxed),
+        2
+    );
+    edits.flush(&spool, context.budget)?;
+    let mut cursor = spool.inventory_cursor(128)?;
+    for (ordinal, identified) in [(64, reference(90)), (127, reference(91))] {
+        for key in [b"\0a".as_slice(), b"\0b".as_slice()] {
+            let edit = cursor
+                .next_edit(context.budget)?
+                .ok_or_else(|| IndexError::BackendViolation("packed alias edit missing".into()))?;
+            check_eq!(edit.root, ordinal);
+            check_eq!(edit.edit.key.as_slice(), key);
+            check_eq!(edit.edit.next, Some(identified.into()));
+        }
+    }
+    check!(cursor.next_edit(context.budget)?.is_none());
+    Ok(())
+}
+
+#[test]
 fn mixed_owner_packet_installs_once_and_keeps_each_inventory_ordinal() -> Result<(), IndexError> {
     let mut fixture = visitor_fixture()?;
     fixture.objects.install_outputs = Some(vec![reference(90), reference(91), reference(92)]);
@@ -642,6 +744,9 @@ fn physical_65_packet_preserves_191_aliases_and_starts_next_packet_after_explici
     drop(edits);
     drop(writes);
     drop(confirmed);
+    // Packet evidence remains funded by the spool across flushes.
+    check!(memory.live.load(Ordering::Relaxed) > 0);
+    drop(spool);
     check_eq!(memory.live.load(Ordering::Relaxed), 0);
     check!(!memory.invalid_release.load(Ordering::Relaxed));
     Ok(())

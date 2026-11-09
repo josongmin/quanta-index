@@ -298,6 +298,104 @@ fn language_constraint_is_applied_before_vector_limit_and_composes_with_scope_v1
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
+    reason = "the fixture proves both the physical cutoff and the canonical cutoff"
+)]
+fn exact_canonical_ties_are_selected_before_lance_top_k_cut() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let generation = ManifestGeneration::new(809);
+    // Insert in reverse path order: Lance's physical row-id tie break would
+    // otherwise include file_25 and exclude canonical-first file_00 at k=25.
+    let replace_scopes = (0..26)
+        .rev()
+        .map(|index| {
+            let path = format!("src/file_{index:02}.go");
+            let id = format!("tie-{index:02}");
+            Ok(SemanticReplaceScope {
+                scope: scope(&path),
+                scope_digest: format!("scope:{path}"),
+                embeddings: vec![embedding_record(&id, &path, vec![1.0, 0.0, 0.0])?],
+                cluster_memberships: Vec::new(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let batch = SemanticIngestBatch {
+        repo_id: repo_id(),
+        revision_id: revision_id(),
+        generation,
+        base_generation: None,
+        manifest_digest: "manifest:809".to_string(),
+        batch_digest: "batch:809".to_string(),
+        mode: BatchIngestMode::ReplaceGeneration,
+        model_contract: model_contract(3),
+        required_corpora: Vec::new(),
+        corpus_policy_digest: None,
+        clear_surfaces: Vec::new(),
+        replace_scopes,
+        tombstone_scopes: Vec::new(),
+        seal: true,
+    };
+    build_resident_batch_v1(&adapter, &batch)?;
+    let searcher = adapter.open(&repo_id(), &revision_id(), generation)?;
+    let ordinary = searcher.search_constrained(
+        &[1.0, 0.0, 0.0],
+        &QueryConstraintSetV1::unconstrained(),
+        25,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(ordinary.len(), 25);
+    assert!(
+        ordinary
+            .iter()
+            .all(|row| row.repo_relative_path.as_str() != "src/file_00.go")
+    );
+    let got = searcher.search_constrained_canonical_ties(
+        &[1.0, 0.0, 0.0],
+        &QueryConstraintSetV1::unconstrained(),
+        25,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let paths = got
+        .iter()
+        .map(|row| row.repo_relative_path.as_str().to_string())
+        .collect::<Vec<_>>();
+    let expected = (0..25)
+        .map(|index| format!("src/file_{index:02}.go"))
+        .collect::<Vec<_>>();
+    assert_eq!(paths, expected);
+    assert!(
+        got.iter()
+            .all(|row| row.score.to_bits() == 1.0_f32.to_bits())
+    );
+    let insufficient = RequestBudgetV1::unbounded().with_semantic_work_limit_v1(77)?;
+    assert!(matches!(
+        searcher.search_constrained_canonical_ties(
+            &[1.0, 0.0, 0.0],
+            &QueryConstraintSetV1::unconstrained(),
+            25,
+            &insufficient,
+        ),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SemanticWorkBudgetExceeded,
+            ..
+        })
+    ));
+    assert_eq!(insufficient.semantic_work_consumed_v1()?, Some(0));
+    let sufficient = RequestBudgetV1::unbounded().with_semantic_work_limit_v1(78)?;
+    let bounded = searcher.search_constrained_canonical_ties(
+        &[1.0, 0.0, 0.0],
+        &QueryConstraintSetV1::unconstrained(),
+        25,
+        &sufficient,
+    )?;
+    assert_eq!(bounded, got);
+    assert_eq!(sufficient.semantic_work_consumed_v1()?, Some(78));
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
     reason = "test asserts exact-path pushdown across the persisted vector engine"
 )]
 fn exact_path_constraint_is_applied_before_vector_limit_v1() -> TestResult {

@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, TryLockError};
 
 use quanta_index_contract::{
     ACTIVATION_ROOT_INCARNATION_BYTES_V1, GenerationPin, GenerationSnapshot, ManifestGeneration,
@@ -883,6 +883,19 @@ impl ActivationCatalog {
         Ok(())
     }
 
+    fn retention_entries_v1(&self) -> Result<RwLockReadGuard<'_, CatalogState>, CoreError> {
+        self.ensure_durability_certain_v1()?;
+        self.entries.try_read().map_err(|error| match error {
+            TryLockError::WouldBlock => CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusRetentionMeasurementBusy,
+                message: "search-plane activation catalog is busy during retention".into(),
+            },
+            TryLockError::Poisoned(error) => CoreError::Storage(format!(
+                "search-plane activation catalog poisoned: {error}"
+            )),
+        })
+    }
+
     pub(super) fn mark_durability_uncertain_v1(&self) {
         self.durability_uncertain_v1.store(true, Ordering::Release);
     }
@@ -894,10 +907,7 @@ impl ActiveSearchCorpusPinReadPort for ActivationCatalog {
         repo_id: &RepoId,
         revision_id: &RevisionId,
     ) -> Result<Vec<crate::search_corpus_lifecycle::UnresolvedSourceTargetV1>, CoreError> {
-        self.ensure_durability_certain_v1()?;
-        let entries = self.entries.read().map_err(|error| {
-            CoreError::Storage(format!("search-plane activation catalog poisoned: {error}"))
-        })?;
+        let entries = self.retention_entries_v1()?;
         Ok(entries
             .histories
             .get(repo_id)
@@ -934,10 +944,7 @@ impl ActiveSearchCorpusPinReadPort for ActivationCatalog {
         revision_id: &RevisionId,
     ) -> Result<Option<SearchCorpusGenerationV1>, CoreError> {
         guard.require_pair_v1(self.lifecycle_coordinator.as_ref(), repo_id, revision_id)?;
-        self.ensure_durability_certain_v1()?;
-        let entries = self.entries.read().map_err(|error| {
-            CoreError::Storage(format!("search-plane activation catalog poisoned: {error}"))
-        })?;
+        let entries = self.retention_entries_v1()?;
         Ok(active_search_corpus_generation_v1(
             &entries.roots,
             repo_id,

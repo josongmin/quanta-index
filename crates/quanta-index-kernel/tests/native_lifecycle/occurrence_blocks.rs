@@ -53,9 +53,104 @@ fn contribution_children(
         MapValue::Inline(inline) => Ok(inline.children()?.to_vec()),
         MapValue::Object(reference) => {
             let stored = objects.get(reference, &mut budget())?;
-            Ok(stored.registration.children)
+            Ok(stored.registration.children.clone())
         }
     }
+}
+
+// A cold exact packed inventory owns the occurrence directly. The first
+// changed selector forces the warm fallback to a separate inventory block.
+fn inventory_block_refs(
+    objects: &FileObjectStore,
+    binding: &MemberBinding,
+    terms: &[String],
+    last_term_changed: bool,
+    record: ObjectRef,
+) -> TestResult<(ObjectRef, Vec<ObjectRef>)> {
+    let artifact = objects.get(binding.artifact, &mut budget())?;
+    let root: serde_json::Value = serde_json::from_slice(&artifact.payload)?;
+    let owners: MapRoot =
+        serde_json::from_value(root.get("owners").ok_or("Text root has no owners")?.clone())?;
+    let key: Vec<_> = owner(1)
+        .producer
+        .0
+        .iter()
+        .chain(&owner(1).stable_id.0)
+        .copied()
+        .collect();
+    let contribution = objects
+        .lookup(owners, &key, &mut budget())?
+        .ok_or("Text owner contribution absent")?;
+    let MapValue::Inline(inline) = contribution else {
+        return Err("Block contribution still requires a wrapper object".into());
+    };
+    let indexed_tokens = u64::try_from(terms.len())? + u64::from(last_term_changed);
+    let mut expected = [0_u8; 9];
+    expected[0] = if last_term_changed { 0x80 } else { 0x82 };
+    expected[1..].copy_from_slice(&indexed_tokens.to_be_bytes());
+    assert_eq!(inline.data()?, expected.as_slice());
+    let [source, block_ref] = inline.children()? else {
+        return Err("Block contribution has wrong physical children".into());
+    };
+    assert_eq!(*source, record);
+    let block_ref = *block_ref;
+    let block = objects.get(block_ref, &mut budget())?;
+    let row_count = u16::try_from(terms.len().checked_mul(2).ok_or("row count overflow")?)?;
+    if !last_term_changed {
+        let vector_count = u16::try_from(terms.len())?;
+        let mut golden = b"QITXOC01".to_vec();
+        golden.extend_from_slice(&row_count.to_be_bytes());
+        golden.extend_from_slice(&vector_count.to_be_bytes());
+        golden.extend_from_slice(&[0; 4]);
+        for case in [0_u8, 1_u8] {
+            for (index, term) in terms.iter().enumerate() {
+                let key_length = u16::try_from(term.len().checked_add(1).ok_or("key overflow")?)?;
+                golden.extend_from_slice(&key_length.to_be_bytes());
+                golden.push(case);
+                golden.extend_from_slice(term.as_bytes());
+                golden.extend_from_slice(&u16::try_from(index)?.to_be_bytes());
+            }
+        }
+        for index in 0..terms.len() {
+            golden.extend_from_slice(&1_u16.to_be_bytes());
+            golden.extend_from_slice(&u32::try_from(index)?.to_be_bytes());
+        }
+        assert!(block.registration.children.is_empty());
+        assert_eq!(block.payload, golden);
+        return Ok((block_ref, vec![block_ref; usize::from(row_count)]));
+    }
+    let mut golden = b"QITXEM02".to_vec();
+    golden.extend_from_slice(&row_count.to_be_bytes());
+    let unique_count = 2_u16;
+    golden.extend_from_slice(&unique_count.to_be_bytes());
+    assert_eq!(block.registration.children.len(), usize::from(unique_count));
+    for (index, child) in block.registration.children.iter().enumerate() {
+        assert!(
+            block.registration.children[..index]
+                .iter()
+                .all(|prior| prior != child)
+        );
+    }
+    let mut selected = Vec::with_capacity(usize::from(row_count));
+    for case in [0_u8, 1_u8] {
+        for (index, term) in terms.iter().enumerate() {
+            let key_length = u16::try_from(term.len().checked_add(1).ok_or("key overflow")?)?;
+            golden.extend_from_slice(&key_length.to_be_bytes());
+            golden.push(case);
+            golden.extend_from_slice(term.as_bytes());
+            let slot = u16::from(index + 1 == terms.len());
+            golden.extend_from_slice(&slot.to_be_bytes());
+            selected.push(
+                *block
+                    .registration
+                    .children
+                    .get(usize::from(slot))
+                    .ok_or("inventory child slot out of bounds")?,
+            );
+        }
+    }
+    assert_eq!(block.payload, golden);
+    Ok((block_ref, selected))
 }
 
 fn occurrence_children(
@@ -242,10 +337,8 @@ fn first_patch_one_block_over_256_selectors_preserves_delta_and_reopen() -> Test
     ))?)?;
     let old_pin = engine.pin_view(ViewSelection::Exact(old), &budget())?;
     let old_member = member(&engine, &objects, old)?;
-    let old_children = contribution_children(&objects, &old_member)?;
-    let old_refs = old_children
-        .get(1..)
-        .ok_or("source child absent from owner contribution")?;
+    let (_old_inventory, old_refs) =
+        inventory_block_refs(&objects, &old_member, &terms, false, initial_record)?;
     assert_eq!(old_refs.len(), 260);
     let block_ref = *old_refs.first().ok_or("first occurrence child absent")?;
     assert!(old_refs.iter().all(|reference| *reference == block_ref));
@@ -303,10 +396,8 @@ fn first_patch_one_block_over_256_selectors_preserves_delta_and_reopen() -> Test
     ))?)?;
     let current_pin = engine.pin_view(ViewSelection::Exact(current), &budget())?;
     let current_member = member(&engine, &objects, current)?;
-    let current_children = contribution_children(&objects, &current_member)?;
-    let current_refs = current_children
-        .get(1..)
-        .ok_or("source child absent from updated contribution")?;
+    let (_current_inventory, current_refs) =
+        inventory_block_refs(&objects, &current_member, &terms, true, changed_record)?;
     assert_eq!(current_refs.len(), 260);
     assert_eq!(current_refs.first(), Some(&block_ref));
     assert_ne!(current_refs.last(), Some(&block_ref));

@@ -3,6 +3,142 @@ use super::*;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
+fn shared_map_node_is_counted_only_for_its_first_reachable_root() -> TestResult {
+    use quanta_index_core::{
+        DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticContextV1, DiagnosticEmitV1,
+        DiagnosticEventKindV1, DiagnosticEventSinkV1, DiagnosticRootKindV1, RequestBudgetV1,
+    };
+    use std::sync::Arc;
+
+    #[derive(Debug, Default)]
+    struct StepClock(AtomicU64);
+    impl DiagnosticClockV1 for StepClock {
+        fn now_ns(&self) -> u64 {
+            self.0.fetch_add(1, Ordering::Relaxed)
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct Events(Mutex<Vec<DiagnosticEmitV1>>);
+    impl DiagnosticEventSinkV1 for Events {
+        fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+            let Ok(mut events) = self.0.try_lock() else {
+                return false;
+            };
+            events.push(event);
+            true
+        }
+    }
+
+    let directory = TestDir::new();
+    let store = FileObjectStore::open(&directory.0)?;
+    let sink = RecordingSink::default();
+    let mut setup = budget()?;
+    let value = value(&store, b"shared map value", &mut setup)?;
+    let before = physical_file_count(&directory)?;
+    let events = Arc::new(Events::default());
+    let context = DiagnosticContextV1::new(
+        DiagnosticCaptureIdV1([71; 16]),
+        Arc::new(StepClock::default()),
+        Arc::clone(&events) as Arc<dyn DiagnosticEventSinkV1>,
+    );
+    let operation = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(1))?;
+    let mut work = WorkBudget::with_request(
+        WorkLimits {
+            reads: 100_000,
+            writes: 100_000,
+            bytes: 256 * 1024 * 1024,
+            mutations: 100_000,
+        },
+        RequestBudgetV1::for_duration(Duration::from_secs(30))
+            .with_diagnostic_context(context.child_context(&operation)),
+    );
+    // Longer than the scalar-pair key bound, so both equal roots use the
+    // scratch-backed two-root installation path measured by lanes 6 and 7.
+    let key = vec![b'k'; quanta_index_core::index::ports::MAX_OBJECT_MAP_BATCH_KEY_BYTES + 1];
+    let edit = MapEdit::objects(key.clone(), None, Some(value));
+    let mut cursor = TestEditCursor(
+        [
+            OrdinalMapEdit::unscoped(0, edit.clone()),
+            OrdinalMapEdit::unscoped(1, edit),
+        ]
+        .into_iter()
+        .collect::<Vec<_>>()
+        .into_iter(),
+    );
+    let roots = store.apply_stream(
+        &[MapRoot(None), MapRoot(None)],
+        &mut cursor,
+        &sink,
+        &mut work,
+    )?;
+    let [first, second] = roots.as_slice() else {
+        return Err(assertion_error("expected two map roots".into()));
+    };
+    check_eq!(first, second);
+    check_eq!(store.lookup_object(*first, &key, &mut work)?, Some(value));
+    check_eq!(store.lookup_object(*second, &key, &mut work)?, Some(value));
+    let node = first.0.ok_or("shared map node missing")?;
+    check_eq!(
+        store.get(node, &mut work)?.registration.children,
+        vec![value]
+    );
+    check_eq!(physical_file_count(&directory)?, before + 1);
+    check_eq!(
+        sink.0
+            .lock()
+            .map_err(|_| std::io::Error::other("sink poisoned"))?
+            .get(&node)
+            .copied(),
+        Some(true)
+    );
+    let rows = events
+        .0
+        .lock()
+        .map_err(|_| std::io::Error::other("event sink poisoned"))?;
+    for (lane, expected) in [(6, 1), (7, 0)] {
+        let spans = rows
+            .iter()
+            .filter_map(|event| match event.kind {
+                DiagnosticEventKindV1::SpanBegin {
+                    span_id,
+                    stage: DiagnosticStageV1::MapApply,
+                    lane: DiagnosticLaneV1(observed),
+                    ..
+                } if observed == lane => Some(span_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        check_eq!(spans.len(), 1);
+        let span = spans[0];
+        check_eq!(
+            rows.iter()
+                .filter(
+                    |event| matches!(event.kind, DiagnosticEventKindV1::Counter {
+                    span_id,
+                    key: DiagnosticCounterV1::NewObjects,
+                    value,
+                } if span_id == span && value == expected)
+                )
+                .count(),
+            1
+        );
+        check_eq!(
+            rows.iter()
+                .filter(
+                    |event| matches!(event.kind, DiagnosticEventKindV1::SpanEnd {
+                    span_id,
+                    outcome: DiagnosticTerminalV1::Ok,
+                } if span_id == span)
+                )
+                .count(),
+            1
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn completed_group_matches_independent_set_with_bounded_work_and_refunds() -> TestResult {
     const MASK: usize = (MAX_INSTALL_BATCH_INPUTS * 2).next_power_of_two() - 1;
     let directory = TestDir::new();

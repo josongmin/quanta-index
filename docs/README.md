@@ -9,6 +9,7 @@ acceptance. Historical tests, counts and status do not qualify current source.
 | Question | Owner |
 | --- | --- |
 | Remaining code, owners and execution order | [Oct-22 epics](plans/oct-22-finalizing/README.md) |
+| Open November audit follow-ups | [Audit tickets](plans/nov-7-repo-audit-closeout/tickets/README.md) |
 | Native indexing performance RCA and new code packets | [Nov-5 bugbash SSOT](plans/nov-5-indexing-bugbash/README.md) |
 | Shared files and handoff | [Single-writer rules](plans/oct-22-finalizing/OWNERSHIP.md) |
 | Original full-product DoD | [R01-R40 and final exit conditions](plans/oct-22-finalizing/DOD.md) |
@@ -24,6 +25,8 @@ VALIDATION keeps source-scoped results. Historical plans and handoff summaries
 do not create another live queue. The Oct-10/13/17 forwarding pages are retired;
 current links go directly to the relevant epic or contract, and historical links
 go to the preserved source and result records.
+The [November closeout](ARCHIVE-INDEX.md#2026-11-07-november-closeout) maps the
+month's implemented decisions, retired packets and remaining acceptance.
 Accepted contracts, current usage, generated capabilities and the reusable
 [purpose audit inventory](reference/purpose-audit-inventory.md)
 are references, not another uncompleted feature queue. Proposed ADRs remain

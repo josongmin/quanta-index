@@ -9,8 +9,8 @@ use std::{
     io::Read as _,
     ops::Bound::{Excluded, Unbounded},
     sync::{
-        Arc, Mutex, MutexGuard, TryLockError,
-        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -20,7 +20,7 @@ use quanta_index_contract::{
     index::ViewSelection,
     native_protocol::{NativeReadSessionId, NativeReadSessionState, NativeReadSessionStatus},
 };
-use quanta_index_core::index::{IndexError, MemoryLease, WorkBudget};
+use quanta_index_core::index::{IndexError, MemoryLease, WorkBudget, WorkBudgetDenial};
 use quanta_index_kernel::ReadTicket;
 
 const SLOT_ALLOWANCE_BYTES: u64 = 4096;
@@ -87,7 +87,32 @@ struct Entry {
     // Bit 0 is permanent Closing intent; the remaining bits count public
     // Release attempts. One atomic snapshot owns both sweep decisions.
     lifecycle: AtomicUsize,
-    inner: Mutex<EntryState>,
+    // A queued Renew fences new query readers before waiting for a write lock.
+    renew_waiters: AtomicUsize,
+    // Validation uncertainty must become visible before a shared query guard
+    // is released; an expired caller cannot wait for a write lock to mark it.
+    uncertain: AtomicBool,
+    inner: RwLock<EntryState>,
+}
+
+struct RenewWaiter<'a>(&'a AtomicUsize);
+
+impl<'a> RenewWaiter<'a> {
+    fn begin(entry: &'a Entry) -> Result<Self, IndexError> {
+        let _prior = entry
+            .renew_waiters
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_add(1)
+            })
+            .map_err(|_overflow| IndexError::ResourceLimited)?;
+        Ok(Self(&entry.renew_waiters))
+    }
+}
+
+impl Drop for RenewWaiter<'_> {
+    fn drop(&mut self) {
+        let _prior = self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 struct PublicReleaseAttempt<'a>(&'a AtomicUsize);
@@ -117,19 +142,41 @@ impl Entry {
         self.lifecycle.load(Ordering::Acquire) & CLOSING_BIT != 0
     }
 
+    fn has_waiting_writer(&self) -> bool {
+        self.renew_waiters.load(Ordering::Acquire) != 0
+            || self.lifecycle.load(Ordering::Acquire) & !CLOSING_BIT != 0
+    }
+
     fn status(&self, state: &EntryState) -> Result<NativeReadSessionStatus, IndexError> {
         let mut status = state.status()?;
         if status.state == NativeReadSessionState::Active && self.is_closing() {
             status.state = NativeReadSessionState::Closing;
+        } else if status.state == NativeReadSessionState::Active
+            && self.uncertain.load(Ordering::Acquire)
+        {
+            status.state = NativeReadSessionState::Unknown;
         }
         Ok(status)
     }
 
     fn require_active_query(&self, state: &EntryState) -> Result<(), IndexError> {
-        if self.is_closing() || state.status()?.state != NativeReadSessionState::Active {
+        if self.status(state)?.state != NativeReadSessionState::Active {
             return Err(IndexError::SnapshotUnavailable);
         }
         Ok(())
+    }
+
+    fn record_query_validation_failure(&self, budget: &WorkBudget, error: &IndexError) {
+        if !matches!(
+            (budget.first_denial(), error),
+            (Some(WorkBudgetDenial::Cancelled), IndexError::Cancelled)
+                | (
+                    Some(WorkBudgetDenial::Deadline),
+                    IndexError::ResourceLimited
+                )
+        ) {
+            self.uncertain.store(true, Ordering::Release);
+        }
     }
 }
 
@@ -145,6 +192,18 @@ struct EntryState {
 }
 
 impl EntryState {
+    fn record_ticket_failure(
+        &mut self,
+        budget: &WorkBudget,
+        error: &IndexError,
+    ) -> Result<(), IndexError> {
+        match (budget.first_denial(), error) {
+            (Some(WorkBudgetDenial::Cancelled), IndexError::Cancelled)
+            | (Some(WorkBudgetDenial::Deadline), IndexError::ResourceLimited) => Ok(()),
+            _ => self.set_state(NativeReadSessionState::Unknown),
+        }
+    }
+
     fn status(&self) -> Result<NativeReadSessionStatus, IndexError> {
         if self.failed_open {
             return Err(IndexError::SnapshotUnavailable);
@@ -159,6 +218,14 @@ impl EntryState {
             IndexError::BackendViolation("native read session has no ticket status".into())
         })?;
         status.state = state;
+        Ok(())
+    }
+
+    fn record_maintenance_release(&mut self, remaining: bool) -> Result<(), IndexError> {
+        self.set_state(NativeReadSessionState::Released)?;
+        self.has_remaining_target_pins = Some(remaining);
+        self.public_release_ack = false;
+        self.terminal_since = Some(Instant::now());
         Ok(())
     }
 }
@@ -229,7 +296,7 @@ impl NativeReadSessions {
         P: FnOnce(ViewSelection) -> Result<ReadTicket, IndexError>,
     {
         if let Some(existing) = self.find_open(uid, open_key, selection, budget)? {
-            let guard = lock_entry(&existing.inner, budget)?;
+            let guard = lock_entry_read(&existing, budget)?;
             return existing.status(&guard);
         }
 
@@ -242,11 +309,13 @@ impl NativeReadSessions {
                 open_key,
                 selection,
                 lifecycle: AtomicUsize::new(0),
-                inner: Mutex::new(EntryState::default()),
+                renew_waiters: AtomicUsize::new(0),
+                uncertain: AtomicBool::new(false),
+                inner: RwLock::new(EntryState::default()),
             });
             // Lock before publication: a concurrent replay cannot see an
             // unowned Opening slot or create a second Catalog ticket.
-            let mut owned = lock_entry(&candidate.inner, budget)?;
+            let mut owned = lock_entry_write(&candidate.inner, budget)?;
             let mut table = lock_table(&self.table, budget)?;
             if let Some(existing_id) = table.by_open.get(&(uid, open_key)) {
                 let existing = table.by_id.get(existing_id).cloned().ok_or_else(|| {
@@ -257,7 +326,7 @@ impl NativeReadSessions {
                 if existing.selection != selection {
                     return Err(IndexError::Conflict);
                 }
-                let guard = lock_entry(&existing.inner, budget)?;
+                let guard = lock_entry_read(&existing, budget)?;
                 return existing.status(&guard);
             }
             if table.by_id.contains_key(&id) {
@@ -313,7 +382,8 @@ impl NativeReadSessions {
         budget: &WorkBudget,
     ) -> Result<NativeReadSessionStatus, IndexError> {
         let entry = self.lookup(uid, id, budget)?;
-        let mut guard = lock_entry(&entry.inner, budget)?;
+        let _waiter = RenewWaiter::begin(&entry)?;
+        let mut guard = lock_entry_write(&entry.inner, budget)?;
         let current = entry.status(&guard)?;
         if current.state != NativeReadSessionState::Active {
             return Err(IndexError::SnapshotUnavailable);
@@ -333,8 +403,11 @@ impl NativeReadSessions {
         let ticket = guard.ticket.as_mut().ok_or_else(|| {
             IndexError::BackendViolation("active read session lost its ticket".into())
         })?;
-        if let Err(error) = ticket.renew() {
-            guard.set_state(NativeReadSessionState::Unknown)?;
+        if let Err(error) = ticket.renew_for_request(budget) {
+            // The request's own checkpoint rejects before Catalog commit. The
+            // old lease stays authoritative and the same revision may retry.
+            // Other failures can leave commit outcome uncertain.
+            guard.record_ticket_failure(budget, &error)?;
             return Err(error);
         }
         let reply = NativeReadSessionStatus {
@@ -358,45 +431,56 @@ impl NativeReadSessions {
         budget: &WorkBudget,
     ) -> Result<NativeReadSessionStatus, IndexError> {
         let entry = self.lookup(uid, id, budget)?;
-        let guard = lock_entry(&entry.inner, budget)?;
+        let guard = lock_entry_read(&entry, budget)?;
         entry.status(&guard)
     }
 
-    /// The entry lock excludes release and renewal for the entire query.
-    /// Both Catalog validations are required before returning a result.
-    pub(super) fn with_ticket<R, Q>(
+    /// Preparation takes no entry lock. Shared query custody excludes renewal
+    /// and release while allowing concurrent reads of one original ticket.
+    /// Hard validation failure is projected as Unknown before releasing it.
+    pub(super) fn with_ticket<T, R, P, Q>(
         &self,
         uid: u32,
         id: NativeReadSessionId,
         budget: &WorkBudget,
+        prepare: P,
         query: Q,
     ) -> Result<R, IndexError>
     where
-        Q: FnOnce(&mut ReadTicket) -> Result<R, IndexError>,
+        P: FnOnce() -> Result<T, IndexError>,
+        Q: FnOnce(&ReadTicket, T) -> Result<R, IndexError>,
     {
         let entry = self.lookup(uid, id, budget)?;
-        if entry.is_closing() {
+        if entry.is_closing() || entry.uncertain.load(Ordering::Acquire) {
             return Err(IndexError::SnapshotUnavailable);
         }
-        let mut guard = lock_entry(&entry.inner, budget)?;
-        // A Release may have announced Closing after the pre-lock check.
+        let prepared = prepare()?;
+        let guard = lock_query_entry(&entry, budget)?;
+        // Release, Renew, or a hard validation failure may have arrived while
+        // preparation waited for Control admission.
         entry.require_active_query(&guard)?;
         budget.checkpoint()?;
-        let ticket = guard.ticket.as_mut().ok_or_else(|| {
+        let ticket = guard.ticket.as_ref().ok_or_else(|| {
             IndexError::BackendViolation("active read session lost its ticket".into())
         })?;
-        if let Err(error) = ticket.validate() {
-            guard.set_state(NativeReadSessionState::Unknown)?;
+        if let Err(error) = ticket.validate_for_request(budget) {
+            entry.record_query_validation_failure(budget, &error);
             return Err(error);
         }
-        let result = query(ticket);
-        let post = ticket.validate();
-        if post.is_err() {
-            guard.set_state(NativeReadSessionState::Unknown)?;
+        if entry.uncertain.load(Ordering::Acquire) {
+            return Err(IndexError::SnapshotUnavailable);
+        }
+        let result = query(ticket, prepared);
+        let post = ticket.validate_for_request(budget);
+        if let Err(error) = &post {
+            entry.record_query_validation_failure(budget, error);
         }
         let outcome = match (result, post) {
             (Err(primary), _) => Err(primary),
             (Ok(_), Err(error)) => Err(error),
+            (Ok(value), Ok(())) if entry.uncertain.load(Ordering::Acquire) => {
+                Err(IndexError::SnapshotUnavailable)
+            }
             (Ok(value), Ok(())) => Ok(value),
         };
         drop(guard);
@@ -424,7 +508,7 @@ impl NativeReadSessions {
         let _attempt = PublicReleaseAttempt::begin(&entry)?;
         // The attempt atomically announced Closing before waiting for an
         // in-flight query. Cancellation drops its waiter but retains intent.
-        let mut guard = lock_entry(&entry.inner, budget)?;
+        let mut guard = lock_entry_write(&entry.inner, budget)?;
         let status = guard.status()?;
         if status.state == NativeReadSessionState::Released {
             if !guard.public_release_ack {
@@ -473,7 +557,7 @@ impl NativeReadSessions {
         O: FnOnce(&ReadTicket) -> Result<R, IndexError>,
     {
         let entry = self.lookup(uid, id, budget)?;
-        let guard = lock_entry(&entry.inner, budget)?;
+        let guard = lock_entry_read(&entry, budget)?;
         if guard.status()?.state != NativeReadSessionState::Released || !guard.public_release_ack {
             return Err(IndexError::SnapshotUnavailable);
         }
@@ -510,7 +594,7 @@ impl NativeReadSessions {
         let mut report = NativeReadSessionSweep::default();
         for entry in entries {
             keep_first(&report, budget.checkpoint())?;
-            let mut guard = match entry.inner.try_lock() {
+            let mut guard = match entry.inner.try_write() {
                 Ok(guard) => guard,
                 Err(TryLockError::WouldBlock) => {
                     report.busy = report.busy.saturating_add(1);
@@ -529,7 +613,7 @@ impl NativeReadSessions {
                 }
                 continue;
             }
-            let status = keep_first(&report, guard.status())?;
+            let status = keep_first(&report, entry.status(&guard))?;
             if status.state == NativeReadSessionState::Released {
                 let expired = guard
                     .terminal_since
@@ -573,10 +657,7 @@ impl NativeReadSessions {
             )?;
             match release(ticket) {
                 Ok(remaining) => {
-                    keep_first(&report, guard.set_state(NativeReadSessionState::Released))?;
-                    guard.has_remaining_target_pins = Some(remaining);
-                    guard.public_release_ack = false;
-                    guard.terminal_since = Some(Instant::now());
+                    keep_first(&report, guard.record_maintenance_release(remaining))?;
                     report.released = report.released.saturating_add(1);
                 }
                 Err(error) => {
@@ -605,7 +686,7 @@ impl NativeReadSessions {
         let mut report = NativeReadSessionSweep::default();
         for entry in entries {
             keep_first(&report, budget.checkpoint())?;
-            let mut guard = keep_first(&report, lock_entry(&entry.inner, budget))?;
+            let mut guard = keep_first(&report, lock_entry_write(&entry.inner, budget))?;
             report.examined = report.examined.saturating_add(1);
             if guard.failed_open {
                 continue;
@@ -622,10 +703,7 @@ impl NativeReadSessions {
             )?;
             match release(ticket) {
                 Ok(remaining) => {
-                    keep_first(&report, guard.set_state(NativeReadSessionState::Released))?;
-                    guard.has_remaining_target_pins = Some(remaining);
-                    guard.public_release_ack = false;
-                    guard.terminal_since = Some(Instant::now());
+                    keep_first(&report, guard.record_maintenance_release(remaining))?;
                     report.released = report.released.saturating_add(1);
                 }
                 Err(error) => {
@@ -755,13 +833,6 @@ fn lock_table<'a>(
     mutex: &'a Mutex<Table>,
     budget: &WorkBudget,
 ) -> Result<MutexGuard<'a, Table>, IndexError> {
-    lock_entry(mutex, budget)
-}
-
-fn lock_entry<'a, T>(
-    mutex: &'a Mutex<T>,
-    budget: &WorkBudget,
-) -> Result<MutexGuard<'a, T>, IndexError> {
     loop {
         budget.checkpoint()?;
         match mutex.try_lock() {
@@ -771,6 +842,67 @@ fn lock_entry<'a, T>(
             }
             Err(TryLockError::Poisoned(_)) => return Err(poisoned()),
         }
+    }
+}
+
+fn lock_entry_read<'a>(
+    entry: &'a Entry,
+    budget: &WorkBudget,
+) -> Result<RwLockReadGuard<'a, EntryState>, IndexError> {
+    loop {
+        budget.checkpoint()?;
+        if !entry.has_waiting_writer() {
+            match entry.inner.try_read() {
+                Ok(guard) if !entry.has_waiting_writer() => return Ok(guard),
+                Ok(guard) => drop(guard),
+                Err(TryLockError::WouldBlock) => {}
+                Err(TryLockError::Poisoned(_)) => return Err(poisoned()),
+            }
+        }
+        thread::sleep(LOCK_POLL.min(budget.request().remaining()));
+    }
+}
+
+fn lock_entry_write<'a>(
+    entry: &'a RwLock<EntryState>,
+    budget: &WorkBudget,
+) -> Result<RwLockWriteGuard<'a, EntryState>, IndexError> {
+    loop {
+        budget.checkpoint()?;
+        match entry.try_write() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::WouldBlock) => {
+                thread::sleep(LOCK_POLL.min(budget.request().remaining()));
+            }
+            Err(TryLockError::Poisoned(_)) => return Err(poisoned()),
+        }
+    }
+}
+
+fn lock_query_entry<'a>(
+    entry: &'a Entry,
+    budget: &WorkBudget,
+) -> Result<RwLockReadGuard<'a, EntryState>, IndexError> {
+    loop {
+        budget.checkpoint()?;
+        if entry.is_closing() || entry.uncertain.load(Ordering::Acquire) {
+            return Err(IndexError::SnapshotUnavailable);
+        }
+        if entry.renew_waiters.load(Ordering::Acquire) != 0 {
+            thread::sleep(LOCK_POLL.min(budget.request().remaining()));
+            continue;
+        }
+        match entry.inner.try_read() {
+            Ok(guard) => {
+                if entry.renew_waiters.load(Ordering::Acquire) == 0 {
+                    return Ok(guard);
+                }
+                drop(guard);
+            }
+            Err(TryLockError::WouldBlock) => {}
+            Err(TryLockError::Poisoned(_)) => return Err(poisoned()),
+        }
+        thread::sleep(LOCK_POLL.min(budget.request().remaining()));
     }
 }
 

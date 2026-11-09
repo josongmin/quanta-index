@@ -133,7 +133,7 @@ fn crash_left_wal_writer_child() -> TestResult {
         return Ok(());
     };
     require(
-        quanta_index_contract::index::NATIVE_INDEX_STATE_VERSION == 18,
+        quanta_index_contract::index::NATIVE_INDEX_STATE_VERSION == 19,
         "refresh the independent crash-WAL stamp for the current persisted format",
     )?;
     let root = PathBuf::from(root);
@@ -141,10 +141,10 @@ fn crash_left_wal_writer_child() -> TestResult {
     drop(catalog); // Materialize a distinct committed base before the later WAL write.
     let connection = Connection::open(catalog_dir(&root).join(CATALOG_FILE_NAME))?;
     connection.execute_batch("PRAGMA wal_autocheckpoint=0;")?;
-    // Independent Native18 golden: SHA256(capture-format.v1\0 || compact JSON
-    // [1,18,2,bytes(source-capture-v2\0),1,[7;32]]). Only the WAL changes; never
+    // Independent Native19 golden: SHA256(capture-format.v1\0 || compact JSON
+    // [1,19,2,bytes(source-capture-v2\0),1,[7;32]]). Only the WAL changes; never
     // compute this expected checksum with the verifier under test.
-    let gold = "d240ff8800f7b6af1148741ddeceb2e10f3c887f151519508895b92e2da6d1da";
+    let gold = "ca6327790ecbf89562a06208a1f4334fa01b7bba50a201cb757057fd38393b03";
     let digest = gold
         .as_bytes()
         .chunks_exact(2)

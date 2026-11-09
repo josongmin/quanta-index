@@ -1,12 +1,14 @@
-//! Bounded, positional inventory map. The immutable object owns its digest and
-//! ordered child references; this codec only interprets its authenticated data.
+//! Bounded inventory map with canonical first-use child slots. The immutable
+//! object owns its digest and child edges; this codec interprets authenticated data.
 
 use quanta_index_core::index::{
     IndexError, MapPage, MemoryLease, MemoryLifetime, ObjectRef, StagedObjectBatch, StagedPayload,
     StoredObject, WorkBudget, WorkUsage, ports::ImmutableObjectPort,
 };
 
-const MAGIC: &[u8; 8] = b"QITXEM01";
+use crate::native::text_occurrence::block::CheckedBlock;
+
+const MAGIC: &[u8; 8] = b"QITXEM02";
 const HEADER_BYTES: usize = 12;
 const MAX_ROWS: usize = 512;
 const MAX_PAYLOAD_BYTES: usize = 16_384;
@@ -45,6 +47,32 @@ fn next_key<'a>(payload: &'a [u8], offset: &mut usize) -> Result<&'a [u8], Index
     Ok(key)
 }
 
+fn next_row<'a>(payload: &'a [u8], offset: &mut usize) -> Result<(&'a [u8], usize), IndexError> {
+    let key = next_key(payload, offset)?;
+    let end = offset
+        .checked_add(2)
+        .ok_or_else(|| corrupt("block child slot offset overflow"))?;
+    let encoded = payload
+        .get(*offset..end)
+        .ok_or_else(|| corrupt("truncated block child slot"))?;
+    *offset = end;
+    let slot = usize::from(u16::from_be_bytes(
+        encoded
+            .try_into()
+            .map_err(|_error| corrupt("block child slot width differs"))?,
+    ));
+    Ok((key, slot))
+}
+
+fn child_at(object: &StoredObject, slot: usize) -> Result<ObjectRef, IndexError> {
+    object
+        .registration
+        .children
+        .get(slot)
+        .copied()
+        .ok_or_else(|| corrupt("block child slot exceeds dictionary"))
+}
+
 /// Checks the complete body before a requested hit or page may escape.
 fn validate(
     object: &StoredObject,
@@ -56,9 +84,8 @@ fn validate(
     if payload.len() < HEADER_BYTES || payload.len() > MAX_PAYLOAD_BYTES {
         return Err(corrupt("block payload size differs"));
     }
-    if payload.get(..8) != Some(MAGIC.as_slice()) || payload.get(10..12) != Some([0, 0].as_slice())
-    {
-        return Err(corrupt("block magic or reserved bytes differ"));
+    if payload.get(..8) != Some(MAGIC.as_slice()) {
+        return Err(corrupt("block magic differs"));
     }
     let encoded = payload
         .get(8..10)
@@ -71,13 +98,34 @@ fn validate(
     if count == 0 || count > MAX_ROWS {
         return Err(corrupt("block row count exceeds bound"));
     }
-    if object.registration.reference != reference || object.registration.children.len() != count {
+    let encoded = payload
+        .get(10..12)
+        .ok_or_else(|| corrupt("truncated block child count"))?;
+    let child_count = usize::from(u16::from_be_bytes(
+        encoded
+            .try_into()
+            .map_err(|_error| corrupt("block child count width differs"))?,
+    ));
+    if child_count == 0 || child_count > count {
+        return Err(corrupt("block child count exceeds row count"));
+    }
+    if object.registration.reference != reference
+        || object.registration.children.len() != child_count
+    {
         return Err(corrupt("block registration or child count differs"));
+    }
+    for (index, child) in object.registration.children.iter().enumerate() {
+        budget.checkpoint()?;
+        for prior in object.registration.children.iter().take(index) {
+            if prior == child {
+                return Err(corrupt("block dictionary repeats child"));
+            }
+        }
     }
     let wire_bytes = 16_usize
         .checked_add(payload.len())
         .and_then(|bytes| {
-            count
+            child_count
                 .checked_mul(32)
                 .and_then(|children| bytes.checked_add(children))
         })
@@ -94,14 +142,26 @@ fn validate(
     let mut offset = HEADER_BYTES;
     let mut previous: Option<&[u8]> = None;
     let mut small_eligible = count <= INLINE_ROWS;
+    let mut first_unused_slot = 0_usize;
     for _ in 0..count {
         budget.checkpoint()?;
-        let key = next_key(payload, &mut offset)?;
+        let (key, slot) = next_row(payload, &mut offset)?;
         if previous.is_some_and(|prior| prior >= key) {
             return Err(corrupt("block keys are not strictly ordered"));
         }
+        if slot >= child_count || slot > first_unused_slot {
+            return Err(corrupt("block child slot is out of range or noncanonical"));
+        }
+        if slot == first_unused_slot {
+            first_unused_slot = first_unused_slot
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?;
+        }
         small_eligible &= key.len() <= INLINE_KEY_BYTES;
         previous = Some(key);
+    }
+    if first_unused_slot != child_count {
+        return Err(corrupt("block dictionary has unused child"));
     }
     if offset != payload.len() {
         return Err(corrupt("block payload has trailing bytes"));
@@ -126,19 +186,11 @@ pub(super) fn lookup(
     let object = objects.get(reference, budget)?;
     let count = validate(&object, reference, budget)?;
     let mut offset = HEADER_BYTES;
-    for ordinal in 0..count {
+    for _ in 0..count {
         budget.checkpoint()?;
-        let stored = next_key(&object.payload, &mut offset)?;
+        let (stored, slot) = next_row(&object.payload, &mut offset)?;
         match stored.cmp(key) {
-            std::cmp::Ordering::Equal => {
-                return object
-                    .registration
-                    .children
-                    .get(ordinal)
-                    .copied()
-                    .map(Some)
-                    .ok_or_else(|| corrupt("block child slot differs"));
-            }
+            std::cmp::Ordering::Equal => return Ok(Some(child_at(&object, slot)?)),
             std::cmp::Ordering::Greater => return Ok(None),
             std::cmp::Ordering::Less => {}
         }
@@ -166,7 +218,7 @@ pub(super) fn scan(
     let mut eligible = 0_usize;
     for _ in 0..count {
         budget.checkpoint()?;
-        let key = next_key(&object.payload, &mut offset)?;
+        let (key, _) = next_row(&object.payload, &mut offset)?;
         if after.is_none_or(|after| key > after) {
             eligible = eligible.checked_add(1).ok_or(IndexError::ResourceLimited)?;
         }
@@ -186,9 +238,9 @@ pub(super) fn scan(
         .try_reserve_exact(capacity)
         .map_err(|_error| IndexError::ResourceLimited)?;
     offset = HEADER_BYTES;
-    for ordinal in 0..count {
+    for _ in 0..count {
         budget.checkpoint()?;
-        let key = next_key(&object.payload, &mut offset)?;
+        let (key, slot) = next_row(&object.payload, &mut offset)?;
         if after.is_some_and(|after| key <= after) {
             continue;
         }
@@ -210,12 +262,7 @@ pub(super) fn scan(
             .try_reserve_exact(key.len())
             .map_err(|_error| IndexError::ResourceLimited)?;
         owned.extend_from_slice(key);
-        let value = object
-            .registration
-            .children
-            .get(ordinal)
-            .copied()
-            .ok_or_else(|| corrupt("block child slot differs"))?;
+        let value = child_at(&object, slot)?;
         entries.push((owned, value.into()));
         leases.extend(memory);
     }
@@ -309,14 +356,8 @@ impl<'a> BlockCursor<'a> {
         let mut ordinal = self.ordinal;
         for _ in 0..capacity {
             budget.checkpoint()?;
-            let key = next_key(&self.object.payload, &mut offset)?;
-            let value = self
-                .object
-                .registration
-                .children
-                .get(ordinal)
-                .copied()
-                .ok_or_else(|| corrupt("block child slot differs"))?;
+            let (key, slot) = next_row(&self.object.payload, &mut offset)?;
+            let value = child_at(&self.object, slot)?;
             let bytes = u64::try_from(key.len()).map_err(|_error| IndexError::ResourceLimited)?;
             budget.charge(WorkUsage {
                 bytes,
@@ -350,6 +391,7 @@ impl<'a> BlockCursor<'a> {
 /// Bounded staging only. It does not identify or install immutable objects.
 pub(in crate::native::text) struct BlockDraft {
     payload: StagedPayload,
+    rows: usize,
     children: Vec<ObjectRef>,
     // Children die before their reservation, including on stage errors.
     _children_memory: Option<MemoryLease>,
@@ -358,6 +400,38 @@ pub(in crate::native::text) struct BlockDraft {
 }
 
 impl BlockDraft {
+    /// A cold inventory can use its one packed occurrence as the map only
+    /// when every canonical key in this draft is present in that object.
+    pub(in crate::native::text) fn single_child(&self) -> Option<ObjectRef> {
+        match self.children.as_slice() {
+            [reference] => Some(*reference),
+            _ => None,
+        }
+    }
+
+    pub(in crate::native::text) fn matches_occurrence_keys(
+        &self,
+        occurrence: &CheckedBlock,
+        budget: &WorkBudget,
+    ) -> Result<bool, IndexError> {
+        budget.checkpoint()?;
+        if self.rows != occurrence.term_count() || self.children.len() != 1 {
+            return Ok(false);
+        }
+        let mut offset = HEADER_BYTES;
+        for slot in 0..self.rows {
+            budget.checkpoint()?;
+            let (key, child_slot) = next_row(&self.payload.bytes, &mut offset)?;
+            if child_slot != 0 || occurrence.key(slot)? != key {
+                return Ok(false);
+            }
+        }
+        if offset != self.payload.bytes.len() {
+            return Err(corrupt("block draft has trailing bytes"));
+        }
+        Ok(true)
+    }
+
     pub(in crate::native::text) fn new(budget: &WorkBudget) -> Result<Self, IndexError> {
         budget.checkpoint()?;
         let payload_memory = budget.reserve_memory(
@@ -386,6 +460,7 @@ impl BlockDraft {
                 bytes,
                 memory: payload_memory,
             },
+            rows: 0,
             children,
             _children_memory: children_memory,
             last_key: None,
@@ -412,7 +487,7 @@ impl BlockDraft {
                 return Err(corrupt("block draft keys are not strictly ordered"));
             }
         }
-        if key.len() > MAX_KEY_BYTES || self.children.len() == MAX_ROWS {
+        if key.len() > MAX_KEY_BYTES || self.rows == MAX_ROWS {
             return Ok(false);
         }
         let next_size = self
@@ -421,10 +496,22 @@ impl BlockDraft {
             .len()
             .checked_add(2)
             .and_then(|bytes| bytes.checked_add(key.len()))
+            .and_then(|bytes| bytes.checked_add(2))
             .ok_or(IndexError::ResourceLimited)?;
         if next_size > MAX_PAYLOAD_BYTES {
             return Ok(false);
         }
+        let mut existing_slot = None;
+        for (slot, child) in self.children.iter().enumerate() {
+            if slot.is_multiple_of(32) {
+                budget.checkpoint()?;
+            }
+            if *child == value {
+                existing_slot = Some(slot);
+                break;
+            }
+        }
+        let slot = existing_slot.unwrap_or(self.children.len());
         budget.charge(WorkUsage {
             bytes: u64::try_from(key.len()).map_err(|_error| IndexError::ResourceLimited)?,
             ..WorkUsage::default()
@@ -433,9 +520,20 @@ impl BlockDraft {
         self.payload.bytes.extend_from_slice(&length.to_be_bytes());
         let start = self.payload.bytes.len();
         self.payload.bytes.extend_from_slice(key);
-        self.children.push(value);
+        self.payload.bytes.extend_from_slice(
+            &u16::try_from(slot)
+                .map_err(|_error| IndexError::ResourceLimited)?
+                .to_be_bytes(),
+        );
+        if existing_slot.is_none() {
+            self.children.push(value);
+        }
+        self.rows = self
+            .rows
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
         self.last_key = Some((start, key.len()));
-        self.small_eligible &= self.children.len() <= INLINE_ROWS && key.len() <= INLINE_KEY_BYTES;
+        self.small_eligible &= self.rows <= INLINE_ROWS && key.len() <= INLINE_KEY_BYTES;
         Ok(true)
     }
 
@@ -445,16 +543,22 @@ impl BlockDraft {
         budget: &WorkBudget,
     ) -> Result<usize, IndexError> {
         budget.checkpoint()?;
-        if self.children.is_empty() || self.small_eligible {
+        if self.rows == 0 || self.small_eligible {
             return Err(corrupt("noncanonical block draft"));
         }
-        let count =
-            u16::try_from(self.children.len()).map_err(|_error| IndexError::ResourceLimited)?;
+        let count = u16::try_from(self.rows).map_err(|_error| IndexError::ResourceLimited)?;
         self.payload
             .bytes
             .get_mut(8..10)
             .ok_or_else(|| corrupt("draft row count header missing"))?
             .copy_from_slice(&count.to_be_bytes());
+        let child_count =
+            u16::try_from(self.children.len()).map_err(|_error| IndexError::ResourceLimited)?;
+        self.payload
+            .bytes
+            .get_mut(10..12)
+            .ok_or_else(|| corrupt("draft child count header missing"))?
+            .copy_from_slice(&child_count.to_be_bytes());
         let ordinal = batch.inputs().len();
         batch.push(self.payload, &self.children, budget)?;
         Ok(ordinal)

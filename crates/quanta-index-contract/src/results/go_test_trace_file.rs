@@ -184,9 +184,8 @@ impl GoTestTraceFileQueryResponseV1 {
             let left = &pair[0];
             let right = &pair[1];
             let order = right
-                .production_source
-                .cmp(&left.production_source)
-                .then(right.source_frame.cmp(&left.source_frame))
+                .source_frame
+                .cmp(&left.source_frame)
                 .then(right.file_rrf_score.total_cmp(&left.file_rrf_score))
                 .then(right.lexical.is_some().cmp(&left.lexical.is_some()))
                 .then(left.file.cmp(&right.file));
@@ -203,7 +202,12 @@ impl GoTestTraceFileQueryResponseV1 {
     ) -> Result<(), String> {
         request.validate_v1()?;
         self.validate_v1()?;
-        let frames = GoTestTraceSourceFramesV1::from_failure_excerpt(&request.failure_excerpt);
+        let frames = match &request.failure_module_context {
+            Some(module) => {
+                GoTestTraceSourceFramesV1::from_module_cache_panic(&request.failure_excerpt, module)
+            }
+            None => GoTestTraceSourceFramesV1::from_failure_excerpt(&request.failure_excerpt),
+        };
         if self.frame_class != frames.frame_class() {
             return Err("Go trace frame class disagrees with failure_excerpt".to_string());
         }
@@ -416,6 +420,39 @@ mod tests {
     }
 
     #[test]
+    fn unanchored_file_rrf_can_rank_a_test_above_production_source() {
+        let mut response = response();
+        response.frame_class = GoTestTraceFrameClassV1::Unresolved;
+        response.lexical_window = QueryResultWindowV2::exact_probe(2);
+        response.dense_window = QueryResultWindowV2::exact_probe(2);
+        let production = &mut response.results[0];
+        production.source_frame = false;
+        production.lexical.as_mut().expect("lexical").file_rank = 2;
+        production.dense.as_mut().expect("dense").chunk_rank = 2;
+        production.file_rrf_score = 2.0 / 62.0;
+        let test = GoTestTraceFileHitV1 {
+            file: file("trace-file", "binding_test.go"),
+            lexical: Some(GoTestTraceFileLaneWitnessV1 {
+                file_rank: 1,
+                chunk_rank: 1,
+                candidate: candidate("binding_test.go", 1.0),
+            }),
+            dense: Some(GoTestTraceFileLaneWitnessV1 {
+                file_rank: 1,
+                chunk_rank: 1,
+                candidate: candidate("binding_test.go", 0.9),
+            }),
+            file_rrf_score: 2.0 / 61.0,
+            production_source: false,
+            source_frame: false,
+        };
+        response.results.insert(0, test);
+        assert!(response.validate_v1().is_ok());
+        response.results.swap(0, 1);
+        assert!(response.validate_v1().is_err());
+    }
+
+    #[test]
     fn response_keeps_same_path_from_distinct_source_repositories() {
         let mut valid = response();
         valid.frame_class = GoTestTraceFrameClassV1::Unresolved;
@@ -507,6 +544,7 @@ mod tests {
             },
             failure_excerpt: failure_excerpt.to_string(),
             failure_source_repo_id: Some(pin().repo_id),
+            failure_module_context: None,
             top_k: 20,
         };
         let matched = raw("right.go:12");
@@ -556,5 +594,73 @@ mod tests {
                 .validate_against_v1(&raw("right.go:12 other.go:3"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn response_binds_module_cache_frame_to_raw_panic_and_version() {
+        use crate::{
+            GoTestTraceModuleContextV1, HybridQueryRequest, QueryConstraintSetV1, TextQueryRequest,
+            TextQuerySyntax,
+        };
+        let mut response = response();
+        let path = "middleware/encryptcookie/encryptcookie.go";
+        response.results[0].file.repo_relative_path = RepoRelativePath::new(path);
+        response.results[0]
+            .lexical
+            .as_mut()
+            .expect("lexical")
+            .candidate
+            .repo_relative_path = RepoRelativePath::new(path);
+        response.results[0]
+            .dense
+            .as_mut()
+            .expect("dense")
+            .candidate
+            .repo_relative_path = RepoRelativePath::new(path);
+        let request = GoTestTraceFileQueryRequestV1 {
+            query: HybridQueryRequest {
+                text_query: TextQueryRequest {
+                    syntax: TextQuerySyntax::Native,
+                    query_text: "panic".into(),
+                    constraints: QueryConstraintSetV1::unconstrained(),
+                    generation: Some(pin()),
+                    generation_selector: None,
+                    top_k: 100,
+                    cursor: None,
+                },
+                semantic_query_text: "panic".into(),
+                generation: Some(pin()),
+                generation_selector: None,
+                top_k: 100,
+            },
+            failure_excerpt: concat!(
+                "panic: runtime error\n",
+                "\t/tmp/pkg/mod/github.com/gofiber/fiber/v3@v3.0.0-rc.3/middleware/recover/recover.go:12 +0x24\n",
+                "panic({0x1})\n",
+                "\t/tmp/pkg/mod/github.com/valyala/fasthttp@v1.68.0/header.go:1163\n",
+                "\t/tmp/pkg/mod/github.com/gofiber/fiber/v3@v3.0.0-rc.3/middleware/encryptcookie/encryptcookie.go:23 +0x83c\n",
+                "\t/tmp/pkg/mod/github.com/gofiber/fiber/v3@v3.0.0-rc.3/ctx.go:235 +0x74",
+            )
+            .into(),
+            failure_source_repo_id: Some(pin().repo_id),
+            failure_module_context: Some(GoTestTraceModuleContextV1 {
+                module_path: "github.com/gofiber/fiber/v3".into(),
+                module_version: "v3.0.0-rc.3".into(),
+            }),
+            top_k: 20,
+        };
+        assert!(response.validate_against_v1(&request).is_ok());
+        let mut wrong_version = request.clone();
+        wrong_version
+            .failure_module_context
+            .as_mut()
+            .expect("module")
+            .module_version = "v3.0.0-rc.2".into();
+        assert!(response.validate_against_v1(&wrong_version).is_err());
+        let mut missing_panic = request;
+        missing_panic.failure_excerpt = missing_panic
+            .failure_excerpt
+            .replace("panic({0x1})", "recovered");
+        assert!(response.validate_against_v1(&missing_panic).is_err());
     }
 }

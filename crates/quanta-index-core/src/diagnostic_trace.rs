@@ -112,6 +112,8 @@ pub enum DiagnosticStageV1 {
     /// Synchronous managed-object install packet, including all physical phases.
     ManagedObjectInstall,
     ManagedObjectConfirm,
+    /// Atomic confirmation of one managed object and reservation of the next.
+    ManagedObjectAdvance,
     /// Synchronous work-spool sealing before native publication begins.
     NativeWorkSeal,
     NativePublish,
@@ -157,6 +159,8 @@ pub enum DiagnosticStageV1 {
     NativeTextOccurrenceRead,
     /// Native text posting edit admission or bounded scratch flush.
     NativeTextPostingEdit,
+    /// One scratch-backed ordered map application batch.
+    MapApply,
 }
 
 /// Root authority is explicit and independent of the product request ID.
@@ -469,6 +473,12 @@ pub enum DiagnosticCounterV1 {
     /// Entries passed to one reached managed reserve/confirm call, including
     /// retries and refusals. Not newly created files or confirmed registrations.
     ManagedObjectInputs,
+    /// Reached roots with a matching base and input edit fingerprint.
+    MapRootReuseCandidates,
+    /// Reached roots that shared a built root after scratch validation.
+    MapRootReuses,
+    /// Reached root build attempts, including a failed attempt.
+    MapRootBuilds,
     /// Reached full occurrence-count validation calls on each inventory side.
     /// Includes failed calls; not physical I/O or unique-reference counts.
     TextOccurrencePriorValidationAttempts,
@@ -674,10 +684,15 @@ pub enum DiagnosticObjectInstallPhaseV1 {
     Barrier,
     Settlement,
     Existing,
+    NamespaceValidation,
+    WriterCreate,
+    WriterTicketPrepare,
+    WriterOpen,
+    WriterCreatedWitness,
 }
 
 impl DiagnosticObjectInstallPhaseV1 {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 14] = [
         Self::ChildValidation,
         Self::NamespaceAndCreate,
         Self::Write,
@@ -687,6 +702,11 @@ impl DiagnosticObjectInstallPhaseV1 {
         Self::Barrier,
         Self::Settlement,
         Self::Existing,
+        Self::NamespaceValidation,
+        Self::WriterCreate,
+        Self::WriterTicketPrepare,
+        Self::WriterOpen,
+        Self::WriterCreatedWitness,
     ];
 
     #[must_use]
@@ -701,6 +721,11 @@ impl DiagnosticObjectInstallPhaseV1 {
             Self::Barrier => "barrier",
             Self::Settlement => "settlement",
             Self::Existing => "existing",
+            Self::NamespaceValidation => "namespace_validation",
+            Self::WriterCreate => "writer_create",
+            Self::WriterTicketPrepare => "writer_ticket_prepare",
+            Self::WriterOpen => "writer_open",
+            Self::WriterCreatedWitness => "writer_created_witness",
         }
     }
 }
@@ -1392,6 +1417,10 @@ fn observes_thread_cpu(stage: DiagnosticStageV1, lane: DiagnosticLaneV1) -> bool
     if stage == DiagnosticStageV1::SqliteWork {
         return matches!(lane.0, 3..=8 | 11..=12 | 15..=16 | 21 | 25..=26);
     }
+    if stage == DiagnosticStageV1::MapApply {
+        // Lanes 6 and 7 report root attribution after the shared traversal.
+        return lane.0 <= 5;
+    }
     matches!(
         stage,
         DiagnosticStageV1::NativeSourceApply
@@ -1416,6 +1445,7 @@ fn observes_thread_cpu(stage: DiagnosticStageV1, lane: DiagnosticLaneV1) -> bool
             | DiagnosticStageV1::ManagedObjectReserve
             | DiagnosticStageV1::ManagedObjectInstall
             | DiagnosticStageV1::ManagedObjectConfirm
+            | DiagnosticStageV1::ManagedObjectAdvance
             | DiagnosticStageV1::Compaction
     )
 }
@@ -1863,10 +1893,12 @@ mod tests {
             DiagnosticStageV1::NativeTextInventoryRead,
             DiagnosticStageV1::NativeTextOccurrenceRead,
             DiagnosticStageV1::NativeTextPostingEdit,
+            DiagnosticStageV1::MapApply,
             DiagnosticStageV1::NativeWorkSeal,
             DiagnosticStageV1::ManagedObjectReserve,
             DiagnosticStageV1::ManagedObjectInstall,
             DiagnosticStageV1::ManagedObjectConfirm,
+            DiagnosticStageV1::ManagedObjectAdvance,
             DiagnosticStageV1::SqliteWork,
             DiagnosticStageV1::Compaction,
         ] {

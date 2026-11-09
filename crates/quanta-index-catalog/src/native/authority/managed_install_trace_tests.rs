@@ -425,6 +425,85 @@ mod managed_install_trace_tests {
     }
 
     #[test]
+    fn attempt_advance_commits_confirmed_child_and_next_reservation_together() -> TestResult {
+        let (directory, catalog, _ingress) = managed_adoption_fixture()?;
+        let attempt = managed_attempt(&catalog)?;
+        let leaf = object(231, vec![]);
+        let parent = object(232, vec![leaf.reference]);
+        let objects = [leaf.clone(), parent.clone()];
+        let missing = object(234, vec![]).reference;
+        let invalid = object(233, vec![missing]);
+        let scope = ObjectInstallScope::Attempt(attempt);
+        catalog.reserve_managed(scope, std::slice::from_ref(&leaf), &mut admission_budget())?;
+        check_eq!(counts(&catalog, &objects)?, [0, 1, 0]);
+
+        check!(matches!(
+            catalog.advance_attempt_managed(
+                attempt,
+                std::slice::from_ref(&leaf),
+                std::slice::from_ref(&invalid),
+                &mut admission_budget(),
+            ),
+            Err(IndexError::CorruptObject(_))
+        ));
+        // The failed successor preflight rolls back the preceding confirmation.
+        check_eq!(counts(&catalog, &objects)?, [0, 1, 0]);
+        {
+            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            object_install::require_reserved(&guard, &leaf)?;
+            let invalid_rows: i64 = guard.query_row(
+                "SELECT COUNT(*) FROM native_object_install_v1 WHERE object=?1",
+                params![object_key(invalid.reference)],
+                |row| row.get(0),
+            )?;
+            check_eq!(invalid_rows, 0);
+        }
+
+        let Observation {
+            mut budget,
+            events,
+            root,
+            ..
+        } = request(true, true)?;
+        let result = catalog.advance_attempt_managed(
+            attempt,
+            std::slice::from_ref(&leaf),
+            std::slice::from_ref(&parent),
+            &mut budget,
+        );
+        if let Some(root) = root {
+            let _finished = root.finish(DiagnosticTerminalV1::from_result(&result));
+        }
+        result?;
+        let rows = events.rows.lock().map_err(|error| error.to_string())?;
+        let commits = rows
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.kind,
+                    DiagnosticEventKindV1::SpanBegin {
+                        stage: DiagnosticStageV1::SqliteWork,
+                        lane: DiagnosticLaneV1(3),
+                        ..
+                    }
+                )
+            })
+            .count();
+        check_eq!(commits, 1);
+        drop(rows);
+        check_eq!(counts(&catalog, &objects)?, [1, 1, 1]);
+        catalog.confirm_managed(
+            scope,
+            std::slice::from_ref(&parent),
+            &mut admission_budget(),
+        )?;
+        drop(catalog);
+        let reopened = open(directory.path())?;
+        check_eq!(counts(&reopened, &objects)?, [2, 0, 2]);
+        Ok(())
+    }
+
+    #[test]
     fn managed_confirm_replay_still_refuses_corrupt_or_retiring_lifecycle() -> TestResult {
         let (_directory, catalog, _ingress) = managed_adoption_fixture()?;
         let attempt = managed_attempt(&catalog)?;

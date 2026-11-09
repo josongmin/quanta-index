@@ -175,7 +175,7 @@ mod tests {
             digest: Digest([id; 32]),
         };
         let state = MixedStart {
-            view,
+            view: super::super::fixture_catalog_view(view),
             first_ref: None,
             first_token: None,
             next_operation_sequence: 20,
@@ -202,8 +202,8 @@ mod tests {
         let (next, next_session) = snapshot(6, 2);
         bank.install(next, next_session);
         bank.reap(|_status| anyhow::bail!("released while two query borrowers remain"))?;
-        ensure!(first.state.view.sequence == 5 && first.session == initial_session);
-        ensure!(bank.capture()?.state.view.sequence == 6);
+        ensure!(first.state.view.identity.sequence == 5 && first.session == initial_session);
+        ensure!(bank.capture()?.state.view.identity.sequence == 6);
         drop(first);
         bank.reap(|_status| anyhow::bail!("released before the last query borrower finished"))?;
         ensure!(second.session == initial_session);

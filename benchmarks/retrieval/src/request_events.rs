@@ -1,11 +1,16 @@
 //! Bounded, non-scoring query-plane event capture for serial IPC diagnosis.
 
 use std::collections::BTreeSet;
+use std::num::NonZeroU64;
+use std::path::Path;
+use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
     ProcessRequestEventPlaneV1, ProcessRequestEventStageV1, ProcessRequestEventsV1,
 };
-use quanta_index_sdk::{ClientLexicalQueryObservationV1, ClientQueryRpcKindV1};
+use quanta_index_sdk::{
+    ClientLexicalQueryObservationV1, ClientQueryRpcKindV1, ConnectOptions, QuantaIndex,
+};
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 
 use quanta_index_retrieval_bench::{BenchError, BenchResult};
@@ -20,6 +25,152 @@ const SUCCESS_STAGES: [ProcessRequestEventStageV1; 8] = [
     ProcessRequestEventStageV1::DispatchReturned,
     ProcessRequestEventStageV1::ResponseWritten,
 ];
+
+const INGEST_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const INGEST_OBSERVATION_GRACE: Duration = Duration::from_secs(120);
+
+pub(crate) struct PublishTimeoutCapture {
+    client: QuantaIndex,
+    before: ProcessRequestEventsV1,
+}
+
+impl PublishTimeoutCapture {
+    pub(crate) fn begin(state_root: &Path) -> BenchResult<Self> {
+        let client = QuantaIndex::connect(
+            ConnectOptions::from_state_root(state_root)
+                .with_request_io_timeout(Duration::from_secs(1)),
+        )
+        .map_err(|error| BenchError::Sdk(format!("ingest diagnostic connect failed: {error}")))?;
+        let before = ingest_events(&client)?;
+        Ok(Self { client, before })
+    }
+
+    /// Keep the owned daemon alive while an observed in-flight dispatch ends.
+    /// Dispatch events do not establish that publication committed.
+    pub(crate) fn write_after_timeout(&self, path: &Path) -> BenchResult<()> {
+        let start = Instant::now();
+        let mut after = ingest_events(&self.client)?;
+        let active = active_ingest_since(&self.before, &after)?;
+        if active.len() > 1 {
+            return Err(BenchError::Protocol(
+                "serial publish diagnostic observed multiple in-flight ingest requests".into(),
+            ));
+        }
+        let request = active.first().copied();
+        let mut status = "no_pending_dispatch";
+        let mut poll_error = None;
+        if let Some(request) = request {
+            status = "observation_grace_expired";
+            while start.elapsed() < INGEST_OBSERVATION_GRACE {
+                std::thread::sleep(
+                    INGEST_POLL_INTERVAL
+                        .min(INGEST_OBSERVATION_GRACE.saturating_sub(start.elapsed())),
+                );
+                let sample = ingest_events(&self.client).and_then(|window| {
+                    let active = active_ingest_since(&self.before, &window)?;
+                    if window.next_sequence < after.next_sequence
+                        || active.iter().any(|candidate| *candidate != request)
+                    {
+                        return Err(BenchError::Protocol(
+                            "ingest diagnostic sequence or active dispatch changed".into(),
+                        ));
+                    }
+                    Ok((window, active))
+                });
+                match sample {
+                    Ok((window, active)) => {
+                        after = window;
+                        if !active.contains(&request) {
+                            status = "observed_dispatch_ended";
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        status = "poll_failed";
+                        poll_error = Some(error.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+        super::write_json(
+            path,
+            &serde_json::json!({
+                "scope": "ingest_read_timeout_diagnostic",
+                "status": status,
+                "pending_request_at_first_observation": request,
+                "grace_seconds": INGEST_OBSERVATION_GRACE.as_secs(),
+                "poll_error": poll_error,
+                "before": self.before,
+                "after": after,
+            }),
+        )
+    }
+}
+
+fn ingest_events(client: &QuantaIndex) -> BenchResult<ProcessRequestEventsV1> {
+    client
+        .observability()
+        .request_events(ProcessRequestEventPlaneV1::Ingest, 1024)
+        .map_err(|error| BenchError::Sdk(format!("ingest diagnostic event read failed: {error}")))
+}
+
+fn active_ingest_since(
+    before: &ProcessRequestEventsV1,
+    after: &ProcessRequestEventsV1,
+) -> BenchResult<BTreeSet<(NonZeroU64, u64)>> {
+    for window in [before, after] {
+        window.validate_v1().map_err(|error| {
+            BenchError::Protocol(format!("invalid ingest diagnostic event window: {error}"))
+        })?;
+        if window.plane != ProcessRequestEventPlaneV1::Ingest
+            || window.dropped_before != 0
+            || window.dropped_after != 0
+            || window.omitted_before_window
+            || window.sequence_exhausted
+        {
+            return Err(BenchError::Protocol(
+                "ingest diagnostic requires a complete zero-loss event window".into(),
+            ));
+        }
+    }
+    if before.process_instance != after.process_instance
+        || before.next_sequence > after.next_sequence
+    {
+        return Err(BenchError::Protocol(
+            "ingest diagnostic process identity or sequence changed".into(),
+        ));
+    }
+    let mut active = BTreeSet::new();
+    let mut events = after
+        .events
+        .iter()
+        .filter(|event| event.sequence >= before.next_sequence)
+        .peekable();
+    if after.next_sequence > before.next_sequence
+        && events.peek().map(|event| event.sequence) != Some(before.next_sequence)
+    {
+        return Err(BenchError::Protocol(
+            "ingest diagnostic event window omits the observed boundary".into(),
+        ));
+    }
+    for event in events {
+        let key = (event.request_id, event.connection_id);
+        match event.stage {
+            ProcessRequestEventStageV1::BackendStarted => {
+                let _inserted = active.insert(key);
+            }
+            ProcessRequestEventStageV1::DispatchReturned
+            | ProcessRequestEventStageV1::PeerCancelled
+            | ProcessRequestEventStageV1::Aborted
+            | ProcessRequestEventStageV1::Panicked => {
+                let _removed = active.remove(&key);
+            }
+            _ => {}
+        }
+    }
+    Ok(active)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RequestPair {
@@ -299,6 +450,37 @@ mod tests {
             omitted_before_window: false,
             sequence_exhausted: false,
         }
+    }
+
+    #[test]
+    fn ingest_timeout_tail_binds_one_new_dispatch_and_rejects_loss() {
+        let ingest_window = |count| {
+            let mut window = window(count);
+            window.plane = ProcessRequestEventPlaneV1::Ingest;
+            for event in &mut window.events {
+                if event.route.is_some() {
+                    event.route = Some("ingest.publish".into());
+                }
+            }
+            window
+        };
+        let before = ingest_window(1);
+        let finished = ingest_window(2);
+        let mut pending = finished.clone();
+        pending.events.truncate(12);
+        pending.next_sequence = 13;
+        assert_eq!(
+            active_ingest_since(&before, &pending).expect("one pending dispatch"),
+            BTreeSet::from([(NonZeroU64::new(2).expect("request ID"), 2)])
+        );
+        assert!(
+            active_ingest_since(&before, &finished)
+                .expect("observed terminal")
+                .is_empty()
+        );
+        drop(pending.events.drain(..9));
+        pending.oldest_retained_sequence = Some(10);
+        assert!(active_ingest_since(&before, &pending).is_err());
     }
 
     #[test]

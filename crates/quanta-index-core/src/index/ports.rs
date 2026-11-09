@@ -67,6 +67,14 @@ pub trait ObjectWriteIoPort: std::fmt::Debug + Send + Sync {
     ) -> Result<Box<dyn ObjectWriteTicket>, IndexError>;
 }
 
+/// The directory identities obtained from the exact descriptors whose sync
+/// succeeded. The storage adapter must obtain these before closing those FDs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ObjectWriteSyncDirectories {
+    pub objects: crate::publication_capacity::InodeKey,
+    pub shard: crate::publication_capacity::InodeKey,
+}
+
 /// Retains the original output and its independent FD pin through publication.
 ///
 /// No method grants overwrite, Catalog confirmation or logical reclaim.
@@ -74,7 +82,24 @@ pub trait ObjectWriteIoPort: std::fmt::Debug + Send + Sync {
 /// until proven cleanup or the physical owner's explicit recovery/quarantine.
 pub trait ObjectWriteTicket: Send {
     fn creation_started(&mut self) -> Result<(), IndexError>;
+    /// Open the declared temporary through the ticket's held namespace.
+    /// `None` selects the store's existing create path. A successful open
+    /// transfers the sole original writer without a fallible post-open step.
+    fn open_declared_temp(&mut self) -> Result<Option<std::fs::File>, IndexError> {
+        Ok(None)
+    }
     fn created(&mut self, writer: &std::fs::File) -> Result<(), IndexError>;
+    /// Publish through the held namespace using atomic no-replace rename.
+    /// `Some(true)` consumed the temporary name. `Some(false)` left it in
+    /// place after a destination collision. An error must leave it unrenamed.
+    /// Tickets that own temporary creation also own this rename.
+    fn publish_declared_temp(
+        &mut self,
+        _writer: &std::fs::File,
+        _final_path: &std::path::Path,
+    ) -> Result<Option<bool>, IndexError> {
+        Ok(None)
+    }
     fn uncreated(&mut self) -> Result<(), IndexError>;
     /// Consume and physically close the sole original writer. The independent
     /// pin remains owned until the shared batch sync and settlement complete.
@@ -85,7 +110,7 @@ pub trait ObjectWriteTicket: Send {
     /// Called only after the store's file/shard/shared barrier protocol and
     /// original writer close. Authenticate and settle without issuing another
     /// file/parent fsync, then physically retire the independent pin.
-    fn synced(self: Box<Self>) -> Result<(), IndexError>;
+    fn synced(self: Box<Self>, directories: ObjectWriteSyncDirectories) -> Result<(), IndexError>;
 }
 
 /// Shared object-count envelope for one child-first durable installation.
@@ -149,6 +174,13 @@ pub trait ImmutableObjectPort: Send + Sync {
 /// logical edit stream; a producer error must never become a successful prefix.
 pub trait MapEditCursor {
     fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError>;
+
+    /// Opt in one root to the compact terminal-subtree representation.
+    /// The consumer validates the ordinal against its bases before reading any
+    /// edits. Unaware producers retain the original map wire format.
+    fn pack_terminal_subtrees_for_root(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// One bounded, exclusive-keyset page of differences between immutable roots.
@@ -442,6 +474,25 @@ pub trait ManagedObjectInstallPort: Send + Sync {
         objects: &[RegisteredObject],
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError>;
+
+    /// Opt in only when advancing both groups is one durable transaction.
+    fn supports_atomic_attempt_advance(&self) -> bool {
+        false
+    }
+
+    /// Atomically confirm a synced group and reserve its child-first successor.
+    /// The successor must not be written until this call returns successfully.
+    fn advance_attempt_managed(
+        &self,
+        _attempt: AttemptRef,
+        _confirmed: &[RegisteredObject],
+        _next: &[RegisteredObject],
+        _budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        Err(IndexError::BackendViolation(
+            "managed authority does not support atomic attempt advance".into(),
+        ))
+    }
 }
 
 /// One durable authority for bounded candidate, Reclaiming and Draining
@@ -850,10 +901,28 @@ pub trait CatalogReadPort: Send + Sync {
         ticket: super::ReadTicketLease,
         lease: Duration,
     ) -> Result<super::ReadTicketLease, IndexError>;
+    /// Refuse before commit on the original request's deadline or cancellation.
+    /// Once committed, return the new lease even if the request expires during
+    /// commit, so the caller can retain custody and replay its ACK.
+    fn renew_ticket_for_request(
+        &self,
+        session: &dyn super::ReadSessionLease,
+        ticket: super::ReadTicketLease,
+        lease: Duration,
+        budget: &WorkBudget,
+    ) -> Result<super::ReadTicketLease, IndexError>;
     fn validate_ticket(
         &self,
         session: &dyn super::ReadSessionLease,
         ticket: super::ReadTicketLease,
+    ) -> Result<(), IndexError>;
+    /// Validate the same ticket under the caller's original deadline and
+    /// cancellation, including any wait to enter Catalog.
+    fn validate_ticket_for_request(
+        &self,
+        session: &dyn super::ReadSessionLease,
+        ticket: super::ReadTicketLease,
+        budget: &WorkBudget,
     ) -> Result<(), IndexError>;
     fn release_ticket(
         &self,

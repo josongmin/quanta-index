@@ -10,6 +10,90 @@ Dated sections describe their then-current paths. The Oct-22 epics own full-prod
 
 ## Historical record recovery
 
+### 2026-11-08 November audit ticket closeout
+
+Implemented contracts are consolidated in
+[NOV-07-001](adr/NOV-07-001-native-index-execution-and-custody.md).
+P01–P03 and P05–P07 were retired from the audit queue on the evidence below.
+The [audit ticket index](plans/nov-7-repo-audit-closeout/tickets/README.md)
+records the current P04 daemon counts, P08 Sidecar custody and P09 IPC acceptance.
+
+| Closed scope | Source-scoped execution |
+| --- | --- |
+| P01 Native ANN | Working tree based on `7a16f48a2`. `./scripts/cargow nextest run --locked -p quanta-index-semantic --lib --no-tests fail -E 'test(ann_store) \| test(ann_lance)'` ran 16/16 with 228 filtered out. Nextest run `86fdd938-9fcd-47aa-b177-88ff49480752`. |
+| P02 Go trace-file reply | G69 reproduced the duplicate chunk ID across distinct files. G70 passed dispatcher 39/39 and ordinary Hybrid runtime-risk 2/2 on its fixed input. The [execution record](plans/oct-22-finalizing/VALIDATION.md#source-file-identity-repair--2026-11-06) owns the exact source and ranking scope. |
+| P03 read sessions | Working tree based on `7a16f48a2`. Kernel 23/23, Registry 9/9 and UDS 2/2 passed, with 713 filtered out. The SQLite witness counted six lease checks in the prior borrowed path and five in the shared first-stage path. Expiry before reservation caused zero reader reservation and query calls while the original pin survived. |
+| P05 Native boot, P06 Source member authentication, P07 Map batch | The combined P04–P07 focused run passed 86/86 across six crates. The real Native boot selection, verification and serve case passed 1/1. The two SDK publication and restart cases also passed on the matched daemon, including eight named crash cuts. Those SDK cases cover P04 behavior. |
+
+Exact copies of the six retired untracked tickets and the pre-compaction P04
+ticket are in the local Codex artifacts directory
+`quanta-index-nov-08-doc-preimages/audit-tickets/`. The original selectors and
+implementation plans are recoverable there.
+
+### 2026-11-07 November closeout
+
+Scope: November 1–7 KST, through `7a16f48a20e2af2a37ed16847509bf6208dc8a6b`.
+
+| Changes | Current authority |
+| --- | --- |
+| `484e796d3` retired 39 superseded Oct-10/13/17 forwarding pages | [Original recovery mapping](#2026-11-05-forwarding-page-retirement). |
+| `d7df99efe`, `de16b193b` corrected completed IPC write settlement, hangup cancellation ordering, typed causes and platform inventory counters | [IPC and custody ADR](adr/NOV-07-001-native-index-execution-and-custody.md). |
+| `48666a746` integrated Native indexing, catalog installation, Go trace file ranking, SQLite diagnostics and the pinned rusqlite interface | [Native ADR](adr/NOV-07-001-native-index-execution-and-custody.md) for implemented contracts. [Fixed acceptance scope](plans/oct-22-finalizing/DOD.md) and [current E02](plans/oct-22-finalizing/README.md#e02) for execution. |
+| `c5370025b`, `7a16f48a2` updated lexical profiling and Native indexing RCA/workplan | [Native bugbash](plans/nov-5-indexing-bugbash/README.md) owns current source, bounded proofs and measurements. The last recorded Large Off attempt `lo12` failed the original 120-second bound. The subsequent diagnostic build and Large Record were not run in that checkpoint. |
+
+The Oct-28 E02 write map, lane assignments and nine dated ticket bodies were
+retired. The [remaining E02 routes](plans/oct-28-e02-native-closeout/README.md)
+retain open GC/lifecycle, reuse, DELTA, Provider and owning/installed acceptance.
+P01 Acked closed on [its selected cohort](plans/oct-22-finalizing/VALIDATION.md#e02-deduplicated-current-work-20261030-root).
+The old caller-zero successor diagnosis and the borrowed Provider path as the
+only configured route were superseded by the actual DELTA and owned Host paths.
+The exact original fourteen files, including the older Provider and verification
+instructions, are recoverable from the pre-edit revision:
+
+```sh
+git ls-tree -r --name-only 7a16f48a2 docs/plans/oct-28-e02-native-closeout
+git show 7a16f48a2:<repository-relative-path>
+```
+
+For Native lexical work, the 4,096-byte/128-row occurrence policy and the
+4 KiB single Posting Block candidate are retired. The candidate that retired
+all block work on any cold-byte increase was also withdrawn. The
+[current workplan](plans/nov-5-indexing-bugbash/WORKPLAN.md) retains the original
+metric-region and mixed-query bounds. Focused lexical regressions, cached pair
+builds and fixed 512 MiB Medium diagnostics have separate scopes from Large,
+XL, mixed-load and release acceptance.
+
+#### Nov-7 audit P10
+
+`VERIFIED` on the working tree based on `7a16f48a2`. P10 fixed five links
+(benchmark E07 interpretation, three references to the shared Native bugbash
+source-availability anchor, and vendored rusqlite SQLCipher license) and four
+EOF whitespace findings (three history pages and the process monitor test).
+`just lint-doc-paths`, `git diff --check` and
+`git diff --check c32cd1915 -- . ':!vendor'` passed. The closed ticket and
+dispatch copy were retired from the audit queue. Their exact untracked bodies
+were saved in the local Codex artifacts directory
+`quanta-index-nov-07-doc-preimages/P10/`. This was a documentation check.
+
+#### Plan and ticket deduplication
+
+At this checkpoint, the nine Nov-7 audit tickets retained their original
+paths and acceptance. The ten forwarding documents under
+`docs/plans/nov-7-repo-audit-closeout/tickets/packets/` were retired. Their
+distinct commands and shared handoff requirements were moved to the tickets
+and their index. The exact untracked copies are in the local Codex artifacts
+directory `quanta-index-nov-07-doc-preimages/audit-packets/`.
+
+The [current wave plan](plans/oct-22-finalizing/WAVES.md) retains W0–W6, the
+fixed [product DoD](plans/oct-22-finalizing/DOD.md), current E02 join order and
+the incoming anchors. The dated execution tables, old Provider readiness
+assumption and source-specific proof counts are recoverable with
+`git show 7a16f48a2:docs/plans/oct-22-finalizing/WAVES.md`.
+The [E04 plan](plans/oct-22-finalizing/E04-semantic-ann.md#acceptance-and-rca-routing)
+links directly to the original ANN 4K fixed-cohort result and keeps operational
+acceptance in E07. The older October failure summaries are recoverable with
+`git show 7a16f48a2:docs/plans/oct-22-finalizing/E04-semantic-ann.md`.
+
 ### 2026-11-05 Native indexing RCA consolidation
 
 Current RCA, unresolved decisions and implementation/test packets live in

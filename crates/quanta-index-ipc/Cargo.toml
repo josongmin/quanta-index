@@ -12,6 +12,11 @@ workspace = true
 [lib]
 path = "src/lib.rs"
 
+[features]
+default = []
+# Process-scoped test observation of actual Native client send attempts.
+native-send-observer-v1 = []
+
 [dependencies]
 ciborium = { workspace = true }
 ciborium-ll = { workspace = true }

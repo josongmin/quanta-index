@@ -404,3 +404,132 @@ fn large_child_window_refuses_unfunded_original_scope_and_refunds() -> TestResul
     check!(!counts.invalid_release.load(Ordering::Acquire));
     Ok(())
 }
+
+#[test]
+fn aggregate_small_parent_edges_keep_one_transaction_child_proof() -> TestResult {
+    let (_root, catalog, ingress) = managed_adoption_fixture()?;
+    let children = (100_u8..228)
+        .map(|id| object(id, vec![]))
+        .collect::<Vec<_>>();
+    catalog.reserve_managed(
+        ObjectInstallScope::Ingress(ingress),
+        &children,
+        &mut admission_budget(),
+    )?;
+    catalog.confirm_managed(
+        ObjectInstallScope::Ingress(ingress),
+        &children,
+        &mut admission_budget(),
+    )?;
+    let child_refs = children
+        .iter()
+        .map(|child| child.reference)
+        .collect::<Vec<_>>();
+    let parent_rows = |ids: std::ops::Range<u8>| {
+        ids.zip(child_refs.chunks_exact(32))
+            .map(|(id, refs)| object(id, refs.to_vec()))
+            .collect::<Vec<_>>()
+    };
+    let mut batch = parent_rows(50..54);
+    batch.extend(parent_rows(54..58));
+    check_eq!(batch.len(), 8);
+    check!(batch.iter().all(|parent| parent.children.len() == 32));
+    let attempt = admit_managed_attempt(&catalog, operation(12107, 177))?;
+    let scope = ObjectInstallScope::Attempt(attempt);
+    let counts = Arc::new(MemoryCounts::default());
+    let before = managed_install_counts(&catalog)?;
+
+    let mut denied = admission_budget();
+    denied.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+        WindowMemory {
+            counts: Arc::clone(&counts),
+            limit: 4096,
+        },
+    ))));
+    check!(matches!(
+        catalog.reserve_managed(scope, &batch, &mut denied),
+        Err(IndexError::ResourceLimited)
+    ));
+    check_eq!(counts.live.load(Ordering::Acquire), 0);
+    check_eq!(managed_install_counts(&catalog)?, before);
+
+    let mut funded = admission_budget();
+    funded.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+        WindowMemory {
+            counts: Arc::clone(&counts),
+            limit: 131_072,
+        },
+    ))));
+    begin_registration_reads(&catalog)?;
+    catalog.reserve_managed(scope, &batch, &mut funded)?;
+    check_eq!(end_registration_reads(&catalog)?, (129, 0, 129, 136));
+    check_eq!(counts.live.load(Ordering::Acquire), 0);
+
+    let reserved = managed_install_counts(&catalog)?;
+    let mut denied_confirm = admission_budget();
+    denied_confirm.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+        WindowMemory {
+            counts: Arc::clone(&counts),
+            limit: 4096,
+        },
+    ))));
+    check!(matches!(
+        catalog.confirm_managed(scope, &batch, &mut denied_confirm),
+        Err(IndexError::ResourceLimited)
+    ));
+    check_eq!(counts.live.load(Ordering::Acquire), 0);
+    check_eq!(managed_install_counts(&catalog)?, reserved);
+
+    let connection = Connection::open(catalog.path())?;
+    let late = children.get(127).ok_or("late child absent")?.reference;
+    let old_digest: Vec<u8> = connection.query_row(
+        "SELECT row_digest FROM native_object_v1 WHERE object=?1",
+        [object_key(late)],
+        |row| row.get(0),
+    )?;
+    check_eq!(
+        connection.execute(
+            "UPDATE native_object_v1 SET row_digest=zeroblob(32) WHERE object=?1",
+            [object_key(late)],
+        )?,
+        1
+    );
+    check!(matches!(
+        catalog.confirm_managed(scope, &batch, &mut admission_budget()),
+        Err(IndexError::Storage(message)) if message == "native catalog row digest mismatch"
+    ));
+    check_eq!(managed_install_counts(&catalog)?, reserved);
+    for parent in &batch {
+        let registered: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM native_object_v1 WHERE object=?1",
+            [object_key(parent.reference)],
+            |row| row.get(0),
+        )?;
+        check_eq!(registered, 0);
+    }
+    check_eq!(
+        connection.execute(
+            "UPDATE native_object_v1 SET row_digest=?2 WHERE object=?1",
+            params![object_key(late), old_digest],
+        )?,
+        1
+    );
+
+    begin_registration_reads(&catalog)?;
+    catalog.confirm_managed(scope, &batch, &mut funded)?;
+    check_eq!(end_registration_reads(&catalog)?, (137, 0, 129, 136));
+    check_eq!(counts.live.load(Ordering::Acquire), 0);
+    check!(!counts.invalid_release.load(Ordering::Acquire));
+    let confirmed = managed_install_counts(&catalog)?;
+    check_eq!(
+        confirmed[0],
+        reserved[0].checked_add(8).ok_or("object count overflow")?
+    );
+    check_eq!(
+        confirmed[2],
+        reserved[2]
+            .checked_sub(8)
+            .ok_or("provisional count underflow")?
+    );
+    Ok(())
+}

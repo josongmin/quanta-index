@@ -327,10 +327,17 @@ fn validate_contract(contract: &Value) -> BenchResult<u32> {
 /// Load a `freeze`-produced query pack, verifying blindness (no gold-bearing
 /// keys anywhere), query hashes and tokenizer binding.
 pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
+    load_query_pack_with_file_digest(path).map(|(pack, _file_sha256)| pack)
+}
+
+/// Return the validated pack and the digest of the same input file bytes.
+/// The pack's own digest remains the canonical JSON identity used by records.
+pub fn load_query_pack_with_file_digest(path: &Path) -> BenchResult<(QueryPack, String)> {
     let raw = std::fs::read_to_string(path).map_err(|err| BenchError::Io {
         path: path.display().to_string(),
         message: err.to_string(),
     })?;
+    let file_sha256 = sha256_hex(raw.as_bytes());
     let UniqueJson(value) = serde_json::from_str(&raw).map_err(|err| BenchError::Json {
         path: path.display().to_string(),
         message: err.to_string(),
@@ -519,20 +526,23 @@ pub fn load_query_pack(path: &Path) -> BenchResult<QueryPack> {
         });
     }
     let pack_sha256 = sha256_hex(canonical_json(&value)?.as_bytes());
-    Ok(QueryPack {
-        suite_id: get_str("suite_id")?,
-        suite_commitment_sha256: get_str("suite_commitment_sha256")?,
-        repository_commit: get_str("repository_commit")?,
-        tokenizer,
-        tokenizer_budget_version: Some(budget_version),
-        routes: route_names,
-        file_universe: universe,
-        file_universe_digest,
-        tasks: parsed,
-        pack_sha256,
-        comparison_contract: contract.clone(),
-        contract_top_k,
-    })
+    Ok((
+        QueryPack {
+            suite_id: get_str("suite_id")?,
+            suite_commitment_sha256: get_str("suite_commitment_sha256")?,
+            repository_commit: get_str("repository_commit")?,
+            tokenizer,
+            tokenizer_budget_version: Some(budget_version),
+            routes: route_names,
+            file_universe: universe,
+            file_universe_digest,
+            tasks: parsed,
+            pack_sha256,
+            comparison_contract: contract.clone(),
+            contract_top_k,
+        },
+        file_sha256,
+    ))
 }
 
 /// Runner identity block for the record.
@@ -2098,6 +2108,23 @@ mod tests {
         std::fs::write(&path, serde_json::to_string(pack).expect("pack renders"))
             .expect("pack writes");
         load_query_pack(&path)
+    }
+
+    #[test]
+    fn pretty_printed_pack_keeps_distinct_file_and_canonical_digests() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("pack.json");
+        let raw = serde_json::to_string_pretty(&v3_pack_fixture()).expect("pretty pack");
+        std::fs::write(&path, &raw).expect("pack writes");
+
+        let (pack, file_sha256) =
+            load_query_pack_with_file_digest(&path).expect("validated pack and file digest");
+        assert_eq!(file_sha256, sha256_hex(raw.as_bytes()));
+        assert_ne!(file_sha256, pack.pack_sha256);
+        assert_eq!(
+            load_query_pack(&path).expect("legacy load").pack_sha256,
+            pack.pack_sha256
+        );
     }
 
     #[test]

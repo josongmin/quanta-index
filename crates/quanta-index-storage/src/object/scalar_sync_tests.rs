@@ -72,7 +72,10 @@ impl quanta_index_core::index::ObjectWriteTicket for ScalarTicket {
         Ok(())
     }
 
-    fn synced(mut self: Box<Self>) -> Result<(), IndexError> {
+    fn synced(
+        mut self: Box<Self>,
+        _directories: quanta_index_core::index::ObjectWriteSyncDirectories,
+    ) -> Result<(), IndexError> {
         self.pin = None;
         self.settled = true;
         let _prior = self.state.settled.fetch_add(1, Ordering::Relaxed);
@@ -111,6 +114,7 @@ impl ScalarFixture {
         let authority: Arc<dyn ManagedObjectAuthority> = Arc::new(TraceAuthority {
             fail_confirmation: false,
             inputs: 1,
+            pair: None,
         });
         let ticket = Arc::new(ScalarTicketState::default());
         let observer = Arc::new(ObjectIoObservation::default());

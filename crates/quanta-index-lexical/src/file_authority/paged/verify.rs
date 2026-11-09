@@ -23,8 +23,8 @@ use crate::maintenance_merge_facts::FileRunMergeFacts;
 
 use super::producer::{FileAuthorityMutation, FileSourceEdit};
 use super::run_postings::{
-    RunGramCount, RunPostingPage, RunPostingRoot, run_merge_stage_bytes, run_page_key,
-    run_route_key,
+    RunBlockPages, RunGramCount, RunPostingPage, RunPostingRoot, run_merge_stage_bytes,
+    run_page_key, run_route_key,
 };
 use super::run_verify::{verify_changed_run, verify_clean_run_union, verify_global_run_routes};
 use super::{
@@ -424,6 +424,7 @@ fn verify_segment(
     let mut expected_content = vec![Vec::new(); segment.doc_ids.len()];
     let mut path_memberships = 0_u64;
     let mut content_memberships = 0_u64;
+    let documents_phase = crate::causal_profile::begin_phase("seal_file_segment_documents");
     for (local, id) in segment.doc_ids.iter().enumerate() {
         let locator = live_doc(store, root, *id, None)?;
         if locator.segment_sha256 != digest || index_usize(locator.local_id)? != local {
@@ -510,6 +511,8 @@ fn verify_segment(
             "segment membership count differs from source oracle",
         ));
     }
+    crate::causal_profile::finish_phase("seal_file_segment_documents", documents_phase);
+    let path_phase = crate::causal_profile::begin_phase("seal_file_segment_path_terms");
     verify_term_map(
         store,
         digest,
@@ -518,6 +521,8 @@ fn verify_segment(
         &expected_path,
         segment.doc_ids.len(),
     )?;
+    crate::causal_profile::finish_phase("seal_file_segment_path_terms", path_phase);
+    let content_phase = crate::causal_profile::begin_phase("seal_file_segment_content_terms");
     verify_term_map(
         store,
         digest,
@@ -526,6 +531,7 @@ fn verify_segment(
         &expected_content,
         segment.doc_ids.len(),
     )?;
+    crate::causal_profile::finish_phase("seal_file_segment_content_terms", content_phase);
     Ok(())
 }
 
@@ -648,14 +654,9 @@ fn verify_live_term_map(
                 continue;
             }
             let bucket = run_page_key(surface, gram, *id)?;
-            let run_page_ref = store
-                .map_get(&run.pages, &bucket, budget)?
+            let (_, run_page) = run
+                .page_at(store, &bucket, budget)?
                 .ok_or_else(|| corrupt("physical leaf posting omitted from run page"))?;
-            let run_page = RunPostingPage::decode(&store.read_blob(
-                &run_page_ref,
-                size_u64(super::MAX_POSTING_PAGE_BYTES)?,
-                budget,
-            )?)?;
             let matching_member = run_page
                 .rows
                 .binary_search_by_key(id, |row| row.logical_id)
@@ -839,6 +840,13 @@ enum RunScrubPhase {
     Counts,
 }
 
+struct ActiveScrubBlock {
+    last: [u8; 12],
+    reference: BlobRef,
+    pages: RunBlockPages,
+    index: usize,
+}
+
 struct ActiveRunScrub {
     id: u64,
     reference: BlobRef,
@@ -851,6 +859,9 @@ struct ActiveRunScrub {
     page_bytes: u64,
     count_bytes: u64,
     seen_pages: u64,
+    seen_page_records: u64,
+    after_block: Option<[u8; 12]>,
+    block: Option<ActiveScrubBlock>,
     seen_grams: u64,
     seen_counts: u64,
 }
@@ -1038,6 +1049,9 @@ impl RunPostingScrubCursor {
                 page_bytes: 0,
                 count_bytes: 0,
                 seen_pages: 0,
+                seen_page_records: 0,
+                after_block: None,
+                block: None,
                 seen_grams: 0,
                 seen_counts: 0,
             });
@@ -1047,27 +1061,59 @@ impl RunPostingScrubCursor {
             .active
             .as_mut()
             .ok_or_else(|| corrupt("run posting scrub state disappeared"))?;
-        let map = if active.phase == RunScrubPhase::Pages {
-            &active.root.pages
-        } else {
-            &active.root.gram_counts
-        };
-        let mut rows =
-            store.map_cursor(map, &scrub_lower(active.after_key.as_ref()), None, budget)?;
-        if let Some((key, reference)) = rows.next()? {
-            if active.phase == RunScrubPhase::Pages {
-                if reference.root.kind != ObjectKind::Record {
-                    return Err(corrupt("run posting page kind differs"));
+        if active.phase == RunScrubPhase::Pages {
+            if active.root.is_block_layout() && active.block.is_none() {
+                if let Some((last, reference, pages)) =
+                    active
+                        .root
+                        .next_block(store, active.after_block.as_ref(), budget)?
+                {
+                    let first = pages.first_key()?;
+                    if active.after_block.is_some_and(|prior| prior >= first) {
+                        return Err(corrupt("run scrub posting blocks overlap"));
+                    }
+                    active.block = Some(ActiveScrubBlock {
+                        last,
+                        reference,
+                        pages,
+                        index: 0,
+                    });
                 }
-                let page = RunPostingPage::decode(&store.read_blob(
-                    &reference,
-                    size_u64(super::MAX_POSTING_PAGE_BYTES)?,
+            }
+            let page = if active.root.is_block_layout() {
+                active
+                    .block
+                    .as_ref()
+                    .map(|block| {
+                        let (key, page) = block
+                            .pages
+                            .read_at(block.index)?
+                            .ok_or_else(|| corrupt("run scrub block page absent"))?;
+                        Ok::<_, CoreError>((
+                            key.to_vec(),
+                            block.reference.clone(),
+                            page,
+                            block.index == 0,
+                        ))
+                    })
+                    .transpose()?
+            } else {
+                let mut rows = active.root.page_cursor(
+                    store,
+                    &scrub_lower(active.after_key.as_ref()),
+                    None,
                     budget,
-                )?)?;
-                if page.key()?.as_slice() != key
-                    || !store
-                        .object_dependencies(&reference.root, budget)?
-                        .is_empty()
+                )?;
+                rows.next()?
+                    .map(|(key, reference, page)| (key, reference, page, true))
+            };
+            if let Some((key, reference, page, is_new_record)) = page {
+                if reference.root.kind != ObjectKind::Record
+                    || page.key()?.as_slice() != key
+                    || (is_new_record
+                        && !store
+                            .object_dependencies(&reference.root, budget)?
+                            .is_empty())
                 {
                     return Err(corrupt("run posting page key or dependencies differ"));
                 }
@@ -1076,34 +1122,67 @@ impl RunPostingScrubCursor {
                 if active.current_gram.is_some_and(|prior| prior != gram_key) {
                     active.flush_gram(store, authority, budget)?;
                 }
-                active.current_gram = Some(gram_key);
                 scrub_run_page_member(store, authority, active.id, &page, budget)?;
                 let row_count = size_u64(page.rows.len())?;
-                active.current_gram_rows = active
-                    .current_gram_rows
-                    .checked_add(row_count)
-                    .ok_or_else(|| corrupt("run gram row count overflows"))?;
                 let index = match page.surface {
                     1 => 0,
                     2 => 1,
                     _ => return Err(corrupt("run surface differs")),
                 };
-                let slot = active
-                    .page_rows
+                let mut page_rows = active.page_rows;
+                let slot = page_rows
                     .get_mut(index)
                     .ok_or_else(|| corrupt("run surface slot absent"))?;
                 *slot = slot
                     .checked_add(row_count)
                     .ok_or_else(|| corrupt("run surface row count overflows"))?;
-                active.page_bytes = active
+                let gram_rows = active
+                    .current_gram_rows
+                    .checked_add(row_count)
+                    .ok_or_else(|| corrupt("run gram row count overflows"))?;
+                let page_bytes = active
                     .page_bytes
-                    .checked_add(reference.root.bytes)
+                    .checked_add(if is_new_record {
+                        reference.root.bytes
+                    } else {
+                        0
+                    })
                     .ok_or_else(|| corrupt("run page byte ledger overflows"))?;
-                active.seen_pages = active
+                let records = active
+                    .seen_page_records
+                    .checked_add(u64::from(is_new_record))
+                    .ok_or_else(|| corrupt("run page record census overflows"))?;
+                let pages = active
                     .seen_pages
                     .checked_add(1)
                     .ok_or_else(|| corrupt("run page census overflows"))?;
-            } else {
+                active.current_gram = Some(gram_key);
+                active.current_gram_rows = gram_rows;
+                active.page_rows = page_rows;
+                active.page_bytes = page_bytes;
+                active.seen_page_records = records;
+                active.seen_pages = pages;
+                if let Some(block) = &mut active.block {
+                    block.index = block
+                        .index
+                        .checked_add(1)
+                        .ok_or_else(|| corrupt("run scrub block position overflows"))?;
+                    if block.index == block.pages.len() {
+                        active.after_block = Some(block.last);
+                        active.block = None;
+                    }
+                }
+                active.after_key = Some(key);
+                return Ok(false);
+            }
+        } else {
+            let mut rows = store.map_cursor(
+                &active.root.gram_counts,
+                &scrub_lower(active.after_key.as_ref()),
+                None,
+                budget,
+            )?;
+            if let Some((key, reference)) = rows.next()? {
                 if key.len() != 4 || reference.root.kind != ObjectKind::Record {
                     return Err(corrupt("run count key or kind differs"));
                 }
@@ -1119,21 +1198,24 @@ impl RunPostingScrubCursor {
                 {
                     return Err(corrupt("run count key or dependencies differ"));
                 }
-                active.count_bytes = active
+                let count_bytes = active
                     .count_bytes
                     .checked_add(reference.root.bytes)
                     .ok_or_else(|| corrupt("run count byte ledger overflows"))?;
-                active.seen_counts = active
+                let seen_counts = active
                     .seen_counts
                     .checked_add(1)
                     .ok_or_else(|| corrupt("run count census overflows"))?;
+                active.count_bytes = count_bytes;
+                active.seen_counts = seen_counts;
+                active.after_key = Some(key);
+                return Ok(false);
             }
-            active.after_key = Some(key);
-            return Ok(false);
         }
         if active.phase == RunScrubPhase::Pages {
             active.flush_gram(store, authority, budget)?;
-            if active.seen_pages != active.root.pages.entries
+            if active.seen_pages != active.root.logical_pages()
+                || active.seen_page_records != active.root.pages.entries
                 || active.page_rows != [active.root.path_rows, active.root.content_rows]
                 || active.page_bytes != active.root.page_record_encoded_bytes
             {
@@ -2208,7 +2290,9 @@ pub(crate) fn verify_for_seal_with_merge_facts(
             )
             .ok_or_else(|| corrupt("reservation range overflow"))?
     };
-    for edit in &mutation.edits {
+    let source_phase = crate::causal_profile::begin_phase("seal_file_source_edits");
+    let mut verified_body_bytes = Some(0_u64);
+    for (ordinal, edit) in mutation.edits.iter().enumerate() {
         let key = edit.key();
         let digest = source_key_digest(key)?;
         if !allowed_sources.insert(digest) {
@@ -2352,7 +2436,26 @@ pub(crate) fn verify_for_seal_with_merge_facts(
                 }
             }
         }
+        if source_phase.is_some() {
+            if let FileSourceEdit::Upsert { bytes, .. } = edit {
+                verified_body_bytes = verified_body_bytes.and_then(|total| {
+                    u64::try_from(bytes.len())
+                        .ok()
+                        .and_then(|bytes| total.checked_add(bytes))
+                });
+            }
+            let completed = ordinal + 1;
+            if completed % 64 == 0 || completed == mutation.edits.len() {
+                crate::causal_profile::phase_progress(
+                    "seal_file_source_edits",
+                    source_phase,
+                    completed,
+                    verified_body_bytes,
+                );
+            }
+        }
     }
+    crate::causal_profile::finish_phase("seal_file_source_edits", source_phase);
     if root.live_sources != source_count
         || root.live_docs != source_count
         || root.source_bytes != source_bytes
@@ -2362,6 +2465,7 @@ pub(crate) fn verify_for_seal_with_merge_facts(
             "root summaries differ from base plus changed sources",
         ));
     }
+    let transition_phase = crate::causal_profile::begin_phase("seal_file_maps_and_registry");
     store.map_changed_keys(
         &old.source_heads,
         &root.source_heads,
@@ -2601,6 +2705,8 @@ pub(crate) fn verify_for_seal_with_merge_facts(
             let _inserted = removed_segments.insert(digest);
         }
     }
+    crate::causal_profile::finish_phase("seal_file_maps_and_registry", transition_phase);
+    let segments_phase = crate::causal_profile::begin_phase("seal_file_created_segments");
     for digest in created_segments {
         if removed_segments.contains(&digest) {
             return Err(corrupt("segment is both created and removed"));
@@ -2610,6 +2716,8 @@ pub(crate) fn verify_for_seal_with_merge_facts(
             .ok_or_else(|| corrupt("new current locator segment absent"))?;
         verify_segment(store, root, &reference)?;
     }
+    crate::causal_profile::finish_phase("seal_file_created_segments", segments_phase);
+    let runs_phase = crate::causal_profile::begin_phase("seal_file_run_postings");
     let facts = verify_run_posting_transition(
         store,
         old,
@@ -2620,6 +2728,7 @@ pub(crate) fn verify_for_seal_with_merge_facts(
         &clean_selection.run_ids,
     )?;
     facts.validate()?;
+    crate::causal_profile::finish_phase("seal_file_run_postings", runs_phase);
     Ok(facts)
 }
 
@@ -3740,11 +3849,33 @@ mod tests {
         let built = build_for_seal(&store, &lease, None, &reservation, &mutation)
             .expect("valid run fixture");
         let mut cursor = RunPostingScrubCursor::default();
+        assert!(!cursor.step(&store, &built.root, None).expect("open run"));
+        assert!(!cursor.step(&store, &built.root, None).expect("first page"));
+        let run = cursor.active.as_ref().expect("active run");
+        let block = run
+            .block
+            .as_ref()
+            .expect("fixture spans multiple pages in a block");
+        assert_eq!(block.index, 1);
+        assert_eq!(run.seen_page_records, 1);
+        let page_bytes = run.page_bytes;
+        let cancelled = RequestBudgetV1::unbounded();
+        cancelled.cancel_handle().cancel();
+        assert!(cursor.step(&store, &built.root, Some(&cancelled)).is_err());
+        let run = cursor
+            .active
+            .as_ref()
+            .expect("retained run after cancellation");
+        assert_eq!(run.block.as_ref().expect("retained block").index, 1);
+        assert_eq!(run.seen_pages, 1);
+        assert_eq!(run.seen_page_records, 1);
+        assert_eq!(run.page_bytes, page_bytes);
+
         let mut at_final_flush = false;
         for _ in 0..1024 {
             if cursor.active.as_ref().is_some_and(|run| {
                 run.phase == RunScrubPhase::Pages
-                    && run.seen_pages == run.root.pages.entries
+                    && run.seen_pages == run.root.logical_pages()
                     && run.current_gram.is_some()
             }) {
                 at_final_flush = true;

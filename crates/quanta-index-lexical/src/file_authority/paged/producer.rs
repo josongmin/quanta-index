@@ -17,21 +17,20 @@ use crate::lexical_runs::{
     RunCandidate, RunRegistry, RunScanWindow, RunSelectionProgress, SegmentInput, SegmentRemoval,
     bounded_candidate_scan_limit, segment_index_encoded_bytes,
 };
-#[cfg(test)]
 use crate::lexical_store::MapCursor;
 use crate::lexical_store::{
     AttemptLease, Authority as ScanAuthority, BlobRef, CandidateWitness, EligibilityWitness,
-    IneligibleReason, MapEdit, MapRoot, ObjectKind, ObjectRef, ObjectStore, ScanLane,
-    WindowWitness,
+    IneligibleReason, MAX_PACKED_RECORDS, MAX_RECORD_GROUP_BYTES, MapEdit, MapRoot, ObjectKind,
+    ObjectRef, ObjectStore, ScanLane, WindowWitness,
 };
 
 #[cfg(test)]
 use super::route_key;
 use super::run_postings;
 use super::run_postings::{
-    RunGramCount, RunPostingPage, RunPostingPageEdit, RunPostingRoot, RunPostingRow,
-    apply_page_delta, apply_run_page_edits, bootstrap_new_run_postings, merge_run_posting_roots,
-    run_page_key, run_route_key,
+    RunGramCount, RunPostingPageEdit, RunPostingRoot, RunPostingRow, apply_page_delta,
+    apply_run_page_edits, bootstrap_new_run_postings, merge_run_posting_roots, run_page_key,
+    run_route_key,
 };
 use super::{
     AuthorityRoot, LiveDoc, MAX_POSTING_PAGE_BYTES, MAX_POSTING_PAGE_TERMS, MAX_SEGMENT_DOCS,
@@ -41,6 +40,10 @@ use super::{
 // Leaves room within the existing 128 MiB scratch admission for the source
 // vectors, physical page descriptors, and map builder's bounded page stack.
 pub(super) const MAX_SEGMENT_GRAM_BYTES: usize = 32 * 1024 * 1024;
+// Covers pending locator bodies, group views, sorted pack entries, encoded
+// payload/object, and logical references while they coexist during a flush.
+// Near the existing gram-scratch ceiling, use ordinary individual Records.
+const LOCATOR_PACK_SCRATCH_RESERVE_BYTES: usize = 256 * 1024;
 const MAX_SINGLE_SOURCE_GRAM_BYTES: usize = 80 * 1024 * 1024;
 const ADOPTION_CPU_FLUSH_BYTES: usize = 2_097_152;
 // Each run edit now holds both the authenticated prior page and its target.
@@ -89,6 +92,45 @@ struct Prepared {
     content_grams: Vec<[u8; 3]>,
 }
 
+struct StagedUpsert<'a> {
+    coverage: &'a SourceFileCoverage,
+    bytes: &'a [u8],
+    logical_id: u64,
+    source_bytes: u64,
+    indexed_text_bytes: u64,
+    folded_text_bytes: u64,
+    posting_memberships: u64,
+    derived_input_sha256: [u8; 32],
+    key_digest: [u8; 32],
+    path_grams: Vec<[u8; 3]>,
+    content_grams: Vec<[u8; 3]>,
+}
+
+impl StagedUpsert<'_> {
+    fn source_head(&self, body: BlobRef) -> SourceHead {
+        SourceHead {
+            coverage: self.coverage.clone(),
+            body,
+            logical_id: self.logical_id,
+            source_bytes: self.source_bytes,
+            indexed_text_bytes: self.indexed_text_bytes,
+            folded_text_bytes: self.folded_text_bytes,
+            posting_memberships: self.posting_memberships,
+            derived_input_sha256: self.derived_input_sha256,
+        }
+    }
+
+    fn finish(self, head: SourceHead, head_blob: BlobRef) -> Prepared {
+        Prepared {
+            key_digest: self.key_digest,
+            head,
+            head_blob,
+            path_grams: self.path_grams,
+            content_grams: self.content_grams,
+        }
+    }
+}
+
 #[cfg(test)]
 struct CreatedSegment {
     segment: Segment,
@@ -98,6 +140,110 @@ struct CreatedSegment {
 struct CleanRunSelection {
     run_ids: Vec<u64>,
     progress: RunSelectionProgress,
+}
+
+#[derive(Clone, Copy)]
+enum FileBuildStage {
+    SourcePrepare,
+    SegmentFlush,
+    AdoptionFlush,
+    Compaction,
+}
+
+impl FileBuildStage {
+    const ALL: [Self; 4] = [
+        Self::SourcePrepare,
+        Self::SegmentFlush,
+        Self::AdoptionFlush,
+        Self::Compaction,
+    ];
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::SourcePrepare => "source_prepare",
+            Self::SegmentFlush => "segment_flush",
+            Self::AdoptionFlush => "adoption_flush",
+            Self::Compaction => "compaction",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct FileBuildStageSample {
+    completed: usize,
+    elapsed_ns: u128,
+}
+
+struct FileBuildProfile {
+    enabled: bool,
+    samples: [FileBuildStageSample; 4],
+}
+
+impl FileBuildProfile {
+    fn new() -> Self {
+        Self {
+            enabled: crate::causal_profile::enabled(),
+            samples: [FileBuildStageSample::default(); 4],
+        }
+    }
+
+    #[expect(
+        clippy::print_stderr,
+        reason = "Opt-in File publication stage diagnosis."
+    )]
+    fn observe<T>(
+        &mut self,
+        stage: FileBuildStage,
+        operation: impl FnOnce() -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        if !self.enabled {
+            return operation();
+        }
+        let sample = &mut self.samples[stage.index()];
+        if sample.completed == 0 {
+            eprintln!("QI_FILE_STAGE_V1 stage={} event=started", stage.label());
+        }
+        let started = Instant::now();
+        let result = operation();
+        sample.elapsed_ns = sample
+            .elapsed_ns
+            .saturating_add(started.elapsed().as_nanos());
+        sample.completed = sample.completed.saturating_add(1);
+        if sample.completed.is_power_of_two() || result.is_err() {
+            eprintln!(
+                "QI_FILE_STAGE_V1 stage={} event=progress completed={} elapsed_ns={} ok={}",
+                stage.label(),
+                sample.completed,
+                sample.elapsed_ns,
+                u8::from(result.is_ok())
+            );
+        }
+        result
+    }
+
+    #[expect(
+        clippy::print_stderr,
+        reason = "Opt-in File publication stage diagnosis."
+    )]
+    fn finish(&self) {
+        if self.enabled {
+            for stage in FileBuildStage::ALL {
+                let sample = &self.samples[stage.index()];
+                if sample.completed != 0 {
+                    eprintln!(
+                        "QI_FILE_STAGE_V1 stage={} event=completed completed={} elapsed_ns={}",
+                        stage.label(),
+                        sample.completed,
+                        sample.elapsed_ns
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -554,6 +700,23 @@ fn prepare_upsert(
     bytes: &[u8],
     logical_id: u64,
 ) -> Result<Prepared, CoreError> {
+    let staged = stage_upsert(coverage, bytes, logical_id)?;
+    let body = store.put_blob(lease, ObjectKind::FileBody, &[], bytes)?;
+    let head = staged.source_head(body);
+    let head_blob = encode_record(
+        store,
+        lease,
+        &head.encode()?,
+        std::slice::from_ref(&head.body.root),
+    )?;
+    Ok(staged.finish(head, head_blob))
+}
+
+fn stage_upsert<'a>(
+    coverage: &'a SourceFileCoverage,
+    bytes: &'a [u8],
+    logical_id: u64,
+) -> Result<StagedUpsert<'a>, CoreError> {
     coverage
         .validate()
         .map_err(|error| invalid(&error.to_string()))?;
@@ -594,25 +757,91 @@ fn prepare_upsert(
     if memberships > super::super::policy().total_memberships {
         return Err(invalid("source membership admission exceeded"));
     }
-    let body = store.put_blob(lease, ObjectKind::FileBody, &[], bytes)?;
-    let head = SourceHead {
-        coverage: coverage.clone(),
-        body: body.clone(),
+    Ok(StagedUpsert {
+        coverage,
+        bytes,
         logical_id,
         source_bytes: size_u64(bytes.len())?,
         indexed_text_bytes: size_u64(indexed_text.as_ref().map_or(0, String::len))?,
         folded_text_bytes: size_u64(folded_text.as_ref().map_or(0, String::len))?,
         posting_memberships: memberships,
         derived_input_sha256: derived_digest(coverage)?,
-    };
-    let head_blob = encode_record(store, lease, &head.encode()?, &[body.root])?;
-    Ok(Prepared {
         key_digest: source_key_digest(&coverage.source.file)?,
-        head,
-        head_blob,
         path_grams,
         content_grams,
     })
+}
+
+/// Precompute fresh small sources before choosing shared physical body roots.
+/// Every source still receives its own authenticated BlobRef and SourceHead.
+fn prepare_fresh_body_cohort(
+    store: &ObjectStore,
+    lease: &AttemptLease,
+    edits: &[FileSourceEdit],
+    reservation: &DocVersionReservation,
+    allocated: u64,
+    previous_digests: &BTreeSet<[u8; 32]>,
+) -> Result<Vec<Option<Prepared>>, CoreError> {
+    const MAX_GROUP_CANDIDATE_BYTES: usize = 16 * 1024;
+
+    let mut staged = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut used = allocated;
+    for (index, edit) in edits.iter().enumerate() {
+        edit.key().validate().map_err(invalid)?;
+        let digest = source_key_digest(edit.key())?;
+        if previous_digests.contains(&digest) || !seen.insert(digest) {
+            return Err(invalid("duplicate or colliding changed source digest"));
+        }
+        if let FileSourceEdit::Upsert { coverage, bytes } = edit {
+            if used >= reservation.count {
+                return Err(invalid("document-version reservation exhausted"));
+            }
+            let id = reservation
+                .first
+                .checked_add(used)
+                .ok_or_else(|| invalid("document ID overflow"))?;
+            used = used
+                .checked_add(1)
+                .ok_or_else(|| invalid("reservation use overflow"))?;
+            if bytes.len() <= MAX_GROUP_CANDIDATE_BYTES {
+                staged.push((index, stage_upsert(coverage, bytes, id)?));
+            }
+        }
+    }
+    let mut planned = (0..edits.len()).map(|_| None).collect::<Vec<_>>();
+    if staged.is_empty() {
+        return Ok(planned);
+    }
+    let bodies = staged
+        .iter()
+        .map(|(_, item)| item.bytes)
+        .collect::<Vec<_>>();
+    let references = store.put_body_groups(lease, ObjectKind::FileBody, &bodies)?;
+    if references.len() != staged.len() {
+        return Err(corrupt("File body group reference count differs"));
+    }
+    let mut items = staged.into_iter();
+    for group in references.chunk_by(|left, right| left.root == right.root) {
+        let first = group
+            .first()
+            .ok_or_else(|| corrupt("empty File body group"))?;
+        let mut heads = Vec::with_capacity(group.len());
+        let mut encoded = Vec::with_capacity(group.len());
+        for reference in group {
+            let (index, item) = items
+                .next()
+                .ok_or_else(|| corrupt("File body inputs absent"))?;
+            let head = item.source_head(reference.clone());
+            encoded.push(head.encode()?);
+            heads.push((index, item, head));
+        }
+        let head_refs = store.put_body_record_groups(lease, &first.root, &encoded)?;
+        for ((index, item, head), head_blob) in heads.into_iter().zip(head_refs) {
+            planned[index] = Some(item.finish(head, head_blob));
+        }
+    }
+    Ok(planned)
 }
 
 /// Merge each source's sorted unique grams without a corpus-sized term map.
@@ -697,80 +926,115 @@ impl<'a> GramMerge<'a> {
     }
 }
 
+/// Build one immutable posting page and immediately route its ordered grams.
+/// This keeps the original page boundaries and map wire while walking each
+/// source gram once instead of rebuilding the merge for a second pass.
+struct TermMapStream<'a> {
+    store: &'a ObjectStore,
+    lease: &'a AttemptLease,
+    merge: GramMerge<'a>,
+    doc_count: usize,
+    pending: std::vec::IntoIter<([u8; 3], u64)>,
+    pending_ref: Option<BlobRef>,
+    memberships: u64,
+    failed: bool,
+}
+
+impl TermMapStream<'_> {
+    fn next_edit(&mut self) -> Result<Option<MapEdit>, CoreError> {
+        if let Some((gram, _mask)) = self.pending.next() {
+            let reference = self
+                .pending_ref
+                .as_ref()
+                .ok_or_else(|| corrupt("posting page route has no reference"))?;
+            return Ok(Some(MapEdit {
+                key: gram.to_vec(),
+                value: Some(reference.clone()),
+            }));
+        }
+        self.pending_ref = None;
+        let Some((first_gram, first_mask)) = self.merge.next_term()? else {
+            return Ok(None);
+        };
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(MAX_POSTING_PAGE_TERMS)
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "file authority v17: reserve posting page rows: {error}"
+                ))
+            })?;
+        self.memberships = self
+            .memberships
+            .checked_add(u64::from(first_mask.count_ones()))
+            .ok_or_else(|| invalid("segment membership overflow"))?;
+        rows.push((first_gram, first_mask));
+        while rows.len() < MAX_POSTING_PAGE_TERMS {
+            let Some((gram, mask)) = self.merge.next_term()? else {
+                break;
+            };
+            self.memberships = self
+                .memberships
+                .checked_add(u64::from(mask.count_ones()))
+                .ok_or_else(|| invalid("segment membership overflow"))?;
+            rows.push((gram, mask));
+        }
+        let page = PostingPage(rows);
+        let bytes = page.encode(self.doc_count)?;
+        if bytes.len() > MAX_POSTING_PAGE_BYTES {
+            return Err(invalid("posting page exceeds physical byte admission"));
+        }
+        let reference = self
+            .store
+            .put_blob(self.lease, ObjectKind::FilePostings, &[], &bytes)?;
+        self.pending = page.0.into_iter();
+        self.pending_ref = Some(reference);
+        let (gram, _mask) = self
+            .pending
+            .next()
+            .ok_or_else(|| corrupt("stored posting page has no first gram"))?;
+        Ok(Some(MapEdit {
+            key: gram.to_vec(),
+            value: self.pending_ref.clone(),
+        }))
+    }
+}
+
+impl Iterator for TermMapStream<'_> {
+    type Item = Result<MapEdit, CoreError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.failed {
+            return None;
+        }
+        match self.next_edit() {
+            Ok(Some(edit)) => Some(Ok(edit)),
+            Ok(None) => None,
+            Err(error) => {
+                self.failed = true;
+                Some(Err(error))
+            }
+        }
+    }
+}
+
 fn write_term_map(
     store: &ObjectStore,
     lease: &AttemptLease,
     group: &[Prepared],
     content: bool,
 ) -> Result<(MapRoot, u64), CoreError> {
-    let mut pages = Vec::new();
-    let mut memberships = 0_u64;
-    let mut page_rows = Vec::new();
-    let mut merge = GramMerge::new(group, content)?;
-    while let Some((gram, mask)) = merge.next_term()? {
-        memberships = memberships
-            .checked_add(u64::from(mask.count_ones()))
-            .ok_or_else(|| invalid("segment membership overflow"))?;
-        page_rows.push((gram, mask));
-        if page_rows.len() == MAX_POSTING_PAGE_TERMS {
-            emit_posting_page(store, lease, &mut pages, &mut page_rows, group.len())?;
-        }
-    }
-    if !page_rows.is_empty() {
-        emit_posting_page(store, lease, &mut pages, &mut page_rows, group.len())?;
-    }
-    let mut page_index = 0_usize;
-    let mut merge = GramMerge::new(group, content)?;
-    let rows = std::iter::from_fn(|| {
-        let next = match merge.next_term() {
-            Ok(Some((gram, _mask))) => gram,
-            Ok(None) => return None,
-            Err(error) => return Some(Err(error)),
-        };
-        while pages.get(page_index).is_some_and(|(last, _)| *last < next) {
-            let Some(next_index) = page_index.checked_add(1) else {
-                return Some(Err(invalid("posting page cursor overflow")));
-            };
-            page_index = next_index;
-        }
-        let row = pages
-            .get(page_index)
-            .ok_or_else(|| corrupt("posting page fence omits term"))
-            .map(|(_, reference)| MapEdit {
-                key: next.to_vec(),
-                value: Some(reference.clone()),
-            });
-        Some(row)
-    });
-    let map = store.map_bootstrap(lease, rows)?;
-    Ok((map, memberships))
-}
-
-fn emit_posting_page(
-    store: &ObjectStore,
-    lease: &AttemptLease,
-    pages: &mut Vec<([u8; 3], BlobRef)>,
-    pending: &mut Vec<([u8; 3], u64)>,
-    doc_count: usize,
-) -> Result<(), CoreError> {
-    let page = PostingPage(std::mem::take(pending));
-    let last = page
-        .0
-        .last()
-        .ok_or_else(|| invalid("empty posting page"))?
-        .0;
-    let bytes = page.encode(doc_count)?;
-    if bytes.len() > MAX_POSTING_PAGE_BYTES {
-        return Err(invalid("posting page exceeds physical byte admission"));
-    }
-    let reference = store.put_blob(lease, ObjectKind::FilePostings, &[], &bytes)?;
-    pages.try_reserve(1).map_err(|error| {
-        CoreError::Storage(format!(
-            "file authority v17: reserve posting page fence: {error}"
-        ))
-    })?;
-    pages.push((last, reference));
-    Ok(())
+    let mut stream = TermMapStream {
+        store,
+        lease,
+        merge: GramMerge::new(group, content)?,
+        doc_count: group.len(),
+        pending: Vec::new().into_iter(),
+        pending_ref: None,
+        memberships: 0,
+        failed: false,
+    };
+    let map = store.map_bootstrap(lease, &mut stream)?;
+    Ok((map, stream.memberships))
 }
 
 fn map_update(
@@ -872,41 +1136,23 @@ fn apply_segment_to_run(
                     .first()
                     .ok_or_else(|| corrupt("run leaf bucket has no posting rows"))?
                     .logical_id;
-                let key = run_page_key(surface, gram, first_id)?.to_vec();
-                let prior_ref = run
+                let page_key = run_page_key(surface, gram, first_id)?;
+                let key = page_key.to_vec();
+                let prior = run
                     .as_ref()
-                    .map(|root| store.map_get(&root.pages, &key, None))
+                    .map(|root| root.page_at(store, &page_key, None))
                     .transpose()?
                     .flatten();
-                let prior = prior_ref
-                    .as_ref()
-                    .map(|reference| {
-                        if reference.root.kind != ObjectKind::Record {
-                            return Err(corrupt("run page object kind differs"));
-                        }
-                        RunPostingPage::decode(&store.read_blob(
-                            reference,
-                            size_u64(MAX_POSTING_PAGE_BYTES)?,
-                            None,
-                        )?)
-                    })
-                    .transpose()?;
                 let next = apply_page_delta(
                     surface,
                     gram,
                     first_id >> 8,
-                    prior.as_ref(),
+                    prior.as_ref().map(|(_, page)| page),
                     if remove { &rows } else { &[] },
                     if remove { &[] } else { &rows },
                 )?;
                 if edits
-                    .insert(
-                        key,
-                        RunPostingPageEdit {
-                            prior: prior_ref.zip(prior),
-                            next,
-                        },
-                    )
+                    .insert(key, RunPostingPageEdit { prior, next })
                     .is_some()
                 {
                     return Err(corrupt("run leaf emits duplicate bucket"));
@@ -938,6 +1184,97 @@ fn apply_segment_to_run(
     }
 }
 
+struct FreshRunRouteStream<'a> {
+    store: &'a ObjectStore,
+    counts: MapCursor<'a>,
+    run_id: u64,
+    pending: Option<MapEdit>,
+    failed: bool,
+}
+
+impl FreshRunRouteStream<'_> {
+    fn next_surface(&mut self, surface: u8) -> Option<Result<MapEdit, CoreError>> {
+        if self.failed {
+            return None;
+        }
+        let edit = if let Some(edit) = self.pending.take() {
+            edit
+        } else {
+            let row = match self.counts.next() {
+                Ok(Some(row)) => row,
+                Ok(None) => return None,
+                Err(error) => {
+                    self.failed = true;
+                    return Some(Err(error));
+                }
+            };
+            match fresh_run_route_edit(self.store, self.run_id, row) {
+                Ok(edit) => edit,
+                Err(error) => {
+                    self.failed = true;
+                    return Some(Err(error));
+                }
+            }
+        };
+        let actual = edit.key.first().copied();
+        if actual == Some(surface) {
+            return Some(Ok(edit));
+        }
+        if actual == Some(2) && surface == 1 {
+            self.pending = Some(edit);
+            return None;
+        }
+        self.failed = true;
+        Some(Err(corrupt("fresh run route surface differs")))
+    }
+}
+
+fn fresh_run_route_edit(
+    store: &ObjectStore,
+    run_id: u64,
+    (key, reference): (Vec<u8>, BlobRef),
+) -> Result<MapEdit, CoreError> {
+    let gram_key: [u8; 4] = key
+        .as_slice()
+        .try_into()
+        .map_err(|_width| corrupt("run gram-count map key width differs"))?;
+    if !matches!(gram_key[0], 1 | 2) || reference.root.kind != ObjectKind::Record {
+        return Err(corrupt("run gram-count surface or object kind differs"));
+    }
+    let count = RunGramCount::decode(&store.read_blob(
+        &reference,
+        size_u64(super::MAX_RECORD_BYTES)?,
+        None,
+    )?)?;
+    if count.key()? != gram_key {
+        return Err(corrupt("run gram-count key differs"));
+    }
+    Ok(MapEdit {
+        key: run_route_key(count.surface, count.gram, count.count, run_id)?.to_vec(),
+        value: Some(reference),
+    })
+}
+
+fn bootstrap_fresh_run_routes(
+    store: &ObjectStore,
+    lease: &AttemptLease,
+    counts: &MapRoot,
+    run_id: u64,
+) -> Result<(MapRoot, MapRoot), CoreError> {
+    let mut stream = FreshRunRouteStream {
+        store,
+        counts: store.map_cursor(counts, &[], None, None)?,
+        run_id,
+        pending: None,
+        failed: false,
+    };
+    // Gram-count keys are ordered by (surface, gram); adding count and the
+    // fixed run ID after that prefix keeps route keys strictly ordered.
+    let path = store.map_bootstrap(lease, std::iter::from_fn(|| stream.next_surface(1)))?;
+    let content = store.map_bootstrap(lease, std::iter::from_fn(|| stream.next_surface(2)))?;
+    Ok((path, content))
+}
+
 fn update_run_routes(
     store: &ObjectStore,
     lease: &AttemptLease,
@@ -947,6 +1284,17 @@ fn update_run_routes(
     prior: Option<&RunPostingRoot>,
     target: Option<&RunPostingRoot>,
 ) -> Result<(), CoreError> {
+    if prior.is_none()
+        && *path_routes == MapRoot::default()
+        && *content_routes == MapRoot::default()
+        && let Some(target) = target
+    {
+        let (path, content) =
+            bootstrap_fresh_run_routes(store, lease, &target.gram_counts, run_id)?;
+        *path_routes = path;
+        *content_routes = content;
+        return Ok(());
+    }
     let empty = MapRoot::default();
     let prior_counts = prior.map_or(&empty, |root| &root.gram_counts);
     let target_counts = target.map_or(&empty, |root| &root.gram_counts);
@@ -1010,6 +1358,30 @@ fn update_run_routes(
     Ok(())
 }
 
+fn flush_locator_group(
+    store: &ObjectStore,
+    lease: &AttemptLease,
+    pending: &mut Vec<([u8; 8], Vec<u8>)>,
+    current_edits: &mut BTreeMap<Vec<u8>, Option<BlobRef>>,
+) -> Result<(), CoreError> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let mut bodies = Vec::new();
+    bodies
+        .try_reserve_exact(pending.len())
+        .map_err(|error| CoreError::Storage(format!("reserve locator group views: {error}")))?;
+    bodies.extend(pending.iter().map(|(_, bytes)| bytes.as_slice()));
+    let references = store.put_record_group(lease, &bodies)?;
+    if references.len() != pending.len() {
+        return Err(corrupt("packed locator reference count differs"));
+    }
+    for ((key, _bytes), reference) in pending.drain(..).zip(references) {
+        let _previous = current_edits.insert(key.to_vec(), Some(reference));
+    }
+    Ok(())
+}
+
 fn flush_segment(
     store: &ObjectStore,
     lease: &AttemptLease,
@@ -1055,6 +1427,46 @@ fn flush_segment(
     )?;
     let digest = reference.root.sha256;
     let _previous = segment_edits.insert(digest.to_vec(), Some(reference));
+    write_segment_locators(
+        store,
+        lease,
+        group,
+        digest,
+        ceiling - scratch,
+        current_edits,
+    )
+}
+
+fn write_segment_locators(
+    store: &ObjectStore,
+    lease: &AttemptLease,
+    group: &[Prepared],
+    digest: [u8; 32],
+    remaining_scratch: usize,
+    current_edits: &mut BTreeMap<Vec<u8>, Option<BlobRef>>,
+) -> Result<(), CoreError> {
+    if remaining_scratch < LOCATOR_PACK_SCRATCH_RESERVE_BYTES {
+        for (local, item) in group.iter().enumerate() {
+            let locator = LiveDoc {
+                source_key_sha256: item.key_digest,
+                logical_id: item.head.logical_id,
+                segment_sha256: digest,
+                local_id: u32::try_from(local)
+                    .map_err(|error| invalid(&format!("local ID: {error}")))?,
+            };
+            let reference = encode_record(store, lease, &locator.encode()?, &[])?;
+            let _previous =
+                current_edits.insert(doc_key(item.head.logical_id).to_vec(), Some(reference));
+        }
+        return Ok(());
+    }
+    // One 64-document segment owns this bounded scratch. Every locator has no
+    // object dependencies; its BlobRef keeps its own logical digest and width.
+    let mut pending = Vec::new();
+    pending
+        .try_reserve_exact(group.len())
+        .map_err(|error| CoreError::Storage(format!("reserve segment locators: {error}")))?;
+    let mut pending_width = 3_usize;
     for (local, item) in group.iter().enumerate() {
         let locator = LiveDoc {
             source_key_sha256: item.key_digest,
@@ -1063,10 +1475,36 @@ fn flush_segment(
             local_id: u32::try_from(local)
                 .map_err(|error| invalid(&format!("local ID: {error}")))?,
         };
-        let locator_blob = encode_record(store, lease, &locator.encode()?, &[])?;
-        let _previous =
-            current_edits.insert(doc_key(item.head.logical_id).to_vec(), Some(locator_blob));
+        let bytes = locator.encode()?;
+        let added_width = bytes
+            .len()
+            .checked_add(2)
+            .ok_or_else(|| invalid("locator pack width overflow"))?;
+        if added_width
+            .checked_add(3)
+            .is_none_or(|width| width > MAX_RECORD_GROUP_BYTES)
+        {
+            flush_locator_group(store, lease, &mut pending, current_edits)?;
+            let reference = encode_record(store, lease, &bytes, &[])?;
+            let _previous =
+                current_edits.insert(doc_key(item.head.logical_id).to_vec(), Some(reference));
+            pending_width = 3;
+            continue;
+        }
+        if pending.len() == MAX_PACKED_RECORDS
+            || pending_width
+                .checked_add(added_width)
+                .is_none_or(|width| width > MAX_RECORD_GROUP_BYTES)
+        {
+            flush_locator_group(store, lease, &mut pending, current_edits)?;
+            pending_width = 3;
+        }
+        pending_width = pending_width
+            .checked_add(added_width)
+            .ok_or_else(|| invalid("locator pack width overflow"))?;
+        pending.push((doc_key(item.head.logical_id), bytes));
     }
+    flush_locator_group(store, lease, &mut pending, current_edits)?;
     Ok(())
 }
 
@@ -2263,11 +2701,22 @@ fn build_for_seal_inner(
     let mut digests = BTreeSet::new();
     let mut allocated = 0_u64;
     let source_phase = crate::causal_profile::begin_phase("file_sources_and_segments");
+    let mut source_profile = FileBuildProfile::new();
+    let mut completed_sources = 0_usize;
     for cohort in mutation.edits.chunks(MAX_SEGMENT_DOCS) {
         // Prior writes must not hold the publication gate through a long
         // inherited/no-op scan. Tiny files still share a bounded cohort.
-        store.flush_adoption_batch()?;
-        for edit in cohort {
+        source_profile.observe(FileBuildStage::AdoptionFlush, || {
+            store.flush_adoption_batch()
+        })?;
+        let mut packed_upserts = if original.source_heads.entries == 0 {
+            source_profile.observe(FileBuildStage::SourcePrepare, || {
+                prepare_fresh_body_cohort(store, lease, cohort, reservation, allocated, &digests)
+            })?
+        } else {
+            (0..cohort.len()).map(|_| None).collect::<Vec<_>>()
+        };
+        for (index, edit) in cohort.iter().enumerate() {
             let key = edit.key();
             key.validate().map_err(invalid)?;
             let digest = source_key_digest(key)?;
@@ -2352,9 +2801,21 @@ fn build_for_seal_inner(
                         .checked_add(1)
                         .ok_or_else(|| invalid("reservation use overflow"))?;
                     if bytes.len() >= ADOPTION_CPU_FLUSH_BYTES {
-                        store.flush_adoption_batch()?;
+                        source_profile.observe(FileBuildStage::AdoptionFlush, || {
+                            store.flush_adoption_batch()
+                        })?;
                     }
-                    let item = prepare_upsert(store, lease, coverage, bytes, id)?;
+                    let item = source_profile.observe(FileBuildStage::SourcePrepare, || {
+                        match packed_upserts[index].take() {
+                            Some(item)
+                                if item.head.logical_id == id && item.key_digest == digest =>
+                            {
+                                Ok(item)
+                            }
+                            Some(_) => Err(corrupt("prepacked File source identity differs")),
+                            None => prepare_upsert(store, lease, coverage, bytes, id),
+                        }
+                    })?;
                     if let Some((digest, reference)) = retired_segment {
                         let _previous = touched_segments.insert(digest, reference.clone());
                         let _previous = debt_edits.insert(digest.to_vec(), Some(reference));
@@ -2395,59 +2856,46 @@ fn build_for_seal_inner(
                             .checked_add(item_scratch)
                             .is_none_or(|total| total > MAX_SEGMENT_GRAM_BYTES)
                     {
-                        flush_segment(
-                            store,
-                            lease,
-                            &prepared,
-                            &mut segment_edits,
-                            &mut current_edits,
-                        )?;
+                        source_profile.observe(FileBuildStage::SegmentFlush, || {
+                            flush_segment(
+                                store,
+                                lease,
+                                &prepared,
+                                &mut segment_edits,
+                                &mut current_edits,
+                            )
+                        })?;
                         prepared.clear();
                     }
                     prepared.push(item);
                     if prepared.len() == MAX_SEGMENT_DOCS || item_scratch > MAX_SEGMENT_GRAM_BYTES {
-                        flush_segment(
-                            store,
-                            lease,
-                            &prepared,
-                            &mut segment_edits,
-                            &mut current_edits,
-                        )?;
+                        source_profile.observe(FileBuildStage::SegmentFlush, || {
+                            flush_segment(
+                                store,
+                                lease,
+                                &prepared,
+                                &mut segment_edits,
+                                &mut current_edits,
+                            )
+                        })?;
                         prepared.clear();
                     }
                 }
             }
         }
-    }
-    store.flush_adoption_batch()?;
-    for (digest, reference) in &touched_segments {
-        compact_segment(
-            CompactionWork {
-                store,
-                lease,
-                original,
-                current_edits: &mut current_edits,
-                segment_edits: &mut segment_edits,
-                debt_edits: &mut debt_edits,
-                pending: &mut prepared,
-            },
-            *digest,
-            reference,
+        completed_sources += cohort.len();
+        crate::causal_profile::phase_progress(
+            "file_sources_and_segments",
+            source_phase,
+            completed_sources,
             None,
-            maintenance_policy,
-        )?;
+        );
     }
-    if !mutation.clear_all {
-        store.flush_adoption_batch()?;
-        let mut cursor = store.map_cursor(&original.compaction_debt, &[], None, None)?;
-        while let Some((key, reference)) = cursor.next()? {
-            let digest: [u8; 32] = key
-                .as_slice()
-                .try_into()
-                .map_err(|_width| corrupt("compaction debt key is not a digest"))?;
-            if touched_segments.contains_key(&digest) {
-                continue;
-            }
+    source_profile.observe(FileBuildStage::AdoptionFlush, || {
+        store.flush_adoption_batch()
+    })?;
+    for (digest, reference) in &touched_segments {
+        source_profile.observe(FileBuildStage::Compaction, || {
             compact_segment(
                 CompactionWork {
                     store,
@@ -2458,21 +2906,57 @@ fn build_for_seal_inner(
                     debt_edits: &mut debt_edits,
                     pending: &mut prepared,
                 },
-                digest,
-                &reference,
-                prepared_compaction.take(),
+                *digest,
+                reference,
+                None,
                 maintenance_policy,
-            )?;
+            )
+        })?;
+    }
+    if !mutation.clear_all {
+        source_profile.observe(FileBuildStage::AdoptionFlush, || {
+            store.flush_adoption_batch()
+        })?;
+        let mut cursor = store.map_cursor(&original.compaction_debt, &[], None, None)?;
+        while let Some((key, reference)) = cursor.next()? {
+            let digest: [u8; 32] = key
+                .as_slice()
+                .try_into()
+                .map_err(|_width| corrupt("compaction debt key is not a digest"))?;
+            if touched_segments.contains_key(&digest) {
+                continue;
+            }
+            source_profile.observe(FileBuildStage::Compaction, || {
+                compact_segment(
+                    CompactionWork {
+                        store,
+                        lease,
+                        original,
+                        current_edits: &mut current_edits,
+                        segment_edits: &mut segment_edits,
+                        debt_edits: &mut debt_edits,
+                        pending: &mut prepared,
+                    },
+                    digest,
+                    &reference,
+                    prepared_compaction.take(),
+                    maintenance_policy,
+                )
+            })?;
             break;
         }
     }
-    flush_segment(
-        store,
-        lease,
-        &prepared,
-        &mut segment_edits,
-        &mut current_edits,
-    )?;
+    if !prepared.is_empty() {
+        source_profile.observe(FileBuildStage::SegmentFlush, || {
+            flush_segment(
+                store,
+                lease,
+                &prepared,
+                &mut segment_edits,
+                &mut current_edits,
+            )
+        })?;
+    }
     prepared.clear();
     if expected_touched
         .as_ref()
@@ -2480,6 +2964,7 @@ fn build_for_seal_inner(
     {
         return Err(corrupt("hard scan touched source set differs from build"));
     }
+    source_profile.finish();
     crate::causal_profile::finish_phase("file_sources_and_segments", source_phase);
     let maps_phase = crate::causal_profile::begin_phase("file_source_maps");
     let clean_selection = if let Some(policy) = maintenance_policy
@@ -2730,6 +3215,222 @@ mod prepared_compaction_tests {
         }
     }
 
+    #[test]
+    fn fresh_file_bodies_share_physical_roots_and_survive_cold_delete() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let inputs = (0..64)
+            .map(|index| {
+                let body = if index == 32 {
+                    vec![b'w'; 20 * 1024]
+                } else {
+                    format!("fn source_{index:03}() {{ alpha_{index:03} }}").into_bytes()
+                };
+                (format!("file-{index:03}.rs"), body)
+            })
+            .collect::<Vec<_>>();
+        let first = FileAuthorityMutation {
+            edits: inputs
+                .iter()
+                .map(|(path, bytes)| FileSourceEdit::Upsert {
+                    coverage: coverage(path, bytes),
+                    bytes: bytes.clone(),
+                })
+                .collect(),
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let first_lease = store
+            .begin_attempt(&binding(1), &[])
+            .expect("first attempt");
+        let first_reservation = DocVersionReservation {
+            first: 1,
+            count: 64,
+            scope_sha256: [5; 32],
+        };
+        let first_root = build_for_seal(&store, &first_lease, None, &first_reservation, &first)
+            .expect("first build")
+            .root;
+        verify_for_seal(&store, &first_root, None, &first_reservation, &first)
+            .expect("first independent seal");
+        first_lease
+            .finish_published(&first_root.object_roots())
+            .expect("first publication");
+
+        let cold = ObjectStore::open(directory.path()).expect("cold store");
+        let mut physical_bodies = BTreeSet::new();
+        let mut physical_heads = BTreeSet::new();
+        let mut shared_root = None;
+        for (index, (path, bytes)) in inputs.iter().enumerate() {
+            let key = coverage(path, bytes).source.file;
+            let (head_ref, head) = read_head(&cold, &first_root.source_heads, &key)
+                .expect("cold source lookup")
+                .expect("source head");
+            assert_eq!(
+                cold.object_dependencies(&head_ref.root, None)
+                    .expect("head dependencies"),
+                vec![head.body.root.clone()]
+            );
+            assert_eq!(
+                cold.read_blob(
+                    &head.body,
+                    size_u64(crate::file_authority::MAX_FILE_BYTES).expect("limit"),
+                    None
+                )
+                .expect("cold body"),
+                *bytes
+            );
+            if index == 0 {
+                shared_root = Some(head.body.root.clone());
+            }
+            if index == 1 {
+                assert_eq!(Some(head.body.root.clone()), shared_root);
+            }
+            let _new = physical_heads.insert(head_ref.root);
+            let _new = physical_bodies.insert(head.body.root);
+        }
+        assert_eq!(physical_bodies.len(), 2, "one small pack and one wide body");
+        assert!(physical_heads.len() < inputs.len());
+
+        let deleted_key = coverage(&inputs[0].0, &inputs[0].1).source.file;
+        let delete = FileAuthorityMutation {
+            edits: vec![FileSourceEdit::Delete {
+                key: deleted_key.clone(),
+            }],
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let delete_lease = cold
+            .begin_attempt(&binding(2), &first_root.object_roots())
+            .expect("delete attempt");
+        let delete_reservation = DocVersionReservation {
+            first: 0,
+            count: 0,
+            scope_sha256: [5; 32],
+        };
+        let remaining = build_for_seal(
+            &cold,
+            &delete_lease,
+            Some(&first_root),
+            &delete_reservation,
+            &delete,
+        )
+        .expect("delete build")
+        .root;
+        verify_for_seal(
+            &cold,
+            &remaining,
+            Some(&first_root),
+            &delete_reservation,
+            &delete,
+        )
+        .expect("delete independent seal");
+        delete_lease
+            .finish_published(&remaining.object_roots())
+            .expect("delete publication");
+        let reopened = ObjectStore::open(directory.path()).expect("reopen after delete");
+        assert!(
+            read_head(&reopened, &remaining.source_heads, &deleted_key)
+                .expect("deleted source lookup")
+                .is_none()
+        );
+        let survivor = read_head(
+            &reopened,
+            &remaining.source_heads,
+            &coverage(&inputs[1].0, &inputs[1].1).source.file,
+        )
+        .expect("survivor lookup")
+        .expect("survivor head")
+        .1;
+        assert_eq!(Some(survivor.body.root.clone()), shared_root);
+        assert_eq!(
+            reopened
+                .read_blob(
+                    &survivor.body,
+                    size_u64(crate::file_authority::MAX_FILE_BYTES).expect("limit"),
+                    None
+                )
+                .expect("survivor body"),
+            inputs[1].1
+        );
+        verify_all_for_scrub(&reopened, &remaining, None).expect("cold scrub");
+    }
+
+    #[test]
+    fn streamed_segment_term_map_matches_independent_membership_oracle_across_pages() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let lease = store.begin_attempt(&binding(1), &[]).expect("attempt");
+        let mut state = 0x1234_5678_u32;
+        let body = (0..4096)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                b'a' + u8::try_from(state % 26).expect("alphabet")
+            })
+            .collect::<Vec<_>>();
+        let bodies = [body.clone(), body[..2048].to_vec()];
+        let group = ["one.rs", "two.rs"]
+            .into_iter()
+            .zip(&bodies)
+            .enumerate()
+            .map(|(local, (path, bytes))| {
+                prepare_upsert(
+                    &store,
+                    &lease,
+                    &coverage(path, bytes),
+                    bytes,
+                    u64::try_from(local + 1).expect("logical ID"),
+                )
+                .expect("source")
+            })
+            .collect::<Vec<_>>();
+        let mut expected = BTreeMap::<[u8; 3], u64>::new();
+        for (local, item) in group.iter().enumerate() {
+            for gram in &item.content_grams {
+                *expected.entry(*gram).or_default() |= 1_u64 << local;
+            }
+        }
+        assert!(expected.len() > MAX_POSTING_PAGE_TERMS);
+        assert!(expected.values().any(|mask| *mask == 1));
+        assert!(expected.values().any(|mask| *mask == 3));
+        let (map, memberships) = write_term_map(&store, &lease, &group, true).expect("term map");
+        assert_eq!(map.entries, expected.len() as u64);
+        assert_eq!(
+            memberships,
+            expected
+                .values()
+                .map(|mask| u64::from(mask.count_ones()))
+                .sum::<u64>()
+        );
+
+        let cold = ObjectStore::open(directory.path()).expect("cold store");
+        let mut cursor = cold.map_cursor(&map, &[], None, None).expect("map cursor");
+        let mut by_page = BTreeMap::<BlobRef, Vec<[u8; 3]>>::new();
+        while let Some((key, reference)) = cursor.next().expect("map row") {
+            let gram: [u8; 3] = key.try_into().expect("gram width");
+            by_page.entry(reference).or_default().push(gram);
+        }
+        assert!(
+            by_page.len() > 1,
+            "fixture must cross a posting page boundary"
+        );
+        for (reference, grams) in by_page {
+            let bytes = cold
+                .read_blob(&reference, MAX_POSTING_PAGE_BYTES as u64, None)
+                .expect("posting page");
+            let page = PostingPage::decode(&bytes, group.len()).expect("canonical page");
+            assert_eq!(
+                page.0.iter().map(|(gram, _)| *gram).collect::<Vec<_>>(),
+                grams
+            );
+            for (gram, mask) in page.0 {
+                assert_eq!(Some(&mask), expected.get(&gram));
+            }
+        }
+    }
+
     fn one_edit(
         store: &ObjectStore,
         lease: &AttemptLease,
@@ -2815,14 +3516,397 @@ mod prepared_compaction_tests {
     }
 
     #[test]
+    fn fresh_run_routes_stream_two_surfaces_and_refuse_foreign_count_keys() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let lease = store.begin_attempt(&binding(1), &[]).expect("attempt");
+        let counts = [
+            RunGramCount {
+                surface: 1,
+                gram: *b"abc",
+                count: 3,
+            },
+            RunGramCount {
+                surface: 1,
+                gram: *b"abd",
+                count: 1,
+            },
+            RunGramCount {
+                surface: 2,
+                gram: *b"xyz",
+                count: 2,
+            },
+        ];
+        let mut rows = Vec::new();
+        for count in counts {
+            let reference = store
+                .put_blob(
+                    &lease,
+                    ObjectKind::Record,
+                    &[],
+                    &count.encode().expect("count wire"),
+                )
+                .expect("count Record");
+            rows.push((count, reference));
+        }
+        let count_map = store
+            .map_bootstrap(
+                &lease,
+                rows.iter().map(|(count, reference)| {
+                    Ok(MapEdit {
+                        key: count.key().expect("count key").to_vec(),
+                        value: Some(reference.clone()),
+                    })
+                }),
+            )
+            .expect("count map");
+        let (path, content) =
+            bootstrap_fresh_run_routes(&store, &lease, &count_map, 7).expect("fresh route stream");
+        assert_eq!(path.entries, 2);
+        assert_eq!(content.entries, 1);
+        for (count, reference) in rows {
+            let route =
+                run_route_key(count.surface, count.gram, count.count, 7).expect("route key");
+            let map = if count.surface == 1 { &path } else { &content };
+            assert_eq!(
+                store.map_get(map, &route, None).expect("route lookup"),
+                Some(reference)
+            );
+        }
+        let foreign = store
+            .map_bootstrap(
+                &lease,
+                std::iter::once(Ok(MapEdit {
+                    key: vec![3, b'a', b'b', b'c'],
+                    value: store
+                        .map_get(&count_map, &[1, b'a', b'b', b'c'], None)
+                        .expect("count lookup"),
+                })),
+            )
+            .expect("foreign key map");
+        assert!(
+            bootstrap_fresh_run_routes(&store, &lease, &foreign, 7).is_err(),
+            "foreign count key must not be hidden by the surface split"
+        );
+    }
+
+    #[test]
+    fn segment_locators_share_one_physical_record_and_survive_member_deletion() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let lease = store.begin_attempt(&binding(1), &[]).expect("attempt");
+        let mutation = FileAuthorityMutation {
+            edits: (0_u64..3)
+                .map(|index| FileSourceEdit::Upsert {
+                    coverage: coverage(&format!("file-{index}.rs"), b"abcxyz"),
+                    bytes: b"abcxyz".to_vec(),
+                })
+                .collect(),
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let reservation = DocVersionReservation {
+            first: 1,
+            count: 3,
+            scope_sha256: [5; 32],
+        };
+        let built =
+            build_for_seal(&store, &lease, None, &reservation, &mutation).expect("file build");
+        verify_for_seal(&store, &built.root, None, &reservation, &mutation)
+            .expect("independent seal");
+        let mut logical = BTreeSet::new();
+        let mut physical = BTreeSet::new();
+        let mut references = Vec::new();
+        let mut original_bytes = Vec::new();
+        for id in 1_u64..=3 {
+            let reference = store
+                .map_get(&built.root.current_docs, &doc_key(id), None)
+                .expect("locator map read")
+                .expect("locator");
+            let bytes = store
+                .read_blob(
+                    &reference,
+                    size_u64(super::super::MAX_RECORD_BYTES).expect("bound"),
+                    None,
+                )
+                .expect("logical locator bytes");
+            let decoded = LiveDoc::decode(&bytes).expect("locator decode");
+            let source = coverage(&format!("file-{}.rs", id - 1), b"abcxyz");
+            assert_eq!(decoded.logical_id, id);
+            assert_eq!(
+                decoded.source_key_sha256,
+                source_key_digest(&source.source.file).expect("source key")
+            );
+            let expected_sha: [u8; 32] = Sha256::digest(&bytes).into();
+            assert_eq!(reference.sha256, expected_sha);
+            assert_eq!(reference.bytes, bytes.len() as u64);
+            assert_eq!(bytes, decoded.encode().expect("canonical locator"));
+            assert!(logical.insert(reference.sha256), "distinct logical locator");
+            let _new = physical.insert(reference.root.sha256);
+            references.push(reference);
+            original_bytes.push(bytes);
+        }
+        assert_eq!(logical.len(), 3, "three independent logical locators");
+        assert_eq!(physical.len(), 1, "one physical Record for the segment");
+        assert!(
+            references
+                .iter()
+                .all(|reference| reference.root.kind == ObjectKind::Record)
+        );
+
+        let cold = ObjectStore::open(directory.path()).expect("cold object store");
+        verify_for_seal(&cold, &built.root, None, &reservation, &mutation)
+            .expect("cold independent seal");
+        assert_query_ids(
+            &cold,
+            &built.root_bytes,
+            &[1_u64, 2, 3].into_iter().collect(),
+        );
+
+        let survivors = store
+            .map_apply(
+                &lease,
+                &built.root.current_docs,
+                std::iter::once(Ok(MapEdit {
+                    key: doc_key(1).to_vec(),
+                    value: None,
+                })),
+            )
+            .expect("delete one locator map member");
+        let survivor_root = survivors
+            .page
+            .as_ref()
+            .expect("survivor map root")
+            .object
+            .clone();
+        let mut live = BTreeSet::new();
+        store
+            .walk_closure(&[survivor_root], None, &mut |object| {
+                let _new = live.insert(object.sha256);
+                Ok(())
+            })
+            .expect("survivor physical closure");
+        let pack_digest = references[0].root.sha256;
+        assert!(
+            live.contains(&pack_digest),
+            "remaining member must retain pack"
+        );
+        let epoch = store.gc_epoch().expect("GC epoch");
+        assert!(
+            store
+                .gc_sweep_batch(epoch, &[pack_digest], &live)
+                .expect("GC step")
+        );
+        assert_eq!(
+            cold.read_blob(
+                &references[1],
+                size_u64(super::super::MAX_RECORD_BYTES).expect("bound"),
+                None
+            )
+            .expect("surviving packed locator"),
+            original_bytes[1],
+        );
+
+        let empty = store
+            .map_apply(
+                &lease,
+                &survivors,
+                (2_u64..=3).map(|id| {
+                    Ok(MapEdit {
+                        key: doc_key(id).to_vec(),
+                        value: None,
+                    })
+                }),
+            )
+            .expect("delete final locator members");
+        assert!(empty.page.is_none(), "no map member retains the pack");
+        // This test-only sweep uses the explicit empty closure. Production GC
+        // also marks attempt/publication roots before selecting candidates.
+        let no_live_roots = BTreeSet::new();
+        let epoch = store.gc_epoch().expect("GC epoch after final deletion");
+        assert!(
+            store
+                .gc_sweep_batch(epoch, &[pack_digest], &no_live_roots)
+                .expect("reclaim unreferenced pack")
+        );
+        let after_gc = ObjectStore::open(directory.path()).expect("fresh post-GC store");
+        assert!(
+            after_gc
+                .read_blob(
+                    &references[2],
+                    size_u64(super::super::MAX_RECORD_BYTES).expect("bound"),
+                    None,
+                )
+                .is_err(),
+            "final member removal permits physical pack reclamation"
+        );
+    }
+
+    #[test]
+    fn full_segment_packs_64_distinct_logical_locators() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let lease = store.begin_attempt(&binding(1), &[]).expect("attempt");
+        let mutation = FileAuthorityMutation {
+            edits: (0_u64..64)
+                .map(|index| FileSourceEdit::Upsert {
+                    coverage: coverage(&format!("file-{index:03}.rs"), b"abcxyz"),
+                    bytes: b"abcxyz".to_vec(),
+                })
+                .collect(),
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let reservation = DocVersionReservation {
+            first: 1,
+            count: 64,
+            scope_sha256: [5; 32],
+        };
+        let built =
+            build_for_seal(&store, &lease, None, &reservation, &mutation).expect("file build");
+        let mut physical = BTreeSet::new();
+        let mut logical = BTreeSet::new();
+        for id in 1_u64..=64 {
+            let reference = store
+                .map_get(&built.root.current_docs, &doc_key(id), None)
+                .expect("locator map read")
+                .expect("locator");
+            let bytes = store
+                .read_blob(
+                    &reference,
+                    size_u64(super::super::MAX_RECORD_BYTES).expect("bound"),
+                    None,
+                )
+                .expect("logical locator bytes");
+            let decoded = LiveDoc::decode(&bytes).expect("locator decode");
+            let expected_sha: [u8; 32] = Sha256::digest(&bytes).into();
+            let source = coverage(&format!("file-{:03}.rs", id - 1), b"abcxyz");
+            assert_eq!(decoded.logical_id, id);
+            assert_eq!(decoded.local_id, u32::try_from(id - 1).expect("local ID"));
+            assert_eq!(
+                decoded.source_key_sha256,
+                source_key_digest(&source.source.file).expect("source key")
+            );
+            assert_eq!(reference.sha256, expected_sha);
+            assert_eq!(reference.bytes, bytes.len() as u64);
+            assert_eq!(reference.root.kind, ObjectKind::Record);
+            assert!(logical.insert(reference.sha256), "distinct logical locator");
+            let _new = physical.insert(reference.root.sha256);
+        }
+        assert_eq!(logical.len(), 64, "distinct logical locator identities");
+        assert_eq!(physical.len(), 1, "one physical Record for 64 locators");
+    }
+
+    #[test]
+    fn locator_pack_without_scratch_headroom_uses_individual_records() {
+        let directory = tempfile::tempdir().expect("state root");
+        let store = ObjectStore::open(directory.path()).expect("object store");
+        let lease = store.begin_attempt(&binding(1), &[]).expect("attempt");
+        let mutation = FileAuthorityMutation {
+            edits: (0_u64..3)
+                .map(|index| FileSourceEdit::Upsert {
+                    coverage: coverage(&format!("file-{index}.rs"), b"abcxyz"),
+                    bytes: b"abcxyz".to_vec(),
+                })
+                .collect(),
+            clear_all: false,
+            operations_sha256: [4; 32],
+        };
+        let reservation = DocVersionReservation {
+            first: 1,
+            count: 3,
+            scope_sha256: [5; 32],
+        };
+        let built =
+            build_for_seal(&store, &lease, None, &reservation, &mutation).expect("file build");
+        let first = store
+            .map_get(&built.root.current_docs, &doc_key(1), None)
+            .expect("first locator map read")
+            .expect("first locator");
+        let first_bytes = store
+            .read_blob(
+                &first,
+                size_u64(super::super::MAX_RECORD_BYTES).expect("bound"),
+                None,
+            )
+            .expect("first locator bytes");
+        let segment_digest = LiveDoc::decode(&first_bytes)
+            .expect("first locator decode")
+            .segment_sha256;
+        let group: Vec<Prepared> = mutation
+            .edits
+            .iter()
+            .enumerate()
+            .map(|(index, edit)| match edit {
+                FileSourceEdit::Upsert { coverage, bytes } => prepare_upsert(
+                    &store,
+                    &lease,
+                    coverage,
+                    bytes,
+                    u64::try_from(index + 1).expect("logical ID"),
+                )
+                .expect("same source preparation"),
+                FileSourceEdit::Delete { .. } => panic!("upsert fixture"),
+            })
+            .collect();
+        let mut edits = BTreeMap::new();
+        write_segment_locators(&store, &lease, &group, segment_digest, 0, &mut edits)
+            .expect("individual locator fallback");
+        let current_docs = store
+            .map_apply(
+                &lease,
+                &built.root.current_docs,
+                edits
+                    .into_iter()
+                    .map(|(key, value)| Ok(MapEdit { key, value })),
+            )
+            .expect("replace current locators");
+        let mut root = built.root.clone();
+        root.current_docs = current_docs;
+        let root_bytes = root.encode().expect("fallback authority root");
+        let cold = ObjectStore::open(directory.path()).expect("cold object store");
+        verify_for_seal(&cold, &root, None, &reservation, &mutation)
+            .expect("cold fallback independent seal");
+        assert_query_ids(&cold, &root_bytes, &[1_u64, 2, 3].into_iter().collect());
+        let mut physical = BTreeSet::new();
+        for id in 1_u64..=3 {
+            let reference = cold
+                .map_get(&root.current_docs, &doc_key(id), None)
+                .expect("fallback map read")
+                .expect("fallback locator");
+            let bytes = cold
+                .read_blob(
+                    &reference,
+                    size_u64(super::super::MAX_RECORD_BYTES).expect("bound"),
+                    None,
+                )
+                .expect("fallback locator bytes");
+            let original = cold
+                .map_get(&built.root.current_docs, &doc_key(id), None)
+                .expect("packed map read")
+                .expect("packed locator");
+            assert_eq!(reference.sha256, original.sha256);
+            assert_eq!(reference.bytes, original.bytes);
+            assert_eq!(bytes.len() as u64, reference.bytes);
+            assert!(
+                physical.insert(reference.root.sha256),
+                "distinct fallback Record"
+            );
+        }
+        assert_eq!(physical.len(), 3, "scratch fallback uses distinct Records");
+    }
+
+    #[test]
     fn new_run_bootstrap_preserves_routes_ledger_and_pinned_old_views_through_delta() {
         let directory = tempfile::tempdir().expect("state root");
         let store = ObjectStore::open(directory.path()).expect("object store");
         let initial_mutation = FileAuthorityMutation {
-            edits: (0_u64..2)
-                .map(|index| FileSourceEdit::Upsert {
-                    coverage: coverage(&format!("file-{index}.rs"), b"abcxyz"),
-                    bytes: b"abcxyz".to_vec(),
+            edits: [b"abcxyz".as_slice(), b"abcxyz stable".as_slice()]
+                .into_iter()
+                .enumerate()
+                .map(|(index, bytes)| FileSourceEdit::Upsert {
+                    coverage: coverage(&format!("file-{index}.rs"), bytes),
+                    bytes: bytes.to_vec(),
                 })
                 .collect(),
             clear_all: false,
@@ -2852,6 +3936,17 @@ mod prepared_compaction_tests {
         )
         .expect("initial independent seal");
         verify_all_for_scrub(&store, &initial.root, None).expect("initial scrub");
+        let cold = ObjectStore::open(directory.path()).expect("cold object store");
+        let key0 = coverage("file-0.rs", b"abcxyz").source.file;
+        let key1 = coverage("file-1.rs", b"abcxyz stable").source.file;
+        let (_, head0) = read_head(&cold, &initial.root.source_heads, &key0)
+            .expect("first source lookup")
+            .expect("first source");
+        let (_, head1) = read_head(&cold, &initial.root.source_heads, &key1)
+            .expect("second source lookup")
+            .expect("second source");
+        assert_eq!(head0.body.root, head1.body.root);
+        assert_ne!(head0.body.sha256, head1.body.sha256);
         assert!(initial.root.path_routes.entries > 0);
         assert!(initial.root.content_routes.entries > 0);
         assert!(initial.root.run_index_encoded_bytes > 0);
@@ -2930,6 +4025,20 @@ mod prepared_compaction_tests {
         )
         .expect("delete independent seal");
         verify_all_for_scrub(&store, &deleted.root, None).expect("delete scrub");
+        assert!(
+            read_head(&cold, &deleted.root.source_heads, &key0)
+                .expect("deleted lookup")
+                .is_none()
+        );
+        let (_, surviving) = read_head(&cold, &deleted.root.source_heads, &key1)
+            .expect("surviving lookup")
+            .expect("surviving head");
+        assert_eq!(surviving.body, head1.body);
+        assert_eq!(
+            cold.read_blob(&surviving.body, 32, None)
+                .expect("surviving body"),
+            b"abcxyz stable"
+        );
         assert_query_ids(
             &store,
             &deleted.root_bytes,

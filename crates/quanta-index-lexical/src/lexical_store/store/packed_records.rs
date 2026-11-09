@@ -1,4 +1,4 @@
-//! Bounded shared physical roots for small, independently authenticated Records.
+//! Bounded shared physical roots for small, independently authenticated payloads.
 //!
 //! `BlobRef` keeps each logical payload's length and digest. A pack authenticates
 //! every entry in digest order; selecting one never changes its logical bytes.
@@ -7,10 +7,22 @@ use quanta_index_core::CoreError;
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    AttemptLease, BLOCK_BYTES, BlobRef, ObjectKind, ObjectStore, corrupt, invalid, storage,
+    AttemptLease, BLOCK_BYTES, BlobRef, ObjectKind, ObjectRef, ObjectStore, corrupt, invalid,
+    storage,
 };
 
 pub(crate) const MAX_PACKED_RECORDS: usize = 96;
+const BODY_GROUP_BYTES: usize = 16 * 1024;
+
+pub(super) fn packed_dependencies_valid(kind: ObjectKind, dependencies: &[ObjectRef]) -> bool {
+    match (kind, dependencies) {
+        (ObjectKind::Record | ObjectKind::NativeBody | ObjectKind::FileBody, []) => true,
+        (ObjectKind::Record, [body]) => {
+            matches!(body.kind, ObjectKind::NativeBody | ObjectKind::FileBody)
+        }
+        _ => false,
+    }
+}
 
 impl ObjectStore {
     /// At most one 32 KiB payload and 96 logical references are staged here.
@@ -20,6 +32,92 @@ impl ObjectStore {
         lease: &AttemptLease,
         records: &[T],
     ) -> Result<Vec<BlobRef>, CoreError> {
+        self.put_payload_group(lease, ObjectKind::Record, &[], records)
+    }
+
+    /// All records in each pack name the same authenticated body root.
+    pub(crate) fn put_body_record_groups<T: AsRef<[u8]>>(
+        &self,
+        lease: &AttemptLease,
+        body: &ObjectRef,
+        records: &[T],
+    ) -> Result<Vec<BlobRef>, CoreError> {
+        if !matches!(body.kind, ObjectKind::NativeBody | ObjectKind::FileBody) {
+            return Err(invalid("packed body records require a body dependency"));
+        }
+        self.put_payload_groups(
+            lease,
+            ObjectKind::Record,
+            std::slice::from_ref(body),
+            records,
+            BLOCK_BYTES,
+        )
+    }
+
+    /// Pack adjacent small bodies without changing their order or logical bytes.
+    /// Empty and wide bodies retain the independently deduplicated encoding.
+    pub(crate) fn put_body_groups<T: AsRef<[u8]>>(
+        &self,
+        lease: &AttemptLease,
+        kind: ObjectKind,
+        bodies: &[T],
+    ) -> Result<Vec<BlobRef>, CoreError> {
+        if !matches!(kind, ObjectKind::NativeBody | ObjectKind::FileBody) {
+            return Err(invalid("body packing requires a body object kind"));
+        }
+        self.put_payload_groups(lease, kind, &[], bodies, BODY_GROUP_BYTES)
+    }
+
+    fn put_payload_groups<T: AsRef<[u8]>>(
+        &self,
+        lease: &AttemptLease,
+        kind: ObjectKind,
+        dependencies: &[ObjectRef],
+        payloads: &[T],
+        max_group_bytes: usize,
+    ) -> Result<Vec<BlobRef>, CoreError> {
+        if !packed_dependencies_valid(kind, dependencies) {
+            return Err(invalid("packed payload has invalid kind or dependencies"));
+        }
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(payloads.len())
+            .map_err(|error| storage("reserve packed payload references", error))?;
+        let mut remaining = payloads;
+        while let Some((first, rest)) = remaining.split_first() {
+            let first = first.as_ref();
+            if first.is_empty() || first.len() > max_group_bytes - 5 {
+                output.push(self.put_blob(lease, kind, dependencies, first)?);
+                remaining = rest;
+                continue;
+            }
+            let mut width = 3_usize;
+            let count = remaining
+                .iter()
+                .take(MAX_PACKED_RECORDS)
+                .take_while(|body| {
+                    let len = body.as_ref().len();
+                    width = width.saturating_add(2).saturating_add(len);
+                    len != 0 && width <= max_group_bytes
+                })
+                .count();
+            let (group, rest) = remaining.split_at(count);
+            output.extend(self.put_payload_group(lease, kind, dependencies, group)?);
+            remaining = rest;
+        }
+        Ok(output)
+    }
+
+    fn put_payload_group<T: AsRef<[u8]>>(
+        &self,
+        lease: &AttemptLease,
+        kind: ObjectKind,
+        dependencies: &[ObjectRef],
+        records: &[T],
+    ) -> Result<Vec<BlobRef>, CoreError> {
+        if !packed_dependencies_valid(kind, dependencies) {
+            return Err(invalid("packed payload has invalid kind or dependencies"));
+        }
         if records.is_empty() || records.len() > MAX_PACKED_RECORDS {
             return Err(invalid("packed record count exceeds bound"));
         }
@@ -49,7 +147,7 @@ impl ObjectStore {
             let (_, bytes) = entries
                 .first()
                 .ok_or_else(|| invalid("packed record absent"))?;
-            let reference = self.put_blob(lease, ObjectKind::Record, &[], bytes)?;
+            let reference = self.put_blob(lease, kind, dependencies, bytes)?;
             return Ok(vec![reference; records.len()]);
         }
         let width = entries.iter().try_fold(3_usize, |n, (_, bytes)| {
@@ -78,7 +176,7 @@ impl ObjectStore {
             );
             payload.extend_from_slice(bytes);
         }
-        let root = self.put_adopted_object(lease, ObjectKind::Record, &[], &payload)?;
+        let root = self.put_adopted_object(lease, kind, dependencies, &payload)?;
         let mut references = Vec::new();
         references
             .try_reserve_exact(records.len())
@@ -300,6 +398,78 @@ mod tests {
     }
 
     #[test]
+    fn cold_body_packs_preserve_members_and_shared_native_dependency() {
+        let dir = tempfile::tempdir().expect("directory");
+        let store = ObjectStore::open(dir.path()).expect("store");
+        let lease = store.begin_attempt(&binding(), &[]).expect("attempt");
+        let wide = vec![42_u8; BLOCK_BYTES + 1];
+        let inputs = [
+            b"alpha".as_slice(),
+            b"beta".as_slice(),
+            &wide,
+            b"".as_slice(),
+        ];
+        for kind in [ObjectKind::NativeBody, ObjectKind::FileBody] {
+            let refs = store
+                .put_body_groups(&lease, kind, &inputs)
+                .expect("body groups");
+            assert_eq!(refs.len(), inputs.len());
+            assert_eq!(refs[0].root, refs[1].root);
+            assert_ne!(refs[0].sha256, refs[1].sha256);
+            assert_ne!(refs[0].root, refs[2].root);
+            assert_eq!(
+                refs[3],
+                store
+                    .put_blob(&lease, kind, &[], b"")
+                    .expect("empty singleton")
+            );
+            let cold = ObjectStore::open(dir.path())
+                .expect("cold store")
+                .metered_clone();
+            for (reference, expected) in refs.iter().zip(inputs) {
+                assert_eq!(
+                    cold.read_blob(reference, BLOCK_BYTES as u64 + 1, None)
+                        .expect("logical body"),
+                    expected
+                );
+            }
+            let mut cursor = cold.blob_cursor(&refs[1], 4).expect("cursor");
+            assert_eq!(
+                cursor.next(&cold, None).expect("read").expect("block").0,
+                b"beta"
+            );
+            assert!(cursor.next(&cold, None).expect("finished").is_none());
+            let mut missing = refs[0].clone();
+            missing.sha256 = [0; 32];
+            assert!(cold.read_blob(&missing, 5, None).is_err());
+
+            if kind == ObjectKind::NativeBody {
+                let records = store
+                    .put_body_record_groups(&lease, &refs[0].root, &[b"one", b"two"])
+                    .expect("dependent Record pack");
+                assert_eq!(records[0].root, records[1].root);
+                assert_eq!(
+                    cold.read_blob(&records[1], 3, None)
+                        .expect("logical record"),
+                    b"two"
+                );
+                let mut reachable = std::collections::BTreeSet::new();
+                cold.walk_closure(&[records[1].root.clone()], None, &mut |reference| {
+                    let _new = reachable.insert(reference.clone());
+                    Ok(())
+                })
+                .expect("record-to-body closure");
+                assert_eq!(
+                    reachable,
+                    [records[1].root.clone(), refs[1].root.clone()]
+                        .into_iter()
+                        .collect()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn packed_shape_refuses_reordering_duplicates_truncation_and_trailing_bytes() {
         let digest: [u8; 32] = Sha256::digest(b"alpha").into();
         let valid = b"\x00\x02\x00\x05alpha\x00\x04beta";
@@ -343,6 +513,13 @@ mod tests {
                 expected.as_bytes()
             );
         }
+        assert_eq!(query.read_meter_snapshot().1, 1);
+        assert!(
+            query
+                .object_dependencies(&first[0].root, None)
+                .expect("authenticated cached dependencies")
+                .is_empty()
+        );
         assert_eq!(query.read_meter_snapshot().1, 1);
         let mut wrong_length = first[0].clone();
         wrong_length.bytes += 1;

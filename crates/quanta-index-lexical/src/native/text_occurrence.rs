@@ -2,6 +2,7 @@
 //! Query heads and callbacks use this only within their execution scope.
 
 pub(super) mod block;
+pub(in crate::native) use block::is_packed;
 
 use std::{fmt, ops::Deref};
 
@@ -85,17 +86,57 @@ impl OccurrenceReader {
         else {
             return Ok(None);
         };
-        let range = block.selection(term, budget)?;
         Ok(Some(OccurrenceCount {
-            value: u64::try_from(
-                range
-                    .len()
-                    .checked_div(4)
-                    .ok_or(IndexError::ResourceLimited)?,
-            )
-            .map_err(|_error| IndexError::ResourceLimited)?,
+            value: block.position_count(term, budget)?,
             leaf: false,
         }))
+    }
+
+    /// Admit an already checked block into the same bounded reader window.
+    /// Ownership, including its DATA grant, moves without reparse or clone.
+    pub(super) fn admit_checked(
+        &mut self,
+        checked: block::CheckedBlock,
+        budget: &WorkBudget,
+    ) -> Result<usize, IndexError> {
+        budget.checkpoint()?;
+        if self.capacity == 0 {
+            self.blocks.clear();
+        } else if let Some(slot) = self.blocks.as_slice().iter().position(|block| {
+            block.object().registration.reference == checked.object().registration.reference
+        }) {
+            let current = self
+                .blocks
+                .as_slice()
+                .get(slot)
+                .ok_or(IndexError::ResourceLimited)?;
+            if current.object() != checked.object() {
+                return Err(IndexError::CorruptObject(
+                    "same occurrence reference has different checked DATA".into(),
+                ));
+            }
+            return Ok(slot);
+        }
+        // A full ring replaces one already-admitted slot. No cache-wide
+        // growth or eviction of a live returned position vector is possible.
+        if self.blocks.len() < self.capacity.max(1) {
+            let slot = self.blocks.len();
+            self.blocks.push(checked, budget)?;
+            Ok(slot)
+        } else {
+            let slot = self.next;
+            let entry = self
+                .blocks
+                .as_mut_slice()
+                .get_mut(slot)
+                .ok_or(IndexError::ResourceLimited)?;
+            *entry = checked;
+            self.next = slot
+                .checked_add(1)
+                .and_then(|next| next.checked_rem(self.blocks.len()))
+                .ok_or(IndexError::ResourceLimited)?;
+            Ok(slot)
+        }
     }
 
     fn block(
@@ -131,30 +172,11 @@ impl OccurrenceReader {
             return Ok(Ok(checked));
         }
         let stored = checked_object(reference, objects, budget)?;
-        if !stored.payload.starts_with(b"QITXOC01") {
+        if !is_packed(&stored.payload) {
             return Ok(Err(stored));
         }
         let checked = block::CheckedBlock::parse(stored, budget)?;
-        // A full ring replaces one already-admitted slot. No cache-wide
-        // growth or eviction of a live returned position vector is possible.
-        let slot = if self.blocks.len() < self.capacity.max(1) {
-            let slot = self.blocks.len();
-            self.blocks.push(checked, budget)?;
-            slot
-        } else {
-            let slot = self.next;
-            let entry = self
-                .blocks
-                .as_mut_slice()
-                .get_mut(slot)
-                .ok_or(IndexError::ResourceLimited)?;
-            *entry = checked;
-            self.next = slot
-                .checked_add(1)
-                .and_then(|next| next.checked_rem(self.blocks.len()))
-                .ok_or(IndexError::ResourceLimited)?;
-            slot
-        };
+        let slot = self.admit_checked(checked, budget)?;
         Ok(Ok(self
             .blocks
             .as_slice()
@@ -171,19 +193,10 @@ impl OccurrenceReader {
     ) -> Result<OccurrenceCount, IndexError> {
         super::text_spool::check_term_key(term)?;
         match self.block(reference, objects, budget)? {
-            Ok(block) => {
-                let range = block.selection(term, budget)?;
-                Ok(OccurrenceCount {
-                    value: u64::try_from(
-                        range
-                            .len()
-                            .checked_div(4)
-                            .ok_or(IndexError::ResourceLimited)?,
-                    )
-                    .map_err(|_error| IndexError::ResourceLimited)?,
-                    leaf: false,
-                })
-            }
+            Ok(block) => Ok(OccurrenceCount {
+                value: block.position_count(term, budget)?,
+                leaf: false,
+            }),
             Err(stored) => {
                 let (layout, _parse_memory) = preflight(&stored.payload, budget)?;
                 Ok(OccurrenceCount {
@@ -204,46 +217,68 @@ impl OccurrenceReader {
     ) -> Result<ScopedOccurrence, IndexError> {
         super::text_spool::check_term_key(term)?;
         match self.block(reference, objects, budget)? {
-            Ok(block) => {
-                let range = block.selection(term, budget)?;
-                let bytes = block
-                    .object()
-                    .payload
-                    .get(range)
-                    .ok_or(IndexError::ResourceLimited)?;
-                let memory = budget.reserve_memory(
-                    u64::try_from(bytes.len()).map_err(|_error| IndexError::ResourceLimited)?,
-                    MemoryLifetime::Temporary,
-                )?;
-                let mut positions = Vec::new();
-                positions
-                    .try_reserve_exact(
-                        bytes
-                            .len()
-                            .checked_div(4)
-                            .ok_or(IndexError::ResourceLimited)?,
-                    )
-                    .map_err(|_error| IndexError::ResourceLimited)?;
-                for raw in bytes.chunks_exact(4) {
-                    budget.checkpoint()?;
-                    let position = raw.try_into().map_err(|_width| {
-                        IndexError::BackendViolation(
-                            "checked text block position width changed".into(),
-                        )
-                    })?;
-                    positions.push(u32::from_be_bytes(position));
-                }
-                budget.checkpoint()?;
-                Ok(ScopedOccurrence {
-                    value: Occurrence {
-                        positions: Positions(positions),
-                    },
-                    _memory: memory,
-                })
-            }
+            Ok(block) => load_checked_block(block, term, budget),
             Err(stored) => decode_payload(&stored.payload, budget),
         }
     }
+
+    /// Packed inventory entries must point to a checked block. A scalar leaf
+    /// in this path is a persisted-shape violation, not a fallback format.
+    pub(super) fn load_packed(
+        &mut self,
+        reference: ObjectRef,
+        term: &[u8],
+        objects: &dyn ImmutableObjectPort,
+        budget: &mut WorkBudget,
+    ) -> Result<ScopedOccurrence, IndexError> {
+        super::text_spool::check_term_key(term)?;
+        match self.block(reference, objects, budget)? {
+            Ok(block) => load_checked_block(block, term, budget),
+            Err(_stored) => Err(IndexError::CorruptObject(
+                "packed inventory references scalar occurrence".into(),
+            )),
+        }
+    }
+}
+
+fn load_checked_block(
+    block: &block::CheckedBlock,
+    term: &[u8],
+    budget: &WorkBudget,
+) -> Result<ScopedOccurrence, IndexError> {
+    let range = block.selection(term, budget)?;
+    let bytes = block
+        .object()
+        .payload
+        .get(range)
+        .ok_or(IndexError::ResourceLimited)?;
+    let memory = budget.reserve_memory(
+        u64::try_from(bytes.len()).map_err(|_error| IndexError::ResourceLimited)?,
+        MemoryLifetime::Temporary,
+    )?;
+    let mut positions = Vec::new();
+    positions
+        .try_reserve_exact(
+            bytes
+                .len()
+                .checked_div(4)
+                .ok_or(IndexError::ResourceLimited)?,
+        )
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    for raw in bytes.chunks_exact(4) {
+        budget.checkpoint()?;
+        let position = raw.try_into().map_err(|_width| {
+            IndexError::BackendViolation("checked text block position width changed".into())
+        })?;
+        positions.push(u32::from_be_bytes(position));
+    }
+    budget.checkpoint()?;
+    Ok(ScopedOccurrence {
+        value: Occurrence {
+            positions: Positions(positions),
+        },
+        _memory: memory,
+    })
 }
 
 /// The canonical value moves with its charge; no copied position allocation or

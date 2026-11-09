@@ -311,7 +311,11 @@ impl LexicalSealedManifest {
                 ),
             });
         }
-        if format_version != LEXICAL_SEALED_MANIFEST_FORMAT_VERSION {
+        if !matches!(
+            format_version,
+            LEXICAL_SEALED_MANIFEST_FORMAT_VERSION
+                | crate::lexical_root_names::LEXICAL_UNPACKED_BODY_MANIFEST_FORMAT_VERSION
+        ) {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
                 message: format!(
@@ -709,6 +713,18 @@ mod tests {
     }
 
     #[test]
+    fn unpacked_body_manifest_remains_readable() {
+        let expected = manifest();
+        let mut bytes = expected.encode().expect("encode manifest");
+        assert_eq!(bytes.get(..2), Some([0x8c, 23].as_slice()));
+        *bytes.get_mut(1).expect("format byte") = 22;
+        assert_eq!(
+            LexicalSealedManifest::decode(&bytes, Path::new("/g1/m")).expect("prior manifest"),
+            expected
+        );
+    }
+
+    #[test]
     fn valid_indefinite_outer_row_round_trips() {
         let expected = manifest();
         let mut bytes = expected.encode().expect("encode manifest");
@@ -725,8 +741,8 @@ mod tests {
     fn small_bigpos_tagged_leading_version_keeps_prior_classification() {
         let expected = manifest();
         let bytes = expected.encode().expect("encode manifest");
-        assert_eq!(bytes.get(..2), Some([0x8c, 0x16].as_slice()));
-        let mut tagged = vec![0x8c, 0xc2, 0x41, 0x16];
+        assert_eq!(bytes.get(..2), Some([0x8c, 0x17].as_slice()));
+        let mut tagged = vec![0x8c, 0xc2, 0x41, 0x17];
         tagged.extend_from_slice(bytes.get(2..).expect("manifest body"));
         assert_eq!(
             LexicalSealedManifest::decode(&tagged, Path::new("/g1/m")).expect("tagged version"),
@@ -1023,7 +1039,7 @@ mod tests {
         }
     }
 
-    /// Every format but the served one is refused by name.
+    /// Unsupported formats are refused by name.
     ///
     /// The earlier layouts (format 4: the doc id stored but not indexed;
     /// format 5: the page order stored but not a fast column) and a later
@@ -1116,7 +1132,7 @@ mod tests {
             quanta_index_core::CoreError::Typed { code, message }
                 if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
                     && message.contains("format 10")
-                    && message.contains("serves 22")
+                    && message.contains("serves 23")
                     && message.contains("shared paged lexical authorities")
                     && message.contains("must be rebuilt")
         ));
@@ -1129,7 +1145,7 @@ mod tests {
         assert!(
             matches!(error, quanta_index_core::CoreError::Typed { code, message }
             if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
-                && message.contains("format 21") && message.contains("serves 22")
+                && message.contains("format 21") && message.contains("serves 23")
                 && message.contains("must be rebuilt"))
         );
     }
@@ -1147,7 +1163,7 @@ mod tests {
             quanta_index_core::CoreError::Typed { code, message }
                 if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported
                     && message.contains("format 12")
-                    && message.contains("serves 22")
+                    && message.contains("serves 23")
                     && message.contains("shared paged lexical authorities")
                     && message.contains("must be rebuilt")
         ));

@@ -1,4 +1,4 @@
-//! Fixed positional wires prove one authenticated read across 64-row pages.
+//! Fixed dictionary wires prove one authenticated read across 64-row pages.
 
 use super::*;
 
@@ -154,21 +154,31 @@ impl quanta_index_core::index::MemoryScopePort for DenyOnePageKey {
 }
 
 fn block_wire(rows: u16) -> Result<(Vec<u8>, Vec<ObjectRef>), IndexError> {
-    let mut payload = b"QITXEM01".to_vec();
+    let mut payload = b"QITXEM02".to_vec();
     payload.extend_from_slice(&rows.to_be_bytes());
-    payload.extend_from_slice(&[0, 0]);
+    payload.extend_from_slice(&rows.min(250).to_be_bytes());
     let mut children = Vec::new();
     for ordinal in 0..rows {
         payload.extend_from_slice(&2_u16.to_be_bytes());
         payload.extend_from_slice(&ordinal.to_be_bytes());
-        let child = ordinal
+        let selector = ordinal
             .checked_rem(250)
-            .and_then(|value| value.checked_add(1))
             .ok_or(IndexError::ResourceLimited)?;
-        let child = u8::try_from(child).map_err(|_error| IndexError::ResourceLimited)?;
-        children.push(reference(child));
+        payload.extend_from_slice(&selector.to_be_bytes());
+        if ordinal < 250 {
+            let child = ordinal.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+            let child = u8::try_from(child).map_err(|_error| IndexError::ResourceLimited)?;
+            children.push(reference(child));
+        }
     }
     Ok((payload, children))
+}
+
+fn child_at_row(children: &[ObjectRef], ordinal: u16) -> Result<ObjectRef, IndexError> {
+    children
+        .get(usize::from(ordinal % 250))
+        .copied()
+        .ok_or(IndexError::ResourceLimited)
 }
 
 #[test]
@@ -188,12 +198,7 @@ fn positional_cursor_reads_once_across_65_and_512_rows() -> Result<(), IndexErro
             })?;
             let (key, child) = entry.object_parts()?;
             check_eq!(key.as_slice(), ordinal.to_be_bytes().as_slice());
-            check_eq!(
-                *child,
-                *children
-                    .get(usize::from(ordinal))
-                    .ok_or(IndexError::ResourceLimited)?
-            );
+            check_eq!(*child, child_at_row(&children, ordinal)?);
         }
         check!(cursor.next(&mut work)?.is_none());
         check_eq!(retained.physical_gets.load(Ordering::Relaxed), 1);
@@ -280,9 +285,9 @@ fn positional_cursor_validates_entire_wire_before_first_page() -> Result<(), Ind
     let (mut wire, children) = block_wire(65)?;
     let final_key = wire
         .len()
-        .checked_sub(2)
+        .checked_sub(4)
         .ok_or(IndexError::ResourceLimited)?;
-    wire.get_mut(final_key..)
+    wire.get_mut(final_key..final_key + 2)
         .ok_or(IndexError::ResourceLimited)?
         .copy_from_slice(&63_u16.to_be_bytes());
     let root = objects.insert_wire(&wire, &children, &mut entry_budget()?)?;
@@ -365,12 +370,7 @@ fn positional_cursor_mid_page_refusal_retries_from_original_row() -> Result<(), 
             .ok_or_else(|| IndexError::BackendViolation("retry lost a positional row".into()))?;
         let (key, child) = entry.object_parts()?;
         check_eq!(key.as_slice(), ordinal.to_be_bytes().as_slice());
-        check_eq!(
-            *child,
-            *children
-                .get(usize::from(ordinal))
-                .ok_or(IndexError::ResourceLimited)?
-        );
+        check_eq!(*child, child_at_row(&children, ordinal)?);
     }
     check!(cursor.next(&mut work)?.is_none());
     drop(cursor);

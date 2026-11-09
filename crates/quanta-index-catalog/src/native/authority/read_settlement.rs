@@ -3,13 +3,15 @@
 
 use quanta_index_core::index::{
     CatalogReadSettlementPort, Digest, IndexError, NativeReadReleaseObservation,
-    NativeReadSettlement, NativeReadSettlementScope, NativeReadSettlementStatus, ObjectRef,
-    ReadSessionLease, ReadTicketLease, WorkBudget, WorkUsage,
+    NativeReadSettlement, NativeReadSettlementBlocker, NativeReadSettlementScope,
+    NativeReadSettlementStatus, ObjectRef, ReadSessionLease, ReadTicketLease, WorkBudget,
+    WorkUsage,
 };
-use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params, types::ValueRef};
 
 use super::{
-    SqliteCatalog, begin, exactly_one, int, lifetime, reclaim, retention, sql, workspace_key,
+    SqliteCatalog, begin, cached_query_row, exactly_one, int, lifetime, reclaim, retention, sql,
+    uint, workspace_key,
 };
 
 fn charged_exists(
@@ -65,7 +67,7 @@ pub(super) fn verify_object_lifecycle_coverage(
                 ..WorkUsage::default()
             })?;
             let mut statement = connection
-                .prepare(if after.is_some() {
+                .prepare_cached(if after.is_some() {
                     next_page_query
                 } else {
                     first_page_query
@@ -87,23 +89,15 @@ pub(super) fn verify_object_lifecycle_coverage(
                     bytes: 32,
                     ..WorkUsage::default()
                 })?;
-                let key: Option<Vec<u8>> = row.get(0).map_err(|error| sql(&error))?;
-                let key: [u8; 32] = key
-                    .ok_or_else(|| {
-                        IndexError::Storage("stored object reference shape changed".into())
-                    })?
-                    .try_into()
-                    .map_err(|_error| {
-                        IndexError::Storage("stored object reference shape changed".into())
-                    })?;
-                let kind: Option<i64> = connection
-                    .query_row(
-                        "SELECT kind FROM native_gc_object_v1 WHERE object=?1",
-                        params![&key[..]],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(|error| sql(&error))?;
+                let key = bounded_object_key(row, "stored object reference shape changed")?;
+                let kind: Option<i64> = cached_query_row(
+                    connection,
+                    "SELECT kind FROM native_gc_object_v1 WHERE object=?1",
+                    params![&key[..]],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| sql(&error))?;
                 if kind != Some(expected_kind) {
                     return Err(IndexError::Storage(
                         "stored object has no matching lifecycle".into(),
@@ -120,6 +114,17 @@ pub(super) fn verify_object_lifecycle_coverage(
     Ok(())
 }
 
+fn bounded_object_key(
+    row: &rusqlite::Row<'_>,
+    invalid: &'static str,
+) -> Result<[u8; 32], IndexError> {
+    let ValueRef::Blob(key) = row.get_ref(0).map_err(|error| sql(&error))? else {
+        return Err(IndexError::Storage(invalid.into()));
+    };
+    key.try_into()
+        .map_err(|_error| IndexError::Storage(invalid.into()))
+}
+
 impl CatalogReadSettlementPort for SqliteCatalog {
     fn release_held_ticket(
         &self,
@@ -134,7 +139,6 @@ impl CatalogReadSettlementPort for SqliteCatalog {
         if ticket.session != concrete.binding {
             return Err(IndexError::SnapshotUnavailable);
         }
-        let guard_inode = lifetime::inode(&concrete.file)?;
         let mut connection = self.lock_native_budget(budget)?;
         budget.charge(WorkUsage {
             reads: 4,
@@ -143,7 +147,7 @@ impl CatalogReadSettlementPort for SqliteCatalog {
         })?;
         let transaction = begin(&mut connection)?;
         let session_row = lifetime::checked_session(&transaction, concrete.binding)?;
-        if (session_row.2, session_row.3) != guard_inode {
+        if (session_row.2, session_row.3) != concrete.inode {
             return Err(IndexError::Storage("read session inode mismatch".into()));
         }
         let pin = lifetime::checked_pin(&transaction, ticket)?;
@@ -196,7 +200,6 @@ impl CatalogReadSettlementPort for SqliteCatalog {
         scope.validate()?;
         budget.checkpoint()?;
         let concrete = lifetime::guard(self, session)?;
-        let guard_inode = lifetime::inode(&concrete.file)?;
         let mut connection = self.lock_native_budget(budget)?;
         // A DEFERRED read transaction fixes one SQLite snapshot without taking
         // the write reservation used for Catalog mutations.
@@ -212,7 +215,7 @@ impl CatalogReadSettlementPort for SqliteCatalog {
             ..WorkUsage::default()
         })?;
         let session_row = lifetime::checked_session(&transaction, concrete.binding)?;
-        if (session_row.2, session_row.3) != guard_inode {
+        if (session_row.2, session_row.3) != concrete.inode {
             return Err(IndexError::Storage("read session inode mismatch".into()));
         }
         let head = retention::charged_current_view(&transaction, scope.workspace, budget)?
@@ -241,8 +244,12 @@ impl CatalogReadSettlementPort for SqliteCatalog {
             status,
         };
 
-        if has_remaining_target_pins || exact_floor <= scope.target.sequence {
-            return Ok(result(NativeReadSettlementStatus::Pending));
+        let pending = |blocker| Ok(result(NativeReadSettlementStatus::Pending(blocker)));
+        if has_remaining_target_pins {
+            return pending(NativeReadSettlementBlocker::TargetPin);
+        }
+        if exact_floor <= scope.target.sequence {
+            return pending(NativeReadSettlementBlocker::ExactFloor);
         }
         // A work row below the floor conservatively blocks settlement. Terminal
         // work retires independently of the floor, including work on a newer
@@ -253,20 +260,44 @@ impl CatalogReadSettlementPort for SqliteCatalog {
              WHERE workspace=?1 AND epoch=?2 AND sequence<?3)",
             params![&workspace, epoch, int(exact_floor)?],
             budget,
-        )? || charged_exists(
+        )? {
+            return pending(NativeReadSettlementBlocker::WorkBelowFloor);
+        }
+        if charged_exists(
             &transaction,
             "SELECT EXISTS(SELECT 1 FROM native_work_v1
              WHERE workspace=?1 AND epoch=?2 AND status IN (2,3,4))",
             params![&workspace, epoch],
             budget,
-        )? || charged_exists(
-            &transaction,
-            "SELECT EXISTS(SELECT 1 FROM native_terminal_custody_v1
-             WHERE workspace=?1 AND epoch=?2)",
-            params![&workspace, epoch],
-            budget,
         )? {
-            return Ok(result(NativeReadSettlementStatus::Pending));
+            return pending(NativeReadSettlementBlocker::TerminalWork);
+        }
+        // The same indexed first row that withholds settlement identifies the
+        // oldest outstanding custody. No second query or unbounded scan.
+        budget.charge(WorkUsage {
+            reads: 1,
+            bytes: 8,
+            ..WorkUsage::default()
+        })?;
+        let oldest_ready: Option<i64> = transaction
+            .query_row(
+                "SELECT ready_sequence FROM native_terminal_custody_v1
+                 WHERE workspace=?1 AND epoch=?2 ORDER BY ready_sequence LIMIT 1",
+                params![&workspace, epoch],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| sql(&error))?;
+        if let Some(oldest_ready) = oldest_ready {
+            let oldest_ready_sequence = uint(oldest_ready)?;
+            if oldest_ready_sequence == 0 {
+                return Err(IndexError::Storage(
+                    "terminal custody ready sequence is zero".into(),
+                ));
+            }
+            return pending(NativeReadSettlementBlocker::TerminalCustody {
+                oldest_ready_sequence,
+            });
         }
         // Examine view identities in fixed pages. A nested anti-join could
         // silently scan an unbounded number of protected views in one query.
@@ -313,7 +344,7 @@ impl CatalogReadSettlementPort for SqliteCatalog {
                     found = true;
                     continue;
                 }
-                return Ok(result(NativeReadSettlementStatus::Pending));
+                return pending(NativeReadSettlementBlocker::UnretiredView);
             }
             if !found {
                 break;
@@ -345,7 +376,7 @@ impl CatalogReadSettlementPort for SqliteCatalog {
             [],
             budget,
         )? {
-            return Ok(result(NativeReadSettlementStatus::Pending));
+            return pending(NativeReadSettlementBlocker::ReclaimQueue);
         }
 
         verify_object_lifecycle_coverage(&transaction, budget)?;
@@ -368,7 +399,9 @@ impl CatalogReadSettlementPort for SqliteCatalog {
                 "SELECT CASE WHEN typeof(object)='blob' AND length(object)=32 THEN object END,
                         phase FROM native_gc_object_v1 ORDER BY object LIMIT 256"
             };
-            let mut statement = transaction.prepare(query).map_err(|error| sql(&error))?;
+            let mut statement = transaction
+                .prepare_cached(query)
+                .map_err(|error| sql(&error))?;
             let mut rows = match after.as_ref() {
                 Some(key) => statement.query(params![&key[..]]),
                 None => statement.query([]),
@@ -385,22 +418,16 @@ impl CatalogReadSettlementPort for SqliteCatalog {
                     bytes: 32,
                     ..WorkUsage::default()
                 })?;
-                let key: Option<Vec<u8>> = row.get(0).map_err(|error| sql(&error))?;
-                let key: [u8; 32] = key
-                    .ok_or_else(|| IndexError::Storage("GC object reference shape changed".into()))?
-                    .try_into()
-                    .map_err(|_error| {
-                        IndexError::Storage("GC object reference shape changed".into())
-                    })?;
+                let key = bounded_object_key(row, "GC object reference shape changed")?;
                 let phase: i64 = row.get(1).map_err(|error| sql(&error))?;
                 if phase != 0 {
-                    return Ok(result(NativeReadSettlementStatus::Pending));
+                    return pending(NativeReadSettlementBlocker::ObjectLifecycle);
                 }
                 if !reclaim::checked_live_object(&transaction, ObjectRef(Digest(key)), budget)? {
-                    return Ok(result(NativeReadSettlementStatus::Pending));
+                    return pending(NativeReadSettlementBlocker::ObjectLifecycle);
                 }
                 if !reclaim::reference_exists(&transaction, ObjectRef(Digest(key)), budget)? {
-                    return Ok(result(NativeReadSettlementStatus::Pending));
+                    return pending(NativeReadSettlementBlocker::UnreferencedObject);
                 }
                 after = Some(key);
                 found = true;

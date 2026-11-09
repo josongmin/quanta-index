@@ -88,7 +88,7 @@ fn fixture(cpu_available: bool) -> TestResult<Fixture> {
     let observation = PhysicalObservation {
         context: child,
         span: Some(span),
-        cells: [PhaseCell::default(); 9],
+        cells: [PhaseCell::default(); DiagnosticObjectInstallPhaseV1::ALL.len()],
         flushed: false,
     };
     Ok((clock, events, root, observation))
@@ -370,6 +370,55 @@ fn fixed_clock_unavailable_cpu_is_absent_without_health_failure() -> TestResult 
             != 1
     {
         return Err("unavailable CPU was reported as zero or unhealthy".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn writer_subphases_emit_three_distinct_aggregates() -> TestResult {
+    let (clock, events, root, mut observation) = fixture(true)?;
+    for (index, phase) in [
+        DiagnosticObjectInstallPhaseV1::WriterTicketPrepare,
+        DiagnosticObjectInstallPhaseV1::WriterOpen,
+        DiagnosticObjectInstallPhaseV1::WriterCreatedWitness,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let start = index as u64 * 10;
+        clock.wall.store(start, Ordering::Relaxed);
+        clock.cpu.store(start, Ordering::Relaxed);
+        observation.measure(phase, || {
+            clock.wall.store(start + 5, Ordering::Relaxed);
+            clock.cpu.store(start + 3, Ordering::Relaxed);
+            Ok::<(), &'static str>(())
+        })?;
+    }
+    observation.finish(&Ok::<(), &'static str>(()));
+    root.finish(DiagnosticTerminalV1::Ok)?;
+    let events = recorded_events(&events)?;
+    let phases: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event.kind {
+            DiagnosticEventKindV1::ObjectInstallAggregate {
+                phase,
+                calls: 1,
+                elapsed_sum_ns: 5,
+                thread_cpu_ns: Some(3),
+                failures: 0,
+                ..
+            } => Some(phase),
+            _ => None,
+        })
+        .collect();
+    if phases
+        != [
+            DiagnosticObjectInstallPhaseV1::WriterTicketPrepare,
+            DiagnosticObjectInstallPhaseV1::WriterOpen,
+            DiagnosticObjectInstallPhaseV1::WriterCreatedWitness,
+        ]
+    {
+        return Err("writer subphases did not emit distinct aggregates".into());
     }
     Ok(())
 }

@@ -233,7 +233,7 @@ reserve. These are fixture inputs, not Native operator defaults or a required
 20ms policy. Original4K vector-row, Large file-tier and mixed-load results retain
 their separate input contracts. Kernel occurrence-input counts and object
 reserve/confirm entry counts do not measure unique file births or device writes.
-See the [counter and maintenance interpretation contract](../../../docs/plans/oct-22-finalizing/E07-performance-operations.md#비용-계수유지보수-설정-해석).
+See the [counter and maintenance interpretation contract](../../../docs/history/nov-5-indexing-bugbash/E07-performance-operations.md#비용-계수유지보수-설정-해석).
 
 ## Select the query policy and result unit
 

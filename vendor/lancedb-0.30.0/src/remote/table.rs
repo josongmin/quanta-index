@@ -614,6 +614,11 @@ impl<S: HttpSend> RemoteTable<S> {
         mut body: serde_json::Value,
         query: &VectorQueryRequest,
     ) -> Result<Vec<serde_json::Value>> {
+        if query.exact_tie_order.is_some() {
+            return Err(Error::NotSupported {
+                message: "exact tie order is supported only by local Lance tables".to_string(),
+            });
+        }
         self.apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.

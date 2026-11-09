@@ -64,13 +64,12 @@ fn authenticate(
     // Every pending reference comes from one extant immutable edge. The explicit
     // whole-root entry ceiling also bounds this separately admitted frontier.
     let maximum = u32::try_from(maximum).map_err(|_error| IndexError::ResourceLimited)?;
-    reader.verify_closure(
+    let [request, profile] = reader.verify_closure_with_selected_roots(
         roots.get(..count).ok_or(IndexError::ResourceLimited)?,
+        [manifest.operation.request, manifest.publication.profile],
         maximum,
         budget,
     )?;
-    let request = reader.get(manifest.operation.request, budget)?;
-    let profile = reader.get(manifest.publication.profile, budget)?;
     verify_native_boot_inputs(
         &manifest.operation,
         &manifest.publication,

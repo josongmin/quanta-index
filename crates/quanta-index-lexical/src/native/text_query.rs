@@ -1,8 +1,8 @@
 //! Page-bounded Content Boolean and positional phrase execution of the planner IR.
 
 use super::text::{
-    NativeTextIndex, TextPostingCursor, TextReadContext, TextStatistics, ValidatedPostingHit,
-    admitted_query_tokens,
+    BoundTextMember, NativeTextIndex, Root, TextPostingCursor, TextReadContext, TextStatistics,
+    ValidatedPostingHit, admitted_query_tokens,
 };
 use super::text_memory::PreparedKey;
 use super::text_overlay::TextOverlayCorpus;
@@ -26,6 +26,31 @@ use quanta_index_core::{
 use quanta_index_lq_text_normalizer::TextQueryError;
 use std::time::Instant;
 use std::{cmp::Ordering, collections::BinaryHeap};
+
+enum MemberScope<'a> {
+    Direct(&'a MemberBinding),
+    Bound(&'a BoundTextMember),
+}
+
+impl MemberScope<'_> {
+    fn member(&self) -> &MemberBinding {
+        match self {
+            Self::Direct(member) => member,
+            Self::Bound(bound) => bound.member(),
+        }
+    }
+
+    fn root(
+        &self,
+        index: &NativeTextIndex,
+        context: &mut TextReadContext<'_>,
+    ) -> Result<Root, IndexError> {
+        match self {
+            Self::Direct(member) => index.pinned_root(member, context),
+            Self::Bound(bound) => bound.root(index, context),
+        }
+    }
+}
 
 /// One query-owned aggregate. All observations remain advisory to the work budget.
 struct QueryLexicalObservation {
@@ -722,6 +747,44 @@ impl NativeTextIndex {
         overlay: Option<(&TextOverlayCorpus, &[TextOverlaySource<'_>])>,
         context: TextReadContext<'_>,
     ) -> Result<NativeTextRanking, IndexError> {
+        self.search_content_with_scope(
+            MemberScope::Direct(member),
+            plan,
+            constraints,
+            execution,
+            overlay,
+            context,
+        )
+    }
+
+    pub(super) fn search_content_with_bound_member(
+        &self,
+        bound: &BoundTextMember,
+        plan: &LexicalPlan,
+        constraints: &quanta_index_contract::QueryConstraintSetV1,
+        execution: TextContentExecution,
+        overlay: Option<(&TextOverlayCorpus, &[TextOverlaySource<'_>])>,
+        context: TextReadContext<'_>,
+    ) -> Result<NativeTextRanking, IndexError> {
+        self.search_content_with_scope(
+            MemberScope::Bound(bound),
+            plan,
+            constraints,
+            execution,
+            overlay,
+            context,
+        )
+    }
+
+    fn search_content_with_scope(
+        &self,
+        member_scope: MemberScope<'_>,
+        plan: &LexicalPlan,
+        constraints: &quanta_index_contract::QueryConstraintSetV1,
+        execution: TextContentExecution,
+        overlay: Option<(&TextOverlayCorpus, &[TextOverlaySource<'_>])>,
+        context: TextReadContext<'_>,
+    ) -> Result<NativeTextRanking, IndexError> {
         let TextReadContext {
             ticket,
             objects,
@@ -731,7 +794,7 @@ impl NativeTextIndex {
         let mut observation = QueryLexicalObservation::new(budget.request().diagnostic_context());
         let mut scoped_budget = budget.scoped_diagnostic_context(observation.child_context());
         let result = self.search_content_with_overlay_inner(
-            member,
+            member_scope,
             plan,
             constraints,
             execution,
@@ -755,7 +818,7 @@ impl NativeTextIndex {
 
     fn search_content_with_overlay_inner(
         &self,
-        member: &MemberBinding,
+        member_scope: MemberScope<'_>,
         plan: &LexicalPlan,
         constraints: &quanta_index_contract::QueryConstraintSetV1,
         execution: TextContentExecution,
@@ -763,6 +826,7 @@ impl NativeTextIndex {
         mut context: TextReadContext<'_>,
         observation: &mut QueryLexicalObservation,
     ) -> Result<NativeTextRanking, IndexError> {
+        let member = member_scope.member();
         let TextContentExecution { top_k, policy } = execution;
         let mut occurrences = super::text_occurrence::OccurrenceReader::new(64)?;
         if let Some((corpus, _)) = overlay {
@@ -892,7 +956,7 @@ impl NativeTextIndex {
             },
         )?;
         let selection = super::text_filter::resolve(self, constraints, &mut context)?;
-        let root = self.pinned_root(member, &mut context)?;
+        let root = member_scope.root(self, &mut context)?;
         if (source_regex_count != 0 || !anchored)
             && overlay.is_some_and(|(corpus, _)| {
                 corpus.statistics().docs > super::text_universe::MAX_UNANCHORED_DOCS

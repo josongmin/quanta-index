@@ -75,7 +75,8 @@ use crate::harness::{
 #[path = "scale/native_index.rs"]
 mod native_index;
 pub use native_index::{
-    NativeIndexMeasurement, measure_index_native_tier, native_source_binding_for_failure,
+    NativeCorpusInput, NativeIndexMeasurement, measure_index_native_tier, measure_native_corpus,
+    native_source_binding_for_failure,
     write_index_native_artifacts,
 };
 
@@ -1437,36 +1438,44 @@ fn allocated_root_bytes_with_cancel(
     root: &Path,
     cancelled: impl FnMut() -> bool,
 ) -> AnyResult<u64> {
-    allocated_root_visit(root, cancelled, |_path, _metadata| Ok(()))
+    let [total, _, _] = allocated_root_scopes(root, cancelled, |_path, _metadata| Ok(0))?;
+    Ok(total)
 }
 
 #[cfg(unix)]
-fn allocated_root_visit(
+fn allocated_root_scopes(
     root: &Path,
     mut cancelled: impl FnMut() -> bool,
-    mut visit: impl FnMut(&Path, &fs::Metadata) -> AnyResult<()>,
-) -> AnyResult<u64> {
+    mut subsets: impl FnMut(&Path, &fs::Metadata) -> AnyResult<u8>,
+) -> AnyResult<[u64; 3]> {
     let mut pending = vec![root.to_path_buf()];
-    let mut seen = BTreeSet::new();
-    let mut total = 0_u64;
+    // Each inode records the fixture, state and scratch memberships in order.
+    let mut seen = std::collections::HashMap::<(u64, u64), u8>::new();
+    let mut totals = [0_u64; 3];
     while let Some(path) = pending.pop() {
         anyhow::ensure!(!cancelled(), "disk_probe_cancelled");
         let metadata = fs::symlink_metadata(&path)?;
-        // A hard link may first be visited outside a caller's subset. Each
-        // subset must see its own path before the union deduplicates the inode.
-        visit(&path, &metadata)?;
-        if !seen.insert((metadata.dev(), metadata.ino())) {
+        let scopes = 1 | subsets(&path, &metadata)?;
+        let prior = seen.entry((metadata.dev(), metadata.ino())).or_default();
+        let new_scopes = scopes & !*prior;
+        *prior |= scopes;
+        // A hard link reached outside a subset must still count when the
+        // same inode is later reached through a path inside that subset.
+        if new_scopes == 0 {
             continue;
         }
-        total = total
-            .checked_add(
-                metadata
-                    .blocks()
-                    .checked_mul(512)
-                    .ok_or_else(|| anyhow::anyhow!("scale: allocated-block byte count overflow"))?,
-            )
-            .ok_or_else(|| anyhow::anyhow!("scale: allocated root byte count overflow"))?;
-        if metadata.is_dir() {
+        let bytes = metadata
+            .blocks()
+            .checked_mul(512)
+            .context("scale: allocated-block byte count overflow")?;
+        for (scope, total) in totals.iter_mut().enumerate() {
+            if new_scopes & (1 << scope) != 0 {
+                *total = total
+                    .checked_add(bytes)
+                    .context("scale: allocated root byte count overflow")?;
+            }
+        }
+        if new_scopes & 1 != 0 && metadata.is_dir() {
             anyhow::ensure!(!cancelled(), "disk_probe_cancelled");
             for entry in fs::read_dir(path)? {
                 anyhow::ensure!(!cancelled(), "disk_probe_cancelled");
@@ -1474,7 +1483,7 @@ fn allocated_root_visit(
             }
         }
     }
-    Ok(total)
+    Ok(totals)
 }
 
 #[cfg(unix)]
@@ -1486,35 +1495,16 @@ fn allocated_native_fixture_with_cancel(
         .parent()
         .context("native state root has no fixture parent")?;
     let scratch = state.join("native-scratch-v1");
-    let mut state_inodes = BTreeSet::new();
-    let mut scratch_inodes = BTreeSet::new();
-    let mut state_bytes = 0_u64;
-    let mut scratch_bytes = 0_u64;
     let mut state_seen = false;
-    let fixture_bytes = allocated_root_visit(fixture, cancelled, |path, metadata| {
+    let totals = allocated_root_scopes(fixture, cancelled, |path, metadata| {
         if path == state {
             anyhow::ensure!(metadata.is_dir(), "native state root is not a directory");
             state_seen = true;
         }
-        let inode = (metadata.dev(), metadata.ino());
-        let bytes = metadata
-            .blocks()
-            .checked_mul(512)
-            .context("native fixture allocated-block byte count overflow")?;
-        if path.starts_with(state) && state_inodes.insert(inode) {
-            state_bytes = state_bytes
-                .checked_add(bytes)
-                .context("native state allocation overflow")?;
-        }
-        if path.starts_with(&scratch) && scratch_inodes.insert(inode) {
-            scratch_bytes = scratch_bytes
-                .checked_add(bytes)
-                .context("native scratch allocation overflow")?;
-        }
-        Ok(())
+        Ok((u8::from(path.starts_with(state)) << 1) | (u8::from(path.starts_with(&scratch)) << 2))
     })?;
     anyhow::ensure!(state_seen, "native state root absent from fixture census");
-    Ok([fixture_bytes, state_bytes, scratch_bytes])
+    Ok(totals)
 }
 
 #[cfg(unix)]

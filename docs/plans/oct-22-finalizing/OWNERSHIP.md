@@ -3115,7 +3115,10 @@ Compact registration implementation ownership (8f7 freeze lifted):
 
 
 <a id="e07-closeout-ownership-20261030"></a>
-### E07 current closeout ownership — 2026-10-30
+### E07 closeout ownership checkpoint — 2026-10-30
+
+Historical routing for the Oct-30 cohort. Current Native indexing assignments
+follow the [bugbash ownership boundary](../nov-5-indexing-bugbash/WORKPLAN.md#중복-제외와-소유-경계).
 
 - Root rechecked HEAD90a0ec34/source90c163e8/2879:changed paths from the last
   bound cohort0. E07 compile/product drivers and owned Runtime compiler inventory0.

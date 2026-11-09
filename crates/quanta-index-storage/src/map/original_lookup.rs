@@ -3,13 +3,101 @@
 
 use super::{
     BranchValue, FileObjectStore, IndexError, MAX_NIBBLES, MapBuffer, MapRoot, MapValue, Node,
-    ObjectRef, WorkBudget, WorkUsage,
+    ObjectRef, PackedBranch, WorkBudget, WorkUsage, charge_key_allocation, key_nibbles,
 };
+use quanta_index_core::index::ports::MAX_MAP_LOOKUP_BATCH;
+
+pub(super) fn lookup_batch_with(
+    root: MapRoot,
+    keys: &[&[u8]],
+    values: &mut [Option<MapValue>],
+    budget: &mut WorkBudget,
+    mut read_node: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<Node, IndexError>,
+) -> Result<(), IndexError> {
+    if keys.len() > MAX_MAP_LOOKUP_BATCH || keys.len() != values.len() {
+        return Err(IndexError::InvalidInput(
+            "map lookup batch shape exceeds bound".into(),
+        ));
+    }
+    budget.charge(WorkUsage {
+        bytes: u64::try_from(
+            keys.len()
+                .checked_mul(std::mem::size_of::<Option<MapValue>>())
+                .ok_or(IndexError::ResourceLimited)?,
+        )
+        .map_err(|_error| IndexError::ResourceLimited)?,
+        ..WorkUsage::default()
+    })?;
+    let mut lookup = OriginalLookup::new();
+    for (key, value) in keys.iter().zip(values) {
+        charge_key_allocation(key, budget)?;
+        let nibbles = key_nibbles(key, budget)?;
+        *value = lookup.lookup_with(root, &nibbles, budget, &mut read_node)?;
+    }
+    Ok(())
+}
 
 struct Frame {
     reference: ObjectRef,
     offset: usize,
     node: Node,
+}
+
+/// Packed DATA is terminal-only and belongs to its enclosing physical frame.
+/// A borrowed lookup avoids retaining another frame or charging a decoded read.
+fn lookup_packed(
+    packed: &PackedBranch,
+    nibbles: &[u8],
+    offset: usize,
+    budget: &mut WorkBudget,
+) -> Result<Option<MapValue>, IndexError> {
+    budget.checkpoint()?;
+    let node = &packed.node;
+    budget.charge(WorkUsage {
+        bytes: u64::try_from(node.prefix.len()).map_err(|_error| IndexError::ResourceLimited)?,
+        ..WorkUsage::default()
+    })?;
+    let remaining = nibbles
+        .get(offset..)
+        .ok_or_else(|| IndexError::CorruptObject("map traversal passed key end".into()))?;
+    if !remaining.starts_with(&node.prefix) {
+        return Ok(None);
+    }
+    let offset = offset
+        .checked_add(node.prefix.len())
+        .ok_or(IndexError::ResourceLimited)?;
+    if offset > MAX_NIBBLES {
+        return Err(IndexError::CorruptObject(
+            "packed map traversal exceeds key limit".into(),
+        ));
+    }
+    if offset == nibbles.len() {
+        return Ok(node.value);
+    }
+    let edge = usize::from(
+        *nibbles
+            .get(offset)
+            .ok_or_else(|| IndexError::CorruptObject("map traversal passed key end".into()))?,
+    );
+    let offset = offset.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+    if offset > MAX_NIBBLES {
+        return Err(IndexError::CorruptObject(
+            "packed map traversal exceeds key limit".into(),
+        ));
+    }
+    let Some(branch) = node.branches.get(edge)? else {
+        return Ok(None);
+    };
+    let BranchValue::Terminal(value) = &branch.value else {
+        return Err(IndexError::CorruptObject(
+            "packed map branch has a nested child".into(),
+        ));
+    };
+    budget.charge(WorkUsage {
+        bytes: u64::try_from(branch.prefix.len()).map_err(|_error| IndexError::ResourceLimited)?,
+        ..WorkUsage::default()
+    })?;
+    Ok((nibbles.get(offset..) == Some(branch.prefix.as_slice())).then_some(*value))
 }
 
 pub(super) struct OriginalLookup {
@@ -53,9 +141,10 @@ impl OriginalLookup {
             self.frames.truncate(0);
             self.root = Some(root);
         }
-        let Some(mut reference) = root.0 else {
+        let Some(reference) = root.0 else {
             return Ok(None);
         };
+        let mut reference = reference;
         let mut offset = 0usize;
         let mut depth = 0usize;
         loop {
@@ -80,19 +169,16 @@ impl OriginalLookup {
                 self.frames.push(
                     Frame {
                         reference,
-                        offset,
                         node,
+                        offset,
                     },
                     budget,
                 )?;
             }
-            let node = &self
-                .frames
-                .get(depth)
-                .ok_or_else(|| {
-                    IndexError::BackendViolation("original lookup lost its frame".into())
-                })?
-                .node;
+            let frame = self.frames.get(depth).ok_or_else(|| {
+                IndexError::BackendViolation("original lookup lost its frame".into())
+            })?;
+            let node = &frame.node;
             budget.charge(WorkUsage {
                 bytes: u64::try_from(node.prefix.len())
                     .map_err(|_error| IndexError::ResourceLimited)?,
@@ -119,10 +205,18 @@ impl OriginalLookup {
                     }
                     match node.branches.get(edge)? {
                         None => Some(None),
-                        Some(branch) => match branch.value {
+                        Some(branch) => match &branch.value {
                             BranchValue::Indirect(next) => {
-                                reference = next;
+                                reference = *next;
                                 None
+                            }
+                            BranchValue::Packed(child) => {
+                                if !branch.prefix.is_empty() {
+                                    return Err(IndexError::CorruptObject(
+                                        "packed map branch has an external prefix".into(),
+                                    ));
+                                }
+                                Some(lookup_packed(child, nibbles, offset, budget)?)
                             }
                             BranchValue::Terminal(value) => {
                                 budget.charge(WorkUsage {
@@ -132,7 +226,7 @@ impl OriginalLookup {
                                 })?;
                                 Some(
                                     (nibbles.get(offset..) == Some(branch.prefix.as_slice()))
-                                        .then_some(value),
+                                        .then_some(*value),
                                 )
                             }
                         },

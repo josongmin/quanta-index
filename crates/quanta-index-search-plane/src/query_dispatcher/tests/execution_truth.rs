@@ -11,11 +11,12 @@
 use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
-    EngineTouched, ExplainCandidateV1, HybridCandidateV1, HybridLaneContributionV1, HybridLaneV1,
-    HybridQueryRequest, HybridSeedQueryRequest, QueryConstraintSetV1, SearchExplanation,
-    SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
-    SemanticCorpusKindV1, SemanticQueryRequest, SemanticSeedCorpusBudgetV1, SymbolQueryRequest,
-    TextQueryRequest, TextQuerySyntax,
+    EngineTouched, ExplainCandidateV1, GoTestTraceFileQueryRequestV1, HybridCandidateV1,
+    HybridLaneContributionV1, HybridLaneV1, HybridQueryRequest, HybridSeedQueryRequest,
+    QueryConstraintSetV1, SearchExplanation, SearchPlaneExplainQueryRequest,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SemanticCorpusKindV1,
+    SemanticQueryRequest, SemanticSeedCorpusBudgetV1, SymbolQueryRequest, TextQueryRequest,
+    TextQuerySyntax,
 };
 use quanta_index_core::{RequestBudgetV1, RequestCorrelationV1};
 
@@ -440,6 +441,22 @@ fn hybrid_request(
         semantic_query_text: "needle".to_string(),
         generation: Some(ready_pin()),
         generation_selector: None,
+        top_k: 10,
+    })
+}
+
+fn go_trace_file_request() -> SearchPlaneQueryIpcRequest {
+    SearchPlaneQueryIpcRequest::GoTestTraceFileV1(GoTestTraceFileQueryRequestV1 {
+        query: HybridQueryRequest {
+            text_query: text_query("needle", QueryConstraintSetV1::unconstrained()),
+            semantic_query_text: "needle".to_string(),
+            generation: Some(ready_pin()),
+            generation_selector: None,
+            top_k: 10,
+        },
+        failure_excerpt: "src/handler.go:42: failure".to_string(),
+        failure_source_repo_id: Some(ready_pin().repo_id),
+        failure_module_context: None,
         top_k: 10,
     })
 }
@@ -1312,6 +1329,7 @@ fn one_correlation_reaches_every_route_explanation() -> TestResult {
                 "hybrid",
                 hybrid_request("needle", QueryConstraintSetV1::unconstrained()),
             ),
+            ("go trace file", go_trace_file_request()),
             (
                 "seed",
                 seed_request("needle", QueryConstraintSetV1::unconstrained(), corpora),
@@ -1353,6 +1371,59 @@ fn one_correlation_reaches_every_route_explanation() -> TestResult {
         if id != 0 {
             return Err(format!("{name}: uncorrelated dispatch must stay 0, got {id}").into());
         }
+    }
+    Ok(())
+}
+
+// CASE-COVERS: P02 — Go file ranking reports the execution of its original
+// chunk lanes, including a searched lane that returned no candidate.
+#[test]
+fn go_test_trace_execution_truth_matches_backend_calls() -> TestResult {
+    for (label, lexical_rows, semantic_rows, lexical_contributed, semantic_contributed) in [
+        (
+            "both",
+            vec![candidate("lex-a", 1.0)],
+            vec![candidate("sem-a", 0.9)],
+            true,
+            true,
+        ),
+        (
+            "lexical only",
+            vec![candidate("lex-a", 1.0)],
+            Vec::new(),
+            true,
+            false,
+        ),
+        ("zero hit", Vec::new(), Vec::new(), false, false),
+    ] {
+        let lanes = truth_dispatcher(lexical_rows, semantic_rows)?;
+        let correlation = RequestCorrelationV1::from_raw(91).ok_or("91 is a valid request id")?;
+        let response = lanes.dispatcher.dispatch(
+            go_trace_file_request(),
+            &RequestBudgetV1::unbounded().with_correlation(correlation),
+        );
+        let SearchPlaneQueryIpcResponse::GoTestTraceFileV1(files) = &response else {
+            return Err(format!("{label}: expected Go file response, got {response:?}").into());
+        };
+        let lexical = total_lexical(&lanes)?;
+        let semantic = total_semantic(&lanes)?;
+        if lexical == 0 || semantic == 0 || files.explanation.request_id != 91 {
+            return Err(format!(
+                "{label}: lost backend call or correlation: lexical={lexical}, semantic={semantic}, id={}",
+                files.explanation.request_id
+            )
+            .into());
+        }
+        assert_truth_chain(
+            label,
+            &files.explanation,
+            &lane_flags(&response)?,
+            emitted_fanout(&lanes),
+            lexical,
+            semantic,
+            lexical_contributed,
+            semantic_contributed,
+        )?;
     }
     Ok(())
 }

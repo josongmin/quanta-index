@@ -744,8 +744,206 @@ fn distinct_terms(count: u32) -> String {
         .join(" ")
 }
 
+fn check_inline_owner_inventory(
+    member: &MemberBinding,
+    owner: OwnerKey,
+    record: ObjectRef,
+    tokens: u64,
+    tag: u8,
+    objects: &CanonicalObjects,
+    maps: &CanonicalMaps,
+) -> Result<ObjectRef, IndexError> {
+    let mut work = integration_budget()?;
+    let root = read_root(member, objects, &mut work)?;
+    let value = maps
+        .lookup(root.owners, &owner_key(owner), &mut work)?
+        .ok_or_else(|| IndexError::CorruptObject("owner contribution absent".into()))?;
+    let MapValue::Inline(inline) = value else {
+        return Err(IndexError::BackendViolation(
+            "dense owner used a separate contribution object".into(),
+        ));
+    };
+    let logical = read_contribution(value, objects, &mut work)?;
+    let inventory = match (tag, logical.inventory) {
+        (0x80, EntryMap::Block(reference))
+        | (0x81, EntryMap::Tree(reference))
+        | (0x82, EntryMap::OccurrenceBlock(reference)) => reference,
+        _ => {
+            return Err(IndexError::CorruptObject(
+                "unexpected inventory shape".into(),
+            ));
+        }
+    };
+    let mut bytes = [tag; 9];
+    bytes
+        .get_mut(1..)
+        .ok_or(IndexError::ResourceLimited)?
+        .copy_from_slice(&tokens.to_be_bytes());
+    check_eq!(inline.data()?, &bytes);
+    check_eq!(inline.children()?, &[record, inventory]);
+    check_eq!(logical.record, record);
+    check_eq!(logical.indexed_tokens, tokens);
+    let wrapper = CanonicalObjects::registration(&encode(&logical)?, vec![record, inventory])?;
+    check!(
+        !objects
+            .stored
+            .lock()
+            .map_err(|_| IndexError::Storage("test object lock".into()))?
+            .contains_key(&wrapper.reference)
+    );
+    Ok(inventory)
+}
+
 #[test]
-fn bootstrap_512_aliases_share_one_physical_block_across_sql_packets() -> Result<(), IndexError> {
+fn cold_single_block_stages_one_anchor_and_preserves_long_key_fallback() -> Result<(), IndexError> {
+    let workspace = visitor_fixture()?.ticket.view.identity.workspace;
+    for (body, terms, staged_rows) in [
+        (distinct_terms(256), 512, 1),
+        (format!("{} {}", distinct_terms(6), "x".repeat(32)), 14, 14),
+    ] {
+        let objects = CanonicalObjects::default();
+        let maps = CanonicalMaps::default();
+        let scratch = TestScratch::default();
+        let mut work = integration_budget()?;
+        let spool = TextSpool::new(&scratch, &mut work)?;
+        let mut context = AttemptContext {
+            attempt: test_attempt(workspace),
+            objects: &objects,
+            maps: &maps,
+            custody: &TestCustody,
+            scratch: &scratch,
+            budget: &mut work,
+        };
+        let mut edits = InventoryEdits::new(0)?;
+        let mut writes = OccurrenceWrites::new();
+        writes.pack_owners = true;
+        let mut confirmed = ConfirmedOccurrences::new(0)?;
+        let prepared = prepare_inventory(
+            &body,
+            &EntryMap::default(),
+            0,
+            &mut context,
+            &spool,
+            &mut confirmed,
+            &mut edits,
+            &mut writes,
+        )?;
+        check!(prepared.changed);
+        check_eq!(prepared.term_count, terms);
+        check_eq!(writes.fanout_rows, staged_rows);
+        check_eq!(prepared.alias.is_some(), staged_rows == 1);
+        writes.flush(&mut context, &spool, &mut confirmed, &mut edits)?;
+        let roots = entry_patch::apply(
+            entry_map::EntryMapUse::ColdInventory,
+            &[EntryMap::default()],
+            &[staged_rows],
+            &mut spool.inventory_cursor(1)?,
+            |slot| spool.inventory_root_cursor(slot),
+            &mut context,
+            None,
+        )?;
+        let root = *roots
+            .as_slice()
+            .first()
+            .ok_or(IndexError::ResourceLimited)?;
+        if let Some(alias) = prepared.alias {
+            check_eq!(alias.terms, terms);
+            check_eq!(
+                alias.verify(&root, &mut context)?,
+                EntryMap::OccurrenceBlock(alias.reference)
+            );
+        } else {
+            check!(matches!(root, EntryMap::OccurrenceBlock(_)));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn small_ascii_cold_buffer_matches_sql_wire_and_uses_sql_without_optional_memory()
+-> Result<(), IndexError> {
+    // Repeated and unique tokens cross multiple TokenBatch packets. The two
+    // paths must produce the same installed block, not merely the same count.
+    let body = format!("{} alpha beta alpha", distinct_terms(64));
+    let workspace = visitor_fixture()?.ticket.view.identity.workspace;
+    let mut observed = Vec::new();
+    for direct in [false, true] {
+        let objects = CanonicalObjects::default();
+        let maps = CanonicalMaps::default();
+        let scratch = TestScratch::default();
+        let mut work = integration_budget()?;
+        let spool = TextSpool::new(&scratch, &mut work)?;
+        let memory = Arc::new(TokenMemory {
+            ceiling: 100_000_000,
+            ..TokenMemory::default()
+        });
+        if direct {
+            work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+                BatchOutputMemoryScope(Arc::clone(&memory)),
+            ))));
+        }
+        let mut context = AttemptContext {
+            attempt: test_attempt(workspace),
+            objects: &objects,
+            maps: &maps,
+            custody: &TestCustody,
+            scratch: &scratch,
+            budget: &mut work,
+        };
+        let mut edits = InventoryEdits::new(0)?;
+        let mut writes = OccurrenceWrites::new();
+        writes.pack_owners = true;
+        let mut confirmed = ConfirmedOccurrences::new(0)?;
+        let prepared = prepare_inventory(
+            &body,
+            &EntryMap::default(),
+            0,
+            &mut context,
+            &spool,
+            &mut confirmed,
+            &mut edits,
+            &mut writes,
+        )?;
+        check_eq!(
+            spool.token_term_page(None, context.budget)?.is_empty(),
+            direct
+        );
+        check!(prepared.alias.is_some());
+        writes.flush(&mut context, &spool, &mut confirmed, &mut edits)?;
+        let roots = entry_patch::apply(
+            entry_map::EntryMapUse::ColdInventory,
+            &[EntryMap::default()],
+            &[1],
+            &mut spool.inventory_cursor(1)?,
+            |slot| spool.inventory_root_cursor(slot),
+            &mut context,
+            None,
+        )?;
+        let root = roots
+            .as_slice()
+            .first()
+            .ok_or(IndexError::ResourceLimited)?;
+        let alias = prepared.alias.ok_or(IndexError::ResourceLimited)?;
+        let expanded = alias.verify(root, &mut context)?;
+        let payload = objects
+            .get(alias.reference, context.budget)?
+            .payload
+            .clone();
+        observed.push((
+            prepared.indexed_tokens,
+            prepared.term_count,
+            expanded,
+            payload,
+        ));
+        drop(spool);
+    }
+    check_eq!(observed.first(), observed.get(1));
+    Ok(())
+}
+
+#[test]
+fn bootstrap_512_aliases_share_one_physical_block_and_keep_all_selectors() -> Result<(), IndexError>
+{
     let recipe = TextRecipe::new(Digest([77; 32]));
     let owner = OwnerKey {
         producer: ProducerId([78; 16]),
@@ -754,7 +952,7 @@ fn bootstrap_512_aliases_share_one_physical_block_across_sql_packets() -> Result
     let objects = CanonicalObjects::default();
     let maps = CanonicalMaps::default();
     // Two case surfaces for each of 256 terms yield 512 canonical selectors.
-    // One physical ref must survive eight 64-row inventory SQL packets.
+    // The anchor carries one physical ref for all 512 logical selectors.
     let record = source_record(&objects, recipe, &distinct_terms(256))?;
     let source = source_root(&maps, owner, record)?;
     let index = NativeTextIndex::new(recipe);
@@ -769,9 +967,36 @@ fn bootstrap_512_aliases_share_one_physical_block_across_sql_packets() -> Result
         workspace,
     )?;
     check_eq!(objects.block_inputs.load(Ordering::Relaxed), 1);
+    let inventory = check_inline_owner_inventory(
+        &candidate.binding,
+        owner,
+        record,
+        256,
+        0x82,
+        &objects,
+        &maps,
+    )?;
     let first = inventory_ref(&candidate.binding, owner, "t000", &objects, &maps)?;
     let last = inventory_ref(&candidate.binding, owner, "t255", &objects, &maps)?;
+    check_eq!(inventory, first);
     check_eq!(first, last);
+    check!(
+        !objects
+            .stored
+            .lock()
+            .map_err(|_| IndexError::Storage("test object lock".into()))?
+            .values()
+            .any(|object| object.payload.starts_with(b"QITXEM02"))
+    );
+    check_eq!(
+        EntryMap::OccurrenceBlock(inventory).lookup(
+            &objects,
+            &maps,
+            b"\0missing",
+            &mut integration_budget()?,
+        )?,
+        None
+    );
     let block = objects.get(first, &mut integration_budget()?)?;
     check!(block.payload.starts_with(b"QITXOC01"));
     check_eq!(block.payload.get(8..10), Some(b"\x02\x00".as_slice()));
@@ -823,6 +1048,15 @@ fn bootstrap_full_retry_crosses_512_rows_and_keeps_boundary_selectors_exact()
         workspace,
     )?;
     check_eq!(objects.block_inputs.load(Ordering::Relaxed), 2);
+    let _inventory = check_inline_owner_inventory(
+        &candidate.binding,
+        owner,
+        record,
+        258,
+        0x81,
+        &objects,
+        &maps,
+    )?;
     let first = inventory_ref(&candidate.binding, owner, "t000", &objects, &maps)?;
     let last = inventory_ref_case(
         &candidate.binding,

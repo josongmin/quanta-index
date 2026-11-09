@@ -1829,13 +1829,13 @@ fn validated_catalog_clock_sample(
     connection: &Connection,
     current: u64,
 ) -> Result<(u64, u64), IndexError> {
-    let (last, checksum): (i64, Vec<u8>) = connection
-        .query_row(
-            "SELECT last_ms,row_digest FROM native_work_clock_v1 WHERE singleton=1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .map_err(|error| sql(&error))?;
+    let (last, checksum): (i64, Vec<u8>) = cached_query_row(
+        connection,
+        "SELECT last_ms,row_digest FROM native_work_clock_v1 WHERE singleton=1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .map_err(|error| sql(&error))?;
     if checksum != fields_digest(b"qidx.native.workclock.v1", &(1_i64, last))? {
         return Err(IndexError::Storage(
             "native work clock digest mismatch".into(),
@@ -1873,15 +1873,15 @@ fn persist_validated_catalog_clock_sample(
         return Ok(current);
     }
     let next = int(current)?;
-    let changed = connection
-        .execute(
-            "UPDATE native_work_clock_v1 SET last_ms=?1,row_digest=?2 WHERE singleton=1",
-            params![
-                next,
-                fields_digest(b"qidx.native.workclock.v1", &(1_i64, next))?
-            ],
-        )
-        .map_err(|error| sql(&error))?;
+    let changed = cached_execute(
+        connection,
+        "UPDATE native_work_clock_v1 SET last_ms=?1,row_digest=?2 WHERE singleton=1",
+        params![
+            next,
+            fields_digest(b"qidx.native.workclock.v1", &(1_i64, next))?
+        ],
+    )
+    .map_err(|error| sql(&error))?;
     exactly_one(changed, "advance work clock")?;
     Ok(current)
 }
@@ -4122,6 +4122,20 @@ impl ManagedObjectInstallPort for SqliteCatalog {
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
         managed_install::install(self, scope, objects, budget, true)
+    }
+
+    fn supports_atomic_attempt_advance(&self) -> bool {
+        true
+    }
+
+    fn advance_attempt_managed(
+        &self,
+        attempt: AttemptRef,
+        confirmed: &[RegisteredObject],
+        next: &[RegisteredObject],
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        managed_install::advance_attempt(self, attempt, confirmed, next, budget)
     }
 }
 
@@ -9273,6 +9287,172 @@ mod tests {
     }
 
     #[test]
+    fn read_ticket_request_deadline_bounds_catalog_writer_wait() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let session = catalog.open_read_session()?;
+        let ticket = acquire_ticket_with_test_budget(
+            &catalog,
+            session.as_ref(),
+            ViewSelection::Exact(genesis.identity),
+            Duration::from_secs(30),
+        )?;
+        let writer = catalog.lock()?;
+        let outcome = std::thread::scope(|scope| -> Result<_, Box<dyn Error>> {
+            let (send, receive) = std::sync::mpsc::channel();
+            let catalog = &catalog;
+            let session = session.as_ref();
+            let job = scope.spawn(move || {
+                let budget = WorkBudget::with_request(
+                    WorkLimits {
+                        reads: 1,
+                        writes: 1,
+                        bytes: 1,
+                        mutations: 1,
+                    },
+                    quanta_index_core::RequestBudgetV1::for_duration(Duration::from_millis(50)),
+                );
+                let result = catalog.validate_ticket_for_request(session, ticket.lease, &budget);
+                send.send((result, budget.first_denial()))
+            });
+            let observed = receive.recv_timeout(Duration::from_secs(2));
+            drop(writer);
+            job.join()
+                .map_err(|_panic| "validation worker panicked")??;
+            Ok(observed?)
+        })?;
+        check_eq!(outcome.0, Err(IndexError::ResourceLimited));
+        check_eq!(
+            outcome.1,
+            Some(quanta_index_core::index::WorkBudgetDenial::Deadline)
+        );
+        check_eq!(fixture_pin_count(&catalog)?, 1);
+        catalog.validate_ticket_for_request(session.as_ref(), ticket.lease, &admission_budget())?;
+        catalog.release_ticket(session.as_ref(), ticket.lease)?;
+        Ok(())
+    }
+
+    #[test]
+    fn read_ticket_renew_deadline_preserves_old_lease_and_retry_fence() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let session = catalog.open_read_session()?;
+        let ticket = acquire_ticket_with_test_budget(
+            &catalog,
+            session.as_ref(),
+            ViewSelection::Exact(genesis.identity),
+            Duration::from_secs(30),
+        )?;
+        let writer = catalog.lock()?;
+        let outcome = std::thread::scope(|scope| -> Result<_, Box<dyn Error>> {
+            let (send, receive) = std::sync::mpsc::channel();
+            let catalog = &catalog;
+            let session = session.as_ref();
+            let job = scope.spawn(move || {
+                let budget = WorkBudget::with_request(
+                    WorkLimits {
+                        reads: 1,
+                        writes: 1,
+                        bytes: 1,
+                        mutations: 1,
+                    },
+                    quanta_index_core::RequestBudgetV1::for_duration(Duration::from_millis(50)),
+                );
+                let result = catalog.renew_ticket_for_request(
+                    session,
+                    ticket.lease,
+                    Duration::from_secs(30),
+                    &budget,
+                );
+                send.send((result, budget.first_denial()))
+            });
+            let observed = receive.recv_timeout(Duration::from_secs(2));
+            drop(writer);
+            job.join().map_err(|_panic| "renewal worker panicked")??;
+            Ok(observed?)
+        })?;
+        check_eq!(outcome.0, Err(IndexError::ResourceLimited));
+        check_eq!(
+            outcome.1,
+            Some(quanta_index_core::index::WorkBudgetDenial::Deadline)
+        );
+        check_eq!(fixture_pin_count(&catalog)?, 1);
+        catalog.validate_ticket(session.as_ref(), ticket.lease)?;
+        let renewed = catalog.renew_ticket_for_request(
+            session.as_ref(),
+            ticket.lease,
+            Duration::from_secs(30),
+            &admission_budget(),
+        )?;
+        check_ne!(renewed.fence, ticket.lease.fence);
+        check_eq!(
+            catalog.validate_ticket(session.as_ref(), ticket.lease),
+            Err(IndexError::SnapshotUnavailable)
+        );
+        catalog.validate_ticket(session.as_ref(), renewed)?;
+        catalog.release_ticket(session.as_ref(), renewed)?;
+        Ok(())
+    }
+
+    #[test]
+    fn read_ticket_renew_returns_committed_lease_after_commit_hook_cancels() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, genesis) = setup(root.path())?;
+        let session = catalog.open_read_session()?;
+        let ticket = acquire_ticket_with_test_budget(
+            &catalog,
+            session.as_ref(),
+            ViewSelection::Exact(genesis.identity),
+            Duration::from_secs(30),
+        )?;
+        let stop = Arc::new(AtomicBool::new(false));
+        {
+            let connection = catalog.lock()?;
+            let hook_stop = Arc::clone(&stop);
+            connection.commit_hook(Some(move || {
+                hook_stop.store(true, Ordering::Release);
+                false
+            }))?;
+        }
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(5))
+            .ok_or("ticket deadline overflow")?;
+        let budget = WorkBudget::with_request(
+            WorkLimits {
+                reads: 100,
+                writes: 100,
+                bytes: 4096,
+                mutations: 100,
+            },
+            quanta_index_core::RequestBudgetV1::until_with_external_cancellation(
+                deadline,
+                Arc::clone(&stop),
+            ),
+        );
+        let renewed = catalog.renew_ticket_for_request(
+            session.as_ref(),
+            ticket.lease,
+            Duration::from_secs(30),
+            &budget,
+        )?;
+        check!(stop.load(Ordering::Acquire));
+        check_eq!(budget.checkpoint(), Err(IndexError::Cancelled));
+        {
+            let connection = catalog.lock()?;
+            connection.commit_hook(None::<fn() -> bool>)?;
+        }
+        check_ne!(renewed.fence, ticket.lease.fence);
+        check_eq!(fixture_pin_count(&catalog)?, 1);
+        check_eq!(
+            catalog.validate_ticket(session.as_ref(), ticket.lease),
+            Err(IndexError::SnapshotUnavailable)
+        );
+        catalog.validate_ticket(session.as_ref(), renewed)?;
+        catalog.release_ticket(session.as_ref(), renewed)?;
+        Ok(())
+    }
+
+    #[test]
     fn read_pin_digest_binds_exact_view_sequence() -> TestResult {
         let root = tempfile::tempdir()?;
         let (catalog, genesis) = setup(root.path())?;
@@ -9711,6 +9891,29 @@ mod tests {
             inspect_with_test_budget(&catalog, operation.key)?,
             OperationStatus::Pending(attempt)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_custody_ready_probe_does_not_reserve_another_writer() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let (catalog, _genesis) = setup(root.path())?;
+        let terminal = operation(993, 181);
+        let attempt = admit_new(&catalog, terminal)?;
+        check_eq!(
+            catalog.refuse(attempt, Refusal::Conflict)?,
+            OperationStatus::Refused(Refusal::Conflict)
+        );
+        let mut external = Connection::open(catalog.path())?;
+        let writer = begin(&mut external)?;
+        let candidate = catalog
+            .next_terminal_custody(workspace(), 7, None, None, &mut admission_budget())?
+            .ok_or("terminal custody candidate missing while writer is reserved")?;
+        check_eq!(candidate.operation, terminal.key);
+        drop(writer);
+        let released =
+            catalog.release_terminal_custody(candidate.operation, 256, &mut admission_budget())?;
+        check!(!released.has_more);
         Ok(())
     }
 
@@ -15019,7 +15222,10 @@ mod tests {
 
     #[test]
     fn read_settlement_release_is_exact_and_observes_last_pin_in_one_commit() -> TestResult {
-        use quanta_index_core::index::{CatalogReadSettlementPort, NativeReadSettlementScope};
+        use quanta_index_core::index::{
+            CatalogReadSettlementPort, NativeReadSettlementBlocker, NativeReadSettlementScope,
+            NativeReadSettlementStatus,
+        };
 
         let root = tempfile::tempdir()?;
         let (catalog, genesis) = setup(root.path())?;
@@ -15066,6 +15272,10 @@ mod tests {
         let first_snapshot =
             catalog.observe_read_settlement(session.as_ref(), scope, &mut admission_budget())?;
         check!(first_snapshot.has_remaining_target_pins);
+        check_eq!(
+            first_snapshot.status,
+            NativeReadSettlementStatus::Pending(NativeReadSettlementBlocker::TargetPin)
+        );
         catalog.validate_ticket(session.as_ref(), second.lease)?;
         let last_release = catalog.release_held_ticket(
             session.as_ref(),
@@ -15088,7 +15298,8 @@ mod tests {
     #[test]
     fn read_settlement_requires_the_original_live_session_guard() -> TestResult {
         use quanta_index_core::index::{
-            CatalogReadSettlementPort, NativeReadSettlementScope, NativeReadSettlementStatus,
+            CatalogReadSettlementPort, NativeReadSettlementBlocker, NativeReadSettlementScope,
+            NativeReadSettlementStatus,
             ReadSessionLease, ReadSessionRef,
         };
 
@@ -15123,7 +15334,10 @@ mod tests {
             catalog.observe_read_settlement(session.as_ref(), scope, &mut admission_budget())?;
         check_eq!(observed.scope, scope);
         check_eq!(observed.exact_floor, 0);
-        check_eq!(observed.status, NativeReadSettlementStatus::Pending);
+        check_eq!(
+            observed.status,
+            NativeReadSettlementStatus::Pending(NativeReadSettlementBlocker::ExactFloor)
+        );
         check!(matches!(
             catalog.observe_read_settlement(
                 &ForeignSession(session.binding()),
@@ -15138,7 +15352,8 @@ mod tests {
     #[test]
     fn read_settlement_queue_empty_does_not_hide_eligible_old_view() -> TestResult {
         use quanta_index_core::index::{
-            CatalogReadSettlementPort, NativeReadSettlementScope, NativeReadSettlementStatus,
+            CatalogReadSettlementPort, NativeReadSettlementBlocker, NativeReadSettlementScope,
+            NativeReadSettlementStatus,
         };
 
         let root = tempfile::tempdir()?;
@@ -15170,6 +15385,20 @@ mod tests {
                 )?
                 .has_remaining_target_pins
         );
+        let custody = catalog
+            .next_terminal_custody(workspace(), 7, None, None, &mut admission_budget())?
+            .ok_or("published test operation lacks terminal custody")?;
+        let before_custody_release =
+            catalog.observe_read_settlement(session.as_ref(), scope, &mut admission_budget())?;
+        check_eq!(
+            before_custody_release.status,
+            NativeReadSettlementStatus::Pending(NativeReadSettlementBlocker::TerminalCustody {
+                oldest_ready_sequence: custody.sequence,
+            })
+        );
+        let released =
+            catalog.release_terminal_custody(custody.operation, 256, &mut admission_budget())?;
+        check!(!released.has_more);
         let queue_count: i64 =
             catalog
                 .lock()?
@@ -15180,7 +15409,10 @@ mod tests {
         let observed =
             catalog.observe_read_settlement(session.as_ref(), scope, &mut admission_budget())?;
         check_eq!(observed.exact_floor, 1);
-        check_eq!(observed.status, NativeReadSettlementStatus::Pending);
+        check_eq!(
+            observed.status,
+            NativeReadSettlementStatus::Pending(NativeReadSettlementBlocker::UnretiredView)
+        );
         Ok(())
     }
 
