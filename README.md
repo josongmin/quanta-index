@@ -1,8 +1,21 @@
+<p align="center"><img src="readme-banner.svg" alt="Quanta Index — Typed ingestion, immutable publication, and a separate search plane." width="100%"></p>
+
 # Quanta Index
 
 A Rust search infrastructure workspace for Semantica/Quanta. Producers publish typed records through `quanta-index-sdk`; the search plane owns indexing, generations, activation, and lexical/semantic/hybrid serving over Unix sockets.
 
 [SDK](crates/quanta-index-sdk/README.md) · [Search CLI](crates/quanta-index-searchctl/README.md) · [Architecture and status](docs/ssot/engine-status-v1.md) · [Documentation](docs/README.md)
+
+
+## Engineering highlights
+
+| Mechanism | Engineering purpose |
+| :--- | :--- |
+| **Producer / search-plane separation** | Producers submit typed records through the SDK; indexing, generations, and serving have separate ownership. |
+| **Publication and activation** | Publishing data and activating a serving pair are distinct operations, so a published generation is not implicitly query-visible. |
+| **Native storage authority** | Kernel, catalog, and immutable object storage separate coordination, publication metadata, and retained objects. |
+| **Multiple retrieval paths** | Lexical, semantic, and repository-map adapters sit behind shared contracts; provider qualification remains explicit. |
+| **Operator-facing contracts** | Unix-socket transport, a Rust SDK, a search CLI, and state-cutover procedures expose distinct consumer and operator paths. |
 
 ## Ownership model
 
