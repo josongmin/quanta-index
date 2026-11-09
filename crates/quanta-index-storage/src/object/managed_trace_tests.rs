@@ -627,8 +627,9 @@ fn managed_reserve_confirm_trace_preserves_off_cost_and_closes_error()
                             }
                         })
                         .collect::<Vec<_>>();
-                    if counters.as_slice() != [(counters.first().map_or(usize::MAX, |entry| entry.0), expected)]
+                    if counters.len() != 1
                         || counters[0].0 >= terminal_at
+                        || counters[0].1 != expected
                     {
                         return Err(IndexError::BackendViolation(
                             "managed work counter missing, duplicated, or after terminal".into(),
