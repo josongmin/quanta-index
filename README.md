@@ -2,20 +2,21 @@
 
 # Quanta Index
 
+<p align="center"><a href="#engineering-highlights">Engineering</a> · <a href="#ownership-model">Architecture</a> · <a href="#run-the-daemon">Get started</a> · <a href="#workspace-map">Reference</a></p>
+
 A Rust search infrastructure workspace for Semantica/Quanta. Producers publish typed records through `quanta-index-sdk`; the search plane owns indexing, generations, activation, and lexical/semantic/hybrid serving over Unix sockets.
 
 [SDK](crates/quanta-index-sdk/README.md) · [Search CLI](crates/quanta-index-searchctl/README.md) · [Architecture and status](docs/ssot/engine-status-v1.md) · [Documentation](docs/README.md)
 
-
 ## Engineering highlights
 
-| Mechanism | Engineering purpose |
-| :--- | :--- |
-| **Producer / search-plane separation** | Producers submit typed records through the SDK; indexing, generations, and serving have separate ownership. |
-| **Publication and activation** | Publishing data and activating a serving pair are distinct operations, so a published generation is not implicitly query-visible. |
-| **Native storage authority** | Kernel, catalog, and immutable object storage separate coordination, publication metadata, and retained objects. |
-| **Multiple retrieval paths** | Lexical, semantic, and repository-map adapters sit behind shared contracts; provider qualification remains explicit. |
-| **Operator-facing contracts** | Unix-socket transport, a Rust SDK, a search CLI, and state-cutover procedures expose distinct consumer and operator paths. |
+| Mechanism | Engineering purpose | Source |
+| :--- | :--- | :--- |
+| **Producer / search-plane separation** | Producers submit typed records through the SDK; indexing, generations, and serving have separate ownership. | [Producer SDK](crates/quanta-index-sdk/) |
+| **Publication and activation** | Publishing data and activating a serving pair are distinct operations, so a published generation is not implicitly query-visible. | [Catalog authority](crates/quanta-index-catalog/) |
+| **Native storage authority** | Kernel, catalog, and immutable object storage separate coordination, publication metadata, and retained objects. | [Native kernel](crates/quanta-index-kernel/) |
+| **Multiple retrieval paths** | Lexical, semantic, and repository-map adapters sit behind shared contracts; provider qualification remains explicit. | [Retrieval adapters](docs/ssot/crate-ownership.md) |
+| **Operator-facing contracts** | Unix-socket transport, a Rust SDK, a search CLI, and state-cutover procedures expose distinct consumer and operator paths. | [Operator CLI](crates/quanta-index-searchctl/README.md) |
 
 ## Ownership model
 
@@ -42,6 +43,22 @@ Use the pinned toolchain and repository build wrapper. Keep runtime state outsid
 ```
 
 Then publish through the [typed SDK](crates/quanta-index-sdk/README.md) and query through the [operator CLI](crates/quanta-index-searchctl/README.md). Backup, restore, validation, and rebuild procedures are in the [state cutover runbook](docs/operator/state-cutover-runbook.md).
+
+## Inspect and query a generation
+
+The operator CLI uses the same explicit state root as the daemon. After publishing and activating your generation:
+
+```sh
+./scripts/cargow --lane dev-lane run -p quanta-index-searchctl --locked -- \
+  --state-root /absolute/state-root --output json readiness
+
+./scripts/cargow --lane dev-lane run -p quanta-index-searchctl --locked -- \
+  --state-root /absolute/state-root --output json lexical \
+  --repo-id my-repo --revision-id pinned-revision --manifest-generation 1 \
+  --syntax sourcegraph --query-text 'file:src main' --top-k 20
+```
+
+`my-repo`, `pinned-revision`, and `1` are example identities; use the values from your publication. Inspect readiness/verdict fields as well as the process exit code. The [CLI guide](crates/quanta-index-searchctl/README.md) defines response kinds, diagnostics, and exit codes.
 
 ## Workspace map
 
@@ -105,3 +122,5 @@ Leaf work shares a cache-root slot. Queue/hold diagnostics do not establish an i
 - [Architecture decisions](docs/adr/README.md) and [historical recovery](docs/ARCHIVE-INDEX.md#historical-record-recovery).
 
 Command availability and documentation coverage are not qualification evidence. Use current source and actual gate results for implementation, integration, benchmark, and release claims.
+
+<p align="center"><sub><a href="https://github.com/josongmin">Project map</a> · <a href="#engineering-highlights">Back to overview</a></sub></p>
