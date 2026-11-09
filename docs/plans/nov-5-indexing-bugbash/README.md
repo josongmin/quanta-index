@@ -428,6 +428,8 @@ Lexical·Kernel 14개 파일이며 f69·r28 고정본은 `046d2c02…`다. 공�
 | r53 Mixed Off | FAILED | `a6003311…`, producer exit1·474.416초. 세 번째 갱신 뒤 held search의 834ms IPC timeout. 검색 12,226건 중 12,209건 실패. 363.641초에 마지막 pin 해제, 600초 유지와 settlement는 NOT_RUN. 호스트 load1 16.79–106.35. |
 | B81 Catalog 검증 계측 f135 | VERIFIED | 최종 `3c034df4…`에서 Catalog 28개·실제 UDS 2개, Catalog strict Clippy 통과. Off clock 비호출과 Record의 성공·clock 회귀 구간을 확인했다. exact patch를 공유 소스에 반영했다. |
 | r54 Mixed Record | BLOCKED | `3c034df4…` 빌드는 완료했으나 capture와 harness가 Mixed의 Record 모드를 지원하지 않는다. capture preflight에서 거절돼 producer body 0, 제품·진단 데이터는 NOT_RUN이다. |
+| B82 선택된 요청의 Catalog 세부 진단 | VERIFIED | `f2b5af03…` 기능 회귀 Catalog 37개·runtime 4개·UDS 2개 통과. 최종 `b7ffae26…`의 annotation 보정 뒤 실제 Catalog trace 회귀 1개·runtime 4개·UDS 2개와 Catalog strict Clippy 통과. exact patch를 공유 소스에 반영했다. |
+| r55 Mixed Off RCA | NOT_RUN | `b7ffae26…` 최적화 pair 빌드 중. 기존 선택된 stderr 표본에 Catalog phase별 시간·횟수·실패와 busy retry를 기록한다. 원 부하 조건이며 성능 qualification은 NOT_RUN이다. |
 | 정식 overhead·XL·Mixed·출시 수용 | NOT_RUN | 로컬 실패 진단과 별도 범위 |
 
 B9 고정 입력46개 중 Main과 다른 두 파일은 `map.rs`의 lookup batch와

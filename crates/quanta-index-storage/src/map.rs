@@ -450,11 +450,13 @@ fn observe_map_phase<T>(
     let Some(span) = begin_map_phase(&context, lane) else {
         return operation(budget);
     };
+    let before = budget.usage();
     let result = {
         let mut scoped_budget =
             budget.scoped_diagnostic_context(Some(context.child_context(&span)));
         operation(&mut scoped_budget)
     };
+    budget.record_diagnostic_usage_delta(before, &span);
     let _finished = span.finish(DiagnosticTerminalV1::from_result(&result));
     result
 }
@@ -2554,6 +2556,196 @@ mod tests {
 
     #[cfg(unix)]
     mod scratch_transactions;
+
+    #[test]
+    fn map_phase_work_delta_preserves_off_cost_and_closes_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_core::{
+            DiagnosticCaptureIdV1, DiagnosticClockV1, DiagnosticEmitV1, DiagnosticEventKindV1,
+            DiagnosticEventSinkV1, DiagnosticRootKindV1, RequestBudgetV1,
+        };
+        use std::sync::Arc;
+
+        #[derive(Default)]
+        struct StepClock(AtomicU64);
+        impl DiagnosticClockV1 for StepClock {
+            fn now_ns(&self) -> u64 {
+                self.0.fetch_add(1, Ordering::Relaxed)
+            }
+        }
+
+        #[derive(Default)]
+        struct Events(Mutex<Vec<DiagnosticEmitV1>>);
+        impl DiagnosticEventSinkV1 for Events {
+            fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+                let Ok(mut rows) = self.0.try_lock() else {
+                    return false;
+                };
+                rows.push(event);
+                true
+            }
+        }
+
+        struct Run {
+            result: Result<(), IndexError>,
+            usage: WorkUsage,
+            clock_calls: u64,
+            events: Vec<DiagnosticEmitV1>,
+        }
+
+        fn run(record: bool, behavior: u8) -> Result<Run, Box<dyn std::error::Error>> {
+            let clock = Arc::new(StepClock::default());
+            let events = Arc::new(Events::default());
+            let context = DiagnosticContextV1::new(
+                DiagnosticCaptureIdV1([73; 16]),
+                Arc::clone(&clock) as Arc<dyn DiagnosticClockV1>,
+                Arc::clone(&events) as Arc<dyn DiagnosticEventSinkV1>,
+            );
+            let root = if record {
+                Some(context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(1))?)
+            } else {
+                None
+            };
+            let request = RequestBudgetV1::for_duration(Duration::from_secs(30));
+            let cancel = request.cancel_handle();
+            let request = match root.as_ref() {
+                Some(root) => request.with_diagnostic_context(context.child_context(root)),
+                None => request,
+            };
+            let mut budget = WorkBudget::with_request(
+                WorkLimits {
+                    reads: 10,
+                    writes: 10,
+                    bytes: 10,
+                    mutations: 10,
+                },
+                request,
+            );
+            let result = observe_map_phase(&mut budget, 5, |budget| {
+                budget.charge(WorkUsage {
+                    reads: 2,
+                    writes: 3,
+                    bytes: 5,
+                    mutations: 7,
+                })?;
+                match behavior {
+                    0 => Ok(()),
+                    1 => Err(IndexError::InvalidInput(
+                        "injected map phase failure".into(),
+                    )),
+                    2 => {
+                        cancel.cancel();
+                        budget.checkpoint()
+                    }
+                    _ => Err(IndexError::BackendViolation("invalid test behavior".into())),
+                }
+            });
+            let usage = budget.usage();
+            if let Some(root) = root {
+                let _finished = root.finish(DiagnosticTerminalV1::from_result(&result));
+            }
+            let captured = events
+                .0
+                .lock()
+                .map_err(|_| assertion_error("map phase event sink poisoned".into()))?
+                .clone();
+            Ok(Run {
+                result,
+                usage,
+                clock_calls: clock.0.load(Ordering::Relaxed),
+                events: captured,
+            })
+        }
+
+        for behavior in 0..=2 {
+            let off = run(false, behavior)?;
+            let recorded = run(true, behavior)?;
+            check_eq!(off.usage, recorded.usage);
+            check_eq!(off.clock_calls, 0);
+            check!(off.events.is_empty());
+            check_eq!(
+                recorded.usage,
+                WorkUsage {
+                    reads: 2,
+                    writes: 3,
+                    bytes: 5,
+                    mutations: 7,
+                }
+            );
+            match behavior {
+                0 => check!(off.result.is_ok() && recorded.result.is_ok()),
+                1 => check!(
+                    matches!(off.result, Err(IndexError::InvalidInput(_)))
+                        && matches!(recorded.result, Err(IndexError::InvalidInput(_)))
+                ),
+                _ => check!(
+                    matches!(off.result, Err(IndexError::Cancelled))
+                        && matches!(recorded.result, Err(IndexError::Cancelled))
+                ),
+            }
+            let spans = recorded
+                .events
+                .iter()
+                .filter_map(|event| match event.kind {
+                    DiagnosticEventKindV1::SpanBegin {
+                        span_id,
+                        stage: DiagnosticStageV1::MapApply,
+                        lane: DiagnosticLaneV1(5),
+                        ..
+                    } => Some(span_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            check_eq!(spans.len(), 1);
+            let span = spans[0];
+            let end = recorded
+                .events
+                .iter()
+                .position(|event| {
+                    matches!(event.kind, DiagnosticEventKindV1::SpanEnd { span_id, .. } if span_id == span)
+                })
+                .ok_or_else(|| assertion_error("map phase terminal missing".into()))?;
+            for (key, expected) in [
+                (DiagnosticCounterV1::WorkReads, 2),
+                (DiagnosticCounterV1::WorkWrites, 3),
+                (DiagnosticCounterV1::WorkBytes, 5),
+                (DiagnosticCounterV1::WorkMutations, 7),
+            ] {
+                let matching = recorded
+                    .events
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, event)| match event.kind {
+                        DiagnosticEventKindV1::Counter {
+                            span_id,
+                            key: observed,
+                            value,
+                        } if span_id == span && observed == key => Some((index, value)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                check_eq!(matching.len(), 1);
+                check_eq!(matching[0].1, expected);
+                check!(matching[0].0 < end);
+            }
+            let expected_terminal = if behavior == 0 {
+                DiagnosticTerminalV1::Ok
+            } else {
+                DiagnosticTerminalV1::Error { code: 1 }
+            };
+            check_eq!(
+                recorded
+                    .events
+                    .iter()
+                    .filter(|event| {
+                        matches!(event.kind, DiagnosticEventKindV1::SpanEnd { span_id, outcome } if span_id == span && outcome == expected_terminal)
+                    })
+                    .count(),
+                1
+            );
+        }
+        Ok(())
+    }
 
     static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 

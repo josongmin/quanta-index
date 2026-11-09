@@ -952,6 +952,8 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
         for index, path in enumerate(paths, 1)
     ]
     paired = {
+        "schema_version": 2,
+        "generic_execution_profile_id": "quanta-natural-language-ucd17-v4",
         "pack_sha256": hashlib.sha256(evidence.canonical_json(pack).encode()).hexdigest(),
         "lane_top_k": 100,
         "generation": {"repo_id": "repo", "revision_id": commit, "manifest_generation": 1},
@@ -960,8 +962,11 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
                 "task_id": task_id,
                 "query_identity": {
                     "original_query_sha256": query_digest,
-                    "semantic_text_sha256": excerpt_digest,
+                    "semantic_text_sha256": query_digest,
                     "effective_lexical_request_sha256": "f" * 64,
+                    "generic_semantic_representation_policy": "task_query_v1",
+                    "trace_semantic_representation_policy": "go_test_excerpt_v1",
+                    "trace_semantic_text_sha256": excerpt_digest,
                 },
                 "lexical": {
                     "candidates": [candidate(paths[1]), candidate(paths[0])],
@@ -977,6 +982,8 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
                     "candidates": trace_candidates,
                     "frame_class": "unresolved",
                     "failure_excerpt_sha256": excerpt_digest,
+                    "semantic_representation_policy": "go_test_excerpt_v1",
+                    "semantic_text_sha256": excerpt_digest,
                     "lexical_window": window(20),
                     "dense_window": window(0),
                     "source_context": {
@@ -1007,6 +1014,27 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
     assert scored["aggregate"]["lexical"] == {"Recall@20": 1.0, "MRR@20": 0.5}
     assert scored["aggregate"]["trace_files"] == {"Recall@20": 1.0, "MRR@20": 1.0}
 
+    def store_pair():
+        execution["paired_sha256"] = write(case_dir / "paired.json", paired)
+        write(case_dir / "execution.json", execution)
+
+    paired["tasks"][0]["query_identity"]["semantic_text_sha256"] = excerpt_digest
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="query/pack identity drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    paired["tasks"][0]["query_identity"]["semantic_text_sha256"] = query_digest
+    paired["tasks"][0]["query_identity"]["trace_semantic_text_sha256"] = query_digest
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="query/pack identity drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    paired["tasks"][0]["query_identity"]["trace_semantic_text_sha256"] = excerpt_digest
+    paired["generic_execution_profile_id"] = "quanta-natural-language-ucd17-v3"
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="query profile drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    paired["generic_execution_profile_id"] = "quanta-natural-language-ucd17-v4"
+    store_pair()
+
     execution["execution_source_head"] = "f" * 40
     write(case_dir / "execution.json", execution)
     with pytest.raises(decision.DecisionError, match="policy source drift"):
@@ -1021,10 +1049,6 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
         decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
     judgment["cases"][0]["source_commit"] = commit
     write(judgments_path, judgment)
-
-    def store_pair():
-        execution["paired_sha256"] = write(case_dir / "paired.json", paired)
-        write(case_dir / "execution.json", execution)
 
     context = paired["tasks"][0]["trace_files"]["source_context"]
     context["mode"] = "unowned"
@@ -1233,8 +1257,9 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
         "pilot_inputs_sha256": input_digest,
         "pack_file_sha256": pack_digest,
     })
-    paired["tasks"][0]["query_identity"]["semantic_text_sha256"] = module_digest
+    paired["tasks"][0]["query_identity"]["trace_semantic_text_sha256"] = module_digest
     paired["tasks"][0]["trace_files"]["failure_excerpt_sha256"] = module_digest
+    paired["tasks"][0]["trace_files"]["semantic_text_sha256"] = module_digest
     paired["tasks"][0]["trace_files"]["frame_class"] = "exact"
     paired["tasks"][0]["trace_files"]["candidates"][0]["source_frame"] = True
     store_pair()

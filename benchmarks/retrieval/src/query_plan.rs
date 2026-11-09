@@ -117,7 +117,7 @@ pub const fn execution_profile_id(policy: QueryInputPolicy) -> &'static str {
         QueryInputPolicy::CodeSearchExactContentFile => "quanta-code-search-exact-content-file-v1",
         QueryInputPolicy::CodeSearchTypoFile => "quanta-code-search-typo-file-v1",
         QueryInputPolicy::CodeSearchComponentsFile => "quanta-code-search-components-file-v1",
-        QueryInputPolicy::NaturalLanguage => "quanta-natural-language-ucd17-v3",
+        QueryInputPolicy::NaturalLanguage => "quanta-natural-language-ucd17-v4",
         QueryInputPolicy::NaturalLanguageFile => "quanta-natural-language-file-ucd17-v2",
         QueryInputPolicy::ExactSymbolName => "quanta-exact-symbol-name-v1",
     }
@@ -417,7 +417,7 @@ pub struct QueryPlan {
     /// Exact lexical-lane request (DSL text, literal phrase, or token-OR
     /// plan depending on the policy).
     pub lexical_request: String,
-    /// Exact semantic-lane text (raw query unless the blind task binds an explicit input).
+    /// Exact ordinary semantic-lane text, shared with the raw lexical query.
     pub semantic_text: String,
     /// SHA-256 of the raw query bytes.
     pub original_query_sha256: String,
@@ -1908,7 +1908,7 @@ mod tests {
         let profile = execution_profile_value(QueryInputPolicy::NaturalLanguage, &config);
         assert_eq!(
             profile.get("profile_id"),
-            Some(&serde_json::json!("quanta-natural-language-ucd17-v3"))
+            Some(&serde_json::json!("quanta-natural-language-ucd17-v4"))
         );
         assert_eq!(
             profile.pointer("/config/max_tokens"),

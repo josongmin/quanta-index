@@ -12442,15 +12442,10 @@ def test_go_trace_semantic_input_binds_blind_pack_and_runner_identity(tmp_path):
         packed = packed_tasks[result["task_id"]]
         ordinary = qp.derive_query_identity("natural_language", packed["query"])
         result["query_identity"] = ordinary
-        if result["task_id"] == task["task_id"]:
-            result["query_identity"] = {
-                **ordinary,
-                "semantic_text_sha256": task["semantic_input"]["text_sha256"],
-            }
     record_v3(repo, suite, run, suite_path, runner_path)
 
     first = next(result for result in run["results"] if result["task_id"] == task["task_id"])
-    first["query_identity"]["semantic_text_sha256"] = task["query_sha256"]
+    first["query_identity"]["semantic_text_sha256"] = task["semantic_input"]["text_sha256"]
     with pytest.raises(ev.EvidenceError, match="does not match the independently re-derived plan"):
         record_v3(repo, suite, run, suite_path, runner_path)
 

@@ -1090,6 +1090,12 @@ def evaluate_go_trace_file_holdout(
         if not run._is_hex(execution.get("paired_sha256"), 64):
             raise DecisionError(f"Go trace SDK attempt lacks paired capture: {task_id}")
         paired = bound("paired.json", execution["paired_sha256"])
+        if (
+            paired.get("schema_version") != 2
+            or paired.get("generic_execution_profile_id")
+            != query_plan.PROFILE_IDS["natural_language"]
+        ):
+            raise DecisionError(f"Go trace paired query profile drift: {task_id}")
         canonical_pack = benchmark_evidence.canonical_json(pack)
         if paired.get("pack_sha256") != hashlib.sha256(canonical_pack.encode()).hexdigest():
             raise DecisionError(f"Go trace paired pack identity drift: {task_id}")
@@ -1127,8 +1133,19 @@ def evaluate_go_trace_file_holdout(
             or pack_tasks[0].get("query_sha256")
             != hashlib.sha256(pack_tasks[0]["query"].encode()).hexdigest()
             or not isinstance(identity, dict)
+            or set(identity) != {
+                "original_query_sha256",
+                "effective_lexical_request_sha256",
+                "semantic_text_sha256",
+                "generic_semantic_representation_policy",
+                "trace_semantic_representation_policy",
+                "trace_semantic_text_sha256",
+            }
             or identity.get("original_query_sha256") != pack_tasks[0].get("query_sha256")
-            or identity.get("semantic_text_sha256") != semantic_digest
+            or identity.get("semantic_text_sha256") != pack_tasks[0].get("query_sha256")
+            or identity.get("generic_semantic_representation_policy") != "task_query_v1"
+            or identity.get("trace_semantic_representation_policy") != "go_test_excerpt_v1"
+            or identity.get("trace_semantic_text_sha256") != semantic_digest
             or not run._is_hex(identity.get("effective_lexical_request_sha256"), 64)
         ):
             raise DecisionError(f"Go trace query/pack identity drift: {task_id}")
@@ -1147,6 +1164,8 @@ def evaluate_go_trace_file_holdout(
             or context.get("manifest_sha256") != case.get("manifest_sha256")
             or context.get("pack_file_sha256") != case.get("pack_sha256")
             or trace.get("failure_excerpt_sha256") != semantic_input.get("failure_excerpt_sha256")
+            or trace.get("semantic_representation_policy") != "go_test_excerpt_v1"
+            or trace.get("semantic_text_sha256") != semantic_digest
         ):
             raise DecisionError(f"Go trace SDK source-context binding is missing: {task_id}")
         if (

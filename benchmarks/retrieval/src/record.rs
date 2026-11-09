@@ -119,7 +119,8 @@ pub struct PackTask {
     pub semantic_input: Option<GoTraceSemanticInput>,
 }
 
-const GO_TRACE_SEMANTIC_PROFILE: &str = "go_test_excerpt_v1";
+pub const GO_TRACE_SEMANTIC_PROFILE: &str = "go_test_excerpt_v1";
+pub const GENERIC_SEMANTIC_REPRESENTATION_POLICY: &str = "task_query_v1";
 const GO_TRACE_SEMANTIC_MAX_BYTES: usize = 16 * 1024;
 
 /// Validated semantic input carried by a blind Go test trace task.
@@ -131,6 +132,16 @@ pub struct GoTraceSemanticInput {
 }
 
 impl GoTraceSemanticInput {
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    #[must_use]
+    pub fn text_sha256(&self) -> &str {
+        &self.text_sha256
+    }
+
     #[must_use]
     pub fn failure_excerpt(&self) -> &str {
         &self.failure_excerpt
@@ -193,13 +204,11 @@ impl PackTask {
         policy: QueryInputPolicy,
         config: &NlPlanConfig,
     ) -> Result<QueryPlan, QueryPlanError> {
-        let mut plan = plan_query(policy, &self.query, config)?;
-        if let Some(input) = &self.semantic_input {
+        let plan = plan_query(policy, &self.query, config)?;
+        if self.semantic_input.is_some() {
             if policy != QueryInputPolicy::NaturalLanguage {
                 return Err(QueryPlanError::SemanticInputRequiresNaturalLanguage);
             }
-            plan.semantic_text.clone_from(&input.text);
-            plan.semantic_text_sha256.clone_from(&input.text_sha256);
         }
         Ok(plan)
     }
@@ -2128,16 +2137,18 @@ mod tests {
     }
 
     #[test]
-    fn go_trace_pack_binds_semantic_bytes_without_changing_lexical_request() {
+    fn go_trace_pack_keeps_generic_query_and_binds_typed_trace_bytes() {
         let mut pack = v3_pack_fixture();
-        let text = "panic: index out of range\nserver.go:17";
+        let text = "full trace input: panic: index out of range\nserver.go:17";
         let digest = sha256_hex(text.as_bytes());
+        let failure_excerpt = "panic: index out of range\nserver.go:17";
+        let failure_digest = sha256_hex(failure_excerpt.as_bytes());
         let input = serde_json::json!({
             "profile": GO_TRACE_SEMANTIC_PROFILE,
             "text": text,
             "text_sha256": digest,
-            "failure_excerpt": text,
-            "failure_excerpt_sha256": digest,
+            "failure_excerpt": failure_excerpt,
+            "failure_excerpt_sha256": failure_digest,
         });
         pack["tasks"][0]["semantic_input"] = input.clone();
         let loaded = load_fixture(&pack).expect("Go trace pack");
@@ -2149,8 +2160,12 @@ mod tests {
             .expect("original plan");
         assert_eq!(plan.original, legacy.original);
         assert_eq!(plan.lexical_request, legacy.lexical_request);
-        assert_eq!(plan.semantic_text, text);
-        assert_eq!(plan.semantic_text_sha256, digest);
+        assert_eq!(plan.semantic_text, legacy.semantic_text);
+        assert_eq!(plan.semantic_text_sha256, legacy.semantic_text_sha256);
+        let typed = loaded.tasks[0].semantic_input.as_ref().expect("typed trace");
+        assert_eq!(typed.text(), text);
+        assert_eq!(typed.text_sha256(), digest);
+        assert_eq!(typed.failure_excerpt(), failure_excerpt);
         assert!(matches!(
             loaded.tasks[0].plan(QueryInputPolicy::Native, &config),
             Err(QueryPlanError::SemanticInputRequiresNaturalLanguage)

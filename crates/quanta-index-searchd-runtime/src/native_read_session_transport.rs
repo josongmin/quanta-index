@@ -59,6 +59,10 @@ pub(super) fn dispatch(
     {
         let mut work = WorkBudget::with_request(dispatcher.limits, budget.clone());
         let timer = RetainedSearchTimer::new(context);
+        let ticket_observation = timer
+            .is_enabled()
+            .then(|| quanta_index_catalog::TicketValidationObservation::begin(&dispatcher.catalog))
+            .flatten();
         let result = sessions
             .with_ticket(
                 uid,
@@ -83,6 +87,9 @@ pub(super) fn dispatch(
                 },
             )
             .map(NativeReply::Text);
+        if let Some(timings) = ticket_observation.and_then(|observation| observation.snapshot()) {
+            timer.record_ticket_validation_timings(timings);
+        }
         let observed_budget = if work.first_denial().is_some() {
             &work
         } else {

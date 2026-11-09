@@ -141,7 +141,7 @@ _LQ_OPERATOR_WORDS = frozenset({"AND", "OR", "NOT"})
 PROFILE_IDS = {
     "native": "quanta-native-v1",
     "literal": "quanta-literal-v1",
-    "natural_language": "quanta-natural-language-ucd17-v3",
+    "natural_language": "quanta-natural-language-ucd17-v4",
     "natural_language_file": "quanta-natural-language-file-ucd17-v2",
     "exact_symbol_name": "quanta-exact-symbol-name-v1",
     "literal_file": "quanta-literal-file-v1",
@@ -622,7 +622,9 @@ def derive_query_identity(
     if semantic_input is not None:
         if policy != "natural_language":
             raise QueryPlanError("Go trace semantic input requires the natural-language policy")
-        semantic_digest = go_trace_semantic_digest(semantic_input)
+        # The trace text is independently authenticated for the typed Go
+        # route. Ordinary semantic and hybrid lanes use the task query.
+        go_trace_semantic_digest(semantic_input)
     return {
         "original_query_sha256": _sha256_hex(raw.encode()),
         "effective_lexical_request_sha256": effective_digest,

@@ -31,6 +31,7 @@ mod io_admission;
 mod native;
 mod open;
 mod sequence;
+mod ticket_diagnostics;
 mod writer_cache;
 
 pub use backup::{
@@ -50,6 +51,7 @@ pub use native::{
     NativeBootCatalogCandidate, NativeBootCatalogSnapshot, NativeBootManifest,
     verify_native_boot_candidate, verify_native_boot_catalog,
 };
+pub use ticket_diagnostics::{TicketValidationObservation, TicketValidationTimings};
 pub use writer_cache::{
     CatalogWriterCacheObservation, CatalogWriterCachePolicy, CatalogWriterSettings,
 };

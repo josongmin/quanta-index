@@ -2,7 +2,7 @@
 
 ## 현재 구현과 다음 수용
 
-- B75·B76·B78·B79·B81은 공유 소스에 반영했고 집중 회귀를 확인했다.
+- B75·B76·B78·B79·B81·B82는 공유 소스에 반영했고 집중 회귀를 확인했다.
   제품 상태는 README의 최신 실행을 따른다.
 - Mixed의 직접 실패는 r53 query preparation이다. capture와 harness는
   Mixed Off만 지원한다. B81의 여섯 구간을 기존 선택된 retained-request
@@ -495,13 +495,17 @@ held 600초와 settlement를 그대로 수용 조건으로 둔다.
   Catalog 내부의 고정 크기 thread-local 관측을 기존 retained prefix
   타이머가 선택한 요청에만 묶는다. scope는 같은 동기 호출 스레드에서
   종료하고, 중첩 scope를 복원하며 제품 예산·검증·수용 형식은 유지한다.
-- B82 후보 `37f49a7a…`의 소유 범위는 Catalog `ticket_diagnostics.rs`,
+- B82 `b7ffae26…`의 소유 범위는 Catalog `ticket_diagnostics.rs`,
   export, 기존 lifetime 계측 연결과 Runtime retained 진단 두 파일이다.
   고정 크기 scope는 Catalog 주소와 요청 내 owner를 확인하며, 종료 순서가
   어긋나면 관측을 비운다. 선택된 요청의 여섯 구간 합계·호출 수·실패 수를
   기존 표본에 붙인다. 관측이 없는 구간은 null 또는 호출 수 0으로
   구분한다. 새 진단의 기능 회귀 뒤 원 Mixed Off profile을 RCA 목적으로
-  실행한다. 이 소스의 성능 qualification은 별도다.
+  실행한다. 이 소스의 성능 qualification은 별도다. 최초 기능 회귀는
+  Catalog 37개·runtime 4개·UDS 2개를 통과했다. annotation 보정 뒤
+  Catalog trace 1개·runtime 4개·UDS 2개와 Catalog strict Clippy를
+  확인해 반영했다. busy poll·실제 retry sleep 합계는 요청 scope 전체의
+  같은 Catalog 경합 값이며 lane201에만 한정한 값으로 해석하지 않는다.
 - XL은 SourceApply의 물리 get/cache와 BuildPrepare의 inventory scratch,
   설치/COMMIT을 분리한다. 기존 전체 trace의 중첩 구간은 합산하지 않는다.
   120초 checkpoint 위치만으로 객체 형식이나 수용 기준을 변경하지 않는다.

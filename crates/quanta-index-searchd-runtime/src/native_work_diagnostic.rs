@@ -94,6 +94,7 @@ pub(super) struct RetainedSearchTimer {
     session_custody_part: Cell<SessionCustodyPart>,
     session_custody_elapsed: Cell<[Option<Duration>; 3]>,
     query_execution_timings: Cell<Option<QueryExecutionTimings>>,
+    ticket_validation_timings: Cell<Option<quanta_index_catalog::TicketValidationTimings>>,
     first_request_permit: Option<usize>,
 }
 
@@ -114,6 +115,7 @@ impl RetainedSearchTimer {
             session_custody_part: Cell::new(SessionCustodyPart::RegistryLookup),
             session_custody_elapsed: Cell::new([None; 3]),
             query_execution_timings: Cell::new(None),
+            ticket_validation_timings: Cell::new(None),
             first_request_permit,
         }
     }
@@ -128,6 +130,28 @@ impl RetainedSearchTimer {
 
     pub(super) fn record_execution_timings(&self, timings: QueryExecutionTimings) {
         self.query_execution_timings.set(Some(timings));
+    }
+
+    pub(super) fn record_ticket_validation_timings(
+        &self,
+        timings: quanta_index_catalog::TicketValidationTimings,
+    ) {
+        self.ticket_validation_timings.set(Some(timings));
+    }
+
+    fn ticket_validation_detail_us(&self) -> Option<serde_json::Value> {
+        let timings = self.ticket_validation_timings.get()?;
+        Some(serde_json::json!({
+            "phases": [
+                "session_guard", "connection_acquisition", "begin",
+                "authenticated_rows", "durable_clock", "commit",
+            ],
+            "elapsed_us": timings.elapsed.map(duration_us),
+            "calls": timings.calls,
+            "failed": timings.failed,
+            "connection_busy_polls": timings.connection_busy_polls,
+            "connection_retry_sleep_us": duration_us(timings.connection_retry_sleep),
+        }))
     }
 
     pub(super) fn mark_session_custody(&self, part: SessionCustodyPart) {
@@ -210,6 +234,7 @@ impl RetainedSearchTimer {
             "elapsed_us": elapsed,
             "session_custody_detail_us": session_custody_detail_us,
             "query_execution_detail_us": query_execution_detail_us,
+            "ticket_validation_detail_us": self.ticket_validation_detail_us(),
             "sample_ordinal": sample_ordinal,
             "sample_limit": OWNED_FAILURE_SAMPLE_LIMIT,
         });
@@ -244,6 +269,7 @@ impl RetainedSearchTimer {
             "elapsed_us": elapsed,
             "session_custody_detail_us": session_custody_detail_us,
             "query_execution_detail_us": query_execution_detail_us,
+            "ticket_validation_detail_us": self.ticket_validation_detail_us(),
             "sample_ordinal": sample_ordinal,
             "sample_limit": OWNED_FAILURE_SAMPLE_LIMIT,
         });
@@ -1295,6 +1321,7 @@ mod tests {
             session_custody_part: Cell::new(SessionCustodyPart::RegistryLookup),
             session_custody_elapsed: Cell::new([None; 3]),
             query_execution_timings: Cell::new(None),
+            ticket_validation_timings: Cell::new(None),
             first_request_permit: None,
         };
         timer.mark(ReadFailureStage::ControlAdmission);
@@ -1323,6 +1350,7 @@ mod tests {
             session_custody_part: Cell::new(SessionCustodyPart::RegistryLookup),
             session_custody_elapsed: Cell::new([None; 3]),
             query_execution_timings: Cell::new(None),
+            ticket_validation_timings: Cell::new(None),
             first_request_permit: None,
         };
         let mut elapsed = [0_u64; 7];
@@ -1361,6 +1389,32 @@ mod tests {
             elapsed.get(retained_stage_index(ReadFailureStage::QueryExecution)),
             Some(&100)
         );
+        assert!(timer.ticket_validation_detail_us().is_none());
+        let mut ticket = quanta_index_catalog::TicketValidationTimings::default();
+        if let (Some(elapsed), Some(calls), Some(failed)) = (
+            ticket.elapsed.get_mut(1),
+            ticket.calls.get_mut(1),
+            ticket.failed.get_mut(1),
+        ) {
+            *elapsed = Duration::from_micros(37);
+            *calls = 2;
+            *failed = 1;
+        }
+        timer.record_ticket_validation_timings(ticket);
+        assert_eq!(
+            timer.ticket_validation_detail_us(),
+            Some(serde_json::json!({
+                "phases": [
+                    "session_guard", "connection_acquisition", "begin",
+                    "authenticated_rows", "durable_clock", "commit",
+                ],
+                "elapsed_us": [0, 37, 0, 0, 0, 0],
+                "calls": [0, 2, 0, 0, 0, 0],
+                "failed": [0, 1, 0, 0, 0, 0],
+                "connection_busy_polls": 0,
+                "connection_retry_sleep_us": 0,
+            }))
+        );
     }
 
     #[test]
@@ -1376,6 +1430,7 @@ mod tests {
             session_custody_part: Cell::new(SessionCustodyPart::RegistryLookup),
             session_custody_elapsed: Cell::new([None; 3]),
             query_execution_timings: Cell::new(None),
+            ticket_validation_timings: Cell::new(None),
             first_request_permit: None,
         };
 

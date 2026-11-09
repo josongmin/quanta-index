@@ -689,6 +689,7 @@ impl SqliteCatalog {
 // SqliteWork lanes 200-205 observe session guard, connection acquisition,
 // BEGIN, authenticated rows, durable clock and COMMIT, in that order.
 fn observe_ticket_validation<T>(
+    catalog: &SqliteCatalog,
     budget: Option<&WorkBudget>,
     lane: u16,
     work: impl FnOnce() -> Result<T, IndexError>,
@@ -698,7 +699,7 @@ fn observe_ticket_validation<T>(
         DiagnosticStageV1::SqliteWork,
         DiagnosticLaneV1(lane),
     );
-    let result = work();
+    let result = crate::ticket_diagnostics::observe(catalog, lane, work);
     if let Some(span) = span {
         let _finished = span.finish(DiagnosticTerminalV1::from_result(&result));
     }
@@ -711,11 +712,11 @@ fn validate_live_ticket(
     ticket: ReadTicketLease,
     budget: Option<&WorkBudget>,
 ) -> Result<(), IndexError> {
-    let concrete = observe_ticket_validation(budget, 200, || guard(catalog, session))?;
+    let concrete = observe_ticket_validation(catalog, budget, 200, || guard(catalog, session))?;
     if ticket.session != concrete.binding {
         return Err(IndexError::SnapshotUnavailable);
     }
-    let mut connection = observe_ticket_validation(budget, 201, || {
+    let mut connection = observe_ticket_validation(catalog, budget, 201, || {
         budget.map_or_else(
             || {
                 catalog
@@ -726,15 +727,15 @@ fn validate_live_ticket(
         )
     })?;
     let connection_for_begin = &mut *connection;
-    let tx = observe_ticket_validation(budget, 202, move || begin(connection_for_begin))?;
-    let pin = observe_ticket_validation(budget, 203, || {
+    let tx = observe_ticket_validation(catalog, budget, 202, move || begin(connection_for_begin))?;
+    let pin = observe_ticket_validation(catalog, budget, 203, || {
         let session_row = checked_session(&tx, concrete.binding)?;
         if (session_row.2, session_row.3) != concrete.inode {
             return Err(IndexError::Storage("read session inode mismatch".into()));
         }
         checked_pin(&tx, ticket)
     })?;
-    let now = observe_ticket_validation(budget, 204, || {
+    let now = observe_ticket_validation(catalog, budget, 204, || {
         catalog_now_ms(&tx, catalog.clock.now_unix_ms())
     })?;
     if now >= uint(pin.4)? {
@@ -743,8 +744,9 @@ fn validate_live_ticket(
     if let Some(budget) = budget {
         budget.checkpoint()?;
     }
-    let result =
-        observe_ticket_validation(budget, 205, || tx.commit().map_err(|error| sql(&error)));
+    let result = observe_ticket_validation(catalog, budget, 205, || {
+        tx.commit().map_err(|error| sql(&error))
+    });
     drop(connection);
     result
 }

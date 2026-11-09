@@ -10,8 +10,13 @@ use quanta_index_contract::{
     GoTestTraceSourceFramesV1, LexicalCandidate, ManifestGeneration, QueryResultWindowV2, RepoId,
     RevisionId, TextRankUnit,
 };
-use quanta_index_retrieval_bench::query_plan::{NlPlanConfig, QueryInputPolicy, QueryPlan};
-use quanta_index_retrieval_bench::record::{QueryPack, load_query_pack_with_file_digest};
+use quanta_index_retrieval_bench::query_plan::{
+    NlPlanConfig, QueryInputPolicy, QueryPlan, execution_profile_id,
+};
+use quanta_index_retrieval_bench::record::{
+    GENERIC_SEMANTIC_REPRESENTATION_POLICY, GO_TRACE_SEMANTIC_PROFILE, GoTraceSemanticInput,
+    QueryPack, load_query_pack_with_file_digest,
+};
 use quanta_index_retrieval_bench::symbols::extract_symbols;
 use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
 use quanta_index_sdk::{ConnectOptions, QuantaIndex};
@@ -545,7 +550,7 @@ fn trace_files(
     pin: &GenerationPin,
     plan: &QueryPlan,
     lane_top_k: u32,
-    failure_excerpt: &str,
+    semantic_input: &GoTraceSemanticInput,
     source_owner: Option<&RepoId>,
     source_module: Option<&BoundModuleContext>,
     source_binding: Option<&SourceOwnerBinding>,
@@ -555,20 +560,24 @@ fn trace_files(
         .search()
         .hybrid()
         .native(&plan.lexical_request)
-        .semantic_text(&plan.semantic_text)
+        .semantic_text(semantic_input.text())
         .pinned(pin.clone())
         .top_k(lane_top_k);
     let response = match (source_owner, source_module) {
         (Some(owner), Some(module)) => query.go_test_trace_file_with_module_context(
             owner.clone(),
             module.context.clone(),
-            failure_excerpt,
+            semantic_input.failure_excerpt(),
             20,
         ),
         (Some(owner), None) => {
-            query.go_test_trace_file_with_source_context(owner.clone(), failure_excerpt, 20)
+            query.go_test_trace_file_with_source_context(
+                owner.clone(),
+                semantic_input.failure_excerpt(),
+                20,
+            )
         }
-        (None, None) => query.go_test_trace_file(failure_excerpt, 20),
+        (None, None) => query.go_test_trace_file(semantic_input.failure_excerpt(), 20),
         (None, Some(_)) => return Err(BenchError::Config("module lacks source owner".into())),
     }
     .map_err(|error| BenchError::Sdk(error.to_string()))?;
@@ -609,7 +618,9 @@ fn trace_files(
         "profile": "go_trace_file_rrf_v1",
         "sdk_query_micros": query_micros,
         "frame_class": response.frame_class.as_str(),
-        "failure_excerpt_sha256": sha256_hex(failure_excerpt.as_bytes()),
+        "failure_excerpt_sha256": sha256_hex(semantic_input.failure_excerpt().as_bytes()),
+        "semantic_representation_policy": GO_TRACE_SEMANTIC_PROFILE,
+        "semantic_text_sha256": semantic_input.text_sha256(),
         "source_context": {
             "mode": if source_module.is_some() { "frozen_module_panic_v1" } else if source_owner.is_some() { "explicit_pilot_owner_v1" } else { "unowned" },
             "failure_source_repo_id": source_owner,
@@ -632,7 +643,7 @@ fn paired_query(
     pin: &GenerationPin,
     plan: &QueryPlan,
     top_k: u32,
-    failure_excerpt: Option<&str>,
+    semantic_input: Option<&GoTraceSemanticInput>,
     source_owner: Option<&RepoId>,
     source_module: Option<&BoundModuleContext>,
     source_binding: Option<&SourceOwnerBinding>,
@@ -697,14 +708,14 @@ fn paired_query(
             ));
         }
     }
-    let trace_files = failure_excerpt
-        .map(|text| {
+    let trace_files = semantic_input
+        .map(|input| {
             trace_files(
                 client,
                 pin,
                 plan,
                 top_k,
-                text,
+                input,
                 source_owner,
                 source_module,
                 source_binding,
@@ -716,6 +727,9 @@ fn paired_query(
             "original_query_sha256": plan.original_query_sha256,
             "effective_lexical_request_sha256": plan.effective_lexical_request_sha256,
             "semantic_text_sha256": plan.semantic_text_sha256,
+            "generic_semantic_representation_policy": GENERIC_SEMANTIC_REPRESENTATION_POLICY,
+            "trace_semantic_representation_policy": semantic_input.map(|_| GO_TRACE_SEMANTIC_PROFILE),
+            "trace_semantic_text_sha256": semantic_input.map(GoTraceSemanticInput::text_sha256),
         },
         "lexical": {
             "query_micros": lexical_micros,
@@ -802,9 +816,7 @@ pub(super) fn run(args: &Args) -> BenchResult<()> {
                 &pin,
                 &plan,
                 pack.contract_top_k,
-                task.semantic_input
-                    .as_ref()
-                    .map(|input| input.failure_excerpt()),
+                task.semantic_input.as_ref(),
                 source_binding
                     .as_ref()
                     .and_then(|binding| binding.by_task.get(&task.task_id))
@@ -822,8 +834,9 @@ pub(super) fn run(args: &Args) -> BenchResult<()> {
     let _digest = write_json_bound(
         &out,
         &json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "scope": "sealed-generation-sdk-quality-diagnostic",
+            "generic_execution_profile_id": execution_profile_id(QueryInputPolicy::NaturalLanguage),
             "pack_sha256": pack.pack_sha256,
             "lane_top_k": pack.contract_top_k,
             "generation": pin,

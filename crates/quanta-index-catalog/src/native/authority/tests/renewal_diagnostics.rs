@@ -78,6 +78,8 @@ fn read_ticket_validation_trace_preserves_phase_order_and_off_clock() -> TestRes
             },
             request,
         );
+        let observation = crate::TicketValidationObservation::begin(&catalog)
+            .ok_or("ticket observation owner exhausted")?;
         for regressed in [false, true] {
             clock.set(if regressed { 1_999 } else { 2_000 });
             events
@@ -95,6 +97,25 @@ fn read_ticket_validation_trace_preserves_phase_order_and_off_clock() -> TestRes
             } else {
                 result?;
             }
+            let timings = observation
+                .snapshot()
+                .ok_or("ticket observation became inactive")?;
+            check_eq!(
+                timings.calls,
+                if regressed {
+                    [2, 2, 2, 2, 2, 1]
+                } else {
+                    [1; 6]
+                }
+            );
+            check_eq!(
+                timings.failed,
+                if regressed {
+                    [0, 0, 0, 0, 1, 0]
+                } else {
+                    [0; 6]
+                }
+            );
             let rows = events
                 .0
                 .lock()

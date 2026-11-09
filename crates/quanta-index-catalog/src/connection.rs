@@ -568,7 +568,9 @@ impl SqliteCatalog {
                             self.path.display()
                         )));
                     }
-                    Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(1)),
+                    Err(TryLockError::WouldBlock) => {
+                        crate::ticket_diagnostics::retry_sleep(self, Duration::from_millis(1));
+                    }
                 }
             }
         })();
