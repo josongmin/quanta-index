@@ -587,6 +587,55 @@ fn managed_reserve_confirm_trace_preserves_off_cost_and_closes_error()
                     )
                     .into());
                 }
+                let terminal_at = run
+                    .events
+                    .iter()
+                    .position(|event| {
+                        matches!(event.kind, DiagnosticEventKindV1::SpanEnd { span_id: observed, .. } if observed == span_id)
+                    })
+                    .ok_or_else(|| {
+                        IndexError::BackendViolation("managed stage terminal missing".into())
+                    })?;
+                for (key, expected) in [
+                    (
+                        DiagnosticCounterV1::WorkReads,
+                        u64::from(span_id == reserve),
+                    ),
+                    (
+                        DiagnosticCounterV1::WorkWrites,
+                        u64::from(span_id == confirm),
+                    ),
+                    (DiagnosticCounterV1::WorkBytes, 0),
+                    (DiagnosticCounterV1::WorkMutations, 0),
+                ] {
+                    let counters = run
+                        .events
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, event)| {
+                            if let DiagnosticEventKindV1::Counter {
+                                span_id: observed,
+                                key: observed_key,
+                                value,
+                            } = event.kind
+                                && observed == span_id
+                                && observed_key == key
+                            {
+                                Some((index, value))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    if counters.as_slice() != [(counters.first().map_or(usize::MAX, |entry| entry.0), expected)]
+                        || counters[0].0 >= terminal_at
+                    {
+                        return Err(IndexError::BackendViolation(
+                            "managed work counter missing, duplicated, or after terminal".into(),
+                        )
+                        .into());
+                    }
+                }
             }
         }
     }
