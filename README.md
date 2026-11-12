@@ -1,4 +1,4 @@
-<p align="center"><img src="readme-banner.svg" alt="Quanta Index — Typed ingestion, immutable publication, and a separate search plane." width="100%"></p>
+
 
 # Quanta Index
 
