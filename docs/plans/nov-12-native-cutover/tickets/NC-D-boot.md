@@ -3,9 +3,9 @@
 <a id="current-work-packets-20261115"></a>
 ## 현재 작업 패킷 · 2026-11-16
 
-**CP2 실행 전 Source 접합 · 2026-11-17.** mutant 전용 Q sibling의 물리 경로를 positive 경로와 같다고 요구하던 runner 검사를 수정했다. 각 sibling 위치와 같은 frozen Source 정체성을 대조한다. 최종 재개도 부모의 실제 Q sibling 경로·등록 요청·actual Source·원 portable QBC attestation/RED를 재검증한다. mutant Source shared execution lease 안에서 spec을 재확인하고 원 증거 판독이 끝날 때까지 유지한다. Source 입장 5건·CP2 semantic 5건·lease 경계 2건, 변경 범위 제어 총 12건이 통과했다. [F 현재 검증](NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16)의 Source·실행 판정을 따른다. signed CP2 mixed·mutant와 정상 rollback·restore-forward 본문은 **NOT_RUN**이다.
+**CP2 실행 전 Source 접합 · 2026-11-17.** mutant 전용 Q sibling의 물리 경로를 positive 경로와 같다고 요구하던 runner 검사를 수정했다. 각 sibling 위치와 같은 frozen Source 정체성을 대조한다. 최종 재개도 부모의 실제 Q sibling 경로·등록 요청·actual Source·원 portable QBC attestation/RED를 재검증한다. mutant Source shared execution lease 안에서 spec을 재확인하고 원 증거 판독이 끝날 때까지 유지한다. Source 입장 5건·CP2 semantic 5건·lease 경계 2건, 변경 범위 제어 총 12건이 통과했다. [F 현재 검증](NC-F-integration.md)의 Source·실행 판정을 따른다. signed CP2 mixed·mutant와 정상 rollback·restore-forward 본문은 **NOT_RUN**이다.
 
-**Runtime Work 선행 수리 · 2026-11-17.** 원 Linux ELF의 첫 fault와 실제 프레임 체인으로 큰 2-bank 배열의 `from_fn` 중첩을 확인하고 `reads_v15.rs`의 초기화만 수정했다. 구문·boundary 17건 이후 실제 successor3의 run `20261117T133100.789417Z-ebe1ce8e1338`에서 컴파일·WorkStorage3 본문 3개가 exit0/3 PASS로 완료됐다. 이는 별도 `ovl-d8e93660f9df961c739df8d0d44ac6e4`의 proof이며 R17 SDK·설치 성공을 뜻하지 않는다. 기존 fixture 표시 전용 successor2는 해당 source 수리를 포함하지 않는다. [F 현재 검증](NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16)을 단일 실행 목록으로 사용한다.
+**Runtime Work 선행 수리 · 2026-11-17.** 원 Linux ELF의 첫 fault와 실제 프레임 체인으로 큰 2-bank 배열의 `from_fn` 중첩을 확인하고 `reads_v15.rs`의 초기화만 수정했다. 구문·boundary 17건 이후 실제 successor3의 run `20261117T133100.789417Z-ebe1ce8e1338`에서 컴파일·WorkStorage3 본문 3개가 exit0/3 PASS로 완료됐다. 이는 별도 `ovl-d8e93660f9df961c739df8d0d44ac6e4`의 proof이며 R17 SDK·설치 성공을 뜻하지 않는다. 기존 fixture 표시 전용 successor2는 해당 source 수리를 포함하지 않는다. [F 현재 검증](NC-F-integration.md)을 단일 실행 목록으로 사용한다.
 
 **남은 수용.** D1–D3와 cold graph/Java DFG 호출은 연결됐다. [잔여 패킷](#d-current-disposition-20261116)의 owning·CP2 mixed, 동일 서명 입력의 정상·게시 후 복구·ACK 유실 본문이 남았다. `source_ready=false`다. Host 222 PASS / 1 ignored, S ancestry 1 PASS, Q wire·join·Catalog·Host 75 PASS는 각 고정 입력에서 재사용한다.
 
@@ -123,7 +123,7 @@ S 기존 설치 fixture의 `source_v1.rs`, `postpublication_v1.rs`, `scenario_v1
 
 **코드 상태.** cold ImportGraph, Java DFG 수신, typed 원인·환급, candidate FULL → 서명 AST → Q Latest → BOOT와 D1–D3 복구 호출은 연결돼 있다. Java getter 배열·선언 스코프·classpath member bound와 외부 메서드의 반환 binary name을 반영했다. Parser, contract, runtime-analysis의 변경분 owning compiler·본문은 NOT_RUN이다.
 
-**11월 17일 이전 실행 보정 이력.** 당시 CP2 owning의 원 외장 입력이 사라져 post-execution custody 검증이 ENOENT로 종료됐다. R16도 Docker EOF로 완료 영수증 없이 종료됐고, 보존된 원 실행·로그를 검증하는 단일 환경 복구 경로를 보완했다. 후속 CP2 입력 복구와 R16의 실제 스택 사전검사 실패는 아래 최신 잔여 표를 따른다. 통합 실행 인수는 [F 원장](NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16)을 함께 대조한다.
+**11월 17일 이전 실행 보정 이력.** 당시 CP2 owning의 원 외장 입력이 사라져 post-execution custody 검증이 ENOENT로 종료됐다. R16도 Docker EOF로 완료 영수증 없이 종료됐고, 보존된 원 실행·로그를 검증하는 단일 환경 복구 경로를 보완했다. 후속 CP2 입력 복구와 R16의 실제 스택 사전검사 실패는 아래 최신 잔여 표를 따른다. 통합 실행 인수는 [F 원장](NC-F-integration.md)을 함께 대조한다.
 
 <a id="d-session-hardening-20261117"></a>
 **Session-hardening · 2026-11-17.** 이 채팅의 publisher/codec·실제 recovery caller, committed cold ImportGraph·Java DFG·거절/환급, FULL → 서명 AST → Q Latest → BOOT와 설치 fixture 세 수리를 병렬 재감사했다. 기준은 S `db42c61e11d5`·Q `49b4e7187f02`의 생산·테스트 20경로 및 checkout 밖 기존 제어 6경로의 내용이다. 과거 77경로 manifest는 현재 없어 이전 귀속은 Git·호출 이력으로 복원한 범위에 한정한다. S의 혼합 커밋 전체나 Q `03e2cead6` 전체를 이 채팅의 단독 변경으로 귀속하지 않는다. 당시 검토한 생산 경로에서 추가 확정 P0–P2 결함은 없었다. 65/64 work 거절은 원 Source first-refusal → finisher → lender의 typed `Err` → SDK `?`로 보존되므로 중복 원인 저장 수리는 필요하지 않다.
@@ -167,9 +167,9 @@ SDK 시작 전 Docker 유휴·canonical 잠금과 spec 불변을 확인해 정�
 | 이 채팅에서 직접 마감 | 현재 상태 | 완료 조건 |
 | --- | --- | --- |
 | 코드 합류·Git 마감 | Legacy BOOT `NativeRestore` 거절 3줄은 공유 main 작업 트리에 유지되며 아직 미커밋이다. H의 production 확장은 기존 활성 claim이 담당한다. 이 채팅은 기존 Source-only recovery exact의 multiactive 양성·foreign readback 공백을 보완했으며, History 세 번째 hop·resident 거절 fixture는 재사용한다. S의 두 설치 테스트 파일은 main 자동 합류를 확인했고, compiler·실제 설치 본문은 NOT_RUN이다. | H 의존 타입·producer/consumer가 함께 반영된 코호트에서 이 3줄을 합류·검사하고, 관련 변경만 커밋·push한다. H/Java 인접 오너의 코드를 다시 만들지 않는다. |
-| R16 SDK 인수 | R16은 **FAILED · 컴파일 성공/SDK 본문0, 8 MiB 사전검사 하한 9,671,600 B > 8,388,608 B**다. 현재는 기존 Main의 Original-funded Owned/Storage·TS/JS import·retained Owned slot 수리를 포함한 **R17 final40 `ovl-332472f2` / spec `b3d89a19`**로 전환했다. 영향 제어 회귀152 PASS·Caller 입력검사 exit0 뒤 기존 resumer PID27038/Runner27117 하나가 canonical 잠금에서 대기 중이다. 현재 R17 SDK 본문은 **NOT_RUN**이며 과거 e05 전송 실패를 현재 소스의 실패로 승격하지 않는다. [F 실행표](NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16) · [R15/R16 이력](#r15-실행-인수와-완료-조건) | 영향 SDK 10개 본문과 정확한 source/feature를 결속한다. Native2 두 본문에서 실제 Taskmesh 8 MiB 경계를 검증한다. |
+| R16 SDK 인수 | R16은 **FAILED · 컴파일 성공/SDK 본문0, 8 MiB 사전검사 하한 9,671,600 B > 8,388,608 B**다. 현재는 기존 Main의 Original-funded Owned/Storage·TS/JS import·retained Owned slot 수리를 포함한 **R17 final40 `ovl-332472f2` / spec `b3d89a19`**로 전환했다. 영향 제어 회귀152 PASS·Caller 입력검사 exit0 뒤 기존 resumer PID27038/Runner27117 하나가 canonical 잠금에서 대기 중이다. 현재 R17 SDK 본문은 **NOT_RUN**이며 과거 e05 전송 실패를 현재 소스의 실패로 승격하지 않는다. [F 실행표](NC-F-integration.md) · [R15/R16 이력](#r15-실행-인수와-완료-조건) | 영향 SDK 10개 본문과 정확한 source/feature를 결속한다. Native2 두 본문에서 실제 Taskmesh 8 MiB 경계를 검증한다. |
 | CP2 owning 검증 | **BLOCKED · 외장 원 입력 재분리**. 한때 `/Volumes/Extreme SSD 1`의 실제 APFS 마운트와 parent·cause3 successor custody를 각각 exit0으로 확인했으나 이후 다시 장치가 사라졌다. 재연결·본체 직결 응답 후에도 전체 디스크/USB 목록에 SSD가 없고 exact Source root도 없다. OS의 잠긴 화면 상태를 확인해 잠금 해제와 액세서리 연결 허용을 요청했다. 이전 `ovl-24f3ad5a` 시도의 ENOENT·종결 결과 부재 이력은 유지하며, 입력 복구를 Host 11개·Linux mixed 1개 또는 mutant RED의 통과로 계산하지 않는다. [기존 요청](#session-hardening-20261115) · [고정 입력별 실패 이력](../../../ARCHIVE-INDEX.md#2026-11-17-e03-retirement-and-owning-proof-reconciliation) | 냉간 복원과 Java DFG 본문을 실행한다. Linux mixed에서 기존 확정 Source·현재 Analysis Head를 사용해 typed 거절, consumer 호출 0, 마지막 alias drop 환급과 기존 generic-error mutation RED를 확인한다. 각 요청의 정확한 소스·feature·본문을 대조한다. |
-| Caller·NC-D 서명 설치 수용 | Caller3·공개7·private retained2(Host·History)의 통합 결과는 [F 실행 원장](NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16)을 따른다. 이 티켓의 signed Linux와 mixed 본문은 **NOT_RUN**이다. History exact의 수용 기준은 [H-ACCEPT-01](NC-H-history.md#current-actionable-backlog--2026-11-16-re-audit)에 있다. | 기존 Caller3와 F의 동일 S/Q·SQL worker 입력에서 공개7과 test-only 서명 retained2를 인수한다. 공개 내 normal·Watch/SDK·AST에서 실제 candidate FULL→AST/Q Latest→BOOT, rollback/restore-forward, ACK 유실·재시작·조회 일치를 확인한다. Host retained는 미정산 ordinal typed 거절, 활성 선택 불변, 재시작 정산, 동일 BOOT 후보 복구를 확인한다. History retained는 FULL·successor DELTA와 ACK 유실 뒤 같은 operation의 정산 및 재시작 조회를 확인한다. 두 exact의 원 영수증과 로그를 각각 요구한다. |
+| Caller·NC-D 서명 설치 수용 | Caller3·공개7·private retained2(Host·History)의 통합 결과는 [F 실행 원장](NC-F-integration.md)을 따른다. 이 티켓의 signed Linux와 mixed 본문은 **NOT_RUN**이다. History exact의 수용 기준은 [H-ACCEPT-01](NC-H-history.md#current-actionable-backlog--2026-11-16-re-audit)에 있다. | 기존 Caller3와 F의 동일 S/Q·SQL worker 입력에서 공개7과 test-only 서명 retained2를 인수한다. 공개 내 normal·Watch/SDK·AST에서 실제 candidate FULL→AST/Q Latest→BOOT, rollback/restore-forward, ACK 유실·재시작·조회 일치를 확인한다. Host retained는 미정산 ordinal typed 거절, 활성 선택 불변, 재시작 정산, 동일 BOOT 후보 복구를 확인한다. History retained는 FULL·successor DELTA와 ACK 유실 뒤 같은 operation의 정산 및 재시작 조회를 확인한다. 두 exact의 원 영수증과 로그를 각각 요구한다. |
 
 | 기존 오너에서 인수할 입력 | 인수 기준 |
 | --- | --- |
@@ -179,13 +179,13 @@ SDK 시작 전 Docker 유휴·canonical 잠금과 spec 불변을 확인해 정�
 | F Root·Q 통합 및 서명 공급 | Runtime6의 Storage3 원 본문 3/3은 기존 범위에서 인수했다. 후속 WorkStorage3도 별도 Source `ovl-d8e93660f9df961c739df8d0d44ac6e4`의 run `20261117T133100.789417Z-ebe1ce8e1338`, exit0/3 PASS·0 FAIL을 확인했다. WorkStorage3 성공을 R17 SDK나 설치 결과로 승격하지 않는다. 기존 Runtime291 영수증, Q selection/combined107 및 Linux 물리 RepoMap 결과는 원 범위별로 인수한다. Q wire/join·Catalog/Host 75 PASS는 해당 범위다. 4-role·Q ELF·SQL worker·Watchman의 같은 서명 설치 입력은 [F 최종 패킷](NC-F-integration.md#p07-final-actions-20261115)과 기존 공급기에서 받는다. |
 
 Parser의 고정 입력 결과를 인수했다. CP2는 기존 레인에서, R16·Caller와
-서명 입력은 [F의 현재 실행표](NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16)에서
+서명 입력은 [F의 현재 실행표](NC-F-integration.md)에서
 관리한다. D는 원 영수증과 실제 설치 결과로 `source_ready`를 판정한다.
 
 **Runtime6 Storage3 VERIFIED 3/3.** 원 Docker 종료 이벤트와 QBC
 `20261116T100414.458599Z-4fc91710ac46`의 명령·영수증·로그를
 `recovered-docker-terminal.json`으로 대조했다. 제어 회귀 13개가 통과했다.
-WorkStorage3의 후속 실패와 재실행은 [F 실행표](NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16)가 소유한다.
+WorkStorage3의 후속 실패와 재실행은 [F 실행표](NC-F-integration.md)가 소유한다.
 
 **R15 실행 전 재개 이력.** Source25 동결 root를 같은 digest로 복원했다.
 첫 이관 후 용량 거절은 compiler·본문 0이었고, 후행 R15의 실제 ELF 사전검사와
@@ -1152,7 +1152,7 @@ Rulepack policy and candidate contracts are in the [implemented contracts](../..
 [custody ADR](../../../adr/NOV-07-001-native-index-execution-and-custody.md). Their exact frozen sources, selectors, compiler failures,
 stack limits, capacity and protobuf repairs remain in the [exact source and execution record](../../../ARCHIVE-INDEX.md#2026-11-17-six-ticket-historical-body-compaction).
 Current R16, Caller and signed install intake follow
-[F's execution table](NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16).
+[F's execution table](NC-F-integration.md).
 
 ## Fresh Native candidate preparation · 2026-11-14
 
