@@ -203,6 +203,8 @@ RCA는 사전 `protoc -I /usr/include`에만 include를 주고, 실제 `prost-bu
 | 서명 설치·복구 | 정상3 forward·두 rollback·Native hop, Source-only multiactive/foreign readback, resident 거절·History/ACK-loss fixture를 재사용. 세 새 leaf는 Main 및 선택 Source에 동일 | **NOT_RUN**: 같은 S/Q·four-role/SQL worker·서명 정책에서 공개7·retained2(Host/History)·Linux CP2 mixed와 generic-error mutant RED. 실제 FULL→AST/Q Latest→BOOT, 정상/ACK 유실·재시작·rollback/restore-forward·조회 일치의 원 receipt 필요 |
 | CP2 Host 원 입력 | 기존 driver와 reviewed repair 경로 재사용. 새 확정 코드 결함 없음 | **BLOCKED**: 외장 physical device0, `/Volumes/Extreme SSD 1` 및 원 parent `ovl-ed95…`/후속 `ovl-24f3…` 부재. 마지막 cause3는 ENOENT/새 receipt 없음, 활성 CP2 오너도 없음. 원 Source 복구 뒤 기존11 host body 실행. Current nofault Source나 새 corpus로 대체 불가 |
 
+현재 실행 입력 준비 후 Q10698·resumer12011의 생존을 확인했지만 Q/Native/installed terminal은 아직 생성되지 않았다. 마지막 host 가용량은 약41.1GB로 원 입장 기준 약54.87GB보다 작다. 공식 Q target GC dry-run은 회수0B·오류0이며 활성 Cargo target/최근 orphan은 보호했다. 잠금·용량 한도 우회나 다른 오너 target 삭제로 실행을 강제하지 않는다.
+
 원 R16/Source23/Current 코호트를 합산하지 않으며 **`source_ready=false`**를 유지한다. 코드·정적 proof, 컴파일·owning body, signed Product 수용을 각각 판정한다.
 
 | 기존 오너에서 인수할 입력 | 인수 기준 |
