@@ -119,10 +119,16 @@ S 기존 설치 fixture의 `source_v1.rs`, `postpublication_v1.rs`, `scenario_v1
 
 **코드 상태.** cold ImportGraph, Java DFG 수신, typed 원인·환급, candidate FULL → 서명 AST → Q Latest → BOOT와 D1–D3 복구 호출은 연결돼 있다. Java getter 배열·선언 스코프·classpath member bound와 외부 메서드의 반환 binary name을 반영했다. Parser, contract, runtime-analysis의 변경분 owning compiler·본문은 NOT_RUN이다.
 
+**11월 17일 실행 보정.** CP2 owning의 원 외장 입력은 현재 장치에서 사라져 post-execution custody 검증이 ENOENT로 종료됐다. R16도 Docker EOF로 완료 영수증 없이 종료됐고, 보존된 원 실행·로그를 검증하는 단일 환경 복구 경로를 보완했다. 실제 수용 판정과 재접수는 [F 현재 원장](NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16)을 따른다. 코드 우선 수리와 제어 검증을 먼저 수행한다.
+
+**11월 17일 코드 우선 재감사.** S `40dd746bf99c`와 Q `3a222aa58`의 검토 경로에서 cold ImportGraph, Java DFG 14종 수신, candidate FULL → 서명 AST → Q Latest → BOOT의 추가 확정 P0–P2 결함은 찾지 못했다. import inventory의 65/64 work 거절은 기존 Source first-refusal → finisher → lender의 typed `Err` → SDK `?`로 이미 전달된다. 중복 원인 저장 변경 두 곳은 제거해 기존 경로를 유지했다. 관련 Rust 8파일은 각 저장소 edition으로 `rustfmt --emit stdout --config skip_children=true` 구문 검사를 통과했고, scope diff 검사도 통과했다. 이 결과는 compiler·본문·제품 수용이 아니다. R16 환경 중단 복구의 기존 Python 회귀 4개도 통과했으며 새 Rust 실행기는 만들지 않았다.
+
+**실행 이력 구분.** `ovl-78e615e8428093d63a78b7d1a177ebda`의 11.94 MiB 스택 거절은 11월 16일 R13 기록이다. 11월 17일 R16의 `ovl-07bac19c04d1386c87ff705abda59dae`는 Docker 중단 후 새 ELF·스택 사전검사·본문 영수증이 없다. 일부 파일의 byte 동일성을 R16의 스택 실패나 성공으로 승격하지 않는다.
+
 | 이 채팅에서 직접 마감 | 현재 상태 | 완료 조건 |
 | --- | --- | --- |
 | R16 SDK 인수 | R15 scalar/boxed Parser 1/1을 재사용한다. R15 Native2는 8 MiB 사전검사에서 실패했다. 새 R16 ELF와 본문은 [F 실행표](NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16), 고정 입력과 실패 원인은 [R15/R16 증거](#r15-실행-인수와-완료-조건)에 있다. | 영향 SDK 10개 본문과 정확한 source/feature를 결속한다. Native2 두 본문에서 실제 Taskmesh 8 MiB 경계를 검증한다. |
-| CP2 owning 검증 | 직전 `cause3`는 SDK Runtime Composition에서 compile101·본문0이었다. 두 파일 수리를 포함한 `8e8792d4e643+ovl-24f3ad5a`의 재검증 결과는 미기록이다. Host 0/11, Linux mixed 0/1. [기존 요청](#session-hardening-20261115) · [고정 입력별 실패 이력](../../../ARCHIVE-INDEX.md#2026-11-17-e03-retirement-and-owning-proof-reconciliation) | 냉간 복원과 Java DFG 본문을 실행한다. Linux mixed에서 기존 확정 Source·현재 Analysis Head를 사용해 typed 거절, consumer 호출 0, 마지막 alias drop 환급과 기존 generic-error mutation RED를 확인한다. 각 요청의 정확한 소스·feature·본문을 대조한다. |
+| CP2 owning 검증 | 이전 `cause3`는 SDK Runtime Composition에서 compile101·본문0이었다. 두 파일 수리를 포함한 `8e8792d4e643+ovl-24f3ad5a`의 재시도는 외장 입력 소실로 post-execution custody 검증이 ENOENT 종료됐고 종결 결과가 없다. 해당 입력 복구는 **BLOCKED**이며 Host 11개·Linux mixed 1개의 수용은 확보하지 못했다. [기존 요청](#session-hardening-20261115) · [고정 입력별 실패 이력](../../../ARCHIVE-INDEX.md#2026-11-17-e03-retirement-and-owning-proof-reconciliation) | 냉간 복원과 Java DFG 본문을 실행한다. Linux mixed에서 기존 확정 Source·현재 Analysis Head를 사용해 typed 거절, consumer 호출 0, 마지막 alias drop 환급과 기존 generic-error mutation RED를 확인한다. 각 요청의 정확한 소스·feature·본문을 대조한다. |
 | Caller·NC-D 서명 설치 수용 | Caller3·공개7·private retained2(Host·History)의 통합 결과는 [F 실행 원장](NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16)을 따른다. 이 티켓의 signed Linux와 mixed 본문은 **NOT_RUN**이다. History exact의 수용 기준은 [H-ACCEPT-01](NC-H-history.md#current-actionable-backlog--2026-11-16-re-audit)에 있다. | 기존 Caller3와 F의 동일 S/Q·SQL worker 입력에서 공개7과 test-only 서명 retained2를 인수한다. 공개 내 normal·Watch/SDK·AST에서 실제 candidate FULL→AST/Q Latest→BOOT, rollback/restore-forward, ACK 유실·재시작·조회 일치를 확인한다. Host retained는 미정산 ordinal typed 거절, 활성 선택 불변, 재시작 정산, 동일 BOOT 후보 복구를 확인한다. History retained는 FULL·successor DELTA와 ACK 유실 뒤 같은 operation의 정산 및 재시작 조회를 확인한다. 두 exact의 원 영수증과 로그를 각각 요구한다. |
 
 | 기존 오너에서 인수할 입력 | 인수 기준 |
