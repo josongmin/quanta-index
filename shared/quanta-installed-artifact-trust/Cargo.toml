@@ -1,0 +1,30 @@
+[package]
+name = "quanta-installed-artifact-trust"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+license = "MIT OR Apache-2.0"
+authors = ["Semantica Team"]
+publish = false
+description = "Signed installed artifact verification with retained image custody"
+
+[package.metadata.layer]
+tier = "tier1-adapter"
+
+[features]
+fixture-trust-root-v1 = []
+s-product-startup-v1 = []
+
+[lints]
+workspace = true
+
+[dependencies]
+ed25519-dalek.workspace = true
+fs2.workspace = true
+quanta-explicit-fd-process.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
