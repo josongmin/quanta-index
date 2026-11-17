@@ -57,4 +57,3 @@ fn assert_pinned_file_mapping_v1(
     let status_v1 = child_v1.wait_v1().expect("wait child");
     assert_helper_success_v1(status_v1, &stdout_v1, &stderr_v1, "regular file helper");
 }
-
