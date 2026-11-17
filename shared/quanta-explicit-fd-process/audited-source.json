@@ -48,6 +48,7 @@
     "src/request.rs": "a534034219127ea0c07845d7417f1dc39ec6bde54b646e43e42ef6e012c6daf1",
     "src/tests.rs": "f63767b63fb0045beb86b7de23fb72a6920c134de202bbab55a9359f11c29f86",
     "src/tests/connected_peer_image_v1.rs": "9064bd252d7ddfe101cd802fffcac4ba86c2ebcbf54374651fcba0cc3197c425",
+    "src/tests/pinned_file_mappings_v1.rs": "c74d72be75858703d28be05c286f28e09cc510d68c78d2285dd8e22a1b42ee4b",
     "src/tests/retained_regular_file_v1.rs": "d7cda25c2b8af6365c5a3b8d98d0cf2c4827bb45f096e72a90df5deedcdb8e15"
   },
   "schema_version": 2,
