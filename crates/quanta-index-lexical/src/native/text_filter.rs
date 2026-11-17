@@ -3,8 +3,9 @@
 use super::{NativeTextIndex, TextReadContext};
 use quanta_index_contract::QueryConstraintSetV1;
 use quanta_index_core::index::{
-    IndexError, MAX_SOURCE_PATH_BYTES, MemoryLifetime, ObjectRef, OwnerKey, SourceRecordOwner,
-    WorkUsage, owner_map_key,
+    IndexError, MAX_SOURCE_PATH_BYTES, MemoryLease, MemoryLifetime, ObjectRef, OwnerKey,
+    SourcePathOwners, SourceRecordOwner, WorkBudget, WorkUsage, owner_map_key,
+    visit_repository_path_sources,
 };
 
 const PATH_KEY_PREFIX: &[u8] = b"path\0";
@@ -12,22 +13,23 @@ const MAX_PATH_KEY_BYTES: usize = 4_096;
 
 /// A resolved source identity; callers apply it while generating candidates,
 /// before the bounded top-k heap can discard a matching result.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(super) enum OwnerSelection {
     Any,
     Absent,
     Exact { owner: OwnerKey, source: ObjectRef },
+    Repositories(RepositoryOwners),
 }
 
 impl OwnerSelection {
-    pub(super) fn matches(self, owner: OwnerKey, source: ObjectRef) -> Result<bool, IndexError> {
+    pub(super) fn matches(&self, owner: OwnerKey, source: ObjectRef) -> Result<bool, IndexError> {
         match self {
             Self::Any => Ok(true),
             Self::Exact {
                 owner: selected_owner,
                 source: selected_source,
-            } if owner == selected_owner => {
-                if source != selected_source {
+            } if owner == *selected_owner => {
+                if source != *selected_source {
                     return Err(IndexError::CorruptObject(
                         "native text candidate differs from selected source owner".into(),
                     ));
@@ -35,7 +37,84 @@ impl OwnerSelection {
                 Ok(true)
             }
             Self::Absent | Self::Exact { .. } => Ok(false),
+            Self::Repositories(selected) => {
+                let Ok(position) = selected
+                    .rows
+                    .binary_search_by_key(&owner, |(owner, _)| *owner)
+                else {
+                    return Ok(false);
+                };
+                let (_, expected) = selected.rows.get(position).ok_or_else(|| {
+                    IndexError::BackendViolation("repository owner selection lost its row".into())
+                })?;
+                if source != *expected {
+                    return Err(IndexError::CorruptObject(
+                        "native text candidate differs from selected source owner".into(),
+                    ));
+                }
+                Ok(true)
+            }
         }
+    }
+}
+
+/// Owner identities are funded before growth. Sorting reuses the existing
+/// buffer, and the retained grant outlives every candidate comparison.
+#[derive(Debug, Default)]
+pub(super) struct RepositoryOwners {
+    rows: Vec<(OwnerKey, ObjectRef)>,
+    memory: Option<MemoryLease>,
+}
+
+impl RepositoryOwners {
+    fn push(
+        &mut self,
+        owner: OwnerKey,
+        source: ObjectRef,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        budget.checkpoint()?;
+        if self.rows.len() == self.rows.capacity() {
+            let capacity = self
+                .rows
+                .capacity()
+                .max(4)
+                .checked_mul(2)
+                .ok_or(IndexError::ResourceLimited)?;
+            let bytes = capacity
+                .checked_mul(std::mem::size_of::<(OwnerKey, ObjectRef)>())
+                .and_then(|bytes| u64::try_from(bytes).ok())
+                .ok_or(IndexError::ResourceLimited)?;
+            let memory = budget.reserve_memory(bytes, MemoryLifetime::Retained)?;
+            let mut rows = Vec::new();
+            rows.try_reserve_exact(capacity)
+                .map_err(|_error| IndexError::ResourceLimited)?;
+            if rows.capacity() > capacity {
+                return Err(IndexError::ResourceLimited);
+            }
+            rows.append(&mut self.rows);
+            self.rows = rows;
+            self.memory = memory;
+        }
+        self.rows.push((owner, source));
+        Ok(())
+    }
+
+    fn complete(mut self) -> Result<OwnerSelection, IndexError> {
+        self.rows.sort_unstable_by_key(|(owner, _)| *owner);
+        if self.rows.windows(2).any(|pair| {
+            pair.first()
+                .zip(pair.last())
+                .is_some_and(|(first, last)| first.0 == last.0)
+        }) {
+            return Err(IndexError::CorruptObject(
+                "repository path repeats the selected source owner".into(),
+            ));
+        }
+        if self.rows.is_empty() {
+            return Ok(OwnerSelection::Absent);
+        }
+        Ok(OwnerSelection::Repositories(self))
     }
 }
 
@@ -92,7 +171,27 @@ pub(super) fn resolve(
         context.budget.checkpoint()?;
         return Ok(OwnerSelection::Absent);
     };
-    let owner = quanta_index_core::index::owner_from_path_map_value(marker_ref, context.budget)?;
+    let owner = match SourcePathOwners::decode(marker_ref, context.budget)? {
+        SourcePathOwners::LegacyOwner(owner) => owner,
+        SourcePathOwners::Repositories(root) => {
+            let mut selected = RepositoryOwners::default();
+            visit_repository_path_sources(
+                root,
+                path,
+                context.ticket.view.source.owners,
+                context.maps,
+                context.objects,
+                context.budget,
+                &mut |owner, source, record, budget| {
+                    if index.validate_selected_source(&record)? {
+                        selected.push(owner, source, budget)?;
+                    }
+                    Ok(())
+                },
+            )?;
+            return selected.complete();
+        }
+    };
     context.budget.checkpoint()?;
 
     let source = context

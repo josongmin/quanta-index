@@ -39,7 +39,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             },
         };
         let NativeIndexResponse::RepoMapRanked(result) =
-            self.request_wire(request_id, &envelope, budget)?
+            self.request_wire(request_id, &envelope, budget, Some(&envelope.payload))?
         else {
             return Err(NativeUdsError::Protocol(
                 "unexpected RepoMap rank reply".into(),

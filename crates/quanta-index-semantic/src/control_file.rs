@@ -7,15 +7,13 @@ use std::sync::Arc;
 
 use lance_io::object_store::file_admission::{FileAdmission, FileReaderLease};
 
-use quanta_index_core::CoreError;
 use rustix::fs::{AtFlags, Mode, OFlags, open, openat, statat};
 use sha2::{Digest as _, Sha256};
 
-pub(crate) const MAX_SEALED_MARKER_BYTES: usize = 4 * 1024;
-pub(crate) const MAX_GENERATION_CONTRACT_BYTES: usize = 1024 * 1024;
-pub(crate) const MAX_SCOPE_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
-pub(crate) const MAX_SEALED_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
-pub(crate) const MAX_RECEIPT_BYTES: usize = 64 * 1024;
+pub(crate) use crate::legacy::limits::{
+    MAX_GENERATION_CONTRACT_BYTES, MAX_RECEIPT_BYTES, MAX_SCOPE_MANIFEST_BYTES,
+    MAX_SEALED_MANIFEST_BYTES, MAX_SEALED_MARKER_BYTES,
+};
 
 /// Pin the family and generation before resolving a control-file name.
 ///
@@ -263,14 +261,7 @@ pub(crate) fn read_string_bounded_with_admission(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
-pub(crate) fn ensure_bounded(bytes: &[u8], max_bytes: usize, what: &str) -> Result<(), CoreError> {
-    if bytes.len() > max_bytes {
-        return Err(CoreError::Storage(format!(
-            "semantic: {what} exceeds {max_bytes} encoded bytes"
-        )));
-    }
-    Ok(())
-}
+pub(crate) use crate::legacy::limits::ensure_bounded;
 
 #[cfg(test)]
 mod tests {

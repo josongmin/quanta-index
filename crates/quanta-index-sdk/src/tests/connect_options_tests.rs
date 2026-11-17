@@ -1,8 +1,12 @@
 use super::*;
+use crate::ClientProfile;
 
 #[test]
 fn connect_options_from_state_root_resolve_default_sockets() {
-    let resolved = ok_or_fail!(ConnectOptions::from_state_root("/tmp/qi-state").resolve());
+    let resolved = ok_or_fail!(
+        ConnectOptions::from_state_root("/tmp/qi-state")
+            .resolve_legacy_profile(ClientProfile::Full)
+    );
     assert_eq!(resolved.state_root, Some(PathBuf::from("/tmp/qi-state")));
     assert_eq!(
         resolved.query_socket,
@@ -29,7 +33,7 @@ fn connect_options_preserve_explicit_request_io_timeout() {
     let resolved = ok_or_fail!(
         ConnectOptions::from_state_root("/tmp/qi-state")
             .with_request_io_timeout(timeout)
-            .resolve()
+            .resolve_legacy_profile(ClientProfile::Full)
     );
     assert_eq!(resolved.io_policy.request_timeout(), timeout);
 }
@@ -40,7 +44,7 @@ fn connect_options_preserve_absolute_request_io_deadline() {
     let resolved = ok_or_fail!(
         ConnectOptions::from_state_root("/tmp/qi-state")
             .with_request_io_deadline(deadline)
-            .resolve()
+            .resolve_legacy_profile(ClientProfile::Full)
     );
     assert_eq!(resolved.io_policy.absolute_deadline(), Some(deadline));
 }
@@ -52,7 +56,7 @@ fn connect_options_reject_elapsed_request_io_deadline() {
         .expect("monotonic clock must represent an instant 1ms in the past");
     let result = ConnectOptions::from_state_root("/tmp/qi-state")
         .with_request_io_deadline(deadline)
-        .resolve();
+        .resolve_legacy_profile(ClientProfile::Full);
     assert!(
         matches!(result, Err(crate::SdkError::Usage(message)) if message.contains("deadline elapsed"))
     );
@@ -62,7 +66,7 @@ fn connect_options_reject_elapsed_request_io_deadline() {
 fn connect_options_reject_zero_request_io_timeout() {
     let result = ConnectOptions::from_state_root("/tmp/qi-state")
         .with_request_io_timeout(std::time::Duration::ZERO)
-        .resolve();
+        .resolve_legacy_profile(ClientProfile::Full);
     assert!(
         matches!(result, Err(crate::SdkError::Usage(message)) if message.contains("greater than zero"))
     );

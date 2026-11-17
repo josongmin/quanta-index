@@ -4333,11 +4333,36 @@ impl Scanner {
             (None, None) => None,
         };
 
-        let knn_plan: Arc<dyn ExecutionPlan> = if let Some(filter_expr) = filter_expr {
+        let mut knn_plan: Arc<dyn ExecutionPlan> = if let Some(filter_expr) = filter_expr {
             Arc::new(LanceFilterExec::try_new(filter_expr.0, flat_dist)?)
         } else {
             flat_dist
         };
+
+        // Exact ties require every candidate's vector for scoring, but the
+        // bounded Top-K sort only needs the score, tie keys, and row identity.
+        // Drop the vector after scoring so SortExec does not move it for every
+        // candidate.  A requested output vector is taken for the selected rows
+        // by create_plan after the Top-K cut.
+        if self
+            .exact_tie_order
+            .as_ref()
+            .is_some_and(|columns| !columns.contains(&q.column))
+        {
+            let schema = knn_plan.schema();
+            let projection = schema
+                .fields()
+                .iter()
+                .filter(|field| field.name() != &q.column)
+                .map(|field| {
+                    Ok((
+                        expressions::col(field.name(), schema.as_ref())?,
+                        field.name().to_string(),
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            knn_plan = Arc::new(DFProjectionExec::try_new(projection, knn_plan)?);
+        }
 
         // The opt-in path ranks by the same f32 score exported to callers.
         // Floating-point subtraction can collapse distinct distances into one
@@ -5682,6 +5707,44 @@ mod test {
             .copied()
             .collect();
         assert_eq!(expected_i, actual_i);
+    }
+
+    #[tokio::test]
+    async fn test_exact_tie_topk_sorts_keys_without_carrying_vectors() {
+        let test_ds = TestVectorDataset::new(LanceFileVersion::Stable, true)
+            .await
+            .unwrap();
+        let key: Float32Array = (32..64).map(|v| v as f32).collect();
+        let mut scan = test_ds.dataset.scan();
+        scan.nearest("vec", &key, 3)
+            .unwrap()
+            .use_index(false)
+            .exact_tie_order(&["s".to_string()])
+            .unwrap()
+            .project(&["i", "vec"])
+            .unwrap();
+
+        let plan = scan.explain_plan(false).await.unwrap();
+        let sort = plan.find("SortExec: TopK(fetch=3)").unwrap();
+        let distance = plan[sort..].find("KNNVectorDistance").unwrap() + sort;
+        let rank_projection = plan[sort..distance]
+            .lines()
+            .find(|line| line.contains("ProjectionExec: expr="))
+            .unwrap();
+        assert!(!rank_projection.contains("vec@"), "{plan}");
+        assert!(plan[..sort].contains("Take: columns="), "{plan}");
+
+        let batch = scan.try_into_batch().await.unwrap();
+        let ids = batch["i"].as_primitive::<Int32Type>();
+        assert_eq!(ids.values().as_ref(), &[1, 161, 241]);
+        let vectors = batch["vec"].as_fixed_size_list();
+        for row in 0..3 {
+            let vector = vectors.value(row);
+            assert_eq!(
+                vector.as_primitive::<Float32Type>().values().as_ref(),
+                key.values().as_ref()
+            );
+        }
     }
 
     #[rstest]

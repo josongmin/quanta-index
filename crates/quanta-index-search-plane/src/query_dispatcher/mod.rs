@@ -42,7 +42,7 @@ mod ranking;
 mod read_view;
 mod response_budget;
 mod rev_at_time;
-mod routes;
+pub(crate) mod routes;
 mod selection;
 mod semantic_query;
 mod stage_timing;

@@ -35,7 +35,7 @@ impl FileAuthorityPlanCache {
         let binding = PlanBinding {
             root: root.as_deref().map(|bytes| Sha256::digest(bytes).into()),
             operations: operations_sha256(ops)?,
-            policy: super::paged::policy_digest(),
+            policy: crate::legacy::file_root::policy_digest(),
         };
         if self
             .entry

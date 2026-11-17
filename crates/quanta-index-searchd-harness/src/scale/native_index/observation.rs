@@ -2,11 +2,7 @@
 
 #[cfg(target_os = "linux")]
 use std::fs;
-#[cfg(target_os = "macos")]
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
-use std::process::{Child, Command, Stdio};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -20,12 +16,18 @@ use serde_json::{Value, json};
 #[path = "aggregate_rss.rs"]
 mod aggregate_rss;
 use aggregate_rss::AggregateRss;
+#[path = "observation_workers.rs"]
+mod observation_workers;
+use observation_workers::ObservationWorkers;
+#[cfg(any(target_os = "macos", test))]
+#[path = "macos_child_rss.rs"]
+mod macos_child_rss;
+#[cfg(target_os = "macos")]
+use macos_child_rss::MacChildRss;
 
 const RSS_INTERVAL: Duration = Duration::from_millis(100);
 const PROCESS_IO_INTERVAL: Duration = Duration::from_millis(100);
 const DISK_INTERVAL: Duration = Duration::from_millis(500);
-#[cfg(target_os = "macos")]
-const PS_DEADLINE: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ObservationMode {
@@ -377,16 +379,30 @@ impl NativeObservation {
 }
 
 pub(super) struct NativeSampler {
-    stopped: Arc<AtomicBool>,
-    worker: Option<thread::JoinHandle<()>>,
+    workers: ObservationWorkers,
     epoch: Arc<Mutex<Epoch>>,
     aggregate_rss: Arc<Mutex<AggregateRss>>,
+    #[cfg(target_os = "macos")]
+    child_rss: Arc<Mutex<MacChildRss>>,
     pid: u32,
     root: PathBuf,
 }
 
 impl NativeSampler {
     fn start(pid: u32, root: &Path, epoch: Arc<Mutex<Epoch>>) -> Result<Self> {
+        Self::start_with_disk_probe(pid, root, epoch, |root, stopped| {
+            crate::scale_disk_census::allocated_native_fixture_with_cancel(root, || {
+                stopped.load(Ordering::Acquire)
+            })
+        })
+    }
+
+    fn start_with_disk_probe(
+        pid: u32,
+        root: &Path,
+        epoch: Arc<Mutex<Epoch>>,
+        mut disk_probe: impl FnMut(&Path, &AtomicBool) -> Result<[u64; 3]> + Send + 'static,
+    ) -> Result<Self> {
         // Bracket even a short reopen epoch: the background worker need not
         // get scheduled before stop. Both probes retain the same unreaped PID.
         let at = Instant::now();
@@ -395,28 +411,42 @@ impl NativeSampler {
             observed.process_io.record(at, at.elapsed(), initial_io)?;
         }
         let stopped = Arc::new(AtomicBool::new(false));
+        #[cfg(target_os = "macos")]
+        let child_rss = {
+            let sampler = Arc::new(Mutex::new(MacChildRss::new(pid)));
+            let at = Instant::now();
+            let result = native_child_rss_sample(&sampler, &stopped);
+            if let Ok(mut observed) = epoch.lock() {
+                observed.rss.record(at, at.elapsed(), result);
+            }
+            sampler
+        };
+        #[cfg(target_os = "macos")]
+        let worker_child_rss = Arc::clone(&child_rss);
         let aggregate_rss = Arc::new(Mutex::new(AggregateRss::new(pid)));
         let at = Instant::now();
         let initial_rss = aggregate_sample(&aggregate_rss, &stopped);
         if let Ok(mut observed) = epoch.lock() {
             observed.aggregate_rss.record(at, at.elapsed(), initial_rss);
         }
-        let worker_stopped = Arc::clone(&stopped);
         let worker_aggregate = Arc::clone(&aggregate_rss);
         let worker_epoch = Arc::clone(&epoch);
+        let disk_epoch = Arc::clone(&epoch);
         let worker_root = root.to_path_buf();
-        let worker = thread::Builder::new()
-            .name("native-resource-observer".into())
-            .spawn(move || {
+        let workers = ObservationWorkers::start(
+            stopped,
+            move |worker_stopped| {
                 let begun = Instant::now();
                 let mut last_rss = begun.checked_sub(RSS_INTERVAL).unwrap_or(begun);
                 let mut last_process_io = begun.checked_sub(PROCESS_IO_INTERVAL).unwrap_or(begun);
-                let mut last_disk = begun.checked_sub(DISK_INTERVAL).unwrap_or(begun);
                 while !worker_stopped.load(Ordering::Acquire) {
                     let now = Instant::now();
                     if now.saturating_duration_since(last_rss) >= RSS_INTERVAL {
                         last_rss = now;
                         let at = Instant::now();
+                        #[cfg(target_os = "macos")]
+                        let result = native_child_rss_sample(&worker_child_rss, &worker_stopped);
+                        #[cfg(not(target_os = "macos"))]
                         let result = child_rss_bytes(pid, &worker_stopped);
                         if let Ok(mut summary) = worker_epoch.lock() {
                             summary.rss.record(at, at.elapsed(), result);
@@ -438,33 +468,37 @@ impl NativeSampler {
                             && let Err(error) = epoch.process_io.record(at, at.elapsed(), result)
                         {
                             epoch.worker_failure = Some(format!("{error:#}"));
+                            worker_stopped.store(true, Ordering::Release);
                             break;
                         }
                     }
-                    if worker_stopped.load(Ordering::Acquire) {
-                        break;
-                    }
+                    thread::park_timeout(Duration::from_millis(10));
+                }
+            },
+            move |worker_stopped| {
+                let begun = Instant::now();
+                let mut last_disk = begun.checked_sub(DISK_INTERVAL).unwrap_or(begun);
+                while !worker_stopped.load(Ordering::Acquire) {
+                    let now = Instant::now();
                     if now.saturating_duration_since(last_disk) >= DISK_INTERVAL {
                         last_disk = now;
                         let at = Instant::now();
-                        let result = super::super::allocated_native_fixture_with_cancel(
-                            &worker_root,
-                            || worker_stopped.load(Ordering::Acquire),
-                        );
+                        let result = disk_probe(&worker_root, &worker_stopped);
                         let elapsed = at.elapsed();
-                        if let Ok(mut summary) = worker_epoch.lock() {
+                        if let Ok(mut summary) = disk_epoch.lock() {
                             record_disk(&mut summary, at, elapsed, result);
                         }
                     }
                     thread::park_timeout(Duration::from_millis(10));
                 }
-            })
-            .context("spawn native resource observer")?;
+            },
+        )?;
         Ok(Self {
-            stopped,
-            worker: Some(worker),
+            workers,
             epoch,
             aggregate_rss,
+            #[cfg(target_os = "macos")]
+            child_rss,
             pid,
             root: root.to_path_buf(),
         })
@@ -476,6 +510,9 @@ impl NativeSampler {
         // short-lived work that periodic sampling may miss.
         let rss_at = Instant::now();
         let uncancelled = AtomicBool::new(false);
+        #[cfg(target_os = "macos")]
+        let rss = native_child_rss_sample(&self.child_rss, &uncancelled);
+        #[cfg(not(target_os = "macos"))]
         let rss = child_rss_bytes(self.pid, &uncancelled);
         let rss_elapsed = rss_at.elapsed();
         let aggregate_at = Instant::now();
@@ -485,7 +522,8 @@ impl NativeSampler {
         let process_io = child_process_io(self.pid);
         let process_io_elapsed = process_io_at.elapsed();
         let disk_at = Instant::now();
-        let disk = super::super::allocated_native_fixture_with_cancel(&self.root, || false);
+        let disk =
+            crate::scale_disk_census::allocated_native_fixture_with_cancel(&self.root, || false);
         let disk_elapsed = disk_at.elapsed();
         if let Ok(mut epoch) = self.epoch.lock() {
             epoch.rss.record(rss_at, rss_elapsed, rss);
@@ -505,14 +543,10 @@ impl NativeSampler {
     }
 
     fn join(&mut self) {
-        self.stopped.store(true, Ordering::Release);
-        if let Some(worker) = self.worker.take() {
-            worker.thread().unpark();
-            if worker.join().is_err()
-                && let Ok(mut epoch) = self.epoch.lock()
-            {
-                epoch.worker_failure = Some("observer_thread_panicked".into());
-            }
+        if let Some(failure) = self.workers.join()
+            && let Ok(mut epoch) = self.epoch.lock()
+        {
+            let _first = epoch.worker_failure.get_or_insert_with(|| failure.into());
         }
     }
 }
@@ -569,47 +603,11 @@ fn child_rss_bytes(pid: u32, _stopped: &AtomicBool) -> Result<u64> {
 }
 
 #[cfg(target_os = "macos")]
-fn child_rss_bytes(pid: u32, stopped: &AtomicBool) -> Result<u64> {
-    struct ProbeChild(Child);
-    impl Drop for ProbeChild {
-        fn drop(&mut self) {
-            drop(self.0.kill());
-            drop(self.0.wait());
-        }
-    }
-    let mut probe = ProbeChild(
-        Command::new("ps")
-            .args(["-o", "rss=", "-p", &pid.to_string()])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("start bounded child RSS probe")?,
-    );
-    let deadline = Instant::now()
-        .checked_add(PS_DEADLINE)
-        .context("RSS probe deadline overflow")?;
-    loop {
-        if stopped.load(Ordering::Acquire) || Instant::now() >= deadline {
-            anyhow::bail!("child RSS probe cancelled or timed out");
-        }
-        if let Some(status) = probe.0.try_wait()? {
-            anyhow::ensure!(status.success(), "child RSS probe failed or child exited");
-            let mut output = String::new();
-            let _read = probe
-                .0
-                .stdout
-                .take()
-                .context("child RSS probe stdout absent")?
-                .read_to_string(&mut output)?;
-            let kib = output
-                .trim()
-                .parse::<u64>()
-                .context("child RSS probe returned no numeric RSS")?;
-            anyhow::ensure!(kib > 0, "child RSS unavailable or zero");
-            return kib.checked_mul(1024).context("child RSS overflow");
-        }
-        thread::sleep(Duration::from_millis(5));
-    }
+fn native_child_rss_sample(sampler: &Mutex<MacChildRss>, stopped: &AtomicBool) -> Result<u64> {
+    sampler
+        .lock()
+        .map_err(|error| anyhow::anyhow!("native child RSS observer lock poisoned: {error}"))?
+        .sample(stopped)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -621,7 +619,7 @@ fn rss_method() -> &'static str {
     if cfg!(target_os = "linux") {
         "proc_pid_status_vmrss"
     } else if cfg!(target_os = "macos") {
-        "ps_o_rss_kib"
+        "proc_pid_rusage_resident_bytes_start_identity"
     } else {
         "unsupported"
     }
@@ -843,6 +841,161 @@ mod tests {
             "missing sample hidden"
         );
         anyhow::ensure!(observed.max_observed_gap_ms >= 150.0, "sample gap hidden");
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_sampler_keeps_child_alive_and_releases_worker_before_fixture_reap() -> Result<()> {
+        use std::io::Read as _;
+        use std::process::{Child, Command, Stdio};
+
+        struct ChildFixture(Child);
+        impl Drop for ChildFixture {
+            fn drop(&mut self) {
+                drop(self.0.kill());
+                drop(self.0.wait());
+            }
+        }
+
+        let mut child = ChildFixture(
+            Command::new("/bin/sh")
+                .env_clear()
+                .args(["-c", "printf 'ready\\n'; read ignored"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()?,
+        );
+        let mut ready = [0_u8; 6];
+        child
+            .0
+            .stdout
+            .as_mut()
+            .context("child readiness pipe absent")?
+            .read_exact(&mut ready)?;
+        anyhow::ensure!(&ready == b"ready\n", "child readiness differs");
+        let fixture = tempfile::tempdir()?;
+        let state = fixture.path().join("state");
+        std::fs::create_dir(&state)?;
+        let epoch = Arc::new(Mutex::new(Epoch {
+            started: Some(Instant::now()),
+            ..Epoch::default()
+        }));
+        NativeSampler::start(child.0.id(), &state, Arc::clone(&epoch))?.stop();
+        anyhow::ensure!(
+            child.0.try_wait()?.is_none(),
+            "observer changed child lifecycle"
+        );
+        let epoch = Arc::try_unwrap(epoch)
+            .map_err(|remaining| {
+                anyhow::anyhow!(
+                    "observer still retains {} epoch references after stop",
+                    Arc::strong_count(&remaining)
+                )
+            })?
+            .into_inner()
+            .map_err(|error| anyhow::anyhow!("observer test epoch poisoned: {error}"))?;
+        anyhow::ensure!(epoch.worker_failure.is_none());
+        anyhow::ensure!(epoch.rss.samples >= 2, "boundary RSS probes absent");
+        anyhow::ensure!(epoch.rss.first_bytes.is_some_and(|value| value > 0));
+        anyhow::ensure!(epoch.rss.last_bytes.is_some_and(|value| value > 0));
+        anyhow::ensure!(epoch.rss.observer_wall_ms.is_finite());
+        anyhow::ensure!(epoch.stopped.is_some());
+        anyhow::ensure!(
+            epoch.aggregate_rss.samples == 0 && epoch.aggregate_rss.missing > 0,
+            "Mac aggregate support boundary changed"
+        );
+        anyhow::ensure!(
+            epoch.fixture_disk.samples > 0,
+            "physical disk census missing"
+        );
+        // EOF releases the controlled shell's read builtin. ChildFixture also
+        // kills/reaps on every early-error path above, without an RSS subprocess.
+        drop(child.0.stdin.take());
+        let _status = child.0.wait()?;
+        drop(child);
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn actual_rss_sampling_progresses_during_blocked_disk_probe_and_stop_joins_both() -> Result<()>
+    {
+        use std::sync::mpsc::{self, SyncSender};
+
+        struct ReleaseProbe(SyncSender<()>);
+        impl Drop for ReleaseProbe {
+            fn drop(&mut self) {
+                let _released = self.0.try_send(());
+            }
+        }
+
+        let fixture = tempfile::tempdir()?;
+        let state = fixture.path().join("state");
+        std::fs::create_dir(&state)?;
+        let epoch = Arc::new(Mutex::new(Epoch {
+            started: Some(Instant::now()),
+            ..Epoch::default()
+        }));
+        let (entered, disk_entered) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let mut blocked_probe = Some(released);
+        // The test process itself stays alive through both joins. Only the
+        // disk call is stalled; RSS still uses the actual native backend.
+        let sampler = NativeSampler::start_with_disk_probe(
+            std::process::id(),
+            &state,
+            Arc::clone(&epoch),
+            move |root, stopped| {
+                if let Some(released) = blocked_probe.take() {
+                    entered.send(()).context("signal blocked disk probe")?;
+                    released.recv().context("wait for disk probe release")?;
+                }
+                crate::scale_disk_census::allocated_native_fixture_with_cancel(root, || {
+                    stopped.load(Ordering::Acquire)
+                })
+            },
+        )?;
+        // This guard releases disk before sampler cleanup on every early error.
+        let release = ReleaseProbe(release);
+        disk_entered.recv_timeout(Duration::from_secs(10))?;
+        let before = epoch
+            .lock()
+            .map_err(|error| anyhow::anyhow!("test epoch poisoned: {error}"))?
+            .rss
+            .samples;
+        let watchdog = Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .context("observer test watchdog overflow")?;
+        loop {
+            let observed_count = epoch
+                .lock()
+                .map_err(|error| anyhow::anyhow!("test epoch poisoned: {error}"))?
+                .rss
+                .samples;
+            if observed_count > before {
+                break;
+            }
+            // This bounds test shutdown, not an assertion about OS scheduling
+            // latency. The oracle is progress before disk is released.
+            anyhow::ensure!(Instant::now() < watchdog, "RSS waited for disk census");
+            thread::park_timeout(RSS_INTERVAL);
+        }
+        drop(release);
+        sampler.stop();
+        let epoch = Arc::try_unwrap(epoch)
+            .map_err(|remaining| {
+                anyhow::anyhow!(
+                    "observer retained {} epoch references after stop",
+                    Arc::strong_count(&remaining)
+                )
+            })?
+            .into_inner()
+            .map_err(|error| anyhow::anyhow!("test epoch poisoned: {error}"))?;
+        anyhow::ensure!(epoch.worker_failure.is_none());
+        anyhow::ensure!(epoch.stopped.is_some());
+        anyhow::ensure!(epoch.fixture_disk.samples > 0);
         Ok(())
     }
 }

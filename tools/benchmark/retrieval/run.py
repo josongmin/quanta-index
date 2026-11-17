@@ -37,9 +37,11 @@ from pathlib import Path
 try:
     from tools.benchmark.retrieval import (
         code_search_rank_study,
+        hybrid_file_evidence,
         linux_isolation,
         linux_process,
         portable_proof,
+        result_window,
         source_oracle,
         symbol_coverage,
     )
@@ -76,10 +78,12 @@ except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import code_search_rank_study  # noqa: E402
     import execution_batch as eb  # noqa: E402
+    import hybrid_file_evidence  # noqa: E402
     import linux_isolation  # noqa: E402
     import linux_process  # noqa: E402
     import portable_proof  # noqa: E402
     import query_plan as qp  # noqa: E402
+    import result_window  # noqa: E402
     import retrieval_contract as rc  # noqa: E402
     import semble as semble_adapter  # noqa: E402
     import source_oracle  # noqa: E402
@@ -379,6 +383,10 @@ def _validate_runner_bundle_members(observed: dict[str, RawFile], expected: dict
 
 class RunError(ValueError):
     """Paired-run evidence is absent, inconsistent or ineligible."""
+
+
+QUANTA_MODELED_ROUTES = rc.QUANTA_MODELED_ROUTES
+QUANTA_NO_MODEL_ROUTES = rc.QUANTA_NO_MODEL_ROUTES
 
 
 class ProcessRootAbsent(RunError):
@@ -2408,6 +2416,12 @@ def _merge_validated_records(
     }
     if any(run.get("span_accounting_version") == 1 for run in validated_runs):
         combined["span_accounting_version"] = 1
+    if hybrid_file_evidence.ROUTE in provenance:
+        owners = [run for run in validated_runs
+                  if hybrid_file_evidence.ROUTE in run["route_provenance"]]
+        if len(owners) != 1:
+            raise RunError("hybrid file cap has no unique source record")
+        combined["file_top_k"] = owners[0]["file_top_k"]
     # Validate the merged rows and route coverage against the same source
     # snapshot. The verdict builds a fresh snapshot before replaying this.
     checked = validate_evidence_against_suite(repo, suite, pack, source, combined)
@@ -2614,6 +2628,7 @@ SPEC_REQUIRED = (
     "searchd_expected_sha256",
 )
 SPEC_OPTIONAL = (
+    "file_top_k",
     "source_closure_reuse",
     "symbol_coverage_policy",
     "symbol_total_timeout_ms",
@@ -3337,6 +3352,12 @@ def _spec_int(spec: dict, key: str, minimum: int) -> int:
 
 def _validate_file_pair_contract(spec: dict, *, paired: bool) -> bool:
     """One admission boundary for loading, direct capture and staged capture."""
+    routes = spec.get("routes", [])
+    if paired and isinstance(routes, list) and hybrid_file_evidence.ROUTE in routes:
+        raise RunError(
+            "hybrid_file paired file scoring is unsupported: its bounded chunk-lane "
+            "contract cannot use the existing lexical-file pair evaluator"
+        )
     profiles = spec.get("execution_profiles")
     quanta = profiles.get("quanta") if isinstance(profiles, dict) else None
     if not isinstance(quanta, dict) or quanta.get("policy") not in qp.FILE_PAIR_POLICIES:
@@ -3451,8 +3472,15 @@ def load_spec(path: Path, *, standalone_quanta: bool = False) -> dict:
             )
     if "semble" in profiles:
         _validate_semble_profile(profiles["semble"], "spec.execution_profiles.semble")
-    _validate_file_pair_contract(spec, paired="semble" in profiles)
+    _validate_file_pair_contract(spec, paired=not standalone_quanta and "semble" in profiles)
     _spec_int(spec, "top_k", 1)
+    try:
+        hybrid_file_evidence.validate_route_configuration(
+            quanta_profile["policy"], spec.get("routes", ["lexical", "semantic", "hybrid"]),
+            spec["top_k"], spec.get("file_top_k"),
+        )
+    except hybrid_file_evidence.HybridFileEvidenceError as exc:
+        raise RunError(str(exc)) from exc
     server_observation_configuration(spec.get("query_stage_observation", "enabled"))
     hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100"))
     if "code_search_rank_study" in spec:
@@ -3904,145 +3932,17 @@ def _validate_diagnostic_response_v2(
 
 
 def _typed_count(value: object, where: str) -> tuple[str, int]:
-    count = _exact_keys(value, {"kind", "value"}, where)
-    if (
-        count["kind"] not in ("exact", "at_least")
-        or type(count["value"]) is not int
-        or count["value"] < 0
-    ):
-        raise RunError(f"{where} is invalid")
-    return count["kind"], count["value"]
+    try:
+        return result_window.typed_count(value, where)
+    except result_window.WindowEvidenceError as exc:
+        raise RunError(str(exc)) from exc
 
 
 def _typed_window(value: object, where: str) -> tuple[int, bool, dict[str, bool]]:
-    if not isinstance(value, dict):
-        raise RunError(f"{where} is malformed")
-    required = {"returned", "candidate_count", "outcome", "coverage"}
-    if set(value) not in (required, required | {"empty_provenance"}):
-        raise RunError(f"{where} fields are invalid")
-    returned = value["returned"]
-    if type(returned) is not int or returned < 0:
-        raise RunError(f"{where}.returned is invalid")
-    count_kind, count_value = _typed_count(value["candidate_count"], f"{where}.candidate_count")
-    if count_value < returned:
-        raise RunError(f"{where} candidate count is below returned")
-    outcome = value["outcome"]
-    if not isinstance(outcome, dict) or not isinstance(outcome.get("kind"), str):
-        raise RunError(f"{where}.outcome is malformed")
-    outcome_kind = outcome["kind"]
-    expected_outcome_fields = {
-        "exact_exhausted": {"kind"},
-        "lower_bound": {"kind", "continuation"},
-        "capped_unknown": {"kind", "cap"},
-        "interrupted_partial": {"kind", "reason"},
-        "approximate": {"kind", "method", "quality_contract"},
-    }
-    if (
-        outcome_kind not in expected_outcome_fields
-        or set(outcome) != expected_outcome_fields[outcome_kind]
-    ):
-        raise RunError(f"{where}.outcome fields are invalid")
-    coverage = _exact_keys(
-        value["coverage"],
-        {"examined", "lanes"}
-        | (
-            {"exhaustion_proof"}
-            if isinstance(value["coverage"], dict) and "exhaustion_proof" in value["coverage"]
-            else set()
-        ),
-        f"{where}.coverage",
-    )
-    examined = coverage["examined"]
-    if not isinstance(examined, dict) or examined.get("kind") not in (
-        "exact",
-        "at_least",
-        "unknown",
-    ):
-        raise RunError(f"{where}.coverage.examined is invalid")
-    if examined["kind"] == "unknown":
-        if set(examined) != {"kind"}:
-            raise RunError(f"{where}.coverage.examined fields are invalid")
-    elif (
-        set(examined) != {"kind", "value"}
-        or type(examined["value"]) is not int
-        or examined["value"] < 0
-    ):
-        raise RunError(f"{where}.coverage.examined fields are invalid")
-    proof = coverage.get("exhaustion_proof")
-    if outcome_kind == "exact_exhausted":
-        if count_kind != "exact" or count_value != returned or not isinstance(proof, dict):
-            raise RunError(f"{where} exact exhaustion evidence is invalid")
-        proof_kind = proof.get("kind")
-        proof_field = {
-            "probe_exhausted": "fetched",
-            "exact_count": "total",
-            "universe_scanned": "scanned",
-        }.get(proof_kind)
-        if (
-            proof_field is None
-            or set(proof) != {"kind", proof_field}
-            or proof[proof_field] != returned
-        ):
-            raise RunError(f"{where}.coverage.exhaustion_proof is invalid")
-    elif proof is not None:
-        raise RunError(f"{where} non-exhausted outcome carries an exhaustion proof")
-    if outcome_kind == "lower_bound":
-        if type(outcome["continuation"]) is not bool or (
-            outcome["continuation"] and count_value <= returned
-        ):
-            raise RunError(f"{where} lower-bound outcome is invalid")
-    elif outcome_kind == "capped_unknown":
-        if type(outcome["cap"]) is not int or outcome["cap"] <= 0:
-            raise RunError(f"{where} capped outcome is invalid")
-    elif outcome_kind == "interrupted_partial":
-        if outcome["reason"] not in ("deadline", "cancelled", "examined_budget"):
-            raise RunError(f"{where} interrupted outcome is invalid")
-    elif outcome_kind == "approximate":
-        quality = outcome["quality_contract"]
-        if (
-            outcome["method"] not in ("ann_search", "filtered_refill")
-            or not isinstance(quality, dict)
-            or set(quality) != {"examined_lower_bound"}
-            or type(quality["examined_lower_bound"]) is not int
-            or quality["examined_lower_bound"] < 0
-        ):
-            raise RunError(f"{where} approximate outcome is invalid")
-    empty = value.get("empty_provenance")
-    if (returned == 0) != (empty in ("available_empty", "filtered_empty", "zero_hit_executed")):
-        raise RunError(f"{where}.empty_provenance contradicts returned")
-    lanes = coverage["lanes"]
-    if not isinstance(lanes, list):
-        raise RunError(f"{where}.coverage.lanes is malformed")
-    lane_execution: dict[str, bool] = {}
-    for lane in lanes:
-        if (
-            not isinstance(lane, dict)
-            or set(lane)
-            - {"lane", "executed", "contributed", "filtered_out", "candidates", "cost", "profile"}
-            or not {"lane", "executed", "contributed", "filtered_out", "candidates"}.issubset(lane)
-        ):
-            raise RunError(f"{where}.coverage lane fields are invalid")
-        name = lane["lane"]
-        if (
-            not isinstance(name, str)
-            or not name
-            or name in lane_execution
-            or type(lane["executed"]) is not bool
-            or type(lane["contributed"]) is not bool
-            or lane["contributed"]
-            and not lane["executed"]
-        ):
-            raise RunError(f"{where}.coverage lane is invalid")
-        if type(lane["filtered_out"]) is not int or lane["filtered_out"] < 0:
-            raise RunError(f"{where}.coverage lane filtered_out is invalid")
-        _typed_count(lane["candidates"], f"{where}.coverage lane candidates")
-        if "cost" in lane and (type(lane["cost"]) is not int or lane["cost"] < 0):
-            raise RunError(f"{where}.coverage lane cost is invalid")
-        if "profile" in lane and (not isinstance(lane["profile"], str) or not lane["profile"]):
-            raise RunError(f"{where}.coverage lane profile is invalid")
-        lane_execution[name] = lane["executed"]
-    exhausted = outcome_kind == "exact_exhausted"
-    return returned, exhausted, lane_execution
+    try:
+        return result_window.typed_window(value, where)
+    except result_window.WindowEvidenceError as exc:
+        raise RunError(str(exc)) from exc
 
 
 def _validate_explanation(
@@ -4052,6 +3952,8 @@ def _validate_explanation(
     version: int,
     returned: int,
     observation_policy: str = "enabled",
+    *,
+    hybrid_file: bool = False,
 ) -> None:
     if value is None:
         if version in (4, 5, 6, 7, 8, 9) and route in ("lexical", "semantic", "hybrid"):
@@ -4229,9 +4131,9 @@ def _validate_explanation(
         )
         expected_touched = (["lexical"] if lexical else []) + (["semantic"] if dense else [])
         expected_strategy = (
-            "rrf"
-            if lexical and dense
-            else "lexical_only"
+            "hybrid_file_rrf" if hybrid_file else "rrf"
+        ) if hybrid_file or (lexical and dense) else (
+            "lexical_only"
             if lexical
             else "semantic_only"
             if dense
@@ -4350,6 +4252,64 @@ def _validate_diagnostic_response_v3(
         return {}
     if not isinstance(response, dict):
         raise RunError(f"{where} is malformed")
+    if kind == "returned_files":
+        if key[1] != hybrid_file_evidence.ROUTE or version != 9 or reference is None:
+            raise RunError(f"{where} file response has no explicit route/record contract")
+        detail = _exact_keys(response, {"lane_top_k", "file_top_k", "typed_response"}, where)
+        if reference.get("hybrid_file_evidence") != {
+            "schema_version": 1, "lane_top_k": detail["lane_top_k"],
+            "file_top_k": detail["file_top_k"], "response": detail["typed_response"],
+        } or detail["lane_top_k"] != top_k:
+            raise RunError(f"{where} file evidence differs from runner record")
+        typed = detail["typed_response"]
+        if not isinstance(typed, dict):
+            raise RunError(f"{where} typed file response is malformed")
+        hits = typed.get("results")
+        if not isinstance(hits, list):
+            raise RunError(f"{where} typed file hits are malformed")
+        lanes = {}
+        for lane in ("lexical", "dense"):
+            _, _, observed = _typed_window(typed.get(lane + "_window"), f"{where}.{lane}")
+            lanes.update(observed)
+        raw_explanation = typed.get("explanation")
+        explanation_fields = {"request_id", "early_stop_reason", "engines_executed",
+                              "engines_touched", "strategy", "planner_trace", "stage_timings"}
+        if not isinstance(raw_explanation, dict) or not explanation_fields <= set(raw_explanation):
+            raise RunError(f"{where} file explanation is incomplete")
+        explanation = {field: raw_explanation[field] for field in explanation_fields}
+        _validate_explanation(explanation, f"{where}.explanation", "hybrid",
+                              version, len(hits), observation_policy,
+                              hybrid_file=True)
+        observed_candidates = row.get("candidates")
+        recorded_candidates = reference.get("candidates")
+        scored_file_count = 0 if row.get("status") == "error" else len(hits)
+        if (
+            not isinstance(observed_candidates, list)
+            or not isinstance(recorded_candidates, list)
+            or len(observed_candidates) != len(recorded_candidates)
+            or len(recorded_candidates) != scored_file_count
+        ):
+            raise RunError(f"{where} file candidates differ from record")
+        for observed, recorded, hit in zip(observed_candidates, recorded_candidates, hits):
+            witness = (hit.get("lexical") or hit.get("dense")) if isinstance(hit, dict) else None
+            if (
+                not isinstance(observed, dict)
+                or not isinstance(recorded, dict)
+                or not isinstance(hit, dict)
+                or not isinstance(witness, dict)
+                or not isinstance(witness.get("candidate"), dict)
+                or not isinstance(recorded.get("span_accounting"), dict)
+                or observed.get("candidate_id")
+                != recorded["span_accounting"].get("unit_id")
+                or observed.get("candidate_id") != witness["candidate"].get("candidate_id")
+                or not is_finite_json_number(observed.get("score"))
+                or not is_finite_json_number(recorded.get("score"))
+                or not is_finite_json_number(hit.get("file_rrf_score"))
+                or observed["score"] != recorded["score"]
+                or observed["score"] != hit["file_rrf_score"]
+            ):
+                raise RunError(f"{where} file candidate differs from record or SDK witness")
+        return lanes
     if kind == "returned_window":
         fields = {"window", "explanation"}
         projected = version in (6, 7, 8, 9) and "native_projection" in response
@@ -4494,11 +4454,13 @@ def rank_study_configuration(
     return config
 
 
-def _validate_hybrid_initial_fetch(trace: list[dict], top_k: int, policy: dict) -> None:
+def _validate_hybrid_initial_fetch(
+    trace: list[dict], top_k: int, policy: dict, prefix: str = "hybrid"
+) -> None:
     # Independent public-cap/probe invariant, not the producer's self-reported count.
     effective = max(min(max(top_k, policy["floor"]), 10_000), top_k + 1)
-    actual = [entry for entry in trace if entry["detail"].startswith("hybrid.internal_top_k=")]
-    if actual != [{"stage": "plan", "detail": f"hybrid.internal_top_k={effective}"}]:
+    actual = [entry for entry in trace if entry["detail"].startswith(f"{prefix}.internal_top_k=")]
+    if actual != [{"stage": "plan", "detail": f"{prefix}.internal_top_k={effective}"}]:
         raise RunError("hybrid actual initial fetch contradicts bounded policy/probe")
 
 
@@ -4990,6 +4952,15 @@ def validate_retrieval_diagnostic(
             raise RunError("retrieval diagnostic result is duplicated or unexpected")
         seen.add(key)
         reference = expected[key]
+        capture_owner = provenance[key[1]]
+        capture = record.get("captures", {}).get(capture_owner.get("capture_id"), {})
+        try:
+            hybrid_file_evidence.validate_result(
+                reference, capture, diagnostic["top_k"],
+                declared_file_top_k=record.get("file_top_k"),
+            )
+        except hybrid_file_evidence.HybridFileEvidenceError as exc:
+            raise RunError(str(exc)) from exc
         if (
             row["query_sha256"] != tasks[key[0]].get("query_sha256")
             or row["status"] != reference.get("status")
@@ -5025,6 +4996,14 @@ def validate_retrieval_diagnostic(
                 _validate_hybrid_initial_fetch(
                     trace, diagnostic["top_k"], diagnostic["hybrid_fetch_policy"]
                 )
+            if key[1] == hybrid_file_evidence.ROUTE and row["response_kind"] == "returned_files":
+                explanation = row["response"]["typed_response"]["explanation"]
+                _validate_hybrid_initial_fetch(explanation["planner_trace"], diagnostic["top_k"],
+                                               diagnostic["hybrid_fetch_policy"], prefix="hybrid_file")
+                request_id = explanation["request_id"]
+                if request_id in seen_request_ids:
+                    raise RunError("retrieval diagnostic reuses a file transport request id")
+                seen_request_ids.add(request_id)
             if (
                 diagnostic["schema_version"] in (4, 5, 6, 7, 8, 9)
                 and key[1] in ("lexical", "semantic", "hybrid")
@@ -5113,6 +5092,15 @@ def validate_retrieval_diagnostic(
     if seen != set(expected):
         raise RunError("retrieval diagnostic results are incomplete")
     return diagnostic
+
+
+def _bind_record_file_cap_to_spec(spec: dict, routes: list[str], record: dict) -> None:
+    if hybrid_file_evidence.ROUTE in routes:
+        if (type(record.get("file_top_k")) is not int
+                or record["file_top_k"] != spec["file_top_k"]):
+            raise RunError("captured hybrid file cap differs from declared spec")
+    elif "file_top_k" in record:
+        raise RunError("captured file cap lacks the explicit hybrid_file route")
 
 
 def run_quanta(spec: dict, _spec_dir: Path) -> int:
@@ -5301,6 +5289,8 @@ def run_quanta_strategy(
         "--out",
         str(record_path),
     ]
+    if hybrid_file_evidence.ROUTE in routes:
+        command += ["--file-top-k", str(spec["file_top_k"])]
     quanta_profile = spec["execution_profiles"]["quanta"]
     if (
         quanta_profile["policy"] in ("natural_language", "natural_language_file")
@@ -5400,9 +5390,11 @@ def run_quanta_strategy(
         raise RunError(f"Rust runner omitted phase metrics for {name}")
     if not diagnostic_path.is_file():
         raise RunError(f"Rust runner omitted retrieval diagnostics for {name}")
+    record_payload = read_json(record_path)
+    _bind_record_file_cap_to_spec(spec, routes, record_payload)
     diagnostic = validate_retrieval_diagnostic(
         read_json(diagnostic_path),
-        read_json(record_path),
+        record_payload,
         sha_file(record_path),
         read_json(pack_path),
     )
@@ -7392,39 +7384,13 @@ def _quanta_admission_model_revision(records: Iterable[object]) -> str:
             raise RunError("Quanta admission model record is malformed")
         captures = record.get("captures")
         routes = record.get("route_provenance")
-        if not isinstance(captures, dict) or not isinstance(routes, dict) or not routes:
-            raise RunError("Quanta admission model lacks bound routes and captures")
-        bound_ids = set()
-        for route, binding in routes.items():
-            if route not in ("lexical", "symbol", "semantic", "hybrid") or not isinstance(
-                binding, dict
-            ):
-                raise RunError("Quanta admission model route is malformed")
-            capture_id = binding.get("capture_id")
-            if not isinstance(capture_id, str) or not isinstance(captures.get(capture_id), dict):
-                raise RunError("Quanta admission model route has no capture")
-            bound_ids.add(capture_id)
-            capture = captures[capture_id]
-            model, revision = capture.get("model"), capture.get("model_revision")
-            if route in ("lexical", "symbol"):
-                if (model, revision) != (f"none:{route}", "not-applicable"):
-                    raise RunError("Quanta no-model route has an invalid model identity")
-            else:
-                if (
-                    not isinstance(model, str)
-                    or not model.strip()
-                    or model != model.strip()
-                    or model.startswith("none:")
-                    or not isinstance(revision, str)
-                    or not revision.strip()
-                    or revision != revision.strip()
-                    or revision == "not-applicable"
-                ):
-                    raise RunError("Quanta modeled route lacks a real model identity")
-                identities.add((model, revision))
-            observed = True
-        if bound_ids != set(captures):
-            raise RunError("Quanta admission model has unbound captures")
+        try:
+            identity = rc.validate_quanta_route_models(captures, routes, require_all_bound=True)
+        except ValueError as exc:
+            raise RunError(str(exc)) from exc
+        if identity is not None:
+            identities.add(identity)
+        observed = True
     if not observed or len(identities) > 1:
         raise RunError("Quanta admission requires one consistent routed model identity")
     return next(iter(identities))[1] if identities else "not-applicable"
@@ -7444,10 +7410,10 @@ def _quanta_semantic_capture_identity_matches(
         for entry in validated.values()
         if entry["system"] == "quanta"
         for route, binding in entry["run"]["route_provenance"].items()
-        if route in ("semantic", "hybrid")
+        if route in QUANTA_MODELED_ROUTES
         for capture in [entry["run"]["captures"].get(binding.get("capture_id"), {})]
     }
-    if declared_quanta_routes & {"semantic", "hybrid"} and not observed:
+    if declared_quanta_routes & QUANTA_MODELED_ROUTES and not observed:
         return False
     return not observed or observed == {
         ("model2vec:minishlab/potion-code-16M-v2", expected_revision)
@@ -9322,7 +9288,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         set_state("QUALITY_DELTA", "fail", "file_quality_metric_mismatch", None)
         classes.append("scoring")
     elif (
-        set(protocol_payload.get("quanta_routes", [])) & {"semantic", "hybrid"}
+        set(protocol_payload.get("quanta_routes", [])) & QUANTA_MODELED_ROUTES
         and provenance_claims["quanta"].get("embedder") != "potion-code"
     ):
         # T10: non-default encoder controls lack a qualified quality gate.
@@ -10504,6 +10470,7 @@ def _verify_execution_context(
         not in (
             portable_proof.EXECUTION_CONTEXT_VERSION,
             portable_proof.FRESH_EXECUTION_CONTEXT_VERSION,
+            portable_proof.EXPLICIT_SEARCHD_EXECUTION_CONTEXT_VERSION,
         )
         or context["rail"] != rail
         or fresh_context
@@ -10606,6 +10573,7 @@ def _verify_execution_context(
         inherited_environment=first_inherited,
         build_profile=build_profile,
         workspace_root=workspace_root,
+        context_version=context["schema_version"],
     )
     if len(commands) != len(expected):
         raise RunError(f"{where} command count mismatch")
@@ -10973,6 +10941,7 @@ def freeze_receipts(spec: dict, stage: Path) -> dict[str, str]:
             not in (
                 portable_proof.EXECUTION_CONTEXT_VERSION,
                 portable_proof.FRESH_EXECUTION_CONTEXT_VERSION,
+                portable_proof.EXPLICIT_SEARCHD_EXECUTION_CONTEXT_VERSION,
             )
         ):
             raise RunError("execution context schema mismatch during freeze")

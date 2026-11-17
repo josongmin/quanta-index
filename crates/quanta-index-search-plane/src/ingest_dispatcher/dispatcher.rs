@@ -1,7 +1,7 @@
 //! `SearchPlaneIngestDispatcher`: routes typed ingest requests to their owner
 //! ports under the idempotency record and the request budget.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use quanta_index_contract::{
     BatchPublishReceipt, GenerationPin, IngestOperationKindV1, RepoMapPublishBundleRequestV2,
@@ -24,6 +24,7 @@ use crate::ingest_dispatcher::errors::core_error_to_ipc;
 use crate::ingest_dispatcher::ports::{
     HistoryIngestPort, RuntimeMetadataIngestPort, StructuralIngestPort,
 };
+use crate::ingest_dispatcher::staged_admission::StagedAdmission;
 
 // =============================================================================
 // Top-level dispatcher
@@ -73,7 +74,7 @@ pub struct SearchPlaneIngestDispatcher {
     publication_admission: Option<Arc<dyn PublicationResourceAdmissionPort>>,
     catalog_publication_funding: Option<Arc<dyn CatalogPublicationFundingPort>>,
     source_upload: Option<Arc<dyn quanta_index_core::SourcePublicationUploadPort>>,
-    source_upload_commit: Mutex<()>,
+    staged_admission: StagedAdmission,
 }
 
 impl SearchPlaneIngestDispatcher {
@@ -125,7 +126,7 @@ impl SearchPlaneIngestDispatcher {
             publication_admission: None,
             catalog_publication_funding: None,
             source_upload: None,
-            source_upload_commit: Mutex::new(()),
+            staged_admission: StagedAdmission::default(),
         }
     }
 
@@ -673,19 +674,18 @@ impl SearchPlaneIngestDispatcher {
             }
             SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit) => {
                 let result = self
-                    .source_upload_commit
-                    .try_lock()
-                    .map_err(|_error| CoreError::Typed {
-                        code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy,
-                        message: "another staged source publication is materializing".into(),
-                    })
-                    .and_then(|_operation| {
+                    .staged_admission
+                    .begin(commit.publication.target.repo_id.clone())
+                    .and_then(|mut admission| {
                         let upload = self.source_upload.as_ref().ok_or_else(|| {
                             CoreError::InvalidContract(
                                 "source publication staging is unavailable".into(),
                             )
                         })?;
-                        let batch = upload.load(commit.identity, budget)?;
+                        let batch = upload.load(commit.identity, budget, &mut |decoded_bytes| {
+                            admission.reserve(decoded_bytes)
+                        })?;
+                        admission.require_reserved()?;
                         if quanta_index_contract::SourcePublicationBinding::for_batch(&batch)
                             != commit.publication
                         {
@@ -697,13 +697,29 @@ impl SearchPlaneIngestDispatcher {
                             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
                             budget,
                         );
-                        if matches!(
-                            &response,
-                            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
-                        ) {
-                            upload.discard(commit.identity)?;
-                        }
-                        Ok(response)
+                        Ok(match response {
+                            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(mut outcome) => {
+                                outcome.upload_cleanup = Some(match upload
+                                    .settle_published(commit.identity)
+                                {
+                                    quanta_index_core::SourcePublicationUploadCleanupDisposition::Complete => {
+                                        quanta_index_contract::SourcePublicationUploadCleanupV1::Complete
+                                    }
+                                    quanta_index_core::SourcePublicationUploadCleanupDisposition::Deferred => {
+                                        quanta_index_contract::SourcePublicationUploadCleanupV1::Deferred
+                                    }
+                                    quanta_index_core::SourcePublicationUploadCleanupDisposition::Failed(error) => {
+                                        let (code, message) = error.into_search_plane_wire();
+                                        quanta_index_contract::SourcePublicationUploadCleanupV1::Failed {
+                                            code,
+                                            message,
+                                        }
+                                    }
+                                });
+                                SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome)
+                            }
+                            other => other,
+                        })
                     });
                 match result {
                     Ok(response) => response,
@@ -751,6 +767,7 @@ impl SearchPlaneIngestDispatcher {
                                 publication,
                                 receipt,
                                 observation,
+                                upload_cleanup: None,
                             },
                         )
                     }

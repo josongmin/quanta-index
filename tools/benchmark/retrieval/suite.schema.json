@@ -10,6 +10,25 @@
     "schema_version": {"const": 3},
     "suite_id": {"type": "string", "minLength": 1},
     "repository_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "source_provenance": {
+      "description": "Optional for other retrieval routes; Native file scoring requires a frozen source kind. The suite commitment binds this declaration to the blind pack and SDK capture.",
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {"kind": {"const": "single_git_commit_v1"}}
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "source_universe_sha256", "source_binding_sha256"],
+          "properties": {
+            "kind": {"const": "composite_git_releases_v1"},
+            "source_universe_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "source_binding_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        }
+      ]
+    },
     "comparison_contract": {"$ref": "#/$defs/comparison_contract"},
     "routes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
     "file_universe": {

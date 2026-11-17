@@ -134,6 +134,7 @@ fn require_child_charged(
     connection: &Connection,
     reference: ObjectRef,
     budget: &mut WorkBudget,
+    managed_bound: bool,
 ) -> Result<RegisteredObject, IndexError> {
     budget.charge(WorkUsage {
         reads: 1,
@@ -166,11 +167,15 @@ fn require_child_charged(
     }
     let edges =
         u64::try_from(registration.children.len()).map_err(|_error| IndexError::ResourceLimited)?;
-    // The caller performs one current-transaction edge validation. Attempt
-    // intent insertion is mutation-only after that preflight; it must not bill
-    // the second validation removed from reserve_object_intent.
+    // Charge the complete edge validation and the child's reclaim adoption.
+    // A managed bound proof pays the namespace read only if its watermark
+    // changed; that final read is charged at the actual adoption boundary.
+    // Namespace cardinality and binding authentication now share one read.
+    // Attempt intent insertion does not revalidate the child's metadata.
     budget.charge(WorkUsage {
-        reads: edges.checked_add(5).ok_or(IndexError::ResourceLimited)?,
+        reads: edges
+            .checked_add(if managed_bound { 3 } else { 4 })
+            .ok_or(IndexError::ResourceLimited)?,
         bytes: metadata_bytes
             .checked_add(edges.checked_mul(128).ok_or(IndexError::ResourceLimited)?)
             .ok_or(IndexError::ResourceLimited)?,
@@ -208,6 +213,10 @@ impl ChildWindow {
                 .checked_add(object.children.len())
                 .ok_or(IndexError::ResourceLimited)
         })?;
+        Self::capacity_for_children(total)
+    }
+
+    fn capacity_for_children(total: usize) -> Result<ChildWindowCapacity, IndexError> {
         if total <= 64 {
             return Ok(ChildWindowCapacity {
                 slots: 64,
@@ -315,6 +324,42 @@ impl ChildWindow {
     }
 }
 
+fn protection_row_memory_bytes(count: usize) -> Result<u64, IndexError> {
+    let row_bytes = std::mem::size_of::<(Vec<u8>, Vec<u8>)>()
+        .checked_add(64)
+        .ok_or(IndexError::ResourceLimited)?;
+    let bytes = count
+        .min(64)
+        .checked_mul(row_bytes)
+        .ok_or(IndexError::ResourceLimited)?;
+    u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)
+}
+
+/// Conservative peak of the two tracked temporary buffers in reserve,
+/// confirmation, or a confirmed-to-next transaction. `SQLite` pager memory is
+/// outside this `WorkBudget` contract.
+pub(super) fn memory_bound(
+    shape: quanta_index_core::index::ports::ObjectInstallMemoryShape,
+) -> Result<quanta_index_core::index::MemoryCreditLimits, IndexError> {
+    shape.validate()?;
+    let capacity = ChildWindow::capacity_for_children(shape.maximum_total_children)?;
+    let child_bytes = capacity
+        .slots
+        .checked_mul(std::mem::size_of::<Option<ObjectRef>>())
+        .ok_or(IndexError::ResourceLimited)?;
+    let child_bytes = u64::try_from(child_bytes).map_err(|_error| IndexError::ResourceLimited)?;
+    let rows = protection_row_memory_bytes(shape.maximum_inputs)?;
+    let total = child_bytes
+        .checked_add(rows)
+        .ok_or(IndexError::ResourceLimited)?;
+    Ok(quanta_index_core::index::MemoryCreditLimits {
+        temporary_data_bytes: total,
+        retained_data_bytes: 0,
+        max_live_temporary_leases: 2,
+        max_live_retained_leases: 0,
+    })
+}
+
 /// Completed metadata, complete edge-ledger and GC adoption checks borrowed
 /// from one actual locked transaction.
 ///
@@ -341,7 +386,12 @@ impl<'tx, 'conn> AdoptedChildrenInTransaction<'tx, 'conn> {
             capacity,
         })
     }
-    fn require(&mut self, child: ObjectRef, budget: &mut WorkBudget) -> Result<(), IndexError> {
+    fn require(
+        &mut self,
+        child: ObjectRef,
+        budget: &mut WorkBudget,
+        bound: Option<&mut reclaim::ManagedBoundNamespace<'_, '_>>,
+    ) -> Result<(), IndexError> {
         budget.checkpoint()?;
         if let Some(completed) = self.completed.as_ref()
             && completed.contains(child)?
@@ -351,8 +401,12 @@ impl<'tx, 'conn> AdoptedChildrenInTransaction<'tx, 'conn> {
         if self.completed.is_none() {
             self.completed = Some(ChildWindow::new(self.capacity, budget)?);
         }
-        let _registered = require_child_charged(self.transaction, child, budget)?;
-        reclaim::adopt(self.transaction, child)?;
+        let _registered = require_child_charged(self.transaction, child, budget, bound.is_some())?;
+        if let Some(bound) = bound {
+            bound.adopt_charged(child, budget)?;
+        } else {
+            reclaim::adopt(self.transaction, child)?;
+        }
         // Failed, provisional, frozen or corrupt children never enter the window.
         self.completed
             .as_mut()
@@ -429,11 +483,30 @@ impl InputPrefix {
     }
 }
 
+/// Exact inputs that completed registration and protection during this advance.
+struct ProtectedAttemptInputs<'tx, 'conn> {
+    transaction: &'tx Transaction<'conn>,
+    attempt: AttemptRef,
+    references: InputPrefix,
+}
+
+fn is_known_reservation_child(
+    earlier: &InputPrefix,
+    protected: Option<&InputPrefix>,
+    child: ObjectRef,
+) -> Result<bool, IndexError> {
+    if earlier.contains(child)? {
+        return Ok(true);
+    }
+    protected.map_or(Ok(false), |references| references.contains(child))
+}
+
 fn preflight_registration_children<'tx, 'conn>(
     transaction: &'tx Transaction<'conn>,
     objects: &'tx [RegisteredObject],
     capacity: ChildWindowCapacity,
     budget: &mut WorkBudget,
+    mut bound: Option<&mut reclaim::ManagedBoundNamespace<'_, '_>>,
 ) -> Result<PreflightedRegistrationChildren<'tx, 'conn>, IndexError> {
     if transaction.is_autocommit() {
         return Err(IndexError::BackendViolation(
@@ -452,7 +525,7 @@ fn preflight_registration_children<'tx, 'conn>(
             if earlier.contains(*child)? {
                 reclaim::adopt_confirming_input(transaction, *child)?;
             } else {
-                adopted.require(*child, budget)?;
+                adopted.require(*child, budget, bound.as_deref_mut())?;
             }
         }
         unique &= earlier.insert(object.reference)?;
@@ -519,7 +592,7 @@ pub(super) fn adopt_registered_inputs(
                 "duplicate or self-referencing ingress adoption".into(),
             ));
         }
-        let registered = require_child_charged(&tx, object.reference, budget)?;
+        let registered = require_child_charged(&tx, object.reference, budget, false)?;
         if registered != *object {
             return Err(IndexError::CorruptObject(
                 "ingress adoption differs from confirmed registration".into(),
@@ -670,7 +743,7 @@ fn reserve_ingress(
             // No other writer can change its lifecycle here; external children
             // still need full adoption.
             if !earlier.contains(*child)? {
-                let _registered = require_child_charged(connection, *child, budget)?;
+                let _registered = require_child_charged(connection, *child, budget, false)?;
                 reclaim::adopt(connection, *child)?;
             }
         }
@@ -706,7 +779,7 @@ fn confirm_ingress(
             ));
         }
     }
-    let proof = preflight_registration_children(connection, objects, capacity, budget)?;
+    let proof = preflight_registration_children(connection, objects, capacity, budget, None)?;
     let registered = register_confirmed_preflighted_children(proof)?;
     let operation = operation_key(stage.operation)?;
     for object in objects {
@@ -735,8 +808,11 @@ fn reserve_attempt(
     attempt: quanta_index_core::index::AttemptRef,
     objects: &[RegisteredObject],
     capacity: ChildWindowCapacity,
+    protected: Option<&InputPrefix>,
     budget: &mut WorkBudget,
+    bound: &mut reclaim::ManagedBoundNamespace<'_, '_>,
 ) -> Result<(), IndexError> {
+    bound.require_transaction(connection)?;
     let (_operation, _adopted) = observe_sqlite(budget, 4, |budget| {
         let operation = check_attempt(connection, attempt)?;
         let mut adopted = AdoptedChildrenInTransaction::new(connection, capacity)?;
@@ -751,8 +827,8 @@ fn reserve_attempt(
                 ));
             }
             for child in &canonical.children {
-                if !earlier.contains(*child)? {
-                    adopted.require(*child, budget)?;
+                if !is_known_reservation_child(&earlier, protected, *child)? {
+                    adopted.require(*child, budget, Some(&mut *bound))?;
                 }
             }
         }
@@ -784,7 +860,9 @@ fn confirm_attempt(
     objects: &[RegisteredObject],
     capacity: ChildWindowCapacity,
     budget: &mut WorkBudget,
+    bound: &mut reclaim::ManagedBoundNamespace<'_, '_>,
 ) -> Result<(), IndexError> {
+    bound.require_transaction(connection)?;
     let (attempt_key, proof) = observe_sqlite(budget, 6, |budget| {
         let _operation = check_attempt(connection, attempt)?;
         let mut attempt_key = None;
@@ -792,7 +870,8 @@ fn confirm_attempt(
             budget.checkpoint()?;
             require_intent_with_attempt_key(connection, attempt, object, &mut attempt_key)?;
         }
-        let proof = preflight_registration_children(connection, objects, capacity, budget)?;
+        let proof =
+            preflight_registration_children(connection, objects, capacity, budget, Some(bound))?;
         let attempt_key = attempt_key.ok_or_else(|| {
             IndexError::BackendViolation("managed confirmation attempt key missing".into())
         })?;
@@ -810,15 +889,8 @@ fn confirm_attempt(
             budget.checkpoint()?;
             // Retain the original packet-wide key/digest preparation order:
             // all preparation checkpoints and digests precede the first SQL write.
-            let row_bytes = std::mem::size_of::<(Vec<u8>, Vec<u8>)>()
-                .checked_add(64)
-                .ok_or(IndexError::ResourceLimited)?;
-            let bytes = packet
-                .len()
-                .checked_mul(row_bytes)
-                .ok_or(IndexError::ResourceLimited)?;
             let _memory = budget.reserve_memory(
-                u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+                protection_row_memory_bytes(packet.len())?,
                 quanta_index_core::index::MemoryLifetime::Temporary,
             )?;
             let mut rows = Vec::new();
@@ -905,7 +977,7 @@ pub(super) fn install(
     budget.checkpoint()?;
     let mut guard = observe_sqlite(budget, 9, |budget| catalog.lock_native_budget(budget))?;
     let tx = observe_sqlite(budget, 10, |_budget| begin(&mut guard))?;
-    install_in_transaction(&tx, scope, objects, budget, confirming)?;
+    install_in_transaction(&tx, scope, objects, budget, confirming, None)?;
     budget.checkpoint()?;
     // Retain the existing COMMIT-only scope and lane identity.
     observe_sqlite(budget, 3, |_budget| {
@@ -935,9 +1007,21 @@ pub(super) fn advance_attempt(
     let mut guard = observe_sqlite(budget, 9, |budget| catalog.lock_native_budget(budget))?;
     let tx = observe_sqlite(budget, 10, |_budget| begin(&mut guard))?;
     let scope = ObjectInstallScope::Attempt(attempt);
-    install_in_transaction(&tx, scope, confirmed, budget, true)?;
+    install_in_transaction(&tx, scope, confirmed, budget, true, None)?;
     budget.checkpoint()?;
-    install_in_transaction(&tx, scope, next, budget, false)?;
+    let mut references = InputPrefix::new();
+    for object in confirmed {
+        budget.checkpoint()?;
+        let _inserted = references.insert(object.reference)?;
+    }
+    // Successful confirmation authenticated each registration and its edges,
+    // then protected its LIVE lifecycle and removed any reclaim queue row.
+    let protected = ProtectedAttemptInputs {
+        transaction: &tx,
+        attempt,
+        references,
+    };
+    install_in_transaction(&tx, scope, next, budget, false, Some(&protected))?;
     budget.checkpoint()?;
     observe_sqlite(budget, 3, |_budget| {
         tx.commit().map_err(|error| sql(&error))
@@ -952,16 +1036,35 @@ fn install_in_transaction(
     objects: &[RegisteredObject],
     budget: &mut WorkBudget,
     confirming: bool,
+    protected: Option<&ProtectedAttemptInputs<'_, '_>>,
 ) -> Result<(), IndexError> {
     if objects.is_empty() || objects.len() > MAX_OBJECTS {
         return Err(IndexError::ResourceLimited);
     }
+    let protected = if let Some(proof) = protected {
+        if confirming
+            || !matches!(scope, ObjectInstallScope::Attempt(attempt) if proof.attempt == attempt)
+            || !std::ptr::eq(proof.transaction, tx)
+        {
+            return Err(IndexError::BackendViolation(
+                "protected inputs do not belong to this attempt reservation".into(),
+            ));
+        }
+        Some(&proof.references)
+    } else {
+        None
+    };
     budget.charge(WorkUsage {
         reads: 2,
         bytes: 256,
         ..WorkUsage::default()
     })?;
-    reclaim::require_bound(tx)?;
+    let mut managed_bound = if matches!(scope, ObjectInstallScope::Attempt(_)) {
+        Some(reclaim::ManagedBoundNamespace::new(tx)?)
+    } else {
+        reclaim::require_bound(tx)?;
+        None
+    };
     // Planning and actual child preflight must use one deterministic capacity
     // policy, or omitted-adoption work credits could exceed executed savings.
     let child_capacity = ChildWindow::capacity(objects)?;
@@ -988,7 +1091,7 @@ fn install_in_transaction(
             let mut count = 0_u64;
             for child in &object.children {
                 budget.checkpoint()?;
-                if earlier_reserved.contains(*child)? {
+                if is_known_reservation_child(&earlier_reserved, protected, *child)? {
                     count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
                 } else {
                     if planned.is_none() {
@@ -1025,10 +1128,29 @@ fn install_in_transaction(
             confirm_ingress(tx, stage, objects, child_capacity, budget)?;
         }
         (ObjectInstallScope::Attempt(attempt), false) => {
-            reserve_attempt(tx, attempt, objects, child_capacity, budget)?;
+            reserve_attempt(
+                tx,
+                attempt,
+                objects,
+                child_capacity,
+                protected,
+                budget,
+                managed_bound.as_mut().ok_or_else(|| {
+                    IndexError::BackendViolation("managed namespace proof absent".into())
+                })?,
+            )?;
         }
         (ObjectInstallScope::Attempt(attempt), true) => {
-            confirm_attempt(tx, attempt, objects, child_capacity, budget)?;
+            confirm_attempt(
+                tx,
+                attempt,
+                objects,
+                child_capacity,
+                budget,
+                managed_bound.as_mut().ok_or_else(|| {
+                    IndexError::BackendViolation("managed namespace proof absent".into())
+                })?,
+            )?;
         }
         (ObjectInstallScope::Bootstrap(stage), false) => {
             let [object] = objects else {
@@ -1062,6 +1184,34 @@ mod tests {
         BootstrapRef, CollectionId, Digest, SlotId, TenantId, WorkLimits, WorkspaceKey, WorktreeId,
     };
     use std::time::Duration;
+
+    #[test]
+    fn managed_install_bound_covers_actual_child_and_row_grants() -> Result<(), IndexError> {
+        for (count, children) in [(1, 0), (64, 64), (65, 4096), (256, 8192)] {
+            let shape = quanta_index_core::index::ports::ObjectInstallMemoryShape {
+                maximum_inputs: count,
+                maximum_total_payload_bytes: count,
+                maximum_payload_bytes: 1,
+                maximum_total_children: children,
+            };
+            let bound = memory_bound(shape)?;
+            let capacity = ChildWindow::capacity_for_children(children)?;
+            let child_bytes = capacity
+                .slots
+                .checked_mul(std::mem::size_of::<Option<ObjectRef>>())
+                .ok_or(IndexError::ResourceLimited)?;
+            let actual = u64::try_from(child_bytes)
+                .map_err(|_error| IndexError::ResourceLimited)?
+                .checked_add(protection_row_memory_bytes(count)?)
+                .ok_or(IndexError::ResourceLimited)?;
+            if bound.temporary_data_bytes < actual || bound.max_live_temporary_leases != 2 {
+                return Err(IndexError::BackendViolation(
+                    "managed install memory bound omits the actual temporary grants".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
 
     fn budget(bytes: u64) -> WorkBudget {
         WorkBudget::with_request(

@@ -1,8 +1,9 @@
 //! Native emission custody. Only canonical DTOs are serialized; scoped Text
 //! stages share their immutable data through the complete synchronous write.
 
+use quanta_index_contract::index::{OperationStatus, SubmitOutcome};
 use quanta_index_contract::native_protocol::{
-    NativeIndexResponse, NativeIndexResponseEnvelope, NativeIndexWireError,
+    NativeIndexResponse, NativeIndexResponseEnvelope, NativeIndexWireError, NativeReadSessionId,
 };
 use quanta_index_core::index::{IndexError, MemoryLease};
 use quanta_index_ipc::{ResponseEnvelope, SlotRefusal};
@@ -36,9 +37,21 @@ impl Serialize for ScopedCanonicalReply {
 pub(crate) enum NativeReply {
     Plain(ScopedCanonicalReply),
     Error(NativeIndexWireError),
+    ReadSessionProfile {
+        session: NativeReadSessionId,
+        profile: quanta_index_kernel::ReadSessionProfile,
+    },
+    ReadSessionHistoryCut {
+        value: quanta_index_contract::native_protocol::NativeReadSessionHistoryCutV1,
+        _memory: Option<MemoryLease>,
+    },
     Literal(ScopedNativeLiteralPage),
     Path(ScopedNativePathPage),
+    RepositoryPath(quanta_index_repomap::native::RepositoryFilePathPage),
     Text(ScopedNativeTextResult),
+    TextPage(crate::native_read_session_transport::ScopedNativeTextPage),
+    HybridFile(crate::native_semantic_result::ScopedNativeHybridFileResult),
+    HistoryPage(crate::native_read_session_transport::ScopedNativeHistoryPage),
     OverlayText(crate::native_overlay_query::ScopedOverlayTextResult),
     Semantic(ScopedNativeSemanticResult),
     OverlaySemantic(crate::native_semantic_result::ScopedOverlaySemanticResult),
@@ -95,6 +108,8 @@ impl NativeReply {
                 true
             }
             Self::Error(_)
+            | Self::ReadSessionProfile { .. }
+            | Self::ReadSessionHistoryCut { .. }
             | Self::EffortDone(_)
             | Self::SourceOwners(_)
             | Self::ProjectionOwners(_)
@@ -105,7 +120,11 @@ impl NativeReply {
             | Self::Overlay(_)
             | Self::Stub(_)
             | Self::Literal(_)
+            | Self::TextPage(_)
+            | Self::HybridFile(_)
+            | Self::HistoryPage(_)
             | Self::Path(_)
+            | Self::RepositoryPath(_)
             | Self::StagedSources(_) => false,
         }
     }
@@ -116,6 +135,7 @@ impl NativeReply {
                 <NativeIndexResponseEnvelope as ResponseEnvelope<NativeIndexResponse>>::stream_terminal,
             ),
             Self::EffortDone(_) | Self::Error(_) => true,
+            Self::ReadSessionProfile { .. } | Self::ReadSessionHistoryCut { .. } => false,
             Self::Text(_)
             | Self::Semantic(_)
             | Self::OverlayText(_)
@@ -130,7 +150,11 @@ impl NativeReply {
             | Self::Stub(_)
             | Self::StagedSources(_)
             | Self::Literal(_)
-            | Self::Path(_) => false,
+            | Self::TextPage(_)
+            | Self::HybridFile(_)
+            | Self::HistoryPage(_)
+            | Self::Path(_)
+            | Self::RepositoryPath(_) => false,
         }
     }
 }
@@ -140,10 +164,40 @@ impl Serialize for NativeReply {
         match self {
             Self::Plain(payload) => payload.serialize(serializer),
             Self::Error(error) => NativeIndexResponse::serialize_error_ref(error, serializer),
+            Self::ReadSessionProfile { session, profile } => {
+                NativeIndexResponse::serialize_read_session_profile_ref(
+                    *session,
+                    profile.view(),
+                    profile.profile(),
+                    serializer,
+                )
+            }
+            Self::ReadSessionHistoryCut { value, .. } => serializer.serialize_newtype_variant(
+                "NativeIndexResponse",
+                40,
+                "HistoryCut",
+                value,
+            ),
+            Self::TextPage(result) => serializer.serialize_newtype_variant(
+                "NativeIndexResponse",
+                35,
+                "TextRankedPage",
+                &**result,
+            ),
+            Self::HistoryPage(result) => result.serialize(serializer),
+            Self::HybridFile(result) => serializer.serialize_newtype_variant(
+                "NativeIndexResponse",
+                34,
+                "HybridFileRanked",
+                &**result,
+            ),
             Self::Literal(result) => {
                 NativeIndexResponse::serialize_literal_page_ref(result, serializer)
             }
             Self::Path(result) => NativeIndexResponse::serialize_path_page_ref(result, serializer),
+            Self::RepositoryPath(result) => {
+                NativeIndexResponse::serialize_repository_path_page_ref(&**result, serializer)
+            }
             Self::OverlayText(result) => {
                 NativeIndexResponse::serialize_overlay_text_ref(result, serializer)
             }
@@ -217,6 +271,47 @@ impl ResponseEnvelope<NativeReply> for NativeReplyEnvelope {
         }
     }
 
+    fn terminal_reply_phase(&self) -> bool {
+        match &self.payload {
+            NativeReply::Error(_) => true,
+            NativeReply::Plain(reply) => matches!(
+                reply.result.as_ref().as_ref(),
+                Some(NativeIndexResponse::Error(_))
+                    | Some(NativeIndexResponse::Submitted(
+                        quanta_index_contract::index::OperationReply {
+                            payload: SubmitOutcome::Unknown(_)
+                                | SubmitOutcome::Terminal(
+                                    OperationStatus::Published(_) | OperationStatus::Refused(_)
+                                ),
+                            ..
+                        }
+                    ))
+            ),
+            NativeReply::Literal(_)
+            | NativeReply::ReadSessionProfile { .. }
+            | NativeReply::ReadSessionHistoryCut { .. }
+            | NativeReply::Path(_)
+            | NativeReply::RepositoryPath(_)
+            | NativeReply::Text(_)
+            | NativeReply::TextPage(_)
+            | NativeReply::HistoryPage(_)
+            | NativeReply::HybridFile(_)
+            | NativeReply::OverlayText(_)
+            | NativeReply::Semantic(_)
+            | NativeReply::OverlaySemantic(_)
+            | NativeReply::EffortDone(_)
+            | NativeReply::Graph(_)
+            | NativeReply::RepoMapRanked(_)
+            | NativeReply::Overlay(_)
+            | NativeReply::Stub(_)
+            | NativeReply::SourceOwners(_)
+            | NativeReply::ProjectionOwners(_)
+            | NativeReply::ProducerSourceOwners(_)
+            | NativeReply::ProjectionSourceDiff(_)
+            | NativeReply::StagedSources(_) => false,
+        }
+    }
+
     fn stream_unsupported(request_id: u64) -> Option<Self> {
         <NativeIndexResponseEnvelope as ResponseEnvelope<NativeIndexResponse>>::stream_unsupported(
             request_id,
@@ -252,14 +347,25 @@ impl ResponseEnvelope<NativeReply> for NativeReplyEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quanta_index_contract::index::{
+        AttemptId, AttemptRef, CollectionId, Digest, IndexInstanceId, ObjectRef, OperationKey,
+        OperationReply, OperationStatus, ProducerId, Refusal, SlotId, StreamId, SubmitOutcome,
+        TenantId, ViewRef, WorkspaceKey, WorktreeId,
+    };
     use quanta_index_contract::native_protocol::{
-        NativeIndexErrorCode, NativeInteractionPublisherId,
+        NativeIndexErrorCode, NativeIndexRequest, NativeIndexRequestEnvelope,
+        NativeInteractionPublisherId, NativeTextCoverage, NativeTextResult,
     };
     use quanta_index_core::index::MemoryLeaseOwner;
+    use quanta_index_ipc::{
+        ClientIoPolicy, DispatchContextV1, IpcDispatcher, IpcPlane, RequestBudgetV1,
+        ServerAdmissionPolicy, UdsServer, send_request,
+    };
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     };
+    use std::time::Duration;
 
     struct LiveMemory(AtomicU64);
     impl MemoryLeaseOwner for LiveMemory {
@@ -331,6 +437,171 @@ mod tests {
         if reply.stage() || !reply.terminal() {
             return Err("refusal reply stage or terminal state changed".into());
         }
+        Ok(())
+    }
+
+    fn plain_reply(payload: NativeIndexResponse) -> NativeReplyEnvelope {
+        NativeReplyEnvelope::from_parts(
+            7,
+            NativeReply::Plain(ScopedCanonicalReply {
+                result: Box::new(Some(payload)),
+                _memory: None,
+            }),
+        )
+    }
+
+    #[test]
+    fn terminal_reply_phase_only_covers_closed_native_results() {
+        let workspace = WorkspaceKey {
+            tenant: TenantId([1; 16]),
+            collection: CollectionId([2; 16]),
+            worktree: WorktreeId([3; 16]),
+            slot: SlotId([4; 16]),
+        };
+        let operation = OperationKey {
+            workspace,
+            epoch: 1,
+            producer: ProducerId([5; 16]),
+            stream: StreamId([6; 16]),
+            stream_epoch: 1,
+            sequence: 1,
+        };
+        let attempt = AttemptRef {
+            operation,
+            attempt: AttemptId([7; 16]),
+            fence: 1,
+        };
+        let view = ViewRef {
+            workspace,
+            epoch: 1,
+            sequence: 1,
+            digest: Digest([8; 32]),
+        };
+        let submitted = |payload| {
+            plain_reply(NativeIndexResponse::Submitted(OperationReply {
+                operation,
+                payload,
+            }))
+        };
+
+        assert!(
+            NativeReplyEnvelope::from_parts(
+                7,
+                NativeReply::Error(NativeIndexWireError {
+                    code: NativeIndexErrorCode::Cancelled,
+                    message: "dispatch expired".into(),
+                }),
+            )
+            .terminal_reply_phase()
+        );
+        assert!(
+            plain_reply(NativeIndexResponse::Error(NativeIndexWireError {
+                code: NativeIndexErrorCode::Cancelled,
+                message: "dispatch expired".into(),
+            }))
+            .terminal_reply_phase()
+        );
+        assert!(submitted(SubmitOutcome::Unknown(operation)).terminal_reply_phase());
+        assert!(
+            submitted(SubmitOutcome::Terminal(OperationStatus::Published(view)))
+                .terminal_reply_phase()
+        );
+        assert!(
+            submitted(SubmitOutcome::Terminal(OperationStatus::Refused(
+                Refusal::ResourceLimited,
+            )))
+            .terminal_reply_phase()
+        );
+
+        assert!(!submitted(SubmitOutcome::Accepted(attempt)).terminal_reply_phase());
+        assert!(
+            !submitted(SubmitOutcome::Terminal(OperationStatus::Pending(attempt)))
+                .terminal_reply_phase()
+        );
+        assert!(
+            !submitted(SubmitOutcome::Terminal(OperationStatus::Unknown)).terminal_reply_phase()
+        );
+        assert!(
+            !plain_reply(NativeIndexResponse::TextRanked(NativeTextResult {
+                view,
+                instance: IndexInstanceId([9; 16]),
+                coverage: NativeTextCoverage::CoreRequired,
+                artifact: ObjectRef(Digest([10; 32])),
+                matched: 0,
+                exhaustive: true,
+                hits: Vec::new(),
+            }))
+            .terminal_reply_phase()
+        );
+    }
+
+    struct ExpiredNativeDispatcher;
+
+    impl IpcDispatcher<NativeIndexRequest, NativeReply> for ExpiredNativeDispatcher {
+        fn dispatch(
+            &self,
+            _context: &DispatchContextV1,
+            _request: NativeIndexRequest,
+            budget: &RequestBudgetV1,
+        ) -> NativeReply {
+            std::thread::sleep(Duration::from_millis(80));
+            let expired = budget.checkpoint("native-terminal-reply-test").is_err();
+            NativeReply::Error(NativeIndexWireError {
+                code: if expired {
+                    NativeIndexErrorCode::Cancelled
+                } else {
+                    NativeIndexErrorCode::BackendViolation
+                },
+                message: "native dispatch deadline reached".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn expired_native_dispatch_delivers_typed_error_over_uds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = quanta_index_searchd_harness::private_tempdir()?;
+        let socket = dir.path().join("native-reply.sock");
+        let policy = ServerAdmissionPolicy::new(
+            2,
+            1,
+            1,
+            Duration::ZERO,
+            Duration::from_millis(20),
+            Duration::from_secs(2),
+        )?;
+        let server = Arc::new(UdsServer::bind_with_policy(&socket, policy)?);
+        let running = Arc::clone(&server);
+        let join = std::thread::spawn(move || {
+            running.run::<
+                NativeIndexRequestEnvelope,
+                NativeIndexRequest,
+                NativeReplyEnvelope,
+                NativeReply,
+                ExpiredNativeDispatcher,
+            >(&Arc::new(ExpiredNativeDispatcher), IpcPlane::Control, Duration::from_millis(1))
+        });
+        let request = NativeIndexRequestEnvelope {
+            request_id: 7,
+            payload: NativeIndexRequest::InteractionBegin { window_millis: 1 },
+        };
+        let response = send_request::<NativeIndexRequestEnvelope, NativeIndexResponseEnvelope>(
+            &socket,
+            &request,
+            ClientIoPolicy::try_new(Duration::from_secs(5))?,
+        );
+        server.shutdown_handle().trigger();
+        join.join()
+            .map_err(|panic| format!("native UDS server panicked: {panic:?}"))??;
+        let response = response?;
+        assert_eq!(response.request_id, request.request_id);
+        assert!(matches!(
+            response.payload,
+            NativeIndexResponse::Error(NativeIndexWireError {
+                code: NativeIndexErrorCode::Cancelled,
+                ..
+            })
+        ));
         Ok(())
     }
 }

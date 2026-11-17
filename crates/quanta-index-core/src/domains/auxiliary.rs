@@ -19,9 +19,14 @@
 
 use std::fmt;
 
-use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
+use quanta_index_contract::{
+    HistoryDiffHunkUpsert, HistoryRefUpsert, RepoId, RevisionId, SearchPlaneTrackKind,
+    index::Digest, lex::CommitRecord,
+};
+use sha2::{Digest as _, Sha256};
 
 use crate::error::CoreError;
+use crate::index::WorkBudget;
 
 /// Wire code for a read that named an auxiliary epoch the plane no longer
 /// retains (QI-BB-020 W2): the continuation must be restarted, it is never
@@ -168,13 +173,7 @@ impl fmt::Display for AuxiliaryRowFamilyV1 {
     }
 }
 
-/// The generation one row belongs to.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct AuxiliaryGenerationKeyV1 {
-    pub repo_id: RepoId,
-    pub revision_id: RevisionId,
-    pub generation: ManifestGeneration,
-}
+pub use quanta_index_contract::index::{AuxiliaryGenerationKeyV1, HistorySourceCutV1};
 
 /// The full address of one row.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -191,6 +190,153 @@ pub struct AuxiliaryRowKeyV1 {
 pub struct AuxiliaryRowV1 {
     pub key: AuxiliaryRowKeyV1,
     pub value: Vec<u8>,
+}
+
+/// Streaming digest for the History row-set format of [`HistorySourceCutV1`].
+/// The source owner must supply rows reconstructed from its own evidence.
+/// The Catalog reader supplies the rows observed in its read transaction.
+pub struct HistorySnapshotDigestV1(Sha256);
+
+impl HistorySnapshotDigestV1 {
+    #[must_use]
+    pub fn new(generation: &AuxiliaryGenerationKeyV1) -> Self {
+        let mut hash = Self(Sha256::new());
+        hash.0.update(b"quanta-index:history-source-snapshot:v1\0");
+        hash.field(generation.repo_id.as_str().as_bytes());
+        hash.field(generation.revision_id.as_str().as_bytes());
+        hash.0.update(generation.generation.get().to_le_bytes());
+        hash
+    }
+
+    /// Append one row in the cut's specified order. The caller validates
+    /// row scope, epoch, ordering, and completeness.
+    pub fn push_row(&mut self, family: AuxiliaryRowFamilyV1, key: &[u8], value: &[u8]) {
+        self.field(family.as_code_str().as_bytes());
+        self.field(key);
+        self.field(value);
+    }
+
+    #[must_use]
+    pub fn finish(self) -> Digest {
+        Digest(self.0.finalize().into())
+    }
+
+    fn field(&mut self, bytes: &[u8]) {
+        let length = u64::try_from(bytes.len()).map_or(u64::MAX, |length| length);
+        self.0.update(length.to_le_bytes());
+        self.0.update(bytes);
+    }
+}
+
+/// Typed row of one History source snapshot, projected from its stored value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HistoryReadbackRowV1 {
+    Commit(CommitRecord),
+    Ref(HistoryRefUpsert),
+    Tag(HistoryRefUpsert),
+    DiffHunk(HistoryDiffHunkUpsert),
+    Materialization {
+        commits: bool,
+        refs: bool,
+        tags: bool,
+        diff_hunks: bool,
+    },
+}
+
+impl serde::Serialize for HistoryReadbackRowV1 {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStructVariant;
+        match self {
+            Self::Commit(record) => {
+                serializer.serialize_newtype_variant("HistoryReadbackRowV1", 0, "Commit", record)
+            }
+            Self::Ref(update) => {
+                serializer.serialize_newtype_variant("HistoryReadbackRowV1", 1, "Ref", update)
+            }
+            Self::Tag(update) => {
+                serializer.serialize_newtype_variant("HistoryReadbackRowV1", 2, "Tag", update)
+            }
+            Self::DiffHunk(update) => {
+                serializer.serialize_newtype_variant("HistoryReadbackRowV1", 3, "DiffHunk", update)
+            }
+            Self::Materialization {
+                commits,
+                refs,
+                tags,
+                diff_hunks,
+            } => {
+                let mut state = serializer.serialize_struct_variant(
+                    "HistoryReadbackRowV1",
+                    4,
+                    "Materialization",
+                    4,
+                )?;
+                state.serialize_field("commits", commits)?;
+                state.serialize_field("refs", refs)?;
+                state.serialize_field("tags", tags)?;
+                state.serialize_field("diff_hunks", diff_hunks)?;
+                state.end()
+            }
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for HistoryReadbackRowV1 {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{self, EnumAccess, MapAccess, VariantAccess, Visitor};
+        struct Flags;
+        impl<'de> Visitor<'de> for Flags {
+            type Value = HistoryReadbackRowV1;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("History materialization flags")
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let (mut commits, mut refs, mut tags, mut diff_hunks) = (None, None, None, None);
+                const FIELDS: &[&str] = &["commits", "refs", "tags", "diff_hunks"];
+                while let Some(key) = map.next_key::<String>()? {
+                    let slot = match key.as_str() {
+                        "commits" => &mut commits,
+                        "refs" => &mut refs,
+                        "tags" => &mut tags,
+                        "diff_hunks" => &mut diff_hunks,
+                        _ => return Err(de::Error::unknown_field(&key, FIELDS)),
+                    };
+                    if slot.is_some() {
+                        return Err(de::Error::custom("duplicate History materialization flag"));
+                    }
+                    *slot = Some(map.next_value()?);
+                }
+                Ok(HistoryReadbackRowV1::Materialization {
+                    commits: commits.ok_or_else(|| de::Error::missing_field("commits"))?,
+                    refs: refs.ok_or_else(|| de::Error::missing_field("refs"))?,
+                    tags: tags.ok_or_else(|| de::Error::missing_field("tags"))?,
+                    diff_hunks: diff_hunks.ok_or_else(|| de::Error::missing_field("diff_hunks"))?,
+                })
+            }
+        }
+        struct Row;
+        const VARIANTS: &[&str] = &["Commit", "Ref", "Tag", "DiffHunk", "Materialization"];
+        impl<'de> Visitor<'de> for Row {
+            type Value = HistoryReadbackRowV1;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("typed History row")
+            }
+            fn visit_enum<A: EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
+                let (variant, value) = data.variant::<String>()?;
+                match variant.as_str() {
+                    "Commit" => value.newtype_variant().map(HistoryReadbackRowV1::Commit),
+                    "Ref" => value.newtype_variant().map(HistoryReadbackRowV1::Ref),
+                    "Tag" => value.newtype_variant().map(HistoryReadbackRowV1::Tag),
+                    "DiffHunk" => value.newtype_variant().map(HistoryReadbackRowV1::DiffHunk),
+                    "Materialization" => {
+                        value.struct_variant(&["commits", "refs", "tags", "diff_hunks"], Flags)
+                    }
+                    _ => Err(de::Error::unknown_variant(&variant, VARIANTS)),
+                }
+            }
+        }
+        deserializer.deserialize_enum("HistoryReadbackRowV1", VARIANTS, Row)
+    }
 }
 
 /// The per-track authority state row (which generation a track has
@@ -268,6 +414,26 @@ pub trait AuxiliaryAuthorityCatalogPort: Send + Sync {
         &self,
         visit: &mut dyn FnMut(AuxiliaryRowV1) -> Result<(), CoreError>,
     ) -> Result<(), CoreError>;
+
+    /// Visit verified History rows for exactly this generation, starting with
+    /// its durable epoch row, followed by the other rows in storage-key order.
+    /// All rows must come from one read snapshot. Adapters without a bounded
+    /// snapshot reader must refuse the operation.
+    ///
+    /// The visitor runs under the read snapshot and must not re-enter this
+    /// Catalog. Catalog's temporary row backing expires after each visit.
+    /// Use the same Work budget to account for visitor work and any backing
+    /// retained across calls. Output is provisional until the read succeeds.
+    fn for_each_history_row(
+        &self,
+        _generation: &AuxiliaryGenerationKeyV1,
+        _budget: &mut WorkBudget,
+        _visit: &mut dyn FnMut(AuxiliaryRowV1, &mut WorkBudget) -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        Err(CoreError::NotImplemented(
+            "bounded durable History scan unavailable".into(),
+        ))
+    }
 
     /// Every stored track row, verified.
     fn track_rows(&self) -> Result<Vec<AuxiliaryTrackRowV1>, CoreError>;

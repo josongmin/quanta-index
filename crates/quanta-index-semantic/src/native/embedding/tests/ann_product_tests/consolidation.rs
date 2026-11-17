@@ -107,6 +107,106 @@ fn corpus_owner(row: u16) -> OwnerKey {
     }
 }
 
+// Fixed oracle from the 576 source directions and the independent f64 cosine
+// formula. Keep these values separate from the ANN graph and ranking helpers.
+const CARRY_TOP_TEN: [(u16, f64); 10] = [
+    (268, 0.384_371_837_715_078_9),
+    (283, 0.382_719_086_034_679_86),
+    (312, 0.348_371_912_429_343_57),
+    (470, 0.316_930_867_237_943_4),
+    (436, 0.277_533_750_979_549_7),
+    (536, 0.277_421_421_102_068_74),
+    (151, 0.264_512_890_163_929_8),
+    (110, 0.263_372_108_249_283_2),
+    (388, 0.258_930_662_575_690_3),
+    (372, 0.256_624_779_978_129_44),
+];
+
+fn check_carry_result(
+    hits: &[SearchHit],
+    independent_scores: &[(usize, f64)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if hits.len() != CARRY_TOP_TEN.len() {
+        return Err(format!(
+            "ANN carry result cardinality: expected {}, got {}",
+            CARRY_TOP_TEN.len(),
+            hits.len()
+        )
+        .into());
+    }
+    let mut owners = BTreeSet::new();
+    for (rank, hit) in hits.iter().enumerate() {
+        if !owners.insert(hit.owner) {
+            return Err(format!("ANN carry duplicate owner at rank {rank}").into());
+        }
+        if hit.vector_id.as_slice() != b"whole-file".as_slice() {
+            return Err(format!("ANN carry vector identity mismatch at rank {rank}").into());
+        }
+        let expected = independent_scores
+            .iter()
+            .find_map(|(row, score)| {
+                u16::try_from(*row)
+                    .ok()
+                    .filter(|row| hit.owner == corpus_owner(*row))
+                    .map(|_row| *score)
+            })
+            .ok_or_else(|| format!("ANN carry unknown owner at rank {rank}"))?;
+        if !expected.is_finite()
+            || !hit.cosine.is_finite()
+            || (hit.cosine - expected).abs() > 1.0e-7
+        {
+            return Err(format!(
+                "ANN carry score mismatch at rank {rank}: expected {expected}, got {}",
+                hit.cosine
+            )
+            .into());
+        }
+        if rank > 0 {
+            let prior = &hits[rank - 1];
+            if prior.cosine.total_cmp(&hit.cosine).is_lt()
+                || (prior.cosine.total_cmp(&hit.cosine).is_eq() && prior.owner >= hit.owner)
+            {
+                return Err(format!("ANN carry score/owner order mismatch at rank {rank}").into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn carry_top_ten_oracle_rejects_incomplete_duplicate_unordered_and_invalid_scores()
+-> Result<(), Box<dyn std::error::Error>> {
+    let make_hits = || {
+        CARRY_TOP_TEN
+            .iter()
+            .map(|(row, score)| {
+                SearchHit::from_parts(corpus_owner(*row), b"whole-file".to_vec(), *score, None)
+            })
+            .collect::<Vec<_>>()
+    };
+    let scores = CARRY_TOP_TEN
+        .iter()
+        .map(|(row, score)| (usize::from(*row), *score))
+        .collect::<Vec<_>>();
+    check_carry_result(&make_hits(), &scores)?;
+    let mut incomplete = make_hits();
+    let _removed = incomplete.pop();
+    check!(check_carry_result(&incomplete, &scores).is_err());
+    let mut duplicate = make_hits();
+    duplicate[1].owner = duplicate[0].owner;
+    check!(check_carry_result(&duplicate, &scores).is_err());
+    let mut unordered = make_hits();
+    unordered.swap(0, 1);
+    check!(check_carry_result(&unordered, &scores).is_err());
+    let mut invalid = make_hits();
+    invalid[0].cosine = f64::NAN;
+    check!(check_carry_result(&invalid, &scores).is_err());
+    let mut wrong_score = make_hits();
+    wrong_score[0].cosine = 0.5;
+    check!(check_carry_result(&wrong_score, &scores).is_err());
+    Ok(())
+}
+
 #[test]
 fn native_ann_small_runs_carry_and_retain_independent_nearest_neighbor()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -130,6 +230,11 @@ fn native_ann_small_runs_carry_and_retain_independent_nearest_neighbor()
         .map(|row| direction(u64::from(row), 64))
         .collect();
     let query = direction(2_000_011, 64);
+    let query_norm = query
+        .iter()
+        .map(|value| f64::from(*value).powi(2))
+        .sum::<f64>()
+        .sqrt();
     // The fixed fresh-direction fixture's nearest row is independent of routing.
     let mut scores: Vec<_> = corpus
         .iter()
@@ -140,12 +245,28 @@ fn native_ann_small_runs_carry_and_retain_independent_nearest_neighbor()
                 .zip(vector)
                 .map(|(a, b)| f64::from(*a) * f64::from(*b))
                 .sum();
-            (row, dot)
+            let vector_norm = vector
+                .iter()
+                .map(|value| f64::from(*value).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            (row, dot / (query_norm * vector_norm))
         })
         .collect();
     scores.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     let gold = scores.first().ok_or("empty ANN independent gold")?.0;
     check_eq!(gold, 268);
+    check_eq!(
+        scores
+            .iter()
+            .take(CARRY_TOP_TEN.len())
+            .map(|(row, _)| *row)
+            .collect::<Vec<_>>(),
+        CARRY_TOP_TEN
+            .iter()
+            .map(|(row, _)| usize::from(*row))
+            .collect::<Vec<_>>()
+    );
     let mut sources = BTreeMap::new();
     let mut owners = BTreeMap::new();
     let mut prior: Option<CoverageBinding> = None;
@@ -168,7 +289,12 @@ fn native_ann_small_runs_carry_and_retain_independent_nearest_neighbor()
             vector,
         )?;
         let mut work = ann_budget()?;
-        let coverage_object = store.get(coverage_ref, &mut work)?;
+        let coverage_object = store.get(coverage_ref, &mut work).map_err(|error| {
+            format!(
+                "ANN carry setup row={row}: {error}; usage={:?}",
+                work.usage()
+            )
+        })?;
         let coverage: OwnerCoverage = serde_json::from_slice(&coverage_object.payload)?;
         let member = coverage.searchable.ok_or("ANN fixture member absent")?;
         check_eq!(sources.insert(key.clone(), source), None);
@@ -193,8 +319,20 @@ fn native_ann_small_runs_carry_and_retain_independent_nearest_neighbor()
                 None,
                 &mut context,
             ),
-        )?
-        .install(&mut context)?
+        )
+        .map_err(|error| {
+            format!(
+                "ANN carry prepare row={row}: {error}; usage={:?}",
+                context.budget.usage()
+            )
+        })?
+        .install(&mut context)
+        .map_err(|error| {
+            format!(
+                "ANN carry install row={row}: {error}; usage={:?}",
+                context.budget.usage()
+            )
+        })?
         .ok_or("ANN fixture directory absent")?;
         prior = Some(maintenance::binding(
             &spec,
@@ -230,38 +368,38 @@ fn native_ann_small_runs_carry_and_retain_independent_nearest_neighbor()
     work.bind_memory_scope(Some(MemoryScope::new(Arc::new(QueryMemoryScope(
         Arc::clone(&memory),
     )))));
-    let result = crate::run_blocking(
-        &runtime,
-        ann_query::search(
-            &SearchQuery {
-                lexical_eligibility: None,
-                lexical_owners: None,
-                exact_path: None,
-                coverage: &coverage,
-                projection: None,
-                source_owners: coverage.desired.root,
-                source_paths: MapRoot(None),
-                instance: spec.instance,
-                format: spec.format,
-                recipe: &recipe,
-                vector: &query,
-                top_k: 10,
-                page_size: 64,
-                max_owners: 576,
-                overlay: None,
-            },
-            &mut ReadContext {
-                objects: &store,
-                maps: &measured,
-                budget: &mut work,
-            },
-        ),
-    )?;
+    let result = ann_query::search(
+        &SearchQuery {
+            source_files: false,
+            lexical_eligibility: None,
+            lexical_owners: None,
+            exact_path: None,
+            coverage: &coverage,
+            projection: None,
+            source_owners: coverage.desired.root,
+            source_paths: MapRoot(None),
+            instance: spec.instance,
+            format: spec.format,
+            recipe: &recipe,
+            vector: &query,
+            top_k: 10,
+            page_size: 64,
+            max_owners: 576,
+            overlay: None,
+        },
+        &mut ReadContext {
+            objects: &store,
+            maps: &measured,
+            budget: &mut work,
+        },
+    )
+    .map_err(|error| format!("ANN carry query: {error}; usage={:?}", work.usage()))?;
     let best = result
         .hits
         .first()
         .ok_or("ANN fresh query returned no hits")?;
     check_eq!(best.owner, corpus_owner(u16::try_from(gold)?));
+    check_carry_result(&result.hits, &scores)?;
     check!(matches!(
         result.traversal,
         NativeSemanticTraversal::Approximate { .. }

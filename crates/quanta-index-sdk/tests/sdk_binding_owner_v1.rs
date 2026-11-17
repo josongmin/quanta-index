@@ -253,7 +253,7 @@ fn client_on(dir: &std::path::Path, query_socket: PathBuf) -> QuantaIndex {
         .with_query_socket(query_socket)
         .with_control_socket(dir.join("control.sock"))
         .with_ingest_socket(dir.join("ingest.sock"));
-    QuantaIndex::connect(options).expect("full-profile client connects")
+    QuantaIndex::connect_legacy(options).expect("full-profile client connects")
 }
 
 /// Run one scripted text query through the exported request entrypoint.
@@ -301,6 +301,7 @@ fn bounded_semantic_binds_work_settlement_and_refuses_ordinary_fallback() {
             top_k: 10,
         },
         max_work_units: 100,
+        canonical_ties: false,
     };
     let query = quanta_index_contract::SemanticQueryResponse {
         selected_active_head: None,
@@ -319,6 +320,7 @@ fn bounded_semantic_binds_work_settlement_and_refuses_ordinary_fallback() {
             quanta_index_contract::SemanticWorkBoundedQueryResponseV1 {
                 query: query.clone(),
                 charged_work_units: script,
+                canonical_ties: false,
             },
         );
         let (socket, _rx) = scripted_query_server(dir.path(), vec![response]);
@@ -339,6 +341,25 @@ fn bounded_semantic_binds_work_settlement_and_refuses_ordinary_fallback() {
             ));
         }
     }
+    let dir = temp_dir("canonical-mode-drift");
+    let response = SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(
+        quanta_index_contract::SemanticWorkBoundedQueryResponseV1 {
+            query: query.clone(),
+            charged_work_units: 10,
+            canonical_ties: false,
+        },
+    );
+    let (socket, _rx) = scripted_query_server(dir.path(), vec![response]);
+    let client = client_on(dir.path(), socket);
+    let mut canonical_request = request.clone();
+    canonical_request.canonical_ties = true;
+    assert!(matches!(
+        client.semantic().query_work_bounded_v1(canonical_request),
+        Err(Binding {
+            axis: ResponseBindingAxis::Order,
+            ..
+        })
+    ));
     let dir = temp_dir("ordinary-semantic-fallback");
     let (socket, _rx) = scripted_query_server(
         dir.path(),
@@ -739,7 +760,7 @@ fn query_only_profile_needs_no_control_or_ingest_sockets() {
     // Only the query socket is named; the query-only profile must not
     // require, resolve or fabricate the other two.
     let options = ConnectOptions::default().with_query_socket(socket);
-    let client = QuantaIndex::connect_query_only(options)
+    let client = QuantaIndex::connect_legacy_query_only(options)
         .expect("query-only profile connects without control/ingest endpoints");
     let response = client
         .reader()
@@ -764,7 +785,7 @@ fn query_only_profile_needs_no_control_or_ingest_sockets() {
     let full = temp_dir("full-refuses");
     let options = ConnectOptions::default().with_query_socket(full.path().join("q.sock"));
     assert!(
-        QuantaIndex::connect(options).is_err(),
+        QuantaIndex::connect_legacy(options).is_err(),
         "the full profile must keep requiring control and ingest endpoints"
     );
 }

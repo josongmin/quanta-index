@@ -151,8 +151,11 @@ struct Maps {
     applies: AtomicUsize,
     fail_diff: AtomicBool,
     fail_apply: AtomicBool,
+    reuse_apply_root: AtomicBool,
+    empty_apply_root: AtomicBool,
     fail_on_apply: AtomicUsize,
     repeat_cursor: AtomicBool,
+    empty_diff_page: AtomicBool,
 }
 
 type MapSnapshot = (MapRoot, BTreeMap<Vec<u8>, MapValue>);
@@ -239,6 +242,9 @@ impl PersistentMapPort for Maps {
                 "injected structural diff failure".into(),
             ));
         }
+        if self.empty_diff_page.load(Ordering::SeqCst) {
+            return Ok(false);
+        }
         if range.limit == 0 {
             return Err(IndexError::InvalidInput("zero test diff page".into()));
         }
@@ -300,6 +306,14 @@ impl PersistentMapPort for Maps {
             return Err(IndexError::Storage("injected reverse apply failure".into()));
         }
         budget.checkpoint()?;
+        if self.reuse_apply_root.load(Ordering::SeqCst) {
+            return Ok(MapWrite { root: base });
+        }
+        if self.empty_apply_root.load(Ordering::SeqCst) {
+            return Ok(MapWrite {
+                root: MapRoot(None),
+            });
+        }
         if edits
             .windows(2)
             .any(|pair| matches!(pair, [left, right] if left.key >= right.key))
@@ -666,6 +680,98 @@ fn failures_do_not_assign_directory_reverse_and_unchanged_root_does_no_work()
 }
 
 #[test]
+fn reverse_edits_reject_unchanged_map_root() -> Result<(), IndexError> {
+    let objects = Objects::default();
+    let maps = Maps::default();
+    let instance = projected_instance();
+    let semantic = owner(15, 1);
+    let source_owner = owner(1, 1);
+    let source = objects.insert(b"source".to_vec(), Vec::new())?;
+    let value = coverage(
+        &objects,
+        &instance,
+        semantic,
+        Some(source_owner),
+        Some(source),
+        1,
+    )?;
+    let target = maps.seed(owners(&[(semantic, value)]))?;
+    let mut directory = AnnDirectory::empty(Digest([30; 32]), MapRoot(None));
+    let original = directory;
+    let mut budget = budget()?;
+    let mut context = AttemptContext {
+        attempt: attempt(),
+        objects: &objects,
+        maps: &maps,
+        custody: &Custody,
+        scratch: &Scratch,
+        budget: &mut budget,
+    };
+    maps.reuse_apply_root.store(true, Ordering::SeqCst);
+    let unchanged = directory.refresh_source_reverse(&instance, target, &mut context);
+    check_eq!(directory, original);
+
+    maps.reuse_apply_root.store(false, Ordering::SeqCst);
+    directory.refresh_source_reverse(&instance, target, &mut context)?;
+    directory.owners = target;
+    let before = directory;
+    let updated = coverage(
+        &objects,
+        &instance,
+        semantic,
+        Some(source_owner),
+        Some(source),
+        2,
+    )?;
+    let target = maps.seed(owners(&[(semantic, updated)]))?;
+    maps.empty_apply_root.store(true, Ordering::SeqCst);
+    let empty = directory.refresh_source_reverse(&instance, target, &mut context);
+
+    check_eq!(maps.applies.load(Ordering::SeqCst), 3);
+    check!(matches!(unchanged, Err(IndexError::CorruptObject(_))));
+    check!(matches!(empty, Err(IndexError::CorruptObject(_))));
+    check_eq!(directory, before);
+    Ok(())
+}
+
+#[test]
+fn reverse_rejects_empty_diff_from_empty_to_nonempty_owner_root() -> Result<(), IndexError> {
+    let objects = Objects::default();
+    let maps = Maps::default();
+    let instance = projected_instance();
+    let semantic = owner(15, 1);
+    let source = objects.insert(b"source".to_vec(), Vec::new())?;
+    let selected = coverage(
+        &objects,
+        &instance,
+        semantic,
+        Some(owner(1, 1)),
+        Some(source),
+        1,
+    )?;
+    let target = maps.seed(owners(&[(semantic, selected)]))?;
+    let mut directory = AnnDirectory::empty(Digest([30; 32]), MapRoot(None));
+    let before = directory;
+    maps.empty_diff_page.store(true, Ordering::SeqCst);
+    let result = directory.refresh_source_reverse(
+        &instance,
+        target,
+        &mut AttemptContext {
+            attempt: attempt(),
+            objects: &objects,
+            maps: &maps,
+            custody: &Custody,
+            scratch: &Scratch,
+            budget: &mut budget()?,
+        },
+    );
+    check_eq!(maps.visits.load(Ordering::SeqCst), 1);
+    check!(matches!(result, Err(IndexError::CorruptObject(_))));
+    check_eq!(directory, before);
+    Ok(())
+}
+
+#[test]
 fn second_page_failure_never_assigns_a_successful_prefix() -> Result<(), IndexError> {
     let objects = Objects::default();
     let maps = Maps::default();
@@ -709,6 +815,14 @@ fn second_page_failure_never_assigns_a_successful_prefix() -> Result<(), IndexEr
     check_eq!(directory.source_reverse, MapRoot(None));
     maps.fail_on_apply.store(0, Ordering::SeqCst);
     maps.repeat_cursor.store(true, Ordering::SeqCst);
+    check!(matches!(
+        directory.refresh_source_reverse(&instance, target, &mut context),
+        Err(IndexError::CorruptObject(_))
+    ));
+    check_eq!(maps.applies.load(Ordering::SeqCst), 3);
+    check_eq!(directory.source_reverse, MapRoot(None));
+    maps.repeat_cursor.store(false, Ordering::SeqCst);
+    maps.empty_diff_page.store(true, Ordering::SeqCst);
     check!(matches!(
         directory.refresh_source_reverse(&instance, target, &mut context),
         Err(IndexError::CorruptObject(_))

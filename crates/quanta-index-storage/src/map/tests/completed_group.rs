@@ -59,8 +59,8 @@ fn shared_map_node_is_counted_only_for_its_first_reachable_root() -> TestResult 
     let edit = MapEdit::objects(key.clone(), None, Some(value));
     let mut cursor = TestEditCursor(
         [
-            OrdinalMapEdit::unscoped(0, edit.clone()),
-            OrdinalMapEdit::unscoped(1, edit),
+            OrdinalMapEdit::unscoped(0, edit.clone())?,
+            OrdinalMapEdit::unscoped(1, edit)?,
         ]
         .into_iter()
         .collect::<Vec<_>>()
@@ -135,6 +135,130 @@ fn shared_map_node_is_counted_only_for_its_first_reachable_root() -> TestResult 
             1
         );
     }
+    Ok(())
+}
+
+#[test]
+fn cold_nested_install_avoids_scratch_reads_for_external_children() -> TestResult {
+    struct PackedCursor(TestEditCursor);
+    impl MapEditCursor for PackedCursor {
+        fn next_edit(
+            &mut self,
+            budget: &mut WorkBudget,
+        ) -> Result<Option<OrdinalMapEdit>, IndexError> {
+            self.0.next_edit(budget)
+        }
+
+        fn subtree_packing(&self) -> Result<RootPackingPlan, IndexError> {
+            let mut plan = RootPackingPlan::default();
+            plan.select(0, RootPackingMode::Nested)?;
+            Ok(plan)
+        }
+    }
+
+    let install = |fund_optional: bool,
+                   missing: bool|
+     -> Result<(MapRoot, WorkUsage), Box<dyn std::error::Error>> {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let mut setup = budget()?;
+        let inputs = (0..64u8)
+            .map(|key| {
+                let reference = if missing && key == 63 {
+                    store
+                        .prepare_object(&[key], &[], &mut setup)?
+                        .registration
+                        .reference
+                } else {
+                    value(&store, &[key], &mut setup)?
+                };
+                Ok((key, reference))
+            })
+            .collect::<Result<Vec<_>, IndexError>>()?;
+        let mut work = budget()?;
+        let tracker =
+            fund_optional.then(|| array_scope(MemoryLifetime::Temporary, Some(0), &mut work));
+        let edits = inputs
+            .iter()
+            .map(|&(key, reference)| {
+                OrdinalMapEdit::unscoped(0, MapEdit::objects(vec![key], None, Some(reference)))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut cursor = PackedCursor(TestEditCursor(edits.into_iter()));
+        let roots = store.apply_stream(
+            &[MapRoot(None)],
+            &mut cursor,
+            &RecordingSink::default(),
+            &mut work,
+        );
+        if missing {
+            check_eq!(
+                roots,
+                Err(IndexError::InvalidInput(
+                    "object references a missing child".into()
+                ))
+            );
+            return Ok((MapRoot(None), work.usage()));
+        }
+        let roots = roots?;
+        let root = *roots.first().ok_or("missing root")?;
+        let usage = work.usage();
+        for (key, reference) in inputs {
+            check_eq!(
+                store.lookup_object(root, &[key], &mut setup)?,
+                Some(reference)
+            );
+        }
+        drop(roots);
+        if let Some(tracker) = tracker {
+            check_eq!(tracker.live.load(Ordering::Relaxed), 0);
+        }
+        Ok((root, usage))
+    };
+    let (ordinary_root, ordinary) = install(false, false)?;
+    let (funded_root, funded) = install(true, false)?;
+    check_eq!(ordinary_root, funded_root);
+    check!(
+        funded.reads + 48 <= ordinary.reads,
+        "scoped install used {} reads vs {}",
+        funded.reads,
+        ordinary.reads
+    );
+    check!(
+        funded.bytes < ordinary.bytes,
+        "scoped install used {} bytes vs {}",
+        funded.bytes,
+        ordinary.bytes
+    );
+    let _missing = install(true, true)?;
+    Ok(())
+}
+
+#[test]
+fn completed_group_first_insert_fits_fixed_work_limit() -> TestResult {
+    let directory = TestDir::new();
+    let store = FileObjectStore::open(&directory.0)?;
+    let mut setup = budget()?;
+    let object = store.prepare_object(b"completed group position", &[], &mut setup)?;
+    let reference = object.registration.reference;
+    let mut work = WorkBudget::new(
+        WorkLimits {
+            reads: 0,
+            writes: 0,
+            bytes: 2_086,
+            mutations: 0,
+        },
+        Instant::now()
+            .checked_add(Duration::from_secs(10))
+            .ok_or(IndexError::ResourceLimited)?,
+    );
+    let tracker = array_scope(MemoryLifetime::Temporary, Some(0), &mut work);
+    let mut group = CompletedGroup::new();
+    group.insert(reference, 0, &[object], &mut work)?;
+    check_eq!(work.usage().bytes, 2_086);
+    check_eq!(tracker.live.load(Ordering::Relaxed), 1_024);
+    drop(group);
+    check_eq!(tracker.live.load(Ordering::Relaxed), 0);
     Ok(())
 }
 
@@ -241,15 +365,7 @@ fn resident_install_does_not_allocate_the_deferred_group_index() -> TestResult {
     let mut setup = budget()?;
     let object = value(&store, b"resident value", &mut setup)?;
     let mut work = budget()?;
-    let table_bytes = 2usize
-        .checked_mul(MAX_INSTALL_BATCH_INPUTS)
-        .and_then(|slots| slots.checked_mul(std::mem::size_of::<usize>()))
-        .ok_or(IndexError::ResourceLimited)?;
-    let tracker = array_scope(
-        MemoryLifetime::Temporary,
-        Some(u64::try_from(table_bytes)?),
-        &mut work,
-    );
+    let tracker = array_scope(MemoryLifetime::Temporary, Some(1_024), &mut work);
     let root = store
         .apply(
             MapRoot(None),

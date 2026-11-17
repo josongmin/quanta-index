@@ -14,6 +14,7 @@
 //! File admission verifies changed raw source input at seal; its logical
 //! counters are separate from generation-local hashing and pool object I/O.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/publication_fixture.rs"]

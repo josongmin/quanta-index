@@ -56,10 +56,28 @@ pub trait SourcePublicationUploadPort: Send + Sync {
         part: &SourcePublicationUploadPart,
         budget: &RequestBudgetV1,
     ) -> Result<SourcePublicationUploadAck, CoreError>;
+    /// Calls `reserve_decoded_bytes` once after bounded CBOR preflight and
+    /// before materialization. The caller holds the reservation through dispatch.
     fn load(
         &self,
         identity: SourcePublicationUploadIdentity,
         budget: &RequestBudgetV1,
+        reserve_decoded_bytes: &mut dyn FnMut(u64) -> Result<(), CoreError>,
     ) -> Result<SearchCorpusIngestBatch, CoreError>;
     fn discard(&self, identity: SourcePublicationUploadIdentity) -> Result<(), CoreError>;
+
+    /// Settle transport cleanup after a durable publication. Cleanup must not
+    /// replace the committed publication receipt with a request error.
+    fn settle_published(
+        &self,
+        identity: SourcePublicationUploadIdentity,
+    ) -> SourcePublicationUploadCleanupDisposition;
+}
+
+/// Transport cleanup is separate from source-event and journal authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SourcePublicationUploadCleanupDisposition {
+    Complete,
+    Deferred,
+    Failed(CoreError),
 }

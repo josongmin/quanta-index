@@ -144,6 +144,31 @@ impl fmt::Debug for NativeScratchIo {
 }
 
 impl NativeScratchIo {
+    pub(crate) fn recovery_reader_handle_ceiling_v1(
+        &self,
+        saved_global_ceiling: u32,
+    ) -> Result<usize, IndexError> {
+        self.vfs
+            .recovery_reader_handle_ceiling_v1(saved_global_ceiling)
+    }
+    pub(crate) fn recovery_sibling_allocation_bytes_v1(
+        &self,
+        entries: u64,
+        max_path: usize,
+    ) -> Result<u64, CoreError> {
+        self.vfs
+            .recovery_sibling_allocation_bytes_v1(entries, max_path)
+    }
+    pub(crate) fn register_recovery_sibling_v1(
+        &self,
+        common: Arc<PublicationFileCapacity>,
+        saved_global_ceiling: u32,
+        budget: &mut WorkBudget,
+    ) -> Result<SqliteCapacityVfs, IndexError> {
+        self.vfs
+            .register_recovery_sibling_v1(common, saved_global_ceiling, budget)
+    }
+
     pub fn register(
         common: Arc<PublicationFileCapacity>,
         name: CString,

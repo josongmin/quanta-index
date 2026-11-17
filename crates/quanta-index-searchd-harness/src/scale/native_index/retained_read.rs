@@ -277,14 +277,14 @@ impl HeldRead {
                 returned_ms - attempt <= SETTLEMENT_LIMIT.as_secs_f64() * 1_000.0,
                 "mixed held settlement response exceeded 60 seconds"
             );
-            self.record_settlement(settlement, returned_ms)?;
+            self.record_settlement(&settlement, returned_ms)?;
         }
         Ok(())
     }
 
     fn record_settlement(
         &mut self,
-        settlement: NativeReadSessionSettlement,
+        settlement: &NativeReadSessionSettlement,
         returned_ms: f64,
     ) -> Result<()> {
         ensure!(
@@ -295,7 +295,7 @@ impl HeldRead {
             .settlement_polls
             .checked_add(1)
             .context("mixed held settlement poll count overflow")?;
-        self.last_settlement = Some(settlement);
+        self.last_settlement = Some(*settlement);
         if settlement.state == NativeReadSettlementState::SettledAtSnapshot {
             ensure!(
                 !settlement.has_remaining_target_pins
@@ -421,8 +421,12 @@ mod tests {
             "unbound load was accepted"
         );
         ensure!(
-            held.bind_load_start(origin - Duration::from_secs(1))
-                .is_err(),
+            held.bind_load_start(
+                origin
+                    .checked_sub(Duration::from_secs(1))
+                    .context("test origin underflow")?
+            )
+            .is_err(),
             "load start before ReadSession custody was accepted"
         );
         let load_start = origin + Duration::from_secs(100);
@@ -455,17 +459,26 @@ mod tests {
             state: NativeReadSettlementState::Pending,
             has_remaining_target_pins: false,
         };
-        held.record_settlement(settlement, 700_002.0)?;
+        held.record_settlement(&settlement, 700_002.0)?;
         let pending = held.detail();
         ensure!(
-            pending["settlement_head_sequence"].as_u64() == Some(8)
-                && pending["settlement_exact_floor"].as_u64() == Some(7)
-                && pending["settlement_has_remaining_target_pins"].as_bool() == Some(false)
+            pending
+                .get("settlement_head_sequence")
+                .and_then(Value::as_u64)
+                == Some(8)
+                && pending
+                    .get("settlement_exact_floor")
+                    .and_then(Value::as_u64)
+                    == Some(7)
+                && pending
+                    .get("settlement_has_remaining_target_pins")
+                    .and_then(Value::as_bool)
+                    == Some(false)
                 && held.complete().is_err(),
             "pending snapshot evidence changed the settlement predicate"
         );
         settlement.state = NativeReadSettlementState::SettledAtSnapshot;
-        held.record_settlement(settlement, 700_010.0)?;
+        held.record_settlement(&settlement, 700_010.0)?;
         held.complete()?;
         let detail = held.detail();
         ensure!(
@@ -473,7 +486,7 @@ mod tests {
             "diagnostic-only poll field changed the successful artifact schema"
         );
         ensure!(
-            detail["load_start_ms"].as_f64() == Some(100_000.0),
+            detail.get("load_start_ms").and_then(Value::as_f64) == Some(100_000.0),
             "mixed load origin evidence differs"
         );
         Ok(())

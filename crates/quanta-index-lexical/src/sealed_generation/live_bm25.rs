@@ -27,9 +27,9 @@ use crate::SchemaFields;
 use crate::doc_census::DocCensus;
 use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
 
-pub(crate) const FILE_NAME: &str = "search-corpus-live-bm25.cbor";
+pub(crate) use crate::legacy::names::live_bm25::FILE_NAME;
 /// Reuse the committed index-control-file admission ceiling.
-pub(crate) const MAX_BYTES: usize = super::index_directory::MAX_INDEX_CONTROL_BYTES;
+pub(crate) use crate::legacy::names::live_bm25::MAX_BYTES;
 /// Four decoded bytes per admitted control byte for retained statistics.
 /// Decode also holds a bounded wire row; transient peak needs measurement.
 const MAX_RESIDENT: usize = MAX_BYTES * 4;

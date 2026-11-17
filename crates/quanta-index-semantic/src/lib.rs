@@ -35,6 +35,7 @@
 pub mod ann_proof;
 mod budget;
 mod build;
+mod build_diagnostic;
 mod codec;
 mod control_file;
 mod dataset_promotion;
@@ -43,6 +44,7 @@ mod errors;
 mod generation_contract;
 mod integrity;
 mod layout;
+pub mod legacy;
 mod manifest;
 mod membership_integrity;
 pub mod native;
@@ -2002,7 +2004,8 @@ mod namespace_read_tests {
         std::fs::remove_file(pair.join("unknown-entry")).expect("remove unknown entry");
         std::fs::create_dir(pair.join("g2")).expect("create sealed generation dir");
         std::fs::write(
-            pair.join("g2").join(layout::MARKER_SEALED_FILE_NAME),
+            pair.join("g2")
+                .join(crate::legacy::layout::MARKER_SEALED_FILE_NAME),
             b"digest",
         )
         .expect("create sealed marker");

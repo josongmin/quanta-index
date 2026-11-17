@@ -2,8 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use quanta_index_core::index::{
-    CatalogReadSettlementPort, CatalogView, IndexError, NativeReadReleaseObservation,
-    NativeReadSettlement, NativeReadSettlementScope, ReadSessionLease, TicketRecord, WorkBudget,
+    CatalogReadAttempt, CatalogReadSettlementPort, CatalogView, IndexError,
+    NativeReadReleaseObservation, NativeReadSettlement, NativeReadSettlementScope,
+    ReadSessionLease, TicketRecord, WorkBudget,
     ports::{CatalogDiagnosticPort, CatalogReadPort},
 };
 
@@ -11,6 +12,48 @@ use quanta_index_core::index::{
 // object-safe view of that same owner, not a second reader or pin issuer.
 pub(crate) trait TicketCatalog: CatalogReadPort + CatalogDiagnosticPort {}
 impl<T: CatalogReadPort + CatalogDiagnosticPort> TicketCatalog for T {}
+
+/// Request-local authority issued by one retained ticket's original Catalog.
+/// Only its Registry owner may finalize and expose the private query result.
+pub struct TicketReadAttempt<'a> {
+    ticket: &'a ReadTicket,
+    budget: &'a WorkBudget,
+    authority: Box<dyn CatalogReadAttempt + 'a>,
+}
+
+impl TicketReadAttempt<'_> {
+    pub(crate) fn require_owner(
+        &self,
+        ticket: &ReadTicket,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        if !std::ptr::eq(self.ticket, ticket)
+            || self.authority.ticket() != ticket.record.lease
+            || !self.budget.request().same_request_as(budget.request())
+            || self.budget.request().deadline() != budget.request().deadline()
+        {
+            return Err(IndexError::InvalidInput(
+                "read attempt belongs to another ticket or request".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn authority(&mut self) -> &mut dyn CatalogReadAttempt {
+        self.authority.as_mut()
+    }
+
+    /// Consume the final durable observation before exposing success.
+    pub fn finalize(self) -> Result<(), IndexError> {
+        self.authority.finalize()?;
+        self.budget.checkpoint()
+    }
+
+    /// Abandon request authority while retaining the caller's original pin.
+    pub fn abort(self) {
+        self.authority.abort();
+    }
+}
 
 /// Exact immutable view lease. The catalog closes its read transaction before
 /// returning this ticket; the lease protects roots until release.
@@ -83,6 +126,25 @@ impl ReadTicket {
         }
         self.catalog
             .validate_ticket_for_request(self.session.as_ref(), self.record.lease, budget)
+    }
+
+    /// Start one explicit request authority without transferring the retained pin.
+    /// The caller must finalize before exposing success; abort/drop keeps custody.
+    pub fn begin_read_attempt<'a>(
+        &'a self,
+        budget: &'a WorkBudget,
+    ) -> Result<TicketReadAttempt<'a>, IndexError> {
+        if self.released {
+            return Err(IndexError::SnapshotUnavailable);
+        }
+        let authority =
+            self.catalog
+                .begin_read_attempt(self.session.as_ref(), self.record.lease, budget)?;
+        Ok(TicketReadAttempt {
+            ticket: self,
+            budget,
+            authority,
+        })
     }
 
     pub fn renew(&mut self) -> Result<(), IndexError> {

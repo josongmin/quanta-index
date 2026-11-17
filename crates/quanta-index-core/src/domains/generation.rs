@@ -1103,46 +1103,16 @@ pub fn verify_tree_commitment_v1(
     Ok(Ok(total))
 }
 
-/// One regular file found under a tree: its committed name and its length,
-/// from directory metadata alone.
-struct TreeEntryV1 {
-    name: String,
-    bytes: u64,
-    path: PathBuf,
-}
+// Existing-only metadata belongs to the canonical index/port boundary.
+// Keep the established generation facade while sharing one tree algorithm.
+use crate::index::existing_tree::{self, TreeEntryV1};
+pub use crate::index::existing_tree::{ReadOnlyTreeLayoutV1, verify_tree_layout_admitted_v1};
+pub use crate::index::ports::{ExistingTreeEntryKindV1, ExistingTreeMetadataIoPortV1};
 
 /// Walk `root` and list every regular file with its length, refusing
 /// symlinks, without opening any file.
 fn list_tree_v1(root: &Path, prefix: &str) -> std::io::Result<Vec<TreeEntryV1>> {
-    let mut entries = Vec::new();
-    let mut pending = vec![(root.to_path_buf(), prefix.to_string())];
-    while let Some((directory, name)) = pending.pop() {
-        for entry in std::fs::read_dir(&directory)? {
-            let entry = entry?;
-            let file_name = entry.file_name();
-            let file_name = file_name.to_str().ok_or_else(|| {
-                std::io::Error::other(format!("non-UTF-8 file name under {}", directory.display()))
-            })?;
-            let entry_name = format!("{name}/{file_name}");
-            let file_type = entry.file_type()?;
-            if file_type.is_symlink() {
-                return Err(std::io::Error::other(format!(
-                    "refusing to measure symlink {entry_name}"
-                )));
-            }
-            if file_type.is_dir() {
-                pending.push((entry.path(), entry_name));
-            } else if file_type.is_file() {
-                entries.push(TreeEntryV1 {
-                    name: entry_name,
-                    bytes: entry.metadata()?.len(),
-                    path: entry.path(),
-                });
-            }
-        }
-    }
-    entries.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(entries)
+    existing_tree::list_ordinary(root, prefix)
 }
 
 /// Compare the file set and lengths under `root` with `committed`, reading
@@ -1158,39 +1128,7 @@ pub fn verify_tree_layout_v1(
     prefix: &str,
     committed: &[SealedArtifactCommitmentV1],
 ) -> std::io::Result<Result<u64, TreeCommitmentMismatchV1>> {
-    let on_disk = list_tree_v1(root, prefix)?;
-    let by_name: BTreeMap<&str, u64> = on_disk
-        .iter()
-        .map(|entry| (entry.name.as_str(), entry.bytes))
-        .collect();
-    let mut total = 0_u64;
-    for artifact in committed {
-        let Some(bytes) = by_name.get(artifact.name.as_str()) else {
-            return Ok(Err(TreeCommitmentMismatchV1::Missing {
-                name: artifact.name.clone(),
-            }));
-        };
-        if *bytes != artifact.bytes {
-            return Ok(Err(TreeCommitmentMismatchV1::Length {
-                name: artifact.name.clone(),
-                on_disk: *bytes,
-                committed: artifact.bytes,
-            }));
-        }
-        total = total.saturating_add(artifact.bytes);
-    }
-    let committed_names: BTreeSet<&str> = committed
-        .iter()
-        .map(|artifact| artifact.name.as_str())
-        .collect();
-    for entry in &on_disk {
-        if !committed_names.contains(entry.name.as_str()) {
-            return Ok(Err(TreeCommitmentMismatchV1::Extra {
-                name: entry.name.clone(),
-            }));
-        }
-    }
-    Ok(Ok(total))
+    existing_tree::verify_ordinary(root, prefix, committed)
 }
 
 /// How one bounded scrub step ended.

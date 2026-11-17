@@ -32,9 +32,10 @@ use quanta_index_contract::{
         NativeOverlayReply, NativeOverlayRequest, NativeOverlaySaveIntent,
         NativeOverlaySaveReceipt, NativeOverlaySemanticResult, NativeOverlaySession,
         NativeOverlayTextQuery, NativeOverlayTextResult, NativeOverlayTextSource, NativePathPage,
+        NativeRepositoryPathCursor, NativeRepositoryPathPage,
         NativeProducerSourcePage, NativeProjectionOwnerLookup, NativeProjectionRead,
-        NativeSemanticResult, NativeSourceOwnerKeys, NativeSourceOwnerLookup, NativeStubReply,
-        NativeStubRequest, NativeTextResult,
+        NativeRootScopedViewV1, NativeSemanticResult, NativeSourceOwnerKeys,
+        NativeSourceOwnerLookup, NativeStubReply, NativeStubRequest, NativeTextResult,
     },
 };
 use quanta_index_ipc::{
@@ -44,6 +45,9 @@ use quanta_index_ipc::{
 };
 
 mod admitted_reply_v1;
+mod published_view_metadata;
+mod root_scoped_view;
+pub use root_scoped_view::AdmittedNativeRootScopedViewReplyV1;
 mod read_session;
 mod repomap;
 mod stub_reply;
@@ -100,6 +104,8 @@ pub enum NativeUdsError {
     Refused(NativeIndexWireError),
     #[error("native index transport failed: {0}")]
     Transport(String),
+    #[error("native request not sent: {0}")]
+    PeerBindingRefused(#[source] quanta_index_ipc::PeerBindingRefusalV1),
     #[error("native write outcome unknown; reconcile original key {0:?}")]
     Unknown(OperationKey),
 }
@@ -159,9 +165,24 @@ impl SourceInputView for BorrowedSourceInput<'_> {
     }
 }
 
+// Same canonical envelope, borrowing the caller-funded request without a DTO clone.
+#[derive(Serialize)]
+struct BorrowedNativeRequestEnvelope<'a> {
+    request_id: u64,
+    payload: &'a NativeIndexRequest,
+}
+
+enum AdmittedWireRoute {
+    Publication,
+    StageProjectionOutput,
+    ReadSession,
+    Stub,
+}
+
 struct StageSourcesEnvelope<'a, T> {
     request_id: u64,
     ingress: IngressRef,
+    repository: Option<&'a quanta_index_contract::RepoId>,
     inputs: &'a [T],
 }
 
@@ -173,6 +194,7 @@ impl<T: SourceInputView> Serialize for StageSourcesEnvelope<'_, T> {
             "payload",
             &StageSourcesPayload {
                 ingress: self.ingress,
+                repository: self.repository,
                 inputs: self.inputs,
             },
         )?;
@@ -182,14 +204,23 @@ impl<T: SourceInputView> Serialize for StageSourcesEnvelope<'_, T> {
 
 struct StageSourcesPayload<'a, T> {
     ingress: IngressRef,
+    repository: Option<&'a quanta_index_contract::RepoId>,
     inputs: &'a [T],
 }
 
 impl<T: SourceInputView> Serialize for StageSourcesPayload<'_, T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let (variant, name, fields) = if self.repository.is_some() {
+            (43, "StageRepositorySources", 3)
+        } else {
+            (20, "StageSources", 2)
+        };
         let mut payload =
-            serializer.serialize_struct_variant("NativeIndexRequest", 20, "StageSources", 2)?;
+            serializer.serialize_struct_variant("NativeIndexRequest", variant, name, fields)?;
         payload.serialize_field("ingress", &self.ingress)?;
+        if let Some(repository) = self.repository {
+            payload.serialize_field("repository", repository)?;
+        }
         payload.serialize_field("inputs", &SourceInputsWire(self.inputs))?;
         payload.end()
     }
@@ -276,7 +307,12 @@ impl Serialize for BorrowedMutationPagePayload<'_, '_> {
 
 pub struct NativeUdsClient<P = PathBuf> {
     socket: P,
+    diagnostic_attempt_source: Option<std::sync::Arc<dyn crate::DiagnosticAttemptSourceV1>>,
     next_request_id: AtomicU64,
+    // Local admitted-I/O control only; never serialized or a new issuer.
+    bound_peer_v1: Option<quanta_index_ipc::KernelConnectedPeerProcessLeaseV1>,
+    // A kernel observation only: never an installed or publication grant.
+    observed_query_peer_v1: Option<quanta_index_ipc::KernelConnectedPeerProcessLeaseV1>,
 }
 
 fn allocate_request_id(counter: &AtomicU64) -> Result<u64, NativeUdsError> {
@@ -292,13 +328,45 @@ fn allocate_request_id(counter: &AtomicU64) -> Result<u64, NativeUdsError> {
     }
 }
 
+fn observed_query_request_v1(request: &NativeIndexRequest) -> bool {
+    matches!(
+        request,
+        NativeIndexRequest::ReadSession(_)
+            | NativeIndexRequest::ReadView(_)
+            | NativeIndexRequest::PublishedViewMetadata(_)
+            | NativeIndexRequest::ObserveRootView(_)
+            | NativeIndexRequest::SearchLiteral { .. }
+            | NativeIndexRequest::QueryPaths { .. }
+            | NativeIndexRequest::QueryRepositoryPaths { .. }
+            | NativeIndexRequest::SearchText { .. }
+            | NativeIndexRequest::SearchSemantic { .. }
+            | NativeIndexRequest::QueryGraph { .. }
+            | NativeIndexRequest::QueryRepoMap { .. }
+            | NativeIndexRequest::ReadProjection { .. }
+            | NativeIndexRequest::LookupSourceOwners { .. }
+            | NativeIndexRequest::ListProducerSourceOwners { .. }
+            | NativeIndexRequest::LookupProjectionOwners { .. }
+            | NativeIndexRequest::DiffProjectionSourceOwners { .. }
+    )
+}
+
 impl<P: AsRef<Path>> NativeUdsClient<P> {
     #[must_use]
     pub fn new(socket: P) -> Self {
         Self {
             socket,
+            diagnostic_attempt_source: None,
             next_request_id: AtomicU64::new(1),
+            bound_peer_v1: None,
+            observed_query_peer_v1: None,
         }
+    }
+
+    pub(crate) fn set_diagnostic_attempt_source(
+        &mut self,
+        source: std::sync::Arc<dyn crate::DiagnosticAttemptSourceV1>,
+    ) {
+        self.diagnostic_attempt_source = Some(source);
     }
 
     /// Read successive validated stage frames from one native effort intent.
@@ -323,6 +391,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         let text_instance = query.text_instance;
         let semantic_instance = query.semantic_instance;
         let text_top_k = native_text_result_limit(&query.text_query)?;
+        let text_constraints = query.text_query.constraints.clone();
         let semantic_top_k = query.semantic_query.top_k;
         let envelope = NativeIndexRequestEnvelope {
             request_id,
@@ -336,6 +405,11 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 preference: query.preference,
             },
         };
+        if self.bound_peer_v1.is_some() || self.observed_query_peer_v1.is_some() {
+            return Err(NativeUdsError::PeerBindingRefused(
+                quanta_index_ipc::PeerBindingRefusalV1::UnsupportedRoute,
+            ));
+        }
         let mut stream = send_stream_request(self.socket.as_ref(), &envelope, budget)
             .map_err(|error| classify_stream_error(budget, &error))?;
         let mut fast_view = None;
@@ -354,7 +428,13 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 NativeIndexResponse::TextRanked(result)
                     if overlay.is_none() && fast_view.is_none() =>
                 {
-                    validate_text_result(selection, text_instance, text_top_k, &result)?;
+                    validate_text_result(
+                        selection,
+                        text_instance,
+                        text_top_k,
+                        &text_constraints,
+                        &result,
+                    )?;
                     fast_view = Some(result.view);
                     stream_budget_checkpoint(budget)?;
                     observe(NativeEffortStreamStage::Fast(&result))?;
@@ -451,9 +531,18 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 | NativeIndexResponse::InputDiscarded(_)
                 | NativeIndexResponse::LiteralPage(_)
                 | NativeIndexResponse::PathPage(_)
+            | NativeIndexResponse::RepositoryPathPage(_)
                 | NativeIndexResponse::OverlayTextRanked(_)
                 | NativeIndexResponse::OverlaySemanticRanked(_)
                 | NativeIndexResponse::TextRanked(_)
+                | NativeIndexResponse::HybridFileRanked(_)
+                | NativeIndexResponse::TextRankedPage(_)
+                | NativeIndexResponse::HistoryPage(_)
+            | NativeIndexResponse::HistoryCut(_)
+            | NativeIndexResponse::HistoryGeneration(_)
+                | NativeIndexResponse::ReadSessionProfile(_)
+                | NativeIndexResponse::PublishedViewMetadata(_)
+                | NativeIndexResponse::RootScopedView(_)
                 | NativeIndexResponse::SemanticRanked(_)
                 | NativeIndexResponse::EffortDone(_)
                 | NativeIndexResponse::InteractionBegun(_)
@@ -508,7 +597,32 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             request_id,
             payload,
         };
-        self.request_wire(request_id, &envelope, budget)
+        self.request_wire(request_id, &envelope, budget, Some(&envelope.payload))
+    }
+
+    /// Restrict this existing client's admitted publication I/O to the same
+    /// captured process. The installed provider authenticates image/root before
+    /// supplying this immutable lease. No observation DATA mints that authority.
+    #[must_use]
+    pub fn with_bound_peer_process_v1(
+        mut self,
+        peer_v1: &quanta_index_ipc::KernelConnectedPeerProcessLeaseV1,
+    ) -> Self {
+        self.bound_peer_v1 = Some(peer_v1.clone());
+        self.observed_query_peer_v1 = None;
+        self
+    }
+
+    /// Pin read-only Native queries to an observed live peer process. This
+    /// does not authenticate its installed image, root, or Source authority.
+    #[must_use]
+    pub fn with_observed_query_peer_v1(
+        mut self,
+        peer_v1: &quanta_index_ipc::KernelConnectedPeerProcessLeaseV1,
+    ) -> Self {
+        self.observed_query_peer_v1 = Some(peer_v1.clone());
+        self.bound_peer_v1 = None;
+        self
     }
 
     /// Admit a one-shot Native publication reply under the caller's original
@@ -521,11 +635,22 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         budget: &RequestBudgetV1,
         memory: &MemoryScope,
     ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
+        self.request_publication_admitted_ref(&payload, budget, memory)
+    }
+
+    fn request_publication_admitted_ref(
+        &self,
+        payload: &NativeIndexRequest,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
         if !matches!(
-            &payload,
-            NativeIndexRequest::BeginInput(_)
+            payload,
+            NativeIndexRequest::CreateWorkspace { .. }
+                | NativeIndexRequest::BeginInput(_)
                 | NativeIndexRequest::StageSource { .. }
                 | NativeIndexRequest::StageSources { .. }
+                | NativeIndexRequest::StageRepositorySources { .. }
                 | NativeIndexRequest::StageProfile { .. }
                 | NativeIndexRequest::StageProjectionOutput { .. }
                 | NativeIndexRequest::StageProjectionOwner { .. }
@@ -538,6 +663,8 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 | NativeIndexRequest::Status(_)
                 | NativeIndexRequest::ReadSession(_)
                 | NativeIndexRequest::ReadView(_)
+                | NativeIndexRequest::PublishedViewMetadata(_)
+                | NativeIndexRequest::ObserveRootView(_)
                 | NativeIndexRequest::ReadProjection { .. }
                 | NativeIndexRequest::LookupProjectionOwners { .. }
                 | NativeIndexRequest::DiffProjectionSourceOwners { .. }
@@ -547,18 +674,51 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 "request is outside the admitted Native publication route".into(),
             ));
         }
-        if budget.is_cancelled() {
+        let read_session = matches!(payload, NativeIndexRequest::ReadSession(_));
+        let checkpointed_read = read_session
+            || matches!(
+                payload,
+                NativeIndexRequest::PublishedViewMetadata(_)
+                    | NativeIndexRequest::ObserveRootView(_)
+            );
+        if checkpointed_read {
+            read_session::admitted_budget_checkpoint(budget)?;
+        } else if budget.is_cancelled() {
             return Err(cancelled_error());
         }
-        let operation = publication_request_key(&payload);
+        let operation = publication_request_key(payload);
         let request_id = allocate_request_id(&self.next_request_id)?;
-        let envelope = NativeIndexRequestEnvelope {
+        let envelope = BorrowedNativeRequestEnvelope {
             request_id,
             payload,
         };
-        let reply = self.request_publication_wire_admitted(request_id, &envelope, budget, memory);
-        match (operation, reply) {
-            (Some(key), Err(_error)) => Err(NativeUdsError::Unknown(key)),
+        // Reuse the ordinary endpoint's existing local diagnostic source at
+        // this read send boundary; no diagnostic wire fields or issuer.
+        let attempt = if read_session {
+            self.diagnostic_attempt_source
+                .as_deref()
+                .and_then(crate::DiagnosticAttemptSourceV1::begin_attempt)
+        } else {
+            None
+        };
+        let route = match payload {
+            NativeIndexRequest::ReadSession(_) => AdmittedWireRoute::ReadSession,
+            NativeIndexRequest::StageProjectionOutput { .. } => {
+                AdmittedWireRoute::StageProjectionOutput
+            }
+            _ => AdmittedWireRoute::Publication,
+        };
+        let reply = self.request_wire_admitted(request_id, &envelope, budget, memory, route);
+        let reply = if checkpointed_read {
+            reply.and_then(|reply| {
+                read_session::admitted_budget_checkpoint(budget)?;
+                Ok(reply)
+            })
+        } else {
+            reply
+        };
+        let result = match (operation, reply) {
+            (Some(key), Err(error)) => Err(admitted_write_error_v1(key, error)),
             (None, Err(error)) => Err(error),
             (Some(key), Ok(reply))
                 if matches!(
@@ -571,8 +731,8 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             {
                 Err(NativeUdsError::Unknown(key))
             }
-            (key, Ok(reply))
-                if publication_response_matches_request(&envelope.payload, reply.response()) =>
+            (_key, Ok(reply))
+                if publication_response_matches_request(envelope.payload, reply.response()) =>
             {
                 Ok(reply)
             }
@@ -580,7 +740,37 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             (None, Ok(_reply)) => Err(NativeUdsError::Protocol(
                 "unexpected Native publication response variant".into(),
             )),
+        };
+        let result = if checkpointed_read {
+            result.and_then(|reply| {
+                read_session::admitted_budget_checkpoint(budget)?;
+                Ok(reply)
+            })
+        } else {
+            result
+        };
+        if let Some(guard) = attempt {
+            use quanta_index_contract::DiagnosticAttemptOutcomeV1 as Outcome;
+            let outcome = match &result {
+                Ok(reply) => match reply.response() {
+                    NativeIndexResponse::Error(error)
+                        if error.code == NativeIndexErrorCode::Cancelled =>
+                    {
+                        Outcome::Cancelled
+                    }
+                    NativeIndexResponse::Error(_) => Outcome::Error,
+                    _ => Outcome::Ok,
+                },
+                Err(_)
+                    if budget.is_cancelled() || std::time::Instant::now() >= budget.deadline() =>
+                {
+                    Outcome::Cancelled
+                }
+                Err(_) => Outcome::Error,
+            };
+            guard.finish(outcome);
         }
+        result
     }
 
     /// Send borrowed source bodies while the original caller owns their bytes.
@@ -593,7 +783,30 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         budget: &RequestBudgetV1,
         memory: &MemoryScope,
     ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
-        validate_stage_sources_inputs(inputs)?;
+        self.stage_sources_borrowed_in_repository(ingress, inputs, None, budget, memory)
+    }
+
+    /// Stage a batch backed by the producer's checked repository identity.
+    pub fn stage_repository_sources_borrowed_admitted(
+        &self,
+        ingress: IngressRef,
+        repository: &quanta_index_contract::RepoId,
+        inputs: &[BorrowedSourceInput<'_>],
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
+        self.stage_sources_borrowed_in_repository(ingress, inputs, Some(repository), budget, memory)
+    }
+
+    fn stage_sources_borrowed_in_repository(
+        &self,
+        ingress: IngressRef,
+        inputs: &[BorrowedSourceInput<'_>],
+        repository: Option<&quanta_index_contract::RepoId>,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
+        validate_stage_sources_inputs(inputs, repository)?;
         if budget.is_cancelled() {
             return Err(cancelled_error());
         }
@@ -601,11 +814,12 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         let envelope = StageSourcesEnvelope {
             request_id,
             ingress,
+            repository,
             inputs,
         };
         let reply = self
             .request_publication_wire_admitted(request_id, &envelope, budget, memory)
-            .map_err(|_error| NativeUdsError::Unknown(ingress.operation))?;
+            .map_err(|error| admitted_write_error_v1(ingress.operation, error))?;
         match reply.response() {
             NativeIndexResponse::StagedSources(references) if references.len() == inputs.len() => {
                 Ok(reply)
@@ -626,9 +840,18 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::InputDiscarded(_)
             | NativeIndexResponse::LiteralPage(_)
             | NativeIndexResponse::PathPage(_)
+            | NativeIndexResponse::RepositoryPathPage(_)
             | NativeIndexResponse::OverlayTextRanked(_)
             | NativeIndexResponse::OverlaySemanticRanked(_)
             | NativeIndexResponse::TextRanked(_)
+            | NativeIndexResponse::HybridFileRanked(_)
+            | NativeIndexResponse::TextRankedPage(_)
+            | NativeIndexResponse::HistoryPage(_)
+            | NativeIndexResponse::HistoryCut(_)
+            | NativeIndexResponse::HistoryGeneration(_)
+            | NativeIndexResponse::ReadSessionProfile(_)
+            | NativeIndexResponse::PublishedViewMetadata(_)
+            | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::SemanticRanked(_)
             | NativeIndexResponse::EffortDone(_)
             | NativeIndexResponse::InteractionBegun(_)
@@ -688,7 +911,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         };
         let reply = self
             .request_publication_wire_admitted(request_id, &envelope, budget, memory)
-            .map_err(|_error| NativeUdsError::Unknown(ingress.operation))?;
+            .map_err(|error| admitted_write_error_v1(ingress.operation, error))?;
         match reply.response() {
             NativeIndexResponse::Error(error)
                 if error.code == NativeIndexErrorCode::ResponseTooLarge
@@ -705,9 +928,18 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::InputDiscarded(_)
             | NativeIndexResponse::LiteralPage(_)
             | NativeIndexResponse::PathPage(_)
+            | NativeIndexResponse::RepositoryPathPage(_)
             | NativeIndexResponse::OverlayTextRanked(_)
             | NativeIndexResponse::OverlaySemanticRanked(_)
             | NativeIndexResponse::TextRanked(_)
+            | NativeIndexResponse::HybridFileRanked(_)
+            | NativeIndexResponse::TextRankedPage(_)
+            | NativeIndexResponse::HistoryPage(_)
+            | NativeIndexResponse::HistoryCut(_)
+            | NativeIndexResponse::HistoryGeneration(_)
+            | NativeIndexResponse::ReadSessionProfile(_)
+            | NativeIndexResponse::PublishedViewMetadata(_)
+            | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::SemanticRanked(_)
             | NativeIndexResponse::EffortDone(_)
             | NativeIndexResponse::InteractionBegun(_)
@@ -751,7 +983,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         };
         let reply = self
             .request_publication_wire_admitted(request_id, &envelope, budget, memory)
-            .map_err(|_error| NativeUdsError::Unknown(key))?;
+            .map_err(|error| admitted_write_error_v1(key, error))?;
         match reply.response() {
             NativeIndexResponse::Submitted(response)
                 if validate_submit_reply(key, response.clone()).is_ok() =>
@@ -774,9 +1006,18 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::InputDiscarded(_)
             | NativeIndexResponse::LiteralPage(_)
             | NativeIndexResponse::PathPage(_)
+            | NativeIndexResponse::RepositoryPathPage(_)
             | NativeIndexResponse::OverlayTextRanked(_)
             | NativeIndexResponse::OverlaySemanticRanked(_)
             | NativeIndexResponse::TextRanked(_)
+            | NativeIndexResponse::HybridFileRanked(_)
+            | NativeIndexResponse::TextRankedPage(_)
+            | NativeIndexResponse::HistoryPage(_)
+            | NativeIndexResponse::HistoryCut(_)
+            | NativeIndexResponse::HistoryGeneration(_)
+            | NativeIndexResponse::ReadSessionProfile(_)
+            | NativeIndexResponse::PublishedViewMetadata(_)
+            | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::SemanticRanked(_)
             | NativeIndexResponse::EffortDone(_)
             | NativeIndexResponse::InteractionBegun(_)
@@ -808,7 +1049,9 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         budget: &RequestBudgetV1,
         memory: &MemoryScope,
     ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
-        self.request_wire_admitted(request_id, envelope, budget, memory, false)
+        self.request_wire_admitted(
+            request_id, envelope, budget, memory, AdmittedWireRoute::Publication,
+        )
     }
 
     fn request_wire_admitted<E: serde::Serialize>(
@@ -817,53 +1060,46 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         envelope: &E,
         budget: &RequestBudgetV1,
         memory: &MemoryScope,
-        stub: bool,
+        route: AdmittedWireRoute,
     ) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
-        let body =
-            send_request_body_with_budget_admitted(self.socket.as_ref(), envelope, budget, memory)
-                .map_err(|error| {
-                    if budget.is_cancelled() {
-                        cancelled_error()
-                    } else {
-                        NativeUdsError::Transport(error.to_string())
-                    }
-                })?;
-        // The type-specific CBOR preflight rejects indefinite text and caps
-        // every nested canonical map/enum identifier to a known <=32-byte
-        // token before Ciborium copies it. The temporary charge covers one
-        // live identifier per bounded recursion level plus one diagnostic.
-        let _parser = memory
-            .reserve(
-                admitted_reply_v1::parser_temporary_limit()?,
-                MemoryLifetime::Temporary,
-            )
-            .map_err(|error| NativeUdsError::Transport(error.to_string()))?;
-        let decoded_limit = if stub {
-            admitted_reply_v1::stub_decoded_retained_limit()?
-        } else {
-            admitted_reply_v1::decoded_retained_limit()?
-        };
-        let decoded = memory
-            .reserve(decoded_limit, MemoryLifetime::Retained)
-            .map_err(|error| NativeUdsError::Transport(error.to_string()))?;
-        let reply = if stub {
-            admitted_reply_v1::decode_stub(body.as_slice())?
-        } else {
-            admitted_reply_v1::decode(body.as_slice())?
-        };
-        if budget.is_cancelled() {
-            return Err(cancelled_error());
-        }
-        if reply.request_id != request_id {
-            return Err(NativeUdsError::Protocol(
-                "response request id differs".into(),
+        if self.observed_query_peer_v1.is_some() {
+            return Err(NativeUdsError::PeerBindingRefused(
+                quanta_index_ipc::PeerBindingRefusalV1::UnsupportedRoute,
             ));
         }
-        Ok(AdmittedNativePublicationReply {
-            response: reply.payload,
-            _body: body,
-            _decoded: decoded,
-        })
+        let body = match self.bound_peer_v1.as_ref() {
+            Some(peer) if matches!(route, AdmittedWireRoute::StageProjectionOutput) => {
+                quanta_index_ipc::send_request_body_with_budget_admitted_multiframe_bound_peer_v1(
+                    self.socket.as_ref(),
+                    envelope,
+                    budget,
+                    memory,
+                    peer,
+                )
+            }
+            Some(peer) => quanta_index_ipc::send_request_body_with_budget_admitted_bound_peer_v1(
+                self.socket.as_ref(), envelope, budget, memory, peer,
+            ),
+            None => send_request_body_with_budget_admitted(
+                self.socket.as_ref(),
+                envelope,
+                budget,
+                memory,
+            ),
+        }
+        .map_err(|error| match error {
+            IpcError::PeerBindingRefused(cause) => NativeUdsError::PeerBindingRefused(cause),
+            _error if budget.is_cancelled() => cancelled_error(),
+            error => NativeUdsError::Transport(error.to_string()),
+        })?;
+        decode_admitted_publication_reply_v1(
+            request_id,
+            body,
+            budget,
+            memory,
+            matches!(route, AdmittedWireRoute::Stub),
+            matches!(route, AdmittedWireRoute::ReadSession),
+        )
     }
 
     fn request_wire<E: serde::Serialize>(
@@ -871,15 +1107,72 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         request_id: u64,
         envelope: &E,
         budget: &RequestBudgetV1,
+        payload: Option<&NativeIndexRequest>,
     ) -> Result<NativeIndexResponse, NativeUdsError> {
-        let reply: NativeIndexResponseEnvelope =
-            send_request_with_budget(self.socket.as_ref(), envelope, budget).map_err(|error| {
-                if budget.is_cancelled() {
-                    cancelled_error()
-                } else {
-                    NativeUdsError::Transport(error.to_string())
+        if self.bound_peer_v1.is_some() {
+            return Err(NativeUdsError::PeerBindingRefused(
+                quanta_index_ipc::PeerBindingRefusalV1::UnsupportedRoute,
+            ));
+        }
+        if self.observed_query_peer_v1.is_some() && !payload.is_some_and(observed_query_request_v1)
+        {
+            return Err(NativeUdsError::PeerBindingRefused(
+                quanta_index_ipc::PeerBindingRefusalV1::UnsupportedRoute,
+            ));
+        }
+        // Public endpoints do not authenticate diagnostic wire compatibility.
+        // Keep this local at the real send boundary, with no linked wire field.
+        let attempt = self
+            .diagnostic_attempt_source
+            .as_deref()
+            .and_then(crate::DiagnosticAttemptSourceV1::begin_attempt);
+        let result = self.request_wire_inner(request_id, envelope, budget);
+        if let Some(guard) = attempt {
+            use quanta_index_contract::DiagnosticAttemptOutcomeV1;
+            let outcome = match &result {
+                Ok(_) => DiagnosticAttemptOutcomeV1::Ok,
+                Err(_)
+                    if budget.is_cancelled() || std::time::Instant::now() >= budget.deadline() =>
+                {
+                    DiagnosticAttemptOutcomeV1::Cancelled
                 }
-            })?;
+                Err(NativeUdsError::Refused(error))
+                    if error.code == NativeIndexErrorCode::Cancelled =>
+                {
+                    DiagnosticAttemptOutcomeV1::Cancelled
+                }
+                Err(_) => DiagnosticAttemptOutcomeV1::Error,
+            };
+            guard.finish(outcome);
+        }
+        result
+    }
+
+    fn request_wire_inner<E: serde::Serialize>(
+        &self,
+        request_id: u64,
+        envelope: &E,
+        budget: &RequestBudgetV1,
+    ) -> Result<NativeIndexResponse, NativeUdsError> {
+        let reply: NativeIndexResponseEnvelope = match self.observed_query_peer_v1.as_ref() {
+            Some(peer) => quanta_index_ipc::send_request_with_budget_bound_peer_v1(
+                self.socket.as_ref(),
+                envelope,
+                budget,
+                peer,
+            ),
+            None => send_request_with_budget(self.socket.as_ref(), envelope, budget),
+        }
+        .map_err(|error| {
+            if let IpcError::PeerBindingRefused(cause) = error {
+                return NativeUdsError::PeerBindingRefused(cause);
+            }
+            if budget.is_cancelled() {
+                cancelled_error()
+            } else {
+                NativeUdsError::Transport(error.to_string())
+            }
+        })?;
         if budget.is_cancelled() {
             return Err(cancelled_error());
         }
@@ -902,9 +1195,18 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::InputDiscarded(_)
             | NativeIndexResponse::LiteralPage(_)
             | NativeIndexResponse::PathPage(_)
+            | NativeIndexResponse::RepositoryPathPage(_)
             | NativeIndexResponse::OverlayTextRanked(_)
             | NativeIndexResponse::OverlaySemanticRanked(_)
             | NativeIndexResponse::TextRanked(_)
+            | NativeIndexResponse::HybridFileRanked(_)
+            | NativeIndexResponse::TextRankedPage(_)
+            | NativeIndexResponse::HistoryPage(_)
+            | NativeIndexResponse::HistoryCut(_)
+            | NativeIndexResponse::HistoryGeneration(_)
+            | NativeIndexResponse::ReadSessionProfile(_)
+            | NativeIndexResponse::PublishedViewMetadata(_)
+            | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::SemanticRanked(_)
             | NativeIndexResponse::InteractionBegun(_)
             | NativeIndexResponse::InteractionAccepted(_)
@@ -1130,7 +1432,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         inputs: &[T],
         budget: &RequestBudgetV1,
     ) -> Result<Vec<ObjectRef>, NativeUdsError> {
-        validate_stage_sources_inputs(inputs)?;
+        validate_stage_sources_inputs(inputs, None)?;
         let count = inputs.len();
         if budget.is_cancelled() {
             return Err(cancelled_error());
@@ -1139,12 +1441,13 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         let envelope = StageSourcesEnvelope {
             request_id,
             ingress,
+            repository: None,
             inputs,
         };
         let response = classify_write_stage_result(
             ingress.operation,
             budget,
-            self.request_wire(request_id, &envelope, budget),
+            self.request_wire(request_id, &envelope, budget, None),
         )?;
         let NativeIndexResponse::StagedSources(references) = response else {
             return Err(NativeUdsError::Unknown(ingress.operation));
@@ -1396,7 +1699,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             request,
         };
         classify_submit_result(
-            self.request_wire(request_id, &envelope, budget),
+            self.request_wire(request_id, &envelope, budget, None),
             key,
             budget,
         )
@@ -1441,9 +1744,18 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             | NativeIndexResponse::InputDiscarded(_)
             | NativeIndexResponse::LiteralPage(_)
             | NativeIndexResponse::PathPage(_)
+            | NativeIndexResponse::RepositoryPathPage(_)
             | NativeIndexResponse::OverlayTextRanked(_)
             | NativeIndexResponse::OverlaySemanticRanked(_)
             | NativeIndexResponse::TextRanked(_)
+            | NativeIndexResponse::HybridFileRanked(_)
+            | NativeIndexResponse::TextRankedPage(_)
+            | NativeIndexResponse::HistoryPage(_)
+            | NativeIndexResponse::HistoryCut(_)
+            | NativeIndexResponse::HistoryGeneration(_)
+            | NativeIndexResponse::ReadSessionProfile(_)
+            | NativeIndexResponse::PublishedViewMetadata(_)
+            | NativeIndexResponse::RootScopedView(_)
             | NativeIndexResponse::SemanticRanked(_)
             | NativeIndexResponse::Submitted(_)
             | NativeIndexResponse::View(_)
@@ -1498,7 +1810,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             },
         };
         let NativeIndexResponse::Graph(result) =
-            self.request_wire(request_id, &envelope, budget)?
+            self.request_wire(request_id, &envelope, budget, Some(&envelope.payload))?
         else {
             return Err(NativeUdsError::Protocol("unexpected graph reply".into()));
         };
@@ -1556,7 +1868,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             payload: NativeIndexRequest::BindOverlaySave(intent),
         };
         let NativeIndexResponse::Overlay(reply) =
-            self.request_wire(request_id, &envelope, budget)?
+            self.request_wire(request_id, &envelope, budget, Some(&envelope.payload))?
         else {
             return Err(NativeUdsError::Protocol(
                 "unexpected save binding reply".into(),
@@ -1586,7 +1898,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             payload: NativeIndexRequest::CompleteOverlaySave(*receipt),
         };
         let NativeIndexResponse::Overlay(reply) =
-            self.request_wire(request_id, &envelope, budget)?
+            self.request_wire(request_id, &envelope, budget, Some(&envelope.payload))?
         else {
             return Err(NativeUdsError::Protocol(
                 "unexpected save completion reply".into(),
@@ -1620,7 +1932,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             request_id,
             payload: NativeIndexRequest::Stub(request),
         };
-        let response = self.request_wire(request_id, &envelope, budget)?;
+        let response = self.request_wire(request_id, &envelope, budget, Some(&envelope.payload))?;
         let NativeIndexResponse::Stub(reply) = response else {
             return Err(NativeUdsError::Protocol("unexpected Stub reply".into()));
         };
@@ -1655,7 +1967,9 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             request_id,
             payload: NativeIndexRequest::Stub(request),
         };
-        let owner = self.request_wire_admitted(request_id, &envelope, budget, memory, true)?;
+        let owner = self.request_wire_admitted(
+            request_id, &envelope, budget, memory, AdmittedWireRoute::Stub,
+        )?;
         if let NativeIndexResponse::Error(error) = owner.response() {
             return Err(NativeUdsError::Refused(error.clone()));
         }
@@ -1694,7 +2008,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             payload: NativeIndexRequest::Overlay(request),
         };
         let NativeIndexResponse::Overlay(reply) =
-            self.request_wire(request_id, &envelope, budget)?
+            self.request_wire(request_id, &envelope, budget, Some(&envelope.payload))?
         else {
             return Err(NativeUdsError::Protocol("unexpected overlay reply".into()));
         };
@@ -1795,23 +2109,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         else {
             return Err(NativeUdsError::Protocol("unexpected view reply".into()));
         };
-        let digest = view
-            .identity_digest()
-            .map_err(|error| NativeUdsError::Protocol(format!("view digest: {error}")))?;
-        if view.identity.digest != digest {
-            return Err(NativeUdsError::Protocol(
-                "view identity digest mismatch".into(),
-            ));
-        }
-        let selected = match selection {
-            ViewSelection::Exact(reference) => view.identity == reference,
-            ViewSelection::Latest { workspace, epoch } => {
-                view.identity.workspace == workspace && view.identity.epoch == epoch
-            }
-        };
-        if !selected {
-            return Err(NativeUdsError::Protocol("view selection mismatch".into()));
-        }
+        validate_catalog_view_selection(selection, &view)?;
         Ok(view)
     }
 
@@ -2015,6 +2313,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             ));
         }
         let requested_top_k = native_text_result_limit(&query)?;
+        let constraints = query.constraints.clone();
         let NativeIndexResponse::TextRanked(result) = self.request(
             NativeIndexRequest::SearchText {
                 selection,
@@ -2028,7 +2327,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 "unexpected text query reply".into(),
             ));
         };
-        validate_text_result(selection, instance, requested_top_k, &result)?;
+        validate_text_result(selection, instance, requested_top_k, &constraints, &result)?;
         Ok(result)
     }
 
@@ -2132,6 +2431,93 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         }
         Ok(page)
     }
+
+    /// Page the published file inventory by `(path, repository)` at one view.
+    pub fn query_repository_paths(
+        &self,
+        selection: ViewSelection,
+        instance: IndexInstanceId,
+        prefix: String,
+        after: Option<NativeRepositoryPathCursor>,
+        limit: u32,
+        budget: &RequestBudgetV1,
+    ) -> Result<NativeRepositoryPathPage, NativeUdsError> {
+        if prefix.len() > MAX_SOURCE_PATH_BYTES
+            || prefix.starts_with('/')
+            || prefix.contains('\0')
+            || !(1..=128).contains(&limit)
+            || after.as_ref().is_some_and(|cursor| {
+                cursor.instance != instance
+                    || cursor.prefix != prefix
+                    || !matches!(selection, ViewSelection::Exact(view) if view == cursor.view)
+                    || !valid_native_source_path(&cursor.path)
+                    || !cursor.path.starts_with(&prefix)
+            })
+        {
+            return Err(NativeUdsError::Protocol(
+                "repository path query exceeds native request bounds or cursor binding".into(),
+            ));
+        }
+        let page_limit = usize::try_from(limit)
+            .map_err(|_error| NativeUdsError::Protocol("page limit overflow".into()))?;
+        let requested_after = after.clone();
+        let NativeIndexResponse::RepositoryPathPage(page) = self.request(
+            NativeIndexRequest::QueryRepositoryPaths {
+                selection,
+                instance,
+                prefix: prefix.clone(),
+                after,
+                limit,
+            },
+            budget,
+        )?
+        else {
+            return Err(NativeUdsError::Protocol(
+                "unexpected repository path query reply".into(),
+            ));
+        };
+        if !selection_matches(selection, page.view)
+            || page.entries.len() > page_limit
+            || page.has_more != page.next_after.is_some()
+            || (page.has_more && page.entries.is_empty())
+        {
+            return Err(NativeUdsError::Protocol(
+                "repository path page binding, limit, or continuation mismatch".into(),
+            ));
+        }
+        let mut prior = requested_after
+            .as_ref()
+            .map(|cursor| (cursor.path.as_str(), cursor.repository.as_ref()));
+        for entry in &page.entries {
+            let path = entry.file.path.as_str();
+            let key = (path, entry.repository.as_ref());
+            if !valid_native_source_path(path)
+                || !path.starts_with(&prefix)
+                || prior.is_some_and(|previous| key <= previous)
+            {
+                return Err(NativeUdsError::Protocol(
+                    "repository path page has invalid or unordered entries".into(),
+                ));
+            }
+            prior = Some(key);
+        }
+        if let Some(cursor) = &page.next_after {
+            let last = page.entries.last().ok_or_else(|| {
+                NativeUdsError::Protocol("repository path continuation has no entry".into())
+            })?;
+            if cursor.view != page.view
+                || cursor.instance != instance
+                || cursor.prefix != prefix
+                || cursor.path != last.file.path
+                || cursor.repository != last.repository
+            {
+                return Err(NativeUdsError::Protocol(
+                    "repository path continuation differs from last entry".into(),
+                ));
+            }
+        }
+        Ok(page)
+    }
 }
 
 fn publication_request_key(request: &NativeIndexRequest) -> Option<OperationKey> {
@@ -2141,6 +2527,7 @@ fn publication_request_key(request: &NativeIndexRequest) -> Option<OperationKey>
         | NativeIndexRequest::Status(key) => Some(*key),
         NativeIndexRequest::StageSource { ingress, .. }
         | NativeIndexRequest::StageSources { ingress, .. }
+        | NativeIndexRequest::StageRepositorySources { ingress, .. }
         | NativeIndexRequest::StageProfile { ingress, .. }
         | NativeIndexRequest::StageProjectionOutput { ingress, .. }
         | NativeIndexRequest::StageProjectionOwner { ingress, .. }
@@ -2152,6 +2539,8 @@ fn publication_request_key(request: &NativeIndexRequest) -> Option<OperationKey>
         NativeIndexRequest::CreateWorkspace { .. }
         | NativeIndexRequest::ReadSession(_)
         | NativeIndexRequest::ReadView(_)
+        | NativeIndexRequest::PublishedViewMetadata(_)
+        | NativeIndexRequest::ObserveRootView(_)
         | NativeIndexRequest::ReadProjection { .. }
         | NativeIndexRequest::LookupProjectionOwners { .. }
         | NativeIndexRequest::DiffProjectionSourceOwners { .. }
@@ -2167,6 +2556,7 @@ fn publication_request_key(request: &NativeIndexRequest) -> Option<OperationKey>
         | NativeIndexRequest::WorkStatus(_)
         | NativeIndexRequest::SearchLiteral { .. }
         | NativeIndexRequest::QueryPaths { .. }
+            | NativeIndexRequest::QueryRepositoryPaths { .. }
         | NativeIndexRequest::SearchOverlayText(_)
         | NativeIndexRequest::SearchText { .. }
         | NativeIndexRequest::SearchSemantic { .. }
@@ -2185,6 +2575,15 @@ fn publication_response_matches_request(
     response: &NativeIndexResponse,
 ) -> bool {
     match (request, response) {
+        (
+            NativeIndexRequest::CreateWorkspace { workspace, epoch },
+            NativeIndexResponse::Created(view),
+        ) => {
+            view.workspace == *workspace
+                && view.epoch == *epoch
+                && view.sequence == 0
+                && view.digest.0 != [0; 32]
+        }
         (NativeIndexRequest::BeginInput(key), NativeIndexResponse::InputOpened(ingress)) => {
             ingress.operation == *key
         }
@@ -2202,7 +2601,8 @@ fn publication_response_matches_request(
         )
         | (_, NativeIndexResponse::Error(_)) => true,
         (
-            NativeIndexRequest::StageSources { inputs, .. },
+            NativeIndexRequest::StageSources { inputs, .. }
+            | NativeIndexRequest::StageRepositorySources { inputs, .. },
             NativeIndexResponse::StagedSources(refs),
         ) => refs.len() == inputs.len(),
         (
@@ -2222,9 +2622,17 @@ fn publication_response_matches_request(
         (NativeIndexRequest::Status(key), NativeIndexResponse::Status(reply)) => {
             validate_status_reply(*key, reply.clone()).is_ok()
         }
+        (
+            NativeIndexRequest::PublishedViewMetadata(key),
+            NativeIndexResponse::PublishedViewMetadata(reply),
+        ) => published_view_metadata::validate_reply(*key, reply).is_ok(),
         (NativeIndexRequest::ReadView(selection), NativeIndexResponse::View(view)) => {
-            selection_matches(*selection, view.identity)
+            validate_catalog_view_selection(*selection, view).is_ok()
         }
+        (
+            NativeIndexRequest::ObserveRootView(selection),
+            NativeIndexResponse::RootScopedView(observed),
+        ) => root_scoped_view::validate_reply(*selection, observed).is_ok(),
         (
             NativeIndexRequest::ReadProjection {
                 selection,
@@ -2261,6 +2669,9 @@ fn publication_response_matches_request(
             *limit,
             page,
         ),
+        (NativeIndexRequest::ReadSession(request), response) => {
+            read_session::response_matches_request(request, response)
+        }
         _ => false,
     }
 }
@@ -2339,12 +2750,16 @@ fn projection_owner_lookup_matches_request(
             .eq(owners.as_slice().iter().copied())
 }
 
-fn validate_stage_sources_inputs<T: SourceInputView>(inputs: &[T]) -> Result<(), NativeUdsError> {
+fn validate_stage_sources_inputs<T: SourceInputView>(
+    inputs: &[T],
+    repository: Option<&quanta_index_contract::RepoId>,
+) -> Result<(), NativeUdsError> {
     if inputs.is_empty() || inputs.len() > MAX_NATIVE_STAGE_SOURCES_INPUTS {
         return Err(NativeUdsError::Protocol(
             "source batch count exceeds native bounds".into(),
         ));
     }
+    let repository_bytes = repository.map_or(0, |repo| repo.as_str().len());
     let mut bytes = 0usize;
     for input in inputs {
         if input.path().len() > MAX_SOURCE_PATH_BYTES {
@@ -2355,6 +2770,7 @@ fn validate_stage_sources_inputs<T: SourceInputView>(inputs: &[T]) -> Result<(),
         bytes = bytes
             .checked_add(input.path().len())
             .and_then(|total| total.checked_add(input.bytes().len()))
+            .and_then(|total| total.checked_add(repository_bytes))
             .and_then(|total| total.checked_add(256))
             .ok_or_else(|| NativeUdsError::Protocol("source batch size overflow".into()))?;
         if bytes > MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES {
@@ -2384,6 +2800,7 @@ fn classify_write_stage_result(
             Err(NativeUdsError::Unknown(key))
         }
         Err(error @ NativeUdsError::Refused(_)) => Err(error),
+        Err(error @ NativeUdsError::PeerBindingRefused(_)) => Err(error),
         Err(
             NativeUdsError::Transport(_) | NativeUdsError::Protocol(_) | NativeUdsError::Unknown(_),
         ) => Err(NativeUdsError::Unknown(key)),
@@ -2466,23 +2883,97 @@ fn classify_stream_error(budget: &RequestBudgetV1, error: &IpcError) -> NativeUd
     }
 }
 
-// Consume the same canonical Native grammar as the daemon. A count bound is
+// Consume the same canonical text grammar as the daemon. A count bound is
 // request authority; a reply cannot silently lower the cardinality expectation.
 fn native_text_result_limit(query: &TextQueryRequest) -> Result<u32, NativeUdsError> {
-    if query.syntax != quanta_index_contract::TextQuerySyntax::Native {
-        return Ok(query.top_k);
+    native_text_result_limit_checked(query, |_| Ok(()))
+}
+
+fn native_text_result_limit_checked(
+    query: &TextQueryRequest,
+    validate: impl FnOnce(&quanta_index_contract::LqQuery) -> Result<(), NativeUdsError>,
+) -> Result<u32, NativeUdsError> {
+    native_text_result_limit_checked_with_memory(query, None, validate)
+}
+
+fn temporary_bytes(
+    memory: Option<&MemoryScope>,
+    bytes: u64,
+) -> Result<Option<MemoryLease>, NativeUdsError> {
+    if bytes == 0 {
+        return Ok(None);
     }
-    let parsed = quanta_index_contract::parse_native_content_query(&query.query_text)
-        .map_err(|error| NativeUdsError::Protocol(error.to_string()))?;
-    match parsed.options.count {
-        None => Ok(query.top_k),
-        Some(quanta_index_contract::LqCountBound::Bounded(count)) if count > 0 => {
-            Ok(query.top_k.min(count))
+    memory
+        .map(|scope| {
+            scope
+                .reserve(bytes, MemoryLifetime::Temporary)
+                .map_err(|error| NativeUdsError::Transport(error.to_string()))
+        })
+        .transpose()
+}
+
+fn temporary_rows<T>(
+    memory: Option<&MemoryScope>,
+    count: usize,
+) -> Result<Option<MemoryLease>, NativeUdsError> {
+    let bytes = count
+        .checked_mul(std::mem::size_of::<T>())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(|| NativeUdsError::Protocol("validation scratch overflow".into()))?;
+    temporary_bytes(memory, bytes)
+}
+
+fn native_text_result_limit_checked_with_memory(
+    query: &TextQueryRequest,
+    memory: Option<&MemoryScope>,
+    validate: impl FnOnce(&quanta_index_contract::LqQuery) -> Result<(), NativeUdsError>,
+) -> Result<u32, NativeUdsError> {
+    use quanta_index_contract::TextQuerySyntax;
+
+    let limit = |parsed: &quanta_index_contract::LqQuery| {
+        validate(parsed)?;
+        match parsed.options.count {
+            None => Ok(query.top_k),
+            Some(quanta_index_contract::LqCountBound::Bounded(count)) if count > 0 => {
+                Ok(query.top_k.min(count))
+            }
+            Some(_) => Err(NativeUdsError::Protocol(
+                "native text count must be positive and bounded".into(),
+            )),
         }
-        Some(_) => Err(NativeUdsError::Protocol(
-            "native text count must be positive and bounded".into(),
-        )),
+    };
+    match query.syntax {
+        TextQuerySyntax::CodeSearch => return Ok(query.top_k),
+        TextQuerySyntax::Sourcegraph => {
+            let backing =
+                quanta_index_contract::sourcegraph_query_backing_bytes(query.query_text.len())
+                    .ok_or_else(|| {
+                        NativeUdsError::Protocol(
+                            "Sourcegraph content query exceeds backing bound".into(),
+                        )
+                    })?;
+            let _backing = temporary_bytes(memory, backing)?;
+            let parsed = quanta_index_contract::parse_sourcegraph_content_query(&query.query_text)
+                .map_err(|error| NativeUdsError::Protocol(error.to_string()))?;
+            return limit(&parsed);
+        }
+        TextQuerySyntax::Native => {}
     }
+    let backing = quanta_index_contract::native_content_query_backing_bytes(query.query_text.len())
+        .ok_or_else(|| {
+            NativeUdsError::Protocol("Native content query exceeds backing bound".into())
+        })?;
+    let _tokens = temporary_bytes(memory, backing)?;
+    let tokens = quanta_index_contract::tokenize_native_content_query(&query.query_text)
+        .map_err(|error| NativeUdsError::Protocol(error.to_string()))?;
+    let preparation = tokens
+        .preparation_backing_bytes()
+        .ok_or_else(|| NativeUdsError::Protocol("Native regex preparation overflow".into()))?;
+    let _preparation = temporary_bytes(memory, preparation)?;
+    let parsed = tokens
+        .parse()
+        .map_err(|error| NativeUdsError::Protocol(error.to_string()))?;
+    limit(&parsed)
 }
 
 fn validate_overlay_corpus_stamp(
@@ -2579,7 +3070,26 @@ fn validate_text_result(
     selection: ViewSelection,
     instance: IndexInstanceId,
     requested_top_k: u32,
+    constraints: &quanta_index_contract::QueryConstraintSetV1,
     result: &NativeTextResult,
+) -> Result<(), NativeUdsError> {
+    validate_text_result_with_memory(
+        selection,
+        instance,
+        requested_top_k,
+        constraints,
+        result,
+        None,
+    )
+}
+
+fn validate_text_result_with_memory(
+    selection: ViewSelection,
+    instance: IndexInstanceId,
+    requested_top_k: u32,
+    constraints: &quanta_index_contract::QueryConstraintSetV1,
+    result: &NativeTextResult,
+    memory: Option<&MemoryScope>,
 ) -> Result<(), NativeUdsError> {
     let limit = usize::try_from(requested_top_k)
         .map_err(|_conversion_error| NativeUdsError::Protocol("text limit overflow".into()))?;
@@ -2596,13 +3106,30 @@ fn validate_text_result(
             "text query binding or cardinality mismatch".into(),
         ));
     }
-    let mut owners = BTreeSet::new();
+    let _scratch = temporary_rows::<OwnerKey>(memory, result.hits.len())?;
+    let mut owners = Vec::new();
+    owners
+        .try_reserve_exact(result.hits.len())
+        .map_err(|error| NativeUdsError::Transport(error.to_string()))?;
     for hit in &result.hits {
-        if !valid_native_source_path(&hit.path) || !owners.insert(hit.owner) {
+        if !valid_native_source_path(&hit.path)
+            || constraints
+                .repo_relative_path_exact
+                .as_ref()
+                .is_some_and(|expected| expected.as_str() != hit.path)
+            || hit.score.get() < 0.0
+        {
             return Err(NativeUdsError::Protocol(
-                "text query hit path or owner invalid".into(),
+                "text query hit path, filter, score or owner invalid".into(),
             ));
         }
+        owners.push(hit.owner);
+    }
+    owners.sort_unstable();
+    if owners.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(NativeUdsError::Protocol(
+            "duplicate text query owner".into(),
+        ));
     }
     for (prior, next) in result.hits.iter().zip(result.hits.iter().skip(1)) {
         let score_order = prior.score.get().total_cmp(&next.score.get());
@@ -2801,6 +3328,62 @@ fn validate_overlay_semantic_result(
     Ok(())
 }
 
+fn decode_admitted_publication_reply_v1(
+    request_id: u64,
+    body: AdmittedClientResponseBody,
+    budget: &RequestBudgetV1,
+    memory: &MemoryScope,
+    stub: bool,
+    read_session: bool,
+) -> Result<AdmittedNativePublicationReply, NativeUdsError> {
+    // The type-specific CBOR preflight rejects indefinite text and caps
+    // every nested canonical map/enum identifier to a known <=32-byte
+    // token before Ciborium copies it. The temporary charge covers one
+    // live identifier per bounded recursion level plus one diagnostic.
+    let _parser = memory
+        .reserve(
+            admitted_reply_v1::parser_temporary_limit()?,
+            MemoryLifetime::Temporary,
+        )
+        .map_err(|error| NativeUdsError::Transport(error.to_string()))?;
+    let prepared = admitted_reply_v1::prepare(body.as_slice(), stub, read_session)?;
+    let decoded = memory
+        .reserve(prepared.decoded_retained_limit()?, MemoryLifetime::Retained)
+        .map_err(|error| NativeUdsError::Transport(error.to_string()))?;
+    let reply = prepared.decode()?;
+    if budget.is_cancelled() {
+        return Err(cancelled_error());
+    }
+    if reply.request_id != request_id {
+        return Err(NativeUdsError::Protocol(
+            "response request id differs".into(),
+        ));
+    }
+    Ok(AdmittedNativePublicationReply {
+        response: reply.payload,
+        _body: body,
+        _decoded: decoded,
+    })
+}
+
+fn validate_catalog_view_selection(
+    selection: ViewSelection,
+    view: &CatalogView,
+) -> Result<(), NativeUdsError> {
+    let digest = view
+        .identity_digest()
+        .map_err(|error| NativeUdsError::Protocol(format!("view digest: {error}")))?;
+    if view.identity.digest != digest {
+        return Err(NativeUdsError::Protocol(
+            "view identity digest mismatch".into(),
+        ));
+    }
+    if !selection_matches(selection, view.identity) {
+        return Err(NativeUdsError::Protocol("view selection mismatch".into()));
+    }
+    Ok(())
+}
+
 fn selection_matches(
     selection: ViewSelection,
     view: quanta_index_contract::index::ViewRef,
@@ -2823,6 +3406,14 @@ fn valid_native_source_path(path: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
+fn admitted_write_error_v1(key: OperationKey, error: NativeUdsError) -> NativeUdsError {
+    match error {
+        // This local variant can arise only before bytes on a bound connection.
+        NativeUdsError::PeerBindingRefused(_) => error,
+        _ => NativeUdsError::Unknown(key),
+    }
+}
+
 fn classify_submit_result(
     response: Result<NativeIndexResponse, NativeUdsError>,
     key: OperationKey,
@@ -2841,6 +3432,7 @@ fn classify_submit_result(
             Err(NativeUdsError::Unknown(key))
         }
         Err(NativeUdsError::Refused(error)) => Err(NativeUdsError::Refused(error)),
+        Err(error @ NativeUdsError::PeerBindingRefused(_)) => Err(error),
         Ok(_) | Err(_) => Err(NativeUdsError::Unknown(key)),
     }
 }
@@ -2895,10 +3487,17 @@ fn validate_status_reply(
 mod tests {
     #[path = "headless_tests.rs"]
     mod headless_tests;
+    #[cfg(target_os = "linux")]
+    #[path = "observed_peer_tests.rs"]
+    mod observed_peer_tests;
     #[path = "projection_tests.rs"]
     mod projection_tests;
+    #[path = "published_view_metadata_tests.rs"]
+    mod published_view_metadata_tests;
     #[path = "repomap_tests.rs"]
     mod repomap_tests;
+    #[path = "root_scoped_view_tests.rs"]
+    mod root_scoped_view_tests;
     #[path = "stub_tests.rs"]
     mod stub_tests;
     use super::*;
@@ -2925,6 +3524,42 @@ mod tests {
         },
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn observed_query_binding_only_admits_reads() {
+        use quanta_index_contract::native_protocol::{
+            NativeReadSessionId, NativeReadSessionRequest,
+        };
+
+        let workspace = key(1).workspace;
+        let selection = ViewSelection::Latest {
+            workspace,
+            epoch: 1,
+        };
+        assert!(observed_query_request_v1(&NativeIndexRequest::ReadView(
+            selection
+        )));
+        assert!(observed_query_request_v1(&NativeIndexRequest::ReadSession(
+            NativeReadSessionRequest::ReadProfile {
+                session: NativeReadSessionId([1; 32]),
+            },
+        )));
+        assert!(observed_query_request_v1(&NativeIndexRequest::ReadSession(
+            NativeReadSessionRequest::Release(NativeReadSessionId([1; 32])),
+        )));
+        assert!(!observed_query_request_v1(
+            &NativeIndexRequest::CreateWorkspace {
+                workspace,
+                epoch: 1,
+            }
+        ));
+        assert!(!observed_query_request_v1(&NativeIndexRequest::BeginInput(
+            key(1)
+        )));
+        assert!(!observed_query_request_v1(
+            &NativeIndexRequest::InteractionBegin { window_millis: 1 }
+        ));
+    }
 
     struct PublicationChargeOwner(Arc<AtomicU64>);
 
@@ -3416,6 +4051,37 @@ mod tests {
         peer.join().expect("held peer");
         worker.join().expect("held stream client");
         (result, saw_fast)
+    }
+
+    #[test]
+    fn effort_stream_rejects_invalid_fast_filter_or_score_before_callback() {
+        let mut negative = text_result();
+        negative.hits[0].score = FiniteScore::new(-0.25).expect("finite negative score");
+        for (fast, filtered) in [(text_result(), true), (negative, false)] {
+            let (outcome, connected) = scripted_effort_stream(
+                vec![NativeIndexResponse::TextRanked(fast)],
+                None,
+                |client, budget| {
+                    let mut query = effort_query();
+                    if filtered {
+                        query.text_query.constraints =
+                            QueryConstraintSetV1::from_exact_repo_relative_path(
+                                quanta_index_contract::ExactRepoRelativePathV1::new("src/other.rs")
+                                    .expect("valid exact source path"),
+                            );
+                    }
+                    let mut callbacks = 0;
+                    let result = client.query_effort_stream(query, budget, &mut |_| {
+                        callbacks += 1;
+                        Ok(())
+                    });
+                    (result, callbacks)
+                },
+            );
+            assert!(connected);
+            assert!(matches!(outcome.0, Err(NativeUdsError::Protocol(_))));
+            assert_eq!(outcome.1, 0, "invalid Fast reply reached the consumer");
+        }
     }
 
     #[test]
@@ -3912,6 +4578,106 @@ mod tests {
             stream_epoch: 1,
             sequence,
         }
+    }
+
+    #[test]
+    fn admitted_workspace_creation_requires_exact_genesis_axes() {
+        let workspace = key(1).workspace;
+        let request = NativeIndexRequest::CreateWorkspace {
+            workspace,
+            epoch: 7,
+        };
+        let genesis = ViewRef {
+            workspace,
+            epoch: 7,
+            sequence: 0,
+            digest: Digest([1; 32]),
+        };
+        assert!(publication_response_matches_request(
+            &request,
+            &NativeIndexResponse::Created(genesis)
+        ));
+        for wrong in [
+            ViewRef {
+                epoch: 8,
+                ..genesis
+            },
+            ViewRef {
+                sequence: 1,
+                ..genesis
+            },
+            ViewRef {
+                digest: Digest([0; 32]),
+                ..genesis
+            },
+        ] {
+            assert!(!publication_response_matches_request(
+                &request,
+                &NativeIndexResponse::Created(wrong)
+            ));
+        }
+        let foreign_workspace = WorkspaceKey {
+            slot: SlotId([9; 16]),
+            ..workspace
+        };
+        assert!(!publication_response_matches_request(
+            &request,
+            &NativeIndexResponse::Created(ViewRef {
+                workspace: foreign_workspace,
+                ..genesis
+            })
+        ));
+    }
+
+    #[test]
+    fn admitted_workspace_creation_uses_existing_publication_transport() -> Result<(), String> {
+        let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let socket = directory.path().join("native-create-admitted.sock");
+        let listener = UnixListener::bind(&socket).map_err(|error| error.to_string())?;
+        let workspace = key(1).workspace;
+        let genesis = ViewRef {
+            workspace,
+            epoch: 3,
+            sequence: 0,
+            digest: Digest([7; 32]),
+        };
+        let server = std::thread::spawn(move || -> Result<(), String> {
+            let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
+            let request: NativeIndexRequestEnvelope =
+                quanta_index_ipc::decode_request(&mut stream).map_err(|error| error.to_string())?;
+            if request.payload
+                != (NativeIndexRequest::CreateWorkspace {
+                    workspace,
+                    epoch: 3,
+                })
+            {
+                return Err("admitted client changed workspace creation request".into());
+            }
+            let frame = quanta_index_ipc::encode_response(&NativeIndexResponseEnvelope {
+                request_id: request.request_id,
+                payload: NativeIndexResponse::Created(genesis),
+            })
+            .map_err(|error| error.to_string())?;
+            stream.write_all(&frame).map_err(|error| error.to_string())
+        });
+        let (memory, active, _) = publication_scope(false);
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(2));
+        let reply = NativeUdsClient::new(socket)
+            .request_publication_admitted(
+                NativeIndexRequest::CreateWorkspace {
+                    workspace,
+                    epoch: 3,
+                },
+                &budget,
+                &memory,
+            )
+            .map_err(|error| error.to_string())?;
+        assert!(matches!(reply.response(), NativeIndexResponse::Created(view) if *view == genesis));
+        server.join().map_err(|_| "workspace peer panicked")??;
+        assert!(active.load(AtomicOrdering::SeqCst) > 0);
+        drop(reply);
+        assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
+        Ok(())
     }
 
     #[test]
@@ -4992,12 +5758,32 @@ mod tests {
         let borrowed_wire = quanta_index_ipc::encode_request(&StageSourcesEnvelope {
             request_id: 1,
             ingress,
+            repository: None,
             inputs: &borrowed,
         })
         .expect("borrowed source wire");
         let canonical_wire =
             quanta_index_ipc::encode_request(&expected).expect("canonical source wire");
         assert_eq!(borrowed_wire, canonical_wire);
+
+        let repository = quanta_index_contract::RepoId::new("corp-a").expect("repository identity");
+        let scoped_wire = quanta_index_ipc::encode_request(&StageSourcesEnvelope {
+            request_id: 1,
+            ingress,
+            repository: Some(&repository),
+            inputs: &borrowed,
+        })
+        .expect("borrowed repository source wire");
+        let expected_repository_wire = quanta_index_ipc::encode_request(&NativeIndexRequestEnvelope {
+            request_id: 1,
+            payload: NativeIndexRequest::StageRepositorySources {
+                ingress,
+                repository,
+                inputs: owned.clone(),
+            },
+        })
+        .expect("canonical repository source wire");
+        assert_eq!(scoped_wire, expected_repository_wire);
 
         let directory = tempfile::tempdir().expect("socket directory");
         let socket = directory.path().join("native.sock");
@@ -5237,6 +6023,48 @@ mod tests {
     }
 
     #[test]
+    fn text_query_rejects_reply_outside_requested_exact_path() {
+        let result = text_result();
+        let selected = ViewSelection::Exact(result.view);
+        for path in ["src/lib.rs", "src/other.rs"] {
+            let mut query = text_query(1);
+            query.constraints = QueryConstraintSetV1::from_exact_repo_relative_path(
+                quanta_index_contract::ExactRepoRelativePathV1::new(path)
+                    .expect("valid exact source path"),
+            );
+            let response = scripted_reply(
+                NativeIndexResponse::TextRanked(result.clone()),
+                |client, budget| client.search_text(selected, result.instance, query, budget),
+            );
+            if path == "src/lib.rs" {
+                assert_eq!(response.expect("same exact path"), result);
+            } else {
+                assert!(matches!(response, Err(NativeUdsError::Protocol(_))));
+            }
+        }
+    }
+
+    #[test]
+    fn text_query_rejects_negative_lexical_score() {
+        let mut result = text_result();
+        result.hits[0].score = FiniteScore::new(-0.25).expect("finite negative score");
+        assert!(matches!(
+            scripted_reply(
+                NativeIndexResponse::TextRanked(result.clone()),
+                |client, budget| {
+                    client.search_text(
+                        ViewSelection::Exact(result.view),
+                        result.instance,
+                        text_query(1),
+                        budget,
+                    )
+                }
+            ),
+            Err(NativeUdsError::Protocol(_))
+        ));
+    }
+
+    #[test]
     fn text_query_rejects_wrong_view_instance_cardinality_and_path() {
         let valid = text_result();
         let selected = ViewSelection::Exact(valid.view);
@@ -5314,6 +6142,81 @@ mod tests {
             ),
             Err(NativeUdsError::Protocol(_))
         ));
+    }
+
+    #[test]
+    fn repository_path_query_checks_order_and_continuation_binding() {
+        use quanta_index_contract::{
+            RepoId,
+            native_protocol::{NativeFilePathEntry, NativeRepositoryPathEntry},
+        };
+
+        let view = text_result().view;
+        let instance = IndexInstanceId([9; 16]);
+        let file = NativeFilePathEntry {
+            owner: OwnerKey {
+                producer: ProducerId([5; 16]),
+                stable_id: StableOwnerId([11; 16]),
+            },
+            path: "src/a.rs".into(),
+            source: ObjectRef(Digest([4; 32])),
+            bytes: ObjectRef(Digest([2; 32])),
+            byte_len: 9,
+        };
+        let repository = RepoId::new("corp-a").expect("repository");
+        let cursor = NativeRepositoryPathCursor {
+            view,
+            instance,
+            prefix: "src/".into(),
+            path: file.path.clone(),
+            repository: Some(repository.clone()),
+        };
+        let valid = NativeRepositoryPathPage {
+            view,
+            entries: vec![
+                NativeRepositoryPathEntry {
+                    repository: None,
+                    file: file.clone(),
+                },
+                NativeRepositoryPathEntry {
+                    repository: Some(repository),
+                    file,
+                },
+            ],
+            has_more: true,
+            next_after: Some(cursor),
+        };
+        let selection = ViewSelection::Exact(view);
+        let result = scripted_reply(
+            NativeIndexResponse::RepositoryPathPage(valid.clone()),
+            |client, budget| {
+                client.query_repository_paths(selection, instance, "src/".into(), None, 2, budget)
+            },
+        );
+        assert_eq!(result.expect("ordered page"), valid);
+
+        let mut duplicate = valid.clone();
+        duplicate.entries[1].repository = None;
+        let mut wrong_cursor = valid.clone();
+        wrong_cursor.next_after.as_mut().expect("cursor").path = "src/b.rs".into();
+        let mut missing_cursor = valid.clone();
+        missing_cursor.next_after = None;
+        for invalid in [duplicate, wrong_cursor, missing_cursor] {
+            assert!(matches!(
+                scripted_reply(
+                    NativeIndexResponse::RepositoryPathPage(invalid),
+                    |client, budget| client.query_repository_paths(
+                        selection,
+                        instance,
+                        "src/".into(),
+                        None,
+                        2,
+                        budget,
+                    ),
+                ),
+                Err(NativeUdsError::Protocol(_))
+            ));
+        }
     }
 
     #[test]

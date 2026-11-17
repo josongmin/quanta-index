@@ -1,7 +1,10 @@
 //! Candidate selection is an offline read of an existing Published receipt.
 
 use super::*;
-use quanta_index_catalog::{catalog_dir, verify_native_boot_candidate};
+use quanta_index_catalog::{
+    catalog_dir, verify_native_boot_candidate, verify_native_boot_current_candidate,
+    verify_native_rollback_with_source_publications,
+};
 use quanta_index_core::index::ports::{
     CatalogExactHistoryPort as _, CatalogGenesisPort as _, CatalogPublicationPort as _,
     ImmutableObjectPort, InputStagingPort as _, OperationJournalPort as _, WorkActionCursor,
@@ -346,6 +349,15 @@ fn candidate_and_selected_are_distinct_in_one_read_without_catalog_mutation() ->
         "candidate inspection spent a write credit",
     )?;
     require(
+        matches!(
+            verify_native_boot_current_candidate(
+                &fixture.root, fixture.vfs.as_ref(), seeded.other, &mut work,
+            ),
+            Err(IndexError::Conflict)
+        ),
+        "current candidate with pending work was allowed to proceed to BOOT",
+    )?;
+    require(
         files(&fixture.root)? == before,
         "candidate read mutated Catalog bytes",
     )?;
@@ -424,6 +436,304 @@ fn candidate_refuses_pending_refused_retired_and_unfunded_reads() -> TestResult 
     require(
         files(&fixture.root)? == before,
         "refused read mutated Catalog bytes",
+    )?;
+    fixture.vfs.drain_retirements()?;
+    Ok(())
+}
+
+/// Original FULL, current Native, and later BOOT are three real rows. No
+/// pending work, no second verifier connection and no synthetic Native root.
+fn seed_current_native_pair(
+    root: &Path,
+) -> Result<(CatalogView, CatalogView, CatalogView), Box<dyn std::error::Error>> {
+    let catalog = SqliteCatalog::open(root, Duration::from_secs(1))?;
+    let profile = object(30);
+    let genesis = view(0, profile.reference)?;
+    let stage = catalog.begin_bootstrap(
+        genesis.identity.workspace,
+        genesis.identity.epoch,
+        &Identity(profile.clone()),
+        &mut budget()?,
+    )?;
+    catalog.reserve_bootstrap(stage, &profile)?;
+    catalog.confirm_bootstrap(stage, &profile)?;
+    require(
+        catalog.publish_bootstrap(stage, genesis.clone(), &mut budget()?)? == genesis.identity,
+        "paired Catalog fixture lost its genesis",
+    )?;
+    let full_attempt = admit(&catalog, 31)?;
+    let full = view(1, profile.reference)?;
+    require(
+        publish(&catalog, full_attempt, &genesis, full.clone())?
+            == OperationStatus::Published(full.identity),
+        "paired Catalog fixture lost FULL",
+    )?;
+    let current_attempt = admit(&catalog, 32)?;
+    let current = view(2, profile.reference)?;
+    require(
+        publish(&catalog, current_attempt, &full, current.clone())?
+            == OperationStatus::Published(current.identity),
+        "paired Catalog fixture lost current Native",
+    )?;
+    let boot_attempt = admit(&catalog, 35)?;
+    let boot = view(3, profile.reference)?;
+    require(
+        publish(&catalog, boot_attempt, &current, boot.clone())?
+            == OperationStatus::Published(boot.identity),
+        "paired Catalog fixture lost selected BOOT",
+    )?;
+    let selected = catalog.select_native_boot_manifest(key(35), &mut budget()?)?;
+    require(
+        selected.publication.identity == boot.identity,
+        "paired Catalog fixture did not select later BOOT",
+    )?;
+    let refused_attempt = admit(&catalog, 34)?;
+    require(
+        catalog.refuse(refused_attempt, Refusal::Conflict)?
+            == OperationStatus::Refused(Refusal::Conflict),
+        "paired Catalog fixture lost a terminal non-Published row",
+    )?;
+    drop(catalog);
+    let directory = catalog_dir(root);
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+    for entry in fs::read_dir(directory)? {
+        fs::set_permissions(entry?.path(), fs::Permissions::from_mode(0o600))?;
+    }
+    Ok((full, current, boot))
+}
+
+#[test]
+fn published_full_and_current_native_share_selected_snapshot_without_aliasing() -> TestResult {
+    let mut seeded = None;
+    let fixture = fixture_with_boot_input(|root| {
+        seeded = Some(seed_current_native_pair(root)?);
+        Ok(16 * 1024 * 1024)
+    })?;
+    let (full, current, boot) = seeded.ok_or("paired Catalog fixture absent")?;
+    let before = files(&fixture.root)?;
+    let candidate = verify_native_boot_current_candidate(
+        &fixture.root, fixture.vfs.as_ref(), key(35), &mut read_budget()?,
+    )?;
+    require(
+        candidate.manifest().publication.identity == boot.identity,
+        "quiescent current candidate lost its BOOT identity",
+    )?;
+    drop(candidate);
+    let mut work = read_budget()?;
+    let actual = verify_native_rollback_with_source_publications(
+        &fixture.root,
+        fixture.vfs.as_ref(),
+        key(31),
+        key(32),
+        &mut work,
+    )?;
+    require(
+        actual
+            .snapshot()
+            .selected
+            .as_ref()
+            .map(|selected| selected.operation.key)
+            == Some(key(35))
+            && actual
+                .snapshot()
+                .selected
+                .as_ref()
+                .map(|selected| selected.publication.identity)
+                == Some(boot.identity),
+        "selected BOOT differs from its own later publication",
+    )?;
+    require(
+        actual
+            .published_for(key(31))
+            .is_some_and(|(operation, publication)| {
+                operation.key == key(31) && publication.identity == full.identity
+            })
+            && actual
+                .published_for(key(32))
+                .is_some_and(|(operation, publication)| {
+                    operation.key == key(32) && publication.identity == current.identity
+                })
+            && actual.published_for(key(35)).is_none(),
+        "FULL/current Native Published rows were conflated or invented",
+    )?;
+    require(
+        work.usage().writes == 0 && work.usage().mutations == 0,
+        "paired read spent mutation credit",
+    )?;
+    drop(actual);
+    let mut deduplicated = read_budget()?;
+    let same = verify_native_rollback_with_source_publications(
+        &fixture.root,
+        fixture.vfs.as_ref(),
+        key(32),
+        key(32),
+        &mut deduplicated,
+    )?;
+    require(
+        same.published_for(key(32))
+            .is_some_and(|(_, publication)| publication.identity == current.identity)
+            && same.published_for(key(31)).is_none()
+            && deduplicated.usage().reads < work.usage().reads,
+        "equal-key current Native caused another row read or historical alias",
+    )?;
+    drop(same);
+    require(
+        files(&fixture.root)? == before,
+        "paired Catalog read changed source bytes",
+    )?;
+    fixture.vfs.drain_retirements()?;
+    Ok(())
+}
+
+#[test]
+fn legacy_history_recovery_observes_every_intermediate_publication() -> TestResult {
+    use quanta_index_catalog::verify_native_legacy_history_recovery_publications_v1;
+
+    let mut seeded = None;
+    let fixture = fixture_with_boot_input(|root| {
+        seeded = Some(seed_current_native_pair(root)?);
+        Ok(16 * 1024 * 1024)
+    })?;
+    let (_, intermediate, _) = seeded.ok_or("history recovery fixture absent")?;
+    let before = files(&fixture.root)?;
+
+    let observed = verify_native_legacy_history_recovery_publications_v1(
+        &fixture.root,
+        fixture.vfs.as_ref(),
+        key(31),
+        key(31),
+        &mut read_budget()?,
+    )?;
+    let [step] = observed.snapshot().history_predecessors() else {
+        return Err("expected one intermediate publication".into());
+    };
+    require(
+        step.operation.key == key(32) && step.publication == intermediate,
+        "wrong operation observed between anchor and selected BOOT",
+    )?;
+    drop(observed);
+
+    let direct = verify_native_legacy_history_recovery_publications_v1(
+        &fixture.root,
+        fixture.vfs.as_ref(),
+        key(31),
+        key(32),
+        &mut read_budget()?,
+    )?;
+    require(
+        direct.snapshot().history_predecessors().is_empty(),
+        "one transition incorrectly required intermediate publications",
+    )?;
+    drop(direct);
+
+    require(
+        matches!(
+            verify_native_legacy_history_recovery_publications_v1(
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                key(31),
+                key(35),
+                &mut read_budget()?,
+            ),
+            Err(IndexError::DigestConflict)
+        ),
+        "the selected BOOT was accepted as its own anchor",
+    )?;
+    require(files(&fixture.root)? == before, "history boot read wrote bytes")?;
+    fixture.vfs.drain_retirements()?;
+    Ok(())
+}
+
+#[test]
+fn published_current_native_refuses_missing_foreign_cancelled_and_unfunded_rows() -> TestResult {
+    let fixture = fixture_with_boot_input(|root| {
+        let _seed = seed_current_native_pair(root)?;
+        Ok(16 * 1024 * 1024)
+    })?;
+    let before = files(&fixture.root)?;
+    require(
+        matches!(
+            verify_native_rollback_with_source_publications(
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                key(31),
+                key(33),
+                &mut read_budget()?
+            ),
+            Err(IndexError::SnapshotUnavailable)
+        ),
+        "unpublished current Native row was invented",
+    )?;
+    require(
+        matches!(
+            verify_native_rollback_with_source_publications(
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                key(31),
+                key(34),
+                &mut read_budget()?
+            ),
+            Err(IndexError::Conflict)
+        ),
+        "terminal refused row was accepted as Published current Native",
+    )?;
+    let mut foreign = key(32);
+    foreign.workspace.tenant = TenantId([99; 16]);
+    require(
+        matches!(
+            verify_native_rollback_with_source_publications(
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                key(31),
+                foreign,
+                &mut read_budget()?
+            ),
+            Err(IndexError::DigestConflict)
+        ),
+        "foreign workspace was read as current Native",
+    )?;
+    let mut cancelled = read_budget()?;
+    cancelled.request().cancel_handle().cancel();
+    require(
+        matches!(
+            verify_native_rollback_with_source_publications(
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                key(31),
+                key(32),
+                &mut cancelled
+            ),
+            Err(IndexError::Cancelled)
+        ),
+        "cancelled current Native read was admitted",
+    )?;
+    let mut denied = WorkBudget::new(
+        WorkLimits {
+            reads: 100_000,
+            writes: 0,
+            bytes: 0,
+            mutations: 0,
+        },
+        Instant::now()
+            .checked_add(Duration::from_secs(30))
+            .ok_or("test deadline overflow")?,
+    );
+    require(
+        matches!(
+            verify_native_rollback_with_source_publications(
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                key(31),
+                key(32),
+                &mut denied
+            ),
+            Err(IndexError::ResourceLimited)
+        ),
+        "unfunded current Native read was admitted",
+    )?;
+    require(
+        files(&fixture.root)? == before,
+        "refused Catalog read changed source bytes",
     )?;
     fixture.vfs.drain_retirements()?;
     Ok(())

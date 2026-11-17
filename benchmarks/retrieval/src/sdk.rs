@@ -14,8 +14,9 @@ use std::time::{Duration, Instant};
 
 use quanta_index_contract::ipc::GenerationStatusReport;
 use quanta_index_contract::{
-    GenerationPin, HybridCandidateV1, LexicalCandidate, ManifestGeneration, QueryResultWindowV2,
-    RepoId, RevisionId, SearchCorpusActiveHeadV1, SearchCorpusIngestObservation, SearchExplanation,
+    ExecutionOutcomeV2, GenerationPin, HybridCandidateV1, HybridFileQueryResponseV1,
+    LexicalCandidate, ManifestGeneration, QueryResultWindowV2, RepoId, RevisionId,
+    SearchCorpusActiveHeadV1, SearchCorpusIngestObservation, SearchExplanation,
     SearchPlaneErrorCodeV2, SearchPlaneSearchCorpusActivationCasAck, TextRankUnit,
 };
 use quanta_index_sdk::{
@@ -76,11 +77,10 @@ pub fn verify_searchd_digest(binary: &Path, expected_sha256: &str) -> BenchResul
             "--searchd-expected-sha256 must be a lowercase sha256".to_string(),
         ));
     }
-    let bytes = std::fs::read(binary).map_err(|err| BenchError::Io {
+    let observed = crate::sha256_file_hex(binary).map_err(|err| BenchError::Io {
         path: binary.display().to_string(),
         message: format!("cannot hash the pinned searchd binary: {err}"),
     })?;
-    let observed = crate::sha256_hex(&bytes);
     if observed != expected_sha256 {
         return Err(BenchError::Daemon(
             "searchd binary digest differs from the pinned digest; refusing to boot".to_string(),
@@ -231,11 +231,20 @@ pub struct DaemonConfig<'a> {
     /// Optional explicit local-model directory. Used by failure probes and
     /// qualified captures that must not inherit a workstation cache path.
     pub model_dir: Option<&'a Path>,
+    /// Explicit local model service binding; absent for every other profile.
+    pub local_code: Option<LocalCodeDaemonBinding<'a>>,
     pub repo_id: &'a RepoId,
     pub revision_id: &'a RevisionId,
     pub ready_timeout: Duration,
     pub io_timeout: Duration,
     pub history_max_generations: usize,
+}
+
+#[derive(Clone, Copy)]
+pub struct LocalCodeDaemonBinding<'a> {
+    pub origin: &'a str,
+    pub manifest_path: &'a Path,
+    pub manifest_sha256: &'a str,
 }
 
 // Benchmark captures can index substantially larger real repositories than
@@ -252,11 +261,42 @@ impl DaemonSession {
     /// the fresh-index product query proves no active generation, so
     /// readiness precedes publish by construction, not by caller ordering.
     pub fn boot(config: &DaemonConfig<'_>) -> BenchResult<Self> {
+        Self::boot_with_daemon_env(config, std::iter::empty())
+    }
+
+    /// Boot with explicit child-only environment values. The session's own
+    /// configured options take precedence over these values.
+    pub fn boot_with_daemon_env<'a>(
+        config: &DaemonConfig<'_>,
+        daemon_env: impl IntoIterator<Item = (&'a str, String)>,
+    ) -> BenchResult<Self> {
         if config.embedder.trim().is_empty() {
             return Err(BenchError::Config(
                 "embedder profile must not be empty".to_string(),
             ));
         }
+        let local_binding = match (config.embedder, config.local_code) {
+            ("local-code-jina-v2", Some(binding)) => {
+                let verified = quanta_index_embed::LocalCodeBindingV1::new(
+                    binding.origin.to_string(),
+                    binding.manifest_path.to_path_buf(),
+                    binding.manifest_sha256.to_string(),
+                )
+                .map_err(|error| BenchError::Config(format!("local code binding: {error}")))?;
+                Some(verified)
+            }
+            ("local-code-jina-v2", None) => {
+                return Err(BenchError::Config(
+                    "local code embedder requires an explicit binding".into(),
+                ));
+            }
+            (_, Some(_)) => {
+                return Err(BenchError::Config(
+                    "local code binding is only valid for local-code-jina-v2".into(),
+                ));
+            }
+            (_, None) => None,
+        };
         if let Some(model_dir) = config.model_dir
             && !model_dir.is_dir()
         {
@@ -322,6 +362,7 @@ impl DaemonSession {
             })?;
         let mut command = Command::new(&binary);
         let _configured = command
+            .envs(daemon_env)
             .stdout(std::process::Stdio::from(stdout_log))
             .stderr(std::process::Stdio::from(stderr_log))
             .arg("serve")
@@ -353,6 +394,23 @@ impl DaemonSession {
             );
         if let Some(model_dir) = config.model_dir {
             let _configured = command.env("QUANTA_INDEX_EMBED_MODEL_DIR", model_dir);
+        }
+        if let Some(binding) = &local_binding {
+            let _configured = command
+                .env("QUANTA_INDEX_LOCAL_CODE_ORIGIN", binding.origin())
+                .env("QUANTA_INDEX_LOCAL_CODE_MANIFEST", binding.manifest_path())
+                .env(
+                    "QUANTA_INDEX_LOCAL_CODE_MANIFEST_SHA256",
+                    binding.manifest_sha256(),
+                )
+                .env("QUANTA_INDEX_PROVIDER_TENANT", "local-code-benchmark")
+                .env("QUANTA_INDEX_PROVIDER_ENDPOINT", binding.endpoint())
+                .env("QUANTA_INDEX_PROVIDER_REGION", "loopback")
+                .env("QUANTA_INDEX_PROVIDER_RETENTION", "local-process")
+                .env("QUANTA_INDEX_PROVIDER_PROFILE", "local-code-jina-v2-dev")
+                .env("QUANTA_INDEX_PROVIDER_SOURCE_CONTENT_CONSENT", "true")
+                .env("QUANTA_INDEX_EMBED_BATCH", "8")
+                .env("QUANTA_INDEX_EMBED_CONCURRENCY", "1");
         }
         let mut child = command.spawn().map_err(|err| {
             BenchError::Daemon(format!("failed to spawn {}: {err}", binary.display()))
@@ -394,7 +452,7 @@ impl DaemonSession {
                 "searchd did not open query/control/ingest sockets".to_string(),
             ));
         }
-        let client = QuantaIndex::connect(
+        let client = QuantaIndex::connect_legacy(
             ConnectOptions::from_state_root(config.state_root)
                 .with_request_io_timeout(config.io_timeout),
         )
@@ -490,6 +548,149 @@ fn verify_empty_status(
 #[cfg(test)]
 mod empty_status_tests {
     use super::*;
+
+    #[test]
+    fn hybrid_file_chunk_lane_requires_proved_exhaustion_or_full_lower_bound() {
+        let cap = 8;
+        assert!(top_k_window_scoreable(
+            ExecutionOutcomeV2::ExactExhausted,
+            2,
+            cap,
+        ));
+        assert!(top_k_window_scoreable(
+            ExecutionOutcomeV2::LowerBound { continuation: true },
+            cap,
+            cap,
+        ));
+        assert!(!top_k_window_scoreable(
+            ExecutionOutcomeV2::LowerBound { continuation: true },
+            cap - 1,
+            cap,
+        ));
+        assert!(!top_k_window_scoreable(
+            ExecutionOutcomeV2::LowerBound {
+                continuation: false
+            },
+            cap,
+            cap,
+        ));
+        assert!(!top_k_window_scoreable(
+            ExecutionOutcomeV2::CappedUnknown { cap },
+            cap,
+            cap,
+        ));
+    }
+
+    #[test]
+    fn hybrid_file_short_bounded_union_keeps_a_capped_prefix() {
+        use quanta_index_contract::{
+            CandidateCountV1, CoverageV1, ExaminedUniverseV1, HybridFileHitV1,
+            HybridFileLaneWitnessV1, RepoRelativePath, SourceFileKey,
+        };
+
+        let pin = GenerationPin::new(
+            RepoId::new("file-window").expect("repo"),
+            RevisionId::new("revision").expect("revision"),
+            ManifestGeneration::new(1),
+        );
+        let file = SourceFileKey {
+            source_repo_id: pin.repo_id.clone(),
+            repo_relative_path: RepoRelativePath::new("src/a.go"),
+        };
+        let candidate = LexicalCandidate {
+            source_repo_id: file.source_repo_id.clone(),
+            source: None,
+            preview: None,
+            candidate_id: "a-1".to_string(),
+            repo_id: pin.repo_id.clone(),
+            revision_id: pin.revision_id.clone(),
+            manifest_generation: pin.manifest_generation,
+            repo_relative_path: file.repo_relative_path.clone(),
+            start_line: 1,
+            end_line: 1,
+            score: 1.0,
+            snippet: String::new(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        };
+        let bounded = |returned| {
+            QueryResultWindowV2::new(
+                returned,
+                CandidateCountV1::AtLeast(3),
+                ExecutionOutcomeV2::LowerBound { continuation: true },
+                CoverageV1::new(ExaminedUniverseV1::AtLeast(3), None, Vec::new()),
+                None,
+            )
+            .expect("bounded chunk window")
+        };
+        let mut second = candidate.clone();
+        second.candidate_id = "a-2".to_string();
+        let lexical_pool_sha256 = quanta_index_contract::hybrid_file_candidate_pool_sha256_v1(
+            &pin,
+            &[candidate.clone(), second],
+        )
+        .expect("lexical pool digest");
+        let empty_pool_sha256 =
+            quanta_index_contract::hybrid_file_candidate_pool_sha256_v1(&pin, &[])
+                .expect("empty pool digest");
+        let mut response = HybridFileQueryResponseV1 {
+            generation: pin,
+            selected_active_head: None,
+            file_top_k: 2,
+            bounded_file_count: 1,
+            lexical_pool_sha256,
+            dense_pool_sha256: empty_pool_sha256,
+            results: vec![HybridFileHitV1 {
+                file,
+                lexical: Some(HybridFileLaneWitnessV1 {
+                    file_rank: 1,
+                    chunk_rank: 1,
+                    candidate,
+                }),
+                dense: None,
+                file_rrf_score: 1.0 / 61.0,
+            }],
+            lexical_window: bounded(2),
+            dense_window: QueryResultWindowV2::exact_probe(0),
+            explanation: SearchExplanation::empty(),
+        };
+        let classify = |response: &HybridFileQueryResponseV1| {
+            QueryOutcome::ReturnedFiles {
+                response: Box::new(response.clone()),
+                lane_top_k: 2,
+                file_top_k: 2,
+                latency: Duration::ZERO,
+            }
+            .classification()
+            .expect("valid file response")
+        };
+        assert_eq!(classify(&response).status, "capped");
+        assert_eq!(response.results.len(), 1);
+        assert_eq!(
+            response.lexical_window.outcome(),
+            ExecutionOutcomeV2::LowerBound { continuation: true }
+        );
+
+        response.lexical_window = QueryResultWindowV2::exact_probe(1);
+        assert_eq!(classify(&response).status, "success");
+        response.lexical_window = bounded(1);
+        assert_eq!(classify(&response).status, "error");
+        response.results.clear();
+        assert!(
+            QueryOutcome::ReturnedFiles {
+                response: Box::new(response.clone()),
+                lane_top_k: 2,
+                file_top_k: 2,
+                latency: Duration::ZERO,
+            }
+            .classification()
+            .is_err()
+        );
+        response.bounded_file_count = 0;
+        response.lexical_window = QueryResultWindowV2::exact_probe(0);
+        response.lexical_pool_sha256 = empty_pool_sha256;
+        assert_eq!(classify(&response).status, "abstained");
+    }
 
     #[test]
     fn timed_route_separates_execute_from_post_execute_without_changing_outcome() {
@@ -927,8 +1128,9 @@ mod empty_status_tests {
     fn daemon_digest_pin_is_verified() {
         let dir = tempfile::tempdir().expect("tempdir");
         let binary = dir.path().join("searchd");
-        std::fs::write(&binary, b"fake-daemon").expect("write");
-        let digest = crate::sha256_hex(b"fake-daemon");
+        let bytes = vec![0x5A; 128 * 1024 + 1];
+        std::fs::write(&binary, &bytes).expect("write");
+        let digest = crate::sha256_hex(&bytes);
         assert_eq!(
             verify_searchd_digest(&binary, &digest).expect("pin holds"),
             digest
@@ -1002,12 +1204,12 @@ pub fn publish_and_activate_with_timeout_observer(
             } else {
                 None
             };
-            BenchError::Sdk(match detail {
-                Some(detail) => {
+            BenchError::Sdk(detail.map_or_else(
+                || format!("publish_and_activate failed: {err}"),
+                |detail| {
                     format!("publish_and_activate failed: {err}; timeout diagnostic: {detail}")
-                }
-                None => format!("publish_and_activate failed: {err}"),
-            })
+                },
+            ))
         })?;
     let observation = outcome.observation.ok_or_else(|| {
         BenchError::Protocol("observed publish returned no transient observation".to_string())
@@ -1203,6 +1405,12 @@ pub enum QueryOutcome {
         explanation: Option<RouteExplanation>,
         latency: Duration,
     },
+    ReturnedFiles {
+        response: Box<HybridFileQueryResponseV1>,
+        lane_top_k: u32,
+        file_top_k: u32,
+        latency: Duration,
+    },
     RejectedResponse {
         code: String,
         message: String,
@@ -1226,6 +1434,21 @@ pub struct OutcomeClassification {
     pub status: &'static str,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
+}
+
+/// Whether a benchmark received the whole requested top-k prefix.
+#[must_use]
+pub fn top_k_window_scoreable(outcome: ExecutionOutcomeV2, returned: u32, lane_top_k: u32) -> bool {
+    match outcome {
+        ExecutionOutcomeV2::ExactExhausted => returned <= lane_top_k,
+        ExecutionOutcomeV2::LowerBound { continuation: true } => returned == lane_top_k,
+        ExecutionOutcomeV2::LowerBound {
+            continuation: false,
+        }
+        | ExecutionOutcomeV2::CappedUnknown { .. }
+        | ExecutionOutcomeV2::InterruptedPartial { .. }
+        | ExecutionOutcomeV2::Approximate { .. } => false,
+    }
 }
 
 impl QueryOutcome {
@@ -1266,6 +1489,62 @@ impl QueryOutcome {
                         error_message: None,
                     })
                 }
+            }
+            Self::ReturnedFiles {
+                response,
+                lane_top_k,
+                file_top_k,
+                ..
+            } => {
+                let Ok(file_limit) = usize::try_from(*file_top_k) else {
+                    return Err("file cap exceeds usize");
+                };
+                if *lane_top_k == 0
+                    || *file_top_k == 0
+                    || file_top_k > lane_top_k
+                    || response.file_top_k != *file_top_k
+                    || response.results.len() > file_limit
+                    || response.lexical_window.returned() > *lane_top_k
+                    || response.dense_window.returned() > *lane_top_k
+                    || response.validate_v1().is_err()
+                {
+                    return Err("typed hybrid file response violates declared caps or witnesses");
+                }
+                let unsafe_window = !top_k_window_scoreable(
+                    response.lexical_window.outcome(),
+                    response.lexical_window.returned(),
+                    *lane_top_k,
+                ) || !top_k_window_scoreable(
+                    response.dense_window.outcome(),
+                    response.dense_window.returned(),
+                    *lane_top_k,
+                );
+                let both_exhausted = response.lexical_window.outcome().is_exhausted()
+                    && response.dense_window.outcome().is_exhausted();
+                if unsafe_window || (response.results.is_empty() && !both_exhausted) {
+                    return Ok(OutcomeClassification {
+                        status: "error",
+                        error_code: Some("incomplete_hybrid_file_window".to_string()),
+                        error_message: Some(
+                            "file result has an unproved chunk lane or empty non-exhausted page"
+                                .to_string(),
+                        ),
+                    });
+                }
+                // A short file page can be the complete union of the bounded
+                // chunk lanes even when either lane has more chunks. Keep its
+                // candidates as a capped prefix, not global file exhaustion.
+                Ok(OutcomeClassification {
+                    status: if response.results.is_empty() {
+                        "abstained"
+                    } else if response.results.len() == file_limit || !both_exhausted {
+                        "capped"
+                    } else {
+                        "success"
+                    },
+                    error_code: None,
+                    error_message: None,
+                })
             }
             Self::RejectedResponse {
                 code,
@@ -1314,6 +1593,7 @@ impl QueryOutcome {
     pub const fn latency(&self) -> Duration {
         match self {
             Self::ReturnedWindow { latency, .. }
+            | Self::ReturnedFiles { latency, .. }
             | Self::RejectedResponse { latency, .. }
             | Self::SdkFailure { latency, .. } => *latency,
         }
@@ -1409,6 +1689,11 @@ pub fn classify_sdk_error(err: &SdkError) -> (&'static str, String, String) {
             let (status, code, _) = classify_sdk_error(source);
             (status, code, err.to_string())
         }
+        SdkError::UnsupportedNativeQuery { capability } => (
+            "unavailable",
+            "CapabilityUnavailable".to_string(),
+            capability.as_str().to_string(),
+        ),
         SdkError::Usage(message) => ("error", "sdk_usage".to_string(), message.clone()),
         SdkError::Protocol(message) => ("error", "sdk_protocol".to_string(), message.clone()),
         SdkError::Serialization(message) => {
@@ -1531,7 +1816,16 @@ pub fn query_route_with_policy_timed(
     query: &RouteQuery<'_>,
     policy: crate::query_plan::QueryInputPolicy,
 ) -> (QueryOutcome, RouteExecutionTiming) {
-    query_route_with_policy_observation(query, policy, false)
+    query_route_with_policy_observation(query, policy, false, None)
+}
+
+#[must_use]
+pub fn query_route_with_policy_timed_file_cap(
+    query: &RouteQuery<'_>,
+    policy: crate::query_plan::QueryInputPolicy,
+    file_top_k: Option<u32>,
+) -> (QueryOutcome, RouteExecutionTiming) {
+    query_route_with_policy_observation(query, policy, false, file_top_k)
 }
 
 /// Opt into request-local client IPC clocks for the bounded lexical diagnostic.
@@ -1541,13 +1835,23 @@ pub fn query_route_with_policy_client_observed(
     query: &RouteQuery<'_>,
     policy: crate::query_plan::QueryInputPolicy,
 ) -> (QueryOutcome, RouteExecutionTiming) {
-    query_route_with_policy_observation(query, policy, true)
+    query_route_with_policy_observation(query, policy, true, None)
+}
+
+#[must_use]
+pub fn query_route_with_policy_client_observed_file_cap(
+    query: &RouteQuery<'_>,
+    policy: crate::query_plan::QueryInputPolicy,
+    file_top_k: Option<u32>,
+) -> (QueryOutcome, RouteExecutionTiming) {
+    query_route_with_policy_observation(query, policy, true, file_top_k)
 }
 
 fn query_route_with_policy_observation(
     query: &RouteQuery<'_>,
     policy: crate::query_plan::QueryInputPolicy,
     observe_client: bool,
+    file_top_k: Option<u32>,
 ) -> (QueryOutcome, RouteExecutionTiming) {
     let expected_pin = GenerationPin::new(
         query.repo_id.clone(),
@@ -1556,6 +1860,71 @@ fn query_route_with_policy_observation(
     );
     let start = Instant::now();
     match query.route {
+        "hybrid_file" => {
+            let Some(file_top_k) = file_top_k else {
+                return (
+                    QueryOutcome::SdkFailure {
+                        status: "error",
+                        code: "missing_hybrid_file_cap".to_string(),
+                        message: "hybrid_file requires an explicit file top-k".to_string(),
+                        latency: start.elapsed(),
+                    },
+                    RouteExecutionTiming::default(),
+                );
+            };
+            if policy != crate::query_plan::QueryInputPolicy::NaturalLanguage {
+                return (
+                    QueryOutcome::SdkFailure {
+                        status: "error",
+                        code: "hybrid_file_policy_mismatch".to_string(),
+                        message: "hybrid_file requires the natural_language chunk query policy"
+                            .to_string(),
+                        latency: start.elapsed(),
+                    },
+                    RouteExecutionTiming::default(),
+                );
+            }
+            let builder = query
+                .client
+                .search()
+                .hybrid()
+                .native(query.lexical_request)
+                .semantic_text(query.semantic_text)
+                .active(query.repo_id.clone(), query.revision_id.clone())
+                .top_k(query.top_k);
+            time_route_execution(
+                || builder.files(file_top_k),
+                |result| match result {
+                    Ok(response) => {
+                        if response.generation != expected_pin
+                            || response.results.iter().any(|hit| {
+                                hit.file.source_repo_id != expected_pin.repo_id
+                                    || hit.lexical.as_ref().is_some_and(|witness| {
+                                        witness.candidate.source_repo_id != expected_pin.repo_id
+                                    })
+                                    || hit.dense.as_ref().is_some_and(|witness| {
+                                        witness.candidate.source_repo_id != expected_pin.repo_id
+                                    })
+                            })
+                        {
+                            return QueryOutcome::SdkFailure {
+                                status: "error",
+                                code: "hybrid_file_source_binding_mismatch".to_string(),
+                                message: "hybrid file response differs from the pinned single-source repository".to_string(),
+                                latency: start.elapsed(),
+                            };
+                        }
+                        QueryOutcome::ReturnedFiles {
+                            response: Box::new(response),
+                            lane_top_k: query.top_k,
+                            file_top_k,
+                            latency: start.elapsed(),
+                        }
+                    }
+                    Err(err) => failed_outcome(&err, start),
+                },
+            )
+        }
         "lexical" => {
             let builder = query.client.lexical().query();
             let builder = if matches!(

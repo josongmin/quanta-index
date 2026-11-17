@@ -23,10 +23,10 @@ use quanta_index_contract::TextQuerySyntax;
 
 use crate::artifact::{BenchRowV1, BenchSyntax, LatencySummary, ResultShape};
 use crate::harness::{E2eErrorCode, E2eHistoryResult, E2eQueryResult, E2eRuntime};
-use crate::scenarios::{DslBenchScenario, FixtureKind};
+use crate::history_fixture::{HISTORY_LEDGER, HISTORY_LEDGER_TEXT, history_fixture_corpus_files};
+use crate::scenarios::{DslBenchScenario, FixtureKind, LEXICAL_CORPUS};
 
-/// Result cap requested for every benchmark query.
-pub const TOP_K: u32 = 10;
+pub use crate::scenarios::TOP_K;
 
 /// Repo id used across every benchmark fixture.
 const BENCH_REPO: &str = "repo-bench";
@@ -126,25 +126,6 @@ fn saturating_u64(n: usize) -> u64 {
 // Fixtures (ingest only — sealing/activation is done once by the caller).
 // ---------------------------------------------------------------------------
 
-/// Multi-file lexical corpus covering the lexical and boolean-structural tokens.
-///
-/// The spread across files makes `OR` / `NOT` non-trivial: `src/with_helper.rs`
-/// carries `helper` so `parity_needle_alpha NOT helper` must exclude it, while
-/// `docs/intro.md` carries only `documentation` so `parity_needle_alpha OR
-/// documentation` must widen to it.
-const LEXICAL_CORPUS: &[(&str, &str)] = &[
-    (
-        "src/lib.rs",
-        "fn parity_needle_alpha() {\n    // sphinx of quartz\n    // release v1.2.3 foo_bar\n    let documentation = \"needle\";\n}\n",
-    ),
-    ("src/other.rs", "fn parity_needle_alpha() {}\n"),
-    ("docs/intro.md", "parity documentation lives here\n"),
-    (
-        "src/with_helper.rs",
-        "fn parity_needle_alpha() {\n    let helper = 1;\n}\n",
-    ),
-];
-
 fn ingest_lexical_corpus(rt: &mut E2eRuntime) -> AnyResult<()> {
     for (path, content) in LEXICAL_CORPUS {
         rt.ingest_text(BENCH_REPO, path, content)?;
@@ -169,29 +150,8 @@ fn ingest_structural_trees(rt: &mut E2eRuntime) -> AnyResult<()> {
 /// The message carries `fix` and `alpha_content_needle`; the diff text carries
 /// `history`; timestamps straddle the `.011Z`/`.012Z` scenario bounds.
 fn ingest_history_ledger(rt: &mut E2eRuntime) -> AnyResult<()> {
-    use crate::harness::E2eHistoryFixtureSpec;
-
-    let path = "src/history.rs";
-    rt.ingest_text(
-        BENCH_REPO,
-        path,
-        "history lexical proof alpha_content_needle\n",
-    )?;
-    rt.ingest_history_fixture_spec(&E2eHistoryFixtureSpec {
-        commit_sha: "0123456789abcdef0123456789abcdef01234567",
-        file_path: path,
-        author: "alice",
-        committer: "alice",
-        message: "fix: sample history alpha_content_needle",
-        author_time_ms: 11,
-        committer_time_ms: 12,
-        applied_at_ms: 12,
-        ref_name: "refs/heads/main",
-        tag_name: "v1.0.0",
-        added_text: "history added line",
-        removed_text: "history removed line",
-        touched_text: "history touched line",
-    })
+    rt.ingest_text(BENCH_REPO, HISTORY_LEDGER.file_path, HISTORY_LEDGER_TEXT)?;
+    rt.ingest_history_fixture_spec(&HISTORY_LEDGER)
 }
 
 /// Runtime catalog covering dirty/changed/stale/snapshot/meta/affected edges.
@@ -293,16 +253,7 @@ pub fn fixture_corpus_files(kind: FixtureKind) -> Vec<(String, String)> {
             ));
             files
         }
-        FixtureKind::HistoryLedger => vec![
-            (
-                "src/history.rs".to_string(),
-                "history lexical proof alpha_content_needle\n".to_string(),
-            ),
-            (
-                "fixture://history/0123456789abcdef0123456789abcdef01234567".to_string(),
-                "file=src/history.rs author=alice committer=alice message=fix: sample history alpha_content_needle author_time_ms=11 committer_time_ms=12 applied_at_ms=12 ref=refs/heads/main tag=v1.0.0 added=history added line removed=history removed line touched=history touched line".to_string(),
-            ),
-        ],
+        FixtureKind::HistoryLedger => history_fixture_corpus_files(),
         FixtureKind::RuntimeCatalog => {
             let mut files: Vec<(String, String)> = [
                 ("src/clean.rs", "clean scope quartz"),

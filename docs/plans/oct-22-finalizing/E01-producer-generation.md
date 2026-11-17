@@ -1,10 +1,10 @@
 # E01 — 실제 producer·Chunk·RepoMap generation
 
-상태/담당/다음 조건은 [SSOT E01](README.md#e01)만 갱신한다. 원 요구 R03/R04/R23/R24/R37/R38, 종전 W2-05/06/12/14를 소유한다. 게시·복구 수명은 [E02](E02-publication-recovery.md), ANN 검색은 [E04](E04-semantic-ann.md)의 결과를 소비한다.
+현재 담당·실행 원장은 [SSOT E01](README.md#e01)에서 찾고, source별 결과는 [W205 검증](VALIDATION.md#w205-proof-20261030)에 기록한다. 이 문서는 고정 구현·수용 계약이다. 원 요구 R03/R04/R23/R24/R37/R38, 종전 W2-05/06/12/14를 소유한다. 게시·복구 수명은 [E02](E02-publication-recovery.md), ANN 검색은 [E04](E04-semantic-ann.md)의 결과를 소비한다.
 
 ## Current W205 routing
 
-이 채팅의 현재 구현·잔여·소유권은 [W205 현재 원장](OWNERSHIP.md#w205-closeout-20261030), 실제 실행 판정은 [W205 검증](VALIDATION.md#w205-proof-20261030)을 따른다. 아래 C0/K/C1/H/T/I/D는 고정 수용 계약이며, 과거 미구현 표현을 새 작업 발주로 읽지 않는다. W205의 실제 initial pin/capture/inventory→Product/context→provisional graph→공개 commit caller와 BC/FT/Java mount3개는 Main에 합류했다. L1-D의 별도 ItemIndex bank·collector 구현도 다시 만들지 않는다.
+현재 작성자와 실행 진입점은 [README E01](README.md#e01), 원 W205 수용은 [고정 경계](OWNERSHIP.md#w205-closeout-20261030), 실제 source별 판정은 [W205 검증](VALIDATION.md#w205-proof-20261030)을 따른다. 아래 C0/K/C1/H/T/I/D는 고정 수용 계약이며, 과거 미구현 표현을 새 작업 발주로 읽지 않는다. W205의 실제 initial pin/capture/inventory→Product/context→provisional graph→공개 commit caller와 BC/FT/Java mount3개는 Main에 합류했다. L1-D의 별도 ItemIndex bank·collector 구현도 다시 만들지 않는다.
 
 Java 분모는 **공개 SDK5**(SourceOnly1 + 기존 공개 Maven/Gradle2 + configured JAR 양성/누락 음성2)와 **게시 전 모델2**를 구분한다. `initial_full_java_models_v86`의 두 본문은 Store 미게시를 단언하므로 공개 Maven/Gradle 실행을 대체하지 않는다. BC2/FT1/Python4, Strong2, 실제 provider 실패·최종 Native alias/refund도 각각 독립 oracle다. R789에서 v143 provider 실패 fixture와 기존 공개 Native fixture의 alias/최종 환급 관측을 구현했다. 그 과정에서 확인한 Ordinary-only Native caller·누락 paid-result wire API·GQLang-only Source cfg도 기존 owner에서 연결했고, provider header는 실제 A로 과금한다. R790은 공개 admission의 typed bridge, completed-result terminal, 실제 서비스의 checked readiness와 canonical borrowed digest, 최고 Source 외부의 context/map/Host 슬롯까지 연결했다. 이를 새 구현 잔여로 발급하지 않는다. 현재 필수 owning Rust/Product 실행은 미충족이며 이 문서는 E01 전체 완료를 선언하지 않는다.
 
@@ -13,7 +13,7 @@ Java 분모는 **공개 SDK5**(SourceOnly1 + 기존 공개 Maven/Gradle2 + confi
 - A: 기존 `consumer_v3/chunk_preplan_v3.rs`·`plan_v3.rs`와 private child. 파일별 single-ordinal query·paid TextBasis·canonical recipe·plan 전달을 재사용.
 - B: `native_chunk_v3/paid_projection_v3.rs`와 private child. 기존 direct/merge/split paid producer·digest/gold를 재사용.
 - 기존 M/I/W·graph/RepoMap/corpus/inventory·Facts producer/seed는 해당 source owner가 한 번 생산한다.
-- PUB는 공개 producer/후반 Facts 오류·SDK 인계를 소유한다. PTA/Product/Source/Store lower body는 기존 canonical owner, 공용 plan/member/token/export/dispatch는 Root다. [단일 owner map](OWNERSHIP.md#compiled-handoff-owner-map)을 따른다.
+- PUB는 공개 producer/후반 Facts 오류·SDK 인계를 소유한다. PTA/Product/Source/Store lower body는 기존 canonical owner, 공용 plan/member/token/export/dispatch는 Root다. [공용 인수 규칙](OWNERSHIP.md#compiled-handoff-owner-map)을 따른다.
 
 <a id="implementation-packet"></a>
 <a id="native-chunk-plan"></a>
@@ -24,11 +24,12 @@ Java 분모는 **공개 SDK5**(SourceOnly1 + 기존 공개 Maven/Gradle2 + confi
 <a id="native-query-closeout"></a>
 ## Native query → planner 실행 계약
 
-이 절은 이 채팅의 Native Chunk 잔여를 기존 E01 안에서 자른 구현/수용 계약이다. 현재 판정은 [README E01](README.md#e01), 실행 증거는 [VALIDATION](VALIDATION.md)만 소유한다. 아래 절단은 새 에픽·진척 분모가 아니며, E01의 filesystem/RepoMap·공개 FULL/delta와 전체 [DoD](DOD.md#final-dod)를 면제하지 않는다. 수정 경계는 [독점 파일표](OWNERSHIP.md#native-query-closeout-writes), 실행 순서는 [다음 배치](WAVES.md#next-execution-batch)를 따른다.
+이 절은 이 채팅의 Native Chunk 잔여를 기존 E01 안에서 자른 구현/수용 계약이다. 현재 판정은 [README E01](README.md#e01), 실행 증거는 [VALIDATION](VALIDATION.md)만 소유한다. 아래 절단은 새 에픽·진척 분모가 아니며, E01의 filesystem/RepoMap·공개 FULL/delta와 전체 [DoD](DOD.md#final-dod)를 면제하지 않는다. 수정 경계는 [공용 수정 규칙](OWNERSHIP.md#exclusive-boundaries), 실행 순서는 [다음 배치](WAVES.md#next-execution-batch)를 따른다.
 
-### C0 — 병렬 구현 전 계약 확정
+<a id="c0--병렬-구현-전-계약-확정"></a>
+### C0 — 입력·발급·실패 계약
 
-Root가 다음 다섯 항목을 현재 producer/caller/consumer에서 확정한다. K/H/T는 그동안 자기 파일의 기존 owner·회귀·고정 oracle를 준비할 수 있다. 공통 서명에 의존하는 수정은 계약 확정 뒤 시작한다.
+다음 다섯 항목은 실제 producer/caller/consumer에서 대조할 고정 입력·발급·실패 계약이다. 기존 Original context·delegate·유료 birth를 재사용하고, 실제 결손이 확인된 hunk만 원 owner가 수정한다. 옛 병렬 착수 순서를 새 구현 배정으로 사용하지 않는다.
 
 1. 실제 SDK dispatch가 설치한 Original delegate와 `QueryOrchestrator`까지 추적한다. wrapper에 direct override가 없다는 사실만으로 실제 경로의 결함을 추론하지 않는다. Native FileText/HIR/ItemIndex 및 공통 경로를 쓰는 Symbol/ImportGraph의 `call_query` 아래까지 읽어 필요한 context field를 표로 고정한다.
 2. 입력은 실제 `OriginalExecutionKeeperV3`의 session+rail, 별도 Source B의 snapshot/session/provider, canonical Original workspace `SourceSpec`·published binding·정책/lineage/framework·언어 payload다. 각 값의 발급자·paid retain·검증자·최종 drop owner를 기존 source에서 지정한다. path/default request만으로 Original workspace를 합성하지 않는다.
@@ -56,9 +57,10 @@ Python은 기존 SDK 유료 evidence ref → Source B의 generic paid parts/hand
 | I / P0 — 현행 source 합류·owning 검증 | K/C1/H/T와 필요한 기존 producer 산출물을 한 의존성/feature 집합에 결합. 정적 경계·test honesty·scoped safety 후 실제 owning QBC selector 실행 | compile/link와 실제 본문 수·실패·ignored·owner exit를 따로 확인. source가 바뀌면 영향 결과만 재검증. A17과 Source-binding2의 과거 서로 다른 Source 결과를 합산하거나 현행 전체 Runtime GREEN으로 승격하지 않음 |
 | D / P1 — 실제 writer·게시 인계 | genuine plan을 기존 paid Chunk producer의 1→1/N→1/1→N에 전달. 실제 Native receipt→writer replay/full-plan/root serial을 수용하고 같은 결과를 기존 E02/공개 producer가 소비 | provider 출력 shape·stub receipt가 아닌 실제 writer artifact/receipt와 cold-target gold를 대조. E02 actual DELTA authority/member·V9/ACK·terminal/복구, FULL/delta/P2I는 각 기존 owner/gate로 이어짐. T/I 통과만으로 D 또는 E01 전체를 닫지 않음 |
 
-### 남은 작업 packet — 기존 절단의 하위 작업
+<a id="남은-작업-packet--기존-절단의-하위-작업"></a>
+### Source/query 수용 절단
 
-아래 packet은 C0/K/C1/H/T/I/D의 실제 연결점과 수용 조건을 더 잘게 자른 것이다. 새 진척 분모나 별도 상태표가 아니다. 파일별 유일 writer는 [OWNERSHIP](OWNERSHIP.md#native-query-closeout-writes), 현재 판정은 [README E01](README.md#e01)을 따른다.
+아래 packet은 C0/K/C1/H/T/I/D의 실제 연결점과 수용 조건을 더 잘게 자른 것이다. 새 진척 분모나 별도 상태표가 아니다. 파일별 writer는 [공용 수정 규칙](OWNERSHIP.md#exclusive-boundaries)에 따라 실제 hunk·현재 담당을 대조하고, 현재 판정은 [README E01](README.md#e01)을 따른다.
 
 | 기존 절단 / 작업 | 실제 수정·검증 대상 | 선행 입력 / 완료 조건 |
 | --- | --- | --- |
@@ -67,8 +69,8 @@ Python은 기존 SDK 유료 evidence ref → Source B의 generic paid parts/hand
 | C1 — SDK 실제 context 생산 경로 | 실제 `Arc<SdkOrchestrator>`의 `QueryContextPort`에서 설치된 Original delegate와 typed Python provider를 전달. Facts target의 ingress Arc를 rail이 캡처하기 전에 기존 V62 bank로 유료 text provider/delegate를 설치하며, genuine target evidence를 같은 composition FULL bind owner에 재결속 | 같은 sealed provider의 단일 birth·동일 Source/Output·설치 성공 후 오류의 delegate/provider 보유. Java 분석 envelope 경계는 유지. effective feature closure를 확인하며 직접 Cargo edge 부재를 기능 부재로 추론하지 않음 |
 | C1 — request 출생 후 admission 실패 | 기존 Request/Product/Ingress/Hydrated/Resolved/Admitted owner의 canonical 연산을 into-slot 또는 borrowed preflight로 확장. 단일 exterior bank가 실제 stage 입력과 typed cause를 `OrchestratorError`→F observer까지 보유 | 각 fallible 경계의 양성·거절·반복 관측·마지막 환급. 입력을 소비한 뒤 `to_string`으로 원인/유료 DATA를 버리지 않음. 새 request IR·policy·ordinary admission 복제 금지. context-base/port 설치/trace 이후 실패도 같은 소유권 경계로 대조 |
 | C1 — 일반 Product Original 후속 경계 | SDK ImportGraph가 도달하는 `build_executable_request_from_admitted_with_projection_hydrator_v1`의 enrichment/port/budget/trace/materialization에도 같은 admitted/ctx/partial bank를 유지하고 SDK 오류 lowering에서 보유를 끊지 않음 | Native fixed-four entry의 수리와 별도 수용. 기존 `PaidFiniteSourceFailureReadyV3`·`RetainedRuntimeErrorV4`를 후보로 사용하되 actual Original session의 Source Current에서 producer 이전 node prebirth/retain, 같은 Current의 canonical paid display와 실제 거절 원인, typed stage cause 관측 계약을 유지. canonical SDK 오류 owner에 whole bank를 운반하며 무단 사후 node 발행·새 contract 역의존·selected-cause-only carrier로 대체 금지 |
-| H/K — Python Native Symbol 입력(S) | `native_symbol_v3::query_native_symbol_output_v3`의 bare ItemIndex 입력을 canonical committed FULL로 준비. Symbol과 Chunk는 같은 `native_v3` module에 include되므로 기존 FULL 준비 helper를 우선 직접 재사용하며 실제 반례가 있을 때만 최소 추출 | genuine Python provider/Source B/Output A와 F slot 계약. FileText의 인증된 language/member·path를 사용. Python 양성·foreign/missing/wrong-member/funding 실패·Java 회귀 및 최종 환급. 두 번째 FULL producer/cache를 만들지 않음 |
-| C1 — ImportGraph 실제 본문(G) | 기존 Original traversal은 forward/reverse·depth cap과 별도 reachable-cycle walk를 이미 구현한다. 선행 `import_graph_filetext_closure.rs::collect_original_closure_reuse_digest_v3`의 FileText 하위 호출이 borrowed `call_query`를 사용해 Original ordinary-copy 거절에 도달한다. 이 실제 호출을 같은 A/B·outer context·receipt와 실패 DATA를 보존하는 canonical owned subquery 경계로 연결 | 고정 forward/reverse/depth1 파일·edge와 모든 경우의 cycle[a,b], actual FileText closure digest/alias 검증·마지막 환급을 유지. 기존 traversal/reader를 다시 만들거나 guard만 바꾸지 않는다. source-static 결손과 R41 실제 SDK Graph 결과를 구분하며 실행 전에는 양성 성공을 주장하지 않음 |
+| H/K — Python Native Symbol 입력(S) | `native_symbol_v3.rs::query_native_symbol_rows_for_ready_v3` → `fill_native_symbol_query_v3`가 지원 feature floor에서 기존 `native_chunk_python_full_item_args_v3`의 committed-FULL bind를 소비하고 `call_query_with_owned_execution_receipt_into_slots_v3<ItemIndexQuery>`를 사용한다. 옛 `query_native_symbol_output_v3`/bare-input 수리를 다시 발급하지 않고 기존 FULL/cache·retained failure bank를 재사용한다 | genuine Python provider/Source B/Output A와 F slot 계약. FileText의 인증된 language/member·path를 사용. Python 양성·foreign/missing/wrong-member/funding 실패·Java 회귀 및 최종 환급. 두 번째 FULL producer/cache를 만들지 않음 |
+| C1 — ImportGraph 실제 본문(G) | 현재 경로는 `quanta-runtime-query-import-graph/src/graph/import_graph_filetext_closure.rs::collect_original_closure_reuse_digest_v3`다. 실제 두 FileText 하위 호출은 `call_query<FileTextQuery>`를 사용한다. 이 정적 관찰을 실행된 실패로 쓰지 않고 같은 A/B·outer context·receipt·실패 DATA와 Original 출력의 독립 수용을 확인한다. 추가 API 수리는 actual caller 계약/본문 실패로 범위를 확정하며 기존 traversal·reader는 재구현하지 않는다 | 고정 forward/reverse/depth1 파일·edge와 모든 경우의 cycle[a,b], actual FileText closure digest/alias 검증·마지막 환급을 유지. 기존 traversal/reader를 다시 만들거나 guard만 바꾸지 않는다. source-static 결손과 R41 실제 SDK Graph 결과를 구분하며 실행 전에는 양성 성공을 주장하지 않음 |
 | H/T — 유료 provider 생산·회귀 | SDK paid Ref header→handle→초기/successor 조립→V61/V60→Runtime FULL cache 실제 witness. 기존 Kernel Module도 같은 generic header 알고리즘의 영향 회귀 실행 | source-only field/reader test와 구분. genuine paid Ref 양성, foreign Current/group/member·late Source·header/retain/funding 거절의 typed partial·최종 환급. generic read가 추가한 work/authentication의 tight-budget 영향 확인 |
 | T — 실제 모든 파일 query·planner 양성 | 기존 genuine 2 upsert+1 delete corpus에서 FileText/HIR/ItemIndex를 실행해 all-file aggregate→canonical planner로 전달. 1→1/N→1/1→N의 고정 ID/span/text/order/digest gold | 두 파일 FileText helper와 Source/ordinal test를 재사용하되 이를 HIR/ItemIndex/planner 성공으로 세지 않음. upsert별 실제 query count, delete query0, 역순 입력과 세 topology의 실제 산출물 대조 |
 | T — 실패·취소 수용 | 두 번째 파일 late failure, missing/foreign/stale owner, policy/binding 불일치, cancel/unwind, output/Source finisher 거절 | 앞선 genuine partial과 원인 bank를 반복 관측. 결과 planner/write0, 정확한 typed 원인, 마지막 drop 뒤 전체 ledger0. fabricated opaque Output/receipt 금지 |

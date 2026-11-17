@@ -89,6 +89,17 @@ fn timespec_ns(seconds: i128, nanoseconds: i128) -> Option<u64> {
     seconds.checked_mul(1_000_000_000)?.checked_add(nanoseconds)
 }
 
+/// Current thread's cumulative CPU time, including when a selected diagnostic
+/// runs without a timeline recorder. Failure remains unavailable, never zero.
+#[must_use]
+pub fn thread_cpu_now_ns() -> Option<u64> {
+    let now = match clock_gettime(ClockId::CLOCK_THREAD_CPUTIME_ID) {
+        Ok(now) => now,
+        Err(_unavailable) => return None,
+    };
+    timespec_ns(i128::from(now.tv_sec()), i128::from(now.tv_nsec()))
+}
+
 impl DiagnosticClockV1 for MonotonicClock {
     fn now_ns(&self) -> u64 {
         let elapsed = self.0.elapsed();
@@ -99,11 +110,7 @@ impl DiagnosticClockV1 for MonotonicClock {
     }
 
     fn thread_cpu_now_ns(&self) -> Option<u64> {
-        // This observation is optional: failure leaves the counter absent.
-        let Ok(now) = clock_gettime(ClockId::CLOCK_THREAD_CPUTIME_ID) else {
-            return None;
-        };
-        timespec_ns(i128::from(now.tv_sec()), i128::from(now.tv_nsec()))
+        thread_cpu_now_ns()
     }
 }
 
@@ -846,6 +853,7 @@ fn event_json(event: DiagnosticEmitV1, output_seq: u64) -> Option<Value> {
             };
             let index_kind = match observation.index_kind {
                 DiagnosticAnnIndexKindV1::Flat => "flat",
+                DiagnosticAnnIndexKindV1::Hnsw => "hnsw",
                 DiagnosticAnnIndexKindV1::IvfHnswSq => "ivf_hnsw_sq",
             };
             json!({"type":"ann_region_observation", "span_id":span_id.get(),
@@ -1391,6 +1399,63 @@ mod tests {
             (DiagnosticCounterV1::WorkWrites, "work_writes"),
             (DiagnosticCounterV1::WorkBytes, "work_bytes"),
             (DiagnosticCounterV1::WorkMutations, "work_mutations"),
+            (DiagnosticCounterV1::ObjectPortGetCalls, "object_port_get_calls"),
+            (
+                DiagnosticCounterV1::ObjectPortGetSucceeded,
+                "object_port_get_succeeded",
+            ),
+            (
+                DiagnosticCounterV1::ObjectPortGetWireBytes,
+                "object_port_get_wire_bytes",
+            ),
+            (
+                DiagnosticCounterV1::ObjectPortRetainedCalls,
+                "object_port_retained_calls",
+            ),
+            (
+                DiagnosticCounterV1::ObjectPortRetainedSucceeded,
+                "object_port_retained_succeeded",
+            ),
+            (
+                DiagnosticCounterV1::ObjectPortRetainedWireBytes,
+                "object_port_retained_wire_bytes",
+            ),
+            (
+                DiagnosticCounterV1::TextCaseOccurrences,
+                "text_case_occurrences",
+            ),
+            (
+                DiagnosticCounterV1::TextUniqueCanonicalTerms,
+                "text_unique_canonical_terms",
+            ),
+            (
+                DiagnosticCounterV1::TextOccurrenceKeyBytes,
+                "text_occurrence_key_bytes",
+            ),
+            (
+                DiagnosticCounterV1::TextUniqueKeyBytes,
+                "text_unique_key_bytes",
+            ),
+            (
+                DiagnosticCounterV1::TextColdAliasOwners,
+                "text_cold_alias_owners",
+            ),
+            (
+                DiagnosticCounterV1::TextColdDirectOwners,
+                "text_cold_direct_owners",
+            ),
+            (
+                DiagnosticCounterV1::TextColdSqlOwners,
+                "text_cold_sql_owners",
+            ),
+            (
+                DiagnosticCounterV1::TextColdEmptyOwners,
+                "text_cold_empty_owners",
+            ),
+            (
+                DiagnosticCounterV1::TextShapeCompleteOwners,
+                "text_shape_complete_owners",
+            ),
             (DiagnosticCounterV1::SqliteRows, "sqlite_rows"),
             (DiagnosticCounterV1::SqliteBatches, "sqlite_batches"),
             (DiagnosticCounterV1::SqliteWriteCalls, "sqlite_write_calls"),
@@ -1532,11 +1597,51 @@ mod tests {
                 "managed_object_inputs",
             ),
             (
+                DiagnosticCounterV1::ManagedObjectExternalChildReferences,
+                "managed_object_external_child_references",
+            ),
+            (
+                DiagnosticCounterV1::ManagedObjectUniqueExternalChildren,
+                "managed_object_unique_external_children",
+            ),
+            (
+                DiagnosticCounterV1::ManagedObjectGuardedRepeatedExternalChildren,
+                "managed_object_guarded_repeated_external_children",
+            ),
+            (
+                DiagnosticCounterV1::ManagedObjectReusedExternalChildValidations,
+                "managed_object_reused_external_child_validations",
+            ),
+            (
                 DiagnosticCounterV1::MapRootReuseCandidates,
                 "map_root_reuse_candidates",
             ),
             (DiagnosticCounterV1::MapRootReuses, "map_root_reuses"),
             (DiagnosticCounterV1::MapRootBuilds, "map_root_builds"),
+            (
+                DiagnosticCounterV1::MapInputNextAbsentValues,
+                "map_input_next_absent_values",
+            ),
+            (
+                DiagnosticCounterV1::MapInputNextObjectValues,
+                "map_input_next_object_values",
+            ),
+            (
+                DiagnosticCounterV1::MapInputNextInlineValues,
+                "map_input_next_inline_values",
+            ),
+            (
+                DiagnosticCounterV1::MapInputNextInlineDataBytes,
+                "map_input_next_inline_data_bytes",
+            ),
+            (
+                DiagnosticCounterV1::MapInputNextInlineChildRefs,
+                "map_input_next_inline_child_refs",
+            ),
+            (
+                DiagnosticCounterV1::MapInputNextWireBytes,
+                "map_input_next_wire_bytes",
+            ),
             (
                 DiagnosticCounterV1::TextOccurrencePriorValidationAttempts,
                 "text_occurrence_prior_validation_attempts",
@@ -2566,6 +2671,42 @@ mod tests {
             (DiagnosticCounterV1::WorkWrites, "work_writes"),
             (DiagnosticCounterV1::WorkBytes, "work_bytes"),
             (DiagnosticCounterV1::WorkMutations, "work_mutations"),
+            (
+                DiagnosticCounterV1::TextCaseOccurrences,
+                "text_case_occurrences",
+            ),
+            (
+                DiagnosticCounterV1::TextUniqueCanonicalTerms,
+                "text_unique_canonical_terms",
+            ),
+            (
+                DiagnosticCounterV1::TextOccurrenceKeyBytes,
+                "text_occurrence_key_bytes",
+            ),
+            (
+                DiagnosticCounterV1::TextUniqueKeyBytes,
+                "text_unique_key_bytes",
+            ),
+            (
+                DiagnosticCounterV1::TextColdAliasOwners,
+                "text_cold_alias_owners",
+            ),
+            (
+                DiagnosticCounterV1::TextColdDirectOwners,
+                "text_cold_direct_owners",
+            ),
+            (
+                DiagnosticCounterV1::TextColdSqlOwners,
+                "text_cold_sql_owners",
+            ),
+            (
+                DiagnosticCounterV1::TextColdEmptyOwners,
+                "text_cold_empty_owners",
+            ),
+            (
+                DiagnosticCounterV1::TextShapeCompleteOwners,
+                "text_shape_complete_owners",
+            ),
             (DiagnosticCounterV1::SqliteWriteCalls, "sqlite_write_calls"),
             (
                 DiagnosticCounterV1::SqliteWriteRequestedBytes,
@@ -2608,6 +2749,22 @@ mod tests {
             (
                 DiagnosticCounterV1::ManagedObjectInputs,
                 "managed_object_inputs",
+            ),
+            (
+                DiagnosticCounterV1::ManagedObjectExternalChildReferences,
+                "managed_object_external_child_references",
+            ),
+            (
+                DiagnosticCounterV1::ManagedObjectUniqueExternalChildren,
+                "managed_object_unique_external_children",
+            ),
+            (
+                DiagnosticCounterV1::ManagedObjectGuardedRepeatedExternalChildren,
+                "managed_object_guarded_repeated_external_children",
+            ),
+            (
+                DiagnosticCounterV1::ManagedObjectReusedExternalChildValidations,
+                "managed_object_reused_external_child_validations",
             ),
             (DiagnosticCounterV1::CompactedSegments, "compacted_segments"),
             (

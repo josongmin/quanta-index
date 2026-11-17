@@ -1166,6 +1166,113 @@ pub struct SqliteCapacityVfs {
     funding_policy: FundingPolicy,
 }
 impl SqliteCapacityVfs {
+    pub(crate) fn recovery_reader_handle_ceiling_v1(
+        &self,
+        saved_global_ceiling: u32,
+    ) -> Result<usize, IndexError> {
+        let actual = self.router.global_max_open_handles;
+        if actual == 0 || actual > saved_global_ceiling {
+            return Err(IndexError::ResourceLimited);
+        }
+        usize::try_from(actual).map_err(|_| IndexError::ResourceLimited)
+    }
+    pub(crate) fn recovery_sibling_allocation_bytes_v1(
+        &self,
+        entries: u64,
+        max_path: usize,
+    ) -> Result<u64, CoreError> {
+        Self::recovery_scope_allocation_bytes_v1(entries, max_path, self.name.len())
+    }
+    /// Admit the first Native recovery scope before constructing its VFS.
+    /// The process router is charged once conservatively even when an existing
+    /// registered router is reused by this recovery process.
+    pub(crate) fn initial_recovery_allocation_bytes_v1(
+        entries: u64,
+        max_path: usize,
+        name_length: usize,
+    ) -> Result<u64, CoreError> {
+        let scope = Self::recovery_scope_allocation_bytes_v1(entries, max_path, name_length)?;
+        let router = quanta_index_core::index::MemoryLease::shared_allocation_backing_layout(
+            std::alloc::Layout::new::<Router>(),
+        )
+        .map_err(|_| CoreError::InvalidContract("recovery router Arc layout overflow".into()))?;
+        scope
+            .checked_add(u64::try_from(router.size()).map_err(|_| {
+                CoreError::InvalidContract("recovery router Arc width overflow".into())
+            })?)
+            .ok_or_else(|| {
+                CoreError::InvalidContract("recovery VFS router backing overflow".into())
+            })
+    }
+    fn recovery_scope_allocation_bytes_v1(
+        entries: u64,
+        max_path: usize,
+        name_length: usize,
+    ) -> Result<u64, CoreError> {
+        fn arc<T>() -> Result<u64, CoreError> {
+            let l = quanta_index_core::index::MemoryLease::shared_allocation_backing_layout(
+                std::alloc::Layout::new::<T>(),
+            )
+            .map_err(|_| CoreError::InvalidContract("recovery VFS Arc layout overflow".into()))?;
+            u64::try_from(l.size())
+                .map_err(|_| CoreError::InvalidContract("recovery VFS Arc width overflow".into()))
+        }
+        let row = quanta_index_core::publication_capacity::publication_inventory_map_node_bytes_v1::<
+            u64,
+            Handle,
+        >()?;
+        let scope =
+            quanta_index_core::publication_capacity::publication_inventory_map_node_bytes_v1::<
+                NonZeroU64,
+                ScopedAdapter,
+            >()?;
+        let paths = u64::try_from(max_path)
+            .map_err(|_| CoreError::InvalidContract("recovery VFS path width".into()))?
+            .checked_add(8)
+            .and_then(|n| n.checked_mul(8))
+            .ok_or_else(|| {
+                CoreError::InvalidContract("recovery VFS path backing overflow".into())
+            })?;
+        let name = u64::try_from(name_length)
+            .map_err(|_| CoreError::InvalidContract("recovery VFS name width".into()))?
+            .checked_add(1)
+            .and_then(|n| n.checked_mul(2))
+            .ok_or_else(|| {
+                CoreError::InvalidContract("recovery VFS name backing overflow".into())
+            })?;
+        let fixed = scope
+            .checked_add(arc::<Adapter>()?)
+            .and_then(|n| n.checked_add(name))
+            .ok_or_else(|| {
+                CoreError::InvalidContract("recovery VFS fixed backing overflow".into())
+            })?;
+        row.checked_add(paths)
+            .and_then(|n| n.checked_mul(entries))
+            .and_then(|n| n.checked_add(fixed))
+            .ok_or_else(|| CoreError::InvalidContract("recovery VFS backing overflow".into()))
+    }
+    pub(crate) fn register_recovery_sibling_v1(
+        &self,
+        common: Arc<PublicationFileCapacity>,
+        saved_global_ceiling: u32,
+        budget: &mut WorkBudget,
+    ) -> Result<Self, IndexError> {
+        budget.checkpoint()?;
+        if self.router.global_max_open_handles > saved_global_ceiling {
+            return Err(IndexError::ResourceLimited);
+        }
+        // Reuse the already registered real process driver/name/pool. The
+        // saved policy is a ceiling, never permission to create a second pool.
+        budget.charge(quanta_index_core::index::WorkUsage {
+            reads: 3,
+            bytes: 16,
+            ..Default::default()
+        })?;
+        let name = CString::new(self.name.as_bytes()).map_err(|_| IndexError::DigestConflict)?;
+        Self::register_funded(common, name, self.router.global_max_open_handles)
+            .map_err(|error| catalog_file_error(&error))
+    }
+
     pub fn register(
         common: Arc<PublicationFileCapacity>,
         name: CString,

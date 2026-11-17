@@ -256,7 +256,7 @@ fn chunk_owner_prepare_verify_and_readback_preserve_ordered_gold_and_provider_in
     let custody = TestCustody;
     let scratch = NoScratch;
     let input = chunk_input(source, &recipe);
-    let member = {
+    let (member, expected_chunks, expected_vectors) = {
         let mut context = AttemptContext {
             attempt: attempt(),
             objects: &store,
@@ -305,7 +305,12 @@ fn chunk_owner_prepare_verify_and_readback_preserve_ordered_gold_and_provider_in
                 .ok_or("missing vector for ordered chunk member")?;
             check_eq!(&vector.values, &values);
         }
-        crate::run_blocking(&runtime, adapter.verify_owner(candidate, &mut context))?
+        // The fixed gold above is checked before persistence. Reopening must
+        // preserve every validated coordinate, identity, and original vector.
+        let chunks = candidate.artifact.chunks.clone();
+        let vectors = candidate.artifact.vectors.clone();
+        let member = crate::run_blocking(&runtime, adapter.verify_owner(candidate, &mut context))?;
+        (member, chunks, vectors)
     };
     check_eq!(calls.load(AtomicOrdering::SeqCst), 1);
     check_eq!(
@@ -316,6 +321,8 @@ fn chunk_owner_prepare_verify_and_readback_preserve_ordered_gold_and_provider_in
         &[vec!["Aé\n".to_owned(), "🙂".to_owned(), "B".to_owned()]]
     );
     let loaded = load_owner_artifact(&store, &mut work, &member, &recipe)?;
+    check_eq!(loaded.chunks, expected_chunks);
+    check_eq!(loaded.vectors, expected_vectors);
     check_eq!(loaded.chunks.len(), 3);
     check_eq!(loaded.vectors.len(), 3);
     check_eq!(

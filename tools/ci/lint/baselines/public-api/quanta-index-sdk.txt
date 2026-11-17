@@ -129,6 +129,7 @@ pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Explain
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::GoTestTraceFileV1
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::History
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Hybrid
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::HybridFileV1
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::HybridSeed
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::RepoMapQuery
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::ResolvedLexicalGeneration
@@ -182,6 +183,10 @@ pub quanta_index_sdk::native_connect_v1::NativeSdkConnectFailureV1::ArithmeticOv
 pub quanta_index_sdk::native_connect_v1::NativeSdkConnectFailureV1::InvalidNativeCapacity
 pub quanta_index_sdk::native_connect_v1::NativeSdkConnectFailureV1::InvalidNativeProducer
 pub quanta_index_sdk::native_connect_v1::NativeSdkConnectFailureV1::IoPolicy(quanta_index_ipc::error::IpcError)
+pub quanta_index_sdk::native_connect_v1::NativeSdkConnectFailureV1::MixedLegacyEndpoints
+pub quanta_index_sdk::native_connect_v1::NativeSdkConnectFailureV1::NativeSelectionRequired
+pub quanta_index_sdk::native_connect_v1::NativeSdkConnectFailureV1::NativeSocketNotAbsolute
+pub quanta_index_sdk::native_connect_v1::NativeSdkConnectFailureV1::NativeSocketRequired
 pub quanta_index_sdk::native_connect_v1::NativeSdkConnectFailureV1::PathAllocation
 pub quanta_index_sdk::native_connect_v1::NativeSdkConnectFailureV1::SocketUnresolved(&'static str)
 pub quanta_index_sdk::native_connect_v1::NativeSdkConnectFailureV1::UnsupportedEnvironmentLookup
@@ -285,6 +290,8 @@ pub fn quanta_index_sdk::native_index::NativeIndexTransport::status(&self, opera
 pub fn quanta_index_sdk::native_index::NativeIndexTransport::submit(&self, request: quanta_index_contract::index::UpdateRequest) -> quanta_index_sdk::native_index::NativeFuture<'_, quanta_index_contract::index::OperationReply<quanta_index_contract::index::SubmitOutcome>>
 pub type quanta_index_sdk::native_index::NativeFuture<'a, T> = core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<T, quanta_index_sdk::native_index::NativeSubmitError>> + core::marker::Send + 'a)>>
 pub mod quanta_index_sdk::native_uds
+pub use quanta_index_sdk::native_uds::MAX_NATIVE_STAGE_SOURCES_INPUTS
+pub use quanta_index_sdk::native_uds::MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES
 pub enum quanta_index_sdk::native_uds::NativeEffortStreamStage<'a>
 pub quanta_index_sdk::native_uds::NativeEffortStreamStage::Deep(&'a quanta_index_contract::native_protocol::NativeSemanticResult)
 pub quanta_index_sdk::native_uds::NativeEffortStreamStage::Fast(&'a quanta_index_contract::native_protocol::NativeTextResult)
@@ -298,11 +305,15 @@ impl<'a> core::marker::UnsafeUnpin for quanta_index_sdk::native_uds::NativeEffor
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::native_uds::NativeEffortStreamStage<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::native_uds::NativeEffortStreamStage<'a>
 pub enum quanta_index_sdk::native_uds::NativeUdsError
+pub quanta_index_sdk::native_uds::NativeUdsError::PeerBindingRefused(quanta_index_ipc::peer_process_v1::PeerBindingRefusalV1)
 pub quanta_index_sdk::native_uds::NativeUdsError::Protocol(alloc::string::String)
 pub quanta_index_sdk::native_uds::NativeUdsError::Refused(quanta_index_contract::native_protocol::NativeIndexWireError)
 pub quanta_index_sdk::native_uds::NativeUdsError::Transport(alloc::string::String)
 pub quanta_index_sdk::native_uds::NativeUdsError::Unknown(quanta_index_contract_base::index_refs::OperationKey)
+impl core::convert::From<quanta_index_sdk::native_uds::NativeUdsError> for quanta_index_sdk::NativeQueryError
+pub fn quanta_index_sdk::NativeQueryError::from(source: quanta_index_sdk::native_uds::NativeUdsError) -> Self
 impl core::error::Error for quanta_index_sdk::native_uds::NativeUdsError
+pub fn quanta_index_sdk::native_uds::NativeUdsError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for quanta_index_sdk::native_uds::NativeUdsError
 pub fn quanta_index_sdk::native_uds::NativeUdsError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for quanta_index_sdk::native_uds::NativeUdsError
@@ -326,6 +337,20 @@ impl core::marker::Unpin for quanta_index_sdk::native_uds::AdmittedNativePublica
 impl core::marker::UnsafeUnpin for quanta_index_sdk::native_uds::AdmittedNativePublicationReply
 impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::native_uds::AdmittedNativePublicationReply
 impl !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::native_uds::AdmittedNativePublicationReply
+pub struct quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1
+impl quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1
+pub fn quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1::peer_credentials(&self) -> &quanta_index_ipc::socket_access::PeerCredentials
+pub fn quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1::peer_process_v1(&self) -> &quanta_index_ipc::peer_process_v1::KernelConnectedPeerProcessV1
+pub fn quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1::response(&self) -> &quanta_index_contract::native_protocol::NativeIndexResponse
+impl core::fmt::Debug for quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1
+pub fn quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1
+impl core::marker::Send for quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1
+impl core::marker::Sync for quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1
+impl core::marker::Unpin for quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1
+impl core::marker::UnsafeUnpin for quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1
+impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1
+impl !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1
 pub struct quanta_index_sdk::native_uds::AdmittedNativeStubReply
 impl quanta_index_sdk::native_uds::AdmittedNativeStubReply
 pub fn quanta_index_sdk::native_uds::AdmittedNativeStubReply::reply(&self) -> &quanta_index_contract::native_protocol::stub::NativeStubReply
@@ -411,6 +436,12 @@ pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::submit(&self, request: 
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::submit_borrowed(&self, request: &quanta_index_contract::index::UpdateRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::index::SubmitOutcome, quanta_index_sdk::native_uds::NativeUdsError>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::submit_borrowed_admitted(&self, request: &quanta_index_contract::index::UpdateRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::native_uds::NativeUdsError>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::update_overlay_at_path(&self, document: quanta_index_contract::native_protocol::headless::NativeOverlayDocument, expected_revision: core::option::Option<u64>, revision: u64, text: core::option::Option<alloc::string::String>, path: core::option::Option<alloc::string::String>, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::headless::NativeOverlayReply, quanta_index_sdk::native_uds::NativeUdsError>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::with_bound_peer_process_v1(self, peer_v1: &quanta_index_ipc::peer_process_v1::KernelConnectedPeerProcessLeaseV1) -> Self
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::with_observed_query_peer_v1(self, peer_v1: &quanta_index_ipc::peer_process_v1::KernelConnectedPeerProcessLeaseV1) -> Self
+impl<P: core::convert::AsRef<std::path::Path>> quanta_index_sdk::native_uds::NativeUdsClient<P>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::capture_peer_process_admitted_v1(&self, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_ipc::peer_process_v1::KernelConnectedPeerProcessV1, quanta_index_sdk::native_uds::NativeUdsError>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::observe_root_view(&self, selection: quanta_index_contract::index::ViewSelection, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::NativeRootScopedViewV1, quanta_index_sdk::native_uds::NativeUdsError>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::observe_root_view_admitted(&self, selection: quanta_index_contract::index::ViewSelection, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativeRootScopedViewReplyV1, quanta_index_sdk::native_uds::NativeUdsError>
 impl<P: core::convert::AsRef<std::path::Path>> quanta_index_sdk::native_uds::NativeUdsClient<P>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::open_read_session(&self, selection: quanta_index_contract::index::ViewSelection, open_key: [u8; 32], budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, quanta_index_sdk::native_uds::NativeUdsError>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::read_session_settlement(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::read_session::NativeReadSessionSettlement, quanta_index_sdk::native_uds::NativeUdsError>
@@ -419,16 +450,32 @@ pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::release_read_session(&s
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::renew_read_session(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, quanta_index_sdk::native_uds::NativeUdsError>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::search_text_in_read_session(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, instance: quanta_index_contract_base::index_refs::IndexInstanceId, query: quanta_index_contract_base::query::requests::TextQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::NativeTextResult, quanta_index_sdk::native_uds::NativeUdsError>
 impl<P: core::convert::AsRef<std::path::Path>> quanta_index_sdk::native_uds::NativeUdsClient<P>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::open_read_session_admitted(&self, selection: quanta_index_contract::index::ViewSelection, open_key: [u8; 32], budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::native_uds::NativeUdsError>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::read_session_profile_admitted(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::native_uds::NativeUdsError>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::release_read_session_admitted(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::native_uds::NativeUdsError>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::search_hybrid_file_in_read_session_admitted(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, text_instance: quanta_index_contract_base::index_refs::IndexInstanceId, semantic_instance: quanta_index_contract_base::index_refs::IndexInstanceId, text_query: quanta_index_contract_base::query::requests::TextQueryRequest, semantic_query: quanta_index_contract::query::requests::SemanticQueryRequest, file_top_k: u32, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::native_uds::NativeUdsError>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::search_text_in_read_session_admitted(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, instance: quanta_index_contract_base::index_refs::IndexInstanceId, query: quanta_index_contract_base::query::requests::TextQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::native_uds::NativeUdsError>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::search_text_page_in_read_session_admitted(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, instance: quanta_index_contract_base::index_refs::IndexInstanceId, query: quanta_index_contract_base::query::requests::TextQueryRequest, after: core::option::Option<quanta_index_contract::native_protocol::read_session::NativeTextCursor>, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::native_uds::NativeUdsError>
+impl<P: core::convert::AsRef<std::path::Path>> quanta_index_sdk::native_uds::NativeUdsClient<P>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::published_view_metadata(&self, operation: quanta_index_contract_base::index_refs::OperationKey, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::index::CatalogView, quanta_index_sdk::native_uds::NativeUdsError>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::published_view_metadata_admitted(&self, operation: quanta_index_contract_base::index_refs::OperationKey, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::native_uds::NativeUdsError>
+impl<P: core::convert::AsRef<std::path::Path>> quanta_index_sdk::native_uds::NativeUdsClient<P>
 pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::query_repomap(&self, selection: quanta_index_contract::index::ViewSelection, instance: quanta_index_contract_base::index_refs::IndexInstanceId, query: quanta_index_contract::native_protocol::graph::ranking::NativeRepoMapQuery, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::graph::ranking::NativeRepoMapResult, quanta_index_sdk::native_uds::NativeUdsError>
+impl<P: core::convert::AsRef<std::path::Path>> quanta_index_sdk::native_uds::NativeUdsClient<P>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::read_session_profile(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::read_session::NativeReadSessionProfile, quanta_index_sdk::native_uds::NativeUdsError>
+impl<P: core::convert::AsRef<std::path::Path>> quanta_index_sdk::native_uds::NativeUdsClient<P>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::search_history_in_read_session(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, instance: quanta_index_contract_base::index_refs::IndexInstanceId, query: quanta_index_contract::query::requests::HistoryQueryRequest, after: core::option::Option<quanta_index_contract::native_protocol::read_session::history::NativeHistoryCursor>, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::read_session::history::NativeHistoryPage, quanta_index_sdk::native_uds::NativeUdsError>
+impl<P: core::convert::AsRef<std::path::Path>> quanta_index_sdk::native_uds::NativeUdsClient<P>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::search_hybrid_file_in_read_session(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, text_instance: quanta_index_contract_base::index_refs::IndexInstanceId, semantic_instance: quanta_index_contract_base::index_refs::IndexInstanceId, text_query: quanta_index_contract_base::query::requests::TextQueryRequest, semantic_query: quanta_index_contract::query::requests::SemanticQueryRequest, file_top_k: u32, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::read_session::NativeHybridFileResult, quanta_index_sdk::native_uds::NativeUdsError>
+impl<P: core::convert::AsRef<std::path::Path>> quanta_index_sdk::native_uds::NativeUdsClient<P>
+pub fn quanta_index_sdk::native_uds::NativeUdsClient<P>::search_text_page_in_read_session(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, instance: quanta_index_contract_base::index_refs::IndexInstanceId, query: quanta_index_contract_base::query::requests::TextQueryRequest, after: core::option::Option<quanta_index_contract::native_protocol::read_session::NativeTextCursor>, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::read_session::NativeTextPage, quanta_index_sdk::native_uds::NativeUdsError>
 impl<P> !core::marker::Freeze for quanta_index_sdk::native_uds::NativeUdsClient<P>
 impl<P> core::marker::Send for quanta_index_sdk::native_uds::NativeUdsClient<P> where P: core::marker::Send
 impl<P> core::marker::Sync for quanta_index_sdk::native_uds::NativeUdsClient<P> where P: core::marker::Sync
 impl<P> core::marker::Unpin for quanta_index_sdk::native_uds::NativeUdsClient<P> where P: core::marker::Unpin
 impl<P> core::marker::UnsafeUnpin for quanta_index_sdk::native_uds::NativeUdsClient<P> where P: core::marker::UnsafeUnpin
-impl<P> core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::native_uds::NativeUdsClient<P> where P: core::panic::unwind_safe::RefUnwindSafe
-impl<P> core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::native_uds::NativeUdsClient<P> where P: core::panic::unwind_safe::UnwindSafe
-pub const quanta_index_sdk::native_uds::MAX_NATIVE_STAGE_SOURCES_INPUTS: usize
-pub const quanta_index_sdk::native_uds::MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES: usize
+impl<P> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::native_uds::NativeUdsClient<P>
+impl<P> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::native_uds::NativeUdsClient<P>
 pub mod quanta_index_sdk::preparation
 #[non_exhaustive] pub enum quanta_index_sdk::preparation::PreparationError
 pub quanta_index_sdk::preparation::PreparationError::AdapterMismatch
@@ -854,6 +901,7 @@ pub quanta_index_sdk::ExpectedQueryResponseV1::Explain
 pub quanta_index_sdk::ExpectedQueryResponseV1::GoTestTraceFileV1
 pub quanta_index_sdk::ExpectedQueryResponseV1::History
 pub quanta_index_sdk::ExpectedQueryResponseV1::Hybrid
+pub quanta_index_sdk::ExpectedQueryResponseV1::HybridFileV1
 pub quanta_index_sdk::ExpectedQueryResponseV1::HybridSeed
 pub quanta_index_sdk::ExpectedQueryResponseV1::RepoMapQuery
 pub quanta_index_sdk::ExpectedQueryResponseV1::ResolvedLexicalGeneration
@@ -881,6 +929,66 @@ impl core::marker::Unpin for quanta_index_sdk::binding::ExpectedQueryResponseV1
 impl core::marker::UnsafeUnpin for quanta_index_sdk::binding::ExpectedQueryResponseV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::binding::ExpectedQueryResponseV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::binding::ExpectedQueryResponseV1
+#[non_exhaustive] pub enum quanta_index_sdk::LegacyQueryCapabilityV1
+pub quanta_index_sdk::LegacyQueryCapabilityV1::ClusterMembershipRead
+pub quanta_index_sdk::LegacyQueryCapabilityV1::Explain
+pub quanta_index_sdk::LegacyQueryCapabilityV1::GoTestTraceFileV1
+pub quanta_index_sdk::LegacyQueryCapabilityV1::History
+pub quanta_index_sdk::LegacyQueryCapabilityV1::Hybrid
+pub quanta_index_sdk::LegacyQueryCapabilityV1::HybridFileV1
+pub quanta_index_sdk::LegacyQueryCapabilityV1::HybridSeed
+pub quanta_index_sdk::LegacyQueryCapabilityV1::RepoMapQuery
+pub quanta_index_sdk::LegacyQueryCapabilityV1::ResolveActiveGeneration
+pub quanta_index_sdk::LegacyQueryCapabilityV1::ResolveLexicalGeneration
+pub quanta_index_sdk::LegacyQueryCapabilityV1::RuntimeMetadata
+pub quanta_index_sdk::LegacyQueryCapabilityV1::Semantic
+pub quanta_index_sdk::LegacyQueryCapabilityV1::SemanticWorkBoundedV1
+pub quanta_index_sdk::LegacyQueryCapabilityV1::Structural
+pub quanta_index_sdk::LegacyQueryCapabilityV1::Symbol
+pub quanta_index_sdk::LegacyQueryCapabilityV1::Text
+impl quanta_index_sdk::LegacyQueryCapabilityV1
+pub const fn quanta_index_sdk::LegacyQueryCapabilityV1::as_str(self) -> &'static str
+pub const fn quanta_index_sdk::LegacyQueryCapabilityV1::code(self) -> quanta_index_contract::native_protocol::NativeIndexErrorCode
+impl core::clone::Clone for quanta_index_sdk::LegacyQueryCapabilityV1
+pub fn quanta_index_sdk::LegacyQueryCapabilityV1::clone(&self) -> quanta_index_sdk::LegacyQueryCapabilityV1
+impl core::cmp::Eq for quanta_index_sdk::LegacyQueryCapabilityV1
+impl core::cmp::PartialEq for quanta_index_sdk::LegacyQueryCapabilityV1
+pub fn quanta_index_sdk::LegacyQueryCapabilityV1::eq(&self, other: &quanta_index_sdk::LegacyQueryCapabilityV1) -> bool
+impl core::fmt::Debug for quanta_index_sdk::LegacyQueryCapabilityV1
+pub fn quanta_index_sdk::LegacyQueryCapabilityV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_sdk::LegacyQueryCapabilityV1
+impl core::marker::StructuralPartialEq for quanta_index_sdk::LegacyQueryCapabilityV1
+impl core::marker::Freeze for quanta_index_sdk::LegacyQueryCapabilityV1
+impl core::marker::Send for quanta_index_sdk::LegacyQueryCapabilityV1
+impl core::marker::Sync for quanta_index_sdk::LegacyQueryCapabilityV1
+impl core::marker::Unpin for quanta_index_sdk::LegacyQueryCapabilityV1
+impl core::marker::UnsafeUnpin for quanta_index_sdk::LegacyQueryCapabilityV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::LegacyQueryCapabilityV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::LegacyQueryCapabilityV1
+pub enum quanta_index_sdk::NativeQueryError
+pub quanta_index_sdk::NativeQueryError::AmbiguousInstance
+pub quanta_index_sdk::NativeQueryError::DeadlineOverflow
+pub quanta_index_sdk::NativeQueryError::InactiveSession
+pub quanta_index_sdk::NativeQueryError::InstanceMismatch
+pub quanta_index_sdk::NativeQueryError::MissingOpenKey
+pub quanta_index_sdk::NativeQueryError::ProfileBindingMismatch
+pub quanta_index_sdk::NativeQueryError::ProfileRequired
+pub quanta_index_sdk::NativeQueryError::Transport(quanta_index_sdk::native_uds::NativeUdsError)
+impl core::convert::From<quanta_index_sdk::native_uds::NativeUdsError> for quanta_index_sdk::NativeQueryError
+pub fn quanta_index_sdk::NativeQueryError::from(source: quanta_index_sdk::native_uds::NativeUdsError) -> Self
+impl core::error::Error for quanta_index_sdk::NativeQueryError
+pub fn quanta_index_sdk::NativeQueryError::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for quanta_index_sdk::NativeQueryError
+pub fn quanta_index_sdk::NativeQueryError::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for quanta_index_sdk::NativeQueryError
+pub fn quanta_index_sdk::NativeQueryError::fmt(&self, __formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for quanta_index_sdk::NativeQueryError
+impl core::marker::Send for quanta_index_sdk::NativeQueryError
+impl core::marker::Sync for quanta_index_sdk::NativeQueryError
+impl core::marker::Unpin for quanta_index_sdk::NativeQueryError
+impl core::marker::UnsafeUnpin for quanta_index_sdk::NativeQueryError
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::NativeQueryError
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::NativeQueryError
 #[non_exhaustive] pub enum quanta_index_sdk::PublishedBatchFailureStage
 pub quanta_index_sdk::PublishedBatchFailureStage::Activation
 pub quanta_index_sdk::PublishedBatchFailureStage::Observation
@@ -1003,6 +1111,8 @@ pub quanta_index_sdk::SdkError::Remote::message: alloc::string::String
 pub quanta_index_sdk::SdkError::Remote::repair: core::option::Option<quanta_index_contract::ipc::error::QueryErrorRepair>
 pub quanta_index_sdk::SdkError::Serialization(alloc::string::String)
 pub quanta_index_sdk::SdkError::Transport(quanta_index_ipc::error::IpcError)
+pub quanta_index_sdk::SdkError::UnsupportedNativeQuery
+pub quanta_index_sdk::SdkError::UnsupportedNativeQuery::capability: quanta_index_sdk::LegacyQueryCapabilityV1
 pub quanta_index_sdk::SdkError::Usage(alloc::string::String)
 impl quanta_index_sdk::SdkError
 pub fn quanta_index_sdk::SdkError::published_evidence(&self) -> core::option::Option<&quanta_index_sdk::PublishedBatchEvidence>
@@ -1100,6 +1210,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::ClientQueryRp
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::ClientQueryRpcObservationV1
 pub struct quanta_index_sdk::ConnectOptions<P>
 impl quanta_index_sdk::ConnectOptions
+pub fn quanta_index_sdk::ConnectOptions::from_native_socket(path: impl core::convert::Into<std::path::PathBuf>, selection: quanta_index_contract::index::ViewSelection) -> Self
 pub fn quanta_index_sdk::ConnectOptions::from_state_root(path: impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn quanta_index_sdk::ConnectOptions::with_control_socket(self, path: impl core::convert::Into<std::path::PathBuf>) -> Self
 pub fn quanta_index_sdk::ConnectOptions::with_ingest_socket(self, path: impl core::convert::Into<std::path::PathBuf>) -> Self
@@ -1111,6 +1222,7 @@ pub fn quanta_index_sdk::ConnectOptions<&'input std::path::Path>::with_borrowed_
 pub fn quanta_index_sdk::ConnectOptions<&'input std::path::Path>::with_borrowed_ingest_socket_v1(self, path: &'input std::path::Path) -> Self
 pub fn quanta_index_sdk::ConnectOptions<&'input std::path::Path>::with_borrowed_query_socket_v1(self, path: &'input std::path::Path) -> Self
 impl<P> quanta_index_sdk::ConnectOptions<P>
+pub fn quanta_index_sdk::ConnectOptions<P>::with_native_selection(self, selection: quanta_index_contract::index::ViewSelection) -> Self
 pub fn quanta_index_sdk::ConnectOptions<P>::with_request_io_deadline(self, deadline: std::time::Instant) -> Self
 pub fn quanta_index_sdk::ConnectOptions<P>::with_request_io_timeout(self, timeout: core::time::Duration) -> Self
 impl core::default::Default for quanta_index_sdk::ConnectOptions
@@ -1376,7 +1488,10 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool,
 pub struct quanta_index_sdk::HybridQueryBuilder<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>
 pub fn quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>::execute(self) -> core::result::Result<quanta_index_contract::results::query_responses::HybridQueryResponse, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>::files(self, file_top_k: u32) -> core::result::Result<quanta_index_contract::results::hybrid_file::HybridFileQueryResponseV1, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>::go_test_trace_file(self, failure_excerpt: impl core::convert::Into<alloc::string::String>, file_top_k: u32) -> core::result::Result<quanta_index_contract::results::go_test_trace_file::GoTestTraceFileQueryResponseV1, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>::go_test_trace_file_with_module_context(self, source_repo_id: quanta_index_contract_base::ids::RepoId, module_context: quanta_index_contract::query::go_test_trace_file::GoTestTraceModuleContextV1, failure_excerpt: impl core::convert::Into<alloc::string::String>, file_top_k: u32) -> core::result::Result<quanta_index_contract::results::go_test_trace_file::GoTestTraceFileQueryResponseV1, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>::go_test_trace_file_with_rank_pools(self, failure_source_repo_id: core::option::Option<quanta_index_contract_base::ids::RepoId>, failure_module_context: core::option::Option<quanta_index_contract::query::go_test_trace_file::GoTestTraceModuleContextV1>, failure_excerpt: impl core::convert::Into<alloc::string::String>, file_top_k: u32) -> core::result::Result<quanta_index_contract::results::go_test_trace_file::GoTestTraceFileQueryResponseV1, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::HybridQueryBuilder<'_, true, true, true, true>::go_test_trace_file_with_source_context(self, source_repo_id: quanta_index_contract_base::ids::RepoId, failure_excerpt: impl core::convert::Into<alloc::string::String>, file_top_k: u32) -> core::result::Result<quanta_index_contract::results::go_test_trace_file::GoTestTraceFileQueryResponseV1, quanta_index_sdk::SdkError>
 impl<'a, const HAS_TEXT: bool, const HAS_SEMANTIC_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>
 pub fn quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, HAS_SELECTION, HAS_TOP_K>::active(self, repo_id: quanta_index_contract_base::ids::RepoId, revision_id: quanta_index_contract_base::ids::RevisionId) -> quanta_index_sdk::HybridQueryBuilder<'a, HAS_TEXT, HAS_SEMANTIC_TEXT, true, HAS_TOP_K>
@@ -1447,6 +1562,49 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> core::marker::UnsafeUnpin for quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::LexicalQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
+pub struct quanta_index_sdk::NativeQueryReader<'a>
+impl quanta_index_sdk::NativeQueryReader<'_>
+pub fn quanta_index_sdk::NativeQueryReader<'_>::hybrid_file_admitted(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, profile: &quanta_index_sdk::native_uds::AdmittedNativePublicationReply, text: &quanta_index_contract::index::InstanceSpec, semantic: &quanta_index_contract::index::InstanceSpec, text_query: quanta_index_contract_base::query::requests::TextQueryRequest, semantic_query: quanta_index_contract::query::requests::SemanticQueryRequest, file_top_k: u32, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::NativeQueryError>
+pub fn quanta_index_sdk::NativeQueryReader<'_>::open_admitted(&self, open_key: [u8; 32], budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::NativeQueryError>
+pub fn quanta_index_sdk::NativeQueryReader<'_>::profile_admitted(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::NativeQueryError>
+pub fn quanta_index_sdk::NativeQueryReader<'_>::release_admitted(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::NativeQueryError>
+pub fn quanta_index_sdk::NativeQueryReader<'_>::text_admitted(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, profile: &quanta_index_sdk::native_uds::AdmittedNativePublicationReply, instance: &quanta_index_contract::index::InstanceSpec, query: quanta_index_contract_base::query::requests::TextQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::NativeQueryError>
+pub fn quanta_index_sdk::NativeQueryReader<'_>::text_page_admitted(&self, expected: &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus, profile: &quanta_index_sdk::native_uds::AdmittedNativePublicationReply, instance: &quanta_index_contract::index::InstanceSpec, query: quanta_index_contract_base::query::requests::TextQueryRequest, after: core::option::Option<quanta_index_contract::native_protocol::read_session::NativeTextCursor>, budget: &quanta_index_core::request_budget::RequestBudgetV1, memory: &quanta_index_core::index::memory::MemoryScope) -> core::result::Result<quanta_index_sdk::native_uds::AdmittedNativePublicationReply, quanta_index_sdk::NativeQueryError>
+impl<'a> quanta_index_sdk::NativeQueryReader<'a>
+pub fn quanta_index_sdk::NativeQueryReader<'a>::graph(&self, instance: quanta_index_contract_base::index_refs::IndexInstanceId, query: quanta_index_contract::native_protocol::graph::NativeGraphQuery, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::graph::NativeGraphResult, quanta_index_sdk::NativeQueryError>
+pub fn quanta_index_sdk::NativeQueryReader<'a>::open(self, open_key: [u8; 32], budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_sdk::NativeQuerySession<'a>, quanta_index_sdk::NativeQueryError>
+pub fn quanta_index_sdk::NativeQueryReader<'a>::repomap(&self, instance: quanta_index_contract_base::index_refs::IndexInstanceId, query: quanta_index_contract::native_protocol::graph::ranking::NativeRepoMapQuery, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::graph::ranking::NativeRepoMapResult, quanta_index_sdk::NativeQueryError>
+pub fn quanta_index_sdk::NativeQueryReader<'a>::semantic(&self, instance: quanta_index_contract_base::index_refs::IndexInstanceId, query: quanta_index_contract::query::requests::SemanticQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::NativeSemanticResult, quanta_index_sdk::NativeQueryError>
+impl<'a> core::clone::Clone for quanta_index_sdk::NativeQueryReader<'a>
+pub fn quanta_index_sdk::NativeQueryReader<'a>::clone(&self) -> quanta_index_sdk::NativeQueryReader<'a>
+impl<'a> core::marker::Copy for quanta_index_sdk::NativeQueryReader<'a>
+impl<'a> core::marker::Freeze for quanta_index_sdk::NativeQueryReader<'a>
+impl<'a> core::marker::Send for quanta_index_sdk::NativeQueryReader<'a>
+impl<'a> core::marker::Sync for quanta_index_sdk::NativeQueryReader<'a>
+impl<'a> core::marker::Unpin for quanta_index_sdk::NativeQueryReader<'a>
+impl<'a> core::marker::UnsafeUnpin for quanta_index_sdk::NativeQueryReader<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::NativeQueryReader<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::NativeQueryReader<'a>
+pub struct quanta_index_sdk::NativeQuerySession<'a>
+impl quanta_index_sdk::NativeQuerySession<'_>
+pub fn quanta_index_sdk::NativeQuerySession<'_>::history(&self, instance: &quanta_index_contract::index::InstanceSpec, query: quanta_index_contract::query::requests::HistoryQueryRequest, after: core::option::Option<quanta_index_contract::native_protocol::read_session::history::NativeHistoryCursor>, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::read_session::history::NativeHistoryPage, quanta_index_sdk::NativeQueryError>
+pub fn quanta_index_sdk::NativeQuerySession<'_>::hybrid_file(&self, text: &quanta_index_contract::index::InstanceSpec, semantic: &quanta_index_contract::index::InstanceSpec, text_query: quanta_index_contract_base::query::requests::TextQueryRequest, semantic_query: quanta_index_contract::query::requests::SemanticQueryRequest, file_top_k: u32, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::read_session::NativeHybridFileResult, quanta_index_sdk::NativeQueryError>
+pub fn quanta_index_sdk::NativeQuerySession<'_>::load_profile(&mut self, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<&quanta_index_contract::native_protocol::read_session::NativeReadSessionProfile, quanta_index_sdk::NativeQueryError>
+pub const fn quanta_index_sdk::NativeQuerySession<'_>::profile(&self) -> core::option::Option<&quanta_index_contract::native_protocol::read_session::NativeReadSessionProfile>
+pub fn quanta_index_sdk::NativeQuerySession<'_>::refresh_status(&mut self, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<(), quanta_index_sdk::NativeQueryError>
+pub fn quanta_index_sdk::NativeQuerySession<'_>::release(&mut self, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<bool, quanta_index_sdk::NativeQueryError>
+pub fn quanta_index_sdk::NativeQuerySession<'_>::renew(&mut self, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<(), quanta_index_sdk::NativeQueryError>
+pub fn quanta_index_sdk::NativeQuerySession<'_>::settlement(&self, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::read_session::NativeReadSessionSettlement, quanta_index_sdk::NativeQueryError>
+pub const fn quanta_index_sdk::NativeQuerySession<'_>::status(&self) -> &quanta_index_contract::native_protocol::read_session::NativeReadSessionStatus
+pub fn quanta_index_sdk::NativeQuerySession<'_>::text(&self, instance: &quanta_index_contract::index::InstanceSpec, query: quanta_index_contract_base::query::requests::TextQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::NativeTextResult, quanta_index_sdk::NativeQueryError>
+pub fn quanta_index_sdk::NativeQuerySession<'_>::text_page(&self, instance: &quanta_index_contract::index::InstanceSpec, query: quanta_index_contract_base::query::requests::TextQueryRequest, after: core::option::Option<quanta_index_contract::native_protocol::read_session::NativeTextCursor>, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::native_protocol::read_session::NativeTextPage, quanta_index_sdk::NativeQueryError>
+impl<'a> core::marker::Freeze for quanta_index_sdk::NativeQuerySession<'a>
+impl<'a> core::marker::Send for quanta_index_sdk::NativeQuerySession<'a>
+impl<'a> core::marker::Sync for quanta_index_sdk::NativeQuerySession<'a>
+impl<'a> core::marker::Unpin for quanta_index_sdk::NativeQuerySession<'a>
+impl<'a> core::marker::UnsafeUnpin for quanta_index_sdk::NativeQuerySession<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::NativeQuerySession<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::NativeQuerySession<'a>
 pub struct quanta_index_sdk::ObservabilityNamespace<'a>
 impl<'a> quanta_index_sdk::ObservabilityNamespace<'a>
 pub fn quanta_index_sdk::ObservabilityNamespace<'a>::metrics_snapshot(&self) -> core::result::Result<quanta_index_contract::ipc::metrics::MetricsSnapshotV1, quanta_index_sdk::SdkError>
@@ -1462,6 +1620,7 @@ impl<'a> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::Observabili
 pub struct quanta_index_sdk::ProducerClient<'a>
 impl<'a> quanta_index_sdk::ProducerClient<'a>
 pub fn quanta_index_sdk::ProducerClient<'a>::activate_published_search_corpus(&self, evidence: &quanta_index_sdk::PublishedBatchEvidence, expected_active: core::option::Option<quanta_index_contract::ipc::control::SearchCorpusActiveHeadV1>) -> core::result::Result<quanta_index_contract::ipc::control::SearchPlaneSearchCorpusActivationCasAck, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::ProducerClient<'a>::native(&self) -> core::result::Result<&'a quanta_index_sdk::native_uds::NativeUdsClient, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_dirty(&self, batch: &quanta_index_sdk::DirtyBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_history(&self, batch: &quanta_index_sdk::HistoryBatch) -> core::result::Result<quanta_index_sdk::BatchReceipt, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ProducerClient<'a>::publish_repomap(&self, request: &quanta_index_contract::repomap::terminal_receipt_v2::RepoMapPublishBundleRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_sdk::SdkError>
@@ -1503,6 +1662,10 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::PublishedBatchEv
 pub struct quanta_index_sdk::QuantaIndex
 impl quanta_index_sdk::QuantaIndex
 pub fn quanta_index_sdk::QuantaIndex::connect(options: quanta_index_sdk::ConnectOptions) -> core::result::Result<Self, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::QuantaIndex::connect_legacy(options: quanta_index_sdk::ConnectOptions) -> core::result::Result<Self, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::QuantaIndex::connect_legacy_query_only(options: quanta_index_sdk::ConnectOptions) -> core::result::Result<Self, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::QuantaIndex::connect_legacy_query_only_with_diagnostic_attempts(options: quanta_index_sdk::ConnectOptions, source: alloc::sync::Arc<dyn quanta_index_sdk::DiagnosticAttemptSourceV1>) -> core::result::Result<Self, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::QuantaIndex::connect_legacy_with_diagnostic_attempts(options: quanta_index_sdk::ConnectOptions, source: alloc::sync::Arc<dyn quanta_index_sdk::DiagnosticAttemptSourceV1>) -> core::result::Result<Self, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::QuantaIndex::connect_query_only(options: quanta_index_sdk::ConnectOptions) -> core::result::Result<Self, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::QuantaIndex::connect_query_only_with_diagnostic_attempts(options: quanta_index_sdk::ConnectOptions, source: alloc::sync::Arc<dyn quanta_index_sdk::DiagnosticAttemptSourceV1>) -> core::result::Result<Self, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::QuantaIndex::connect_with_diagnostic_attempts(options: quanta_index_sdk::ConnectOptions, source: alloc::sync::Arc<dyn quanta_index_sdk::DiagnosticAttemptSourceV1>) -> core::result::Result<Self, quanta_index_sdk::SdkError>
@@ -1577,6 +1740,7 @@ pub fn quanta_index_sdk::ReaderClient<'a>::hybrid_seed(&self) -> quanta_index_sd
 pub fn quanta_index_sdk::ReaderClient<'a>::hybrid_seed_request(&self, request: quanta_index_contract::query::requests::HybridSeedQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::HybridSeedQueryResponse, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ReaderClient<'a>::lexical(&self) -> quanta_index_sdk::LexicalQueryBuilder<'a>
 pub fn quanta_index_sdk::ReaderClient<'a>::lexical_request(&self, request: quanta_index_contract_base::query::requests::TextQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::TextQueryResponse, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::ReaderClient<'a>::native(&self) -> core::result::Result<quanta_index_sdk::NativeQueryReader<'a>, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ReaderClient<'a>::repomap_query(&self, request: quanta_index_contract::repomap::RepoMapQueryRequest) -> core::result::Result<quanta_index_contract::repomap::RepoMapQueryResponse, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::ReaderClient<'a>::runtime(&self) -> quanta_index_sdk::RuntimeQueryBuilder<'a>
 pub fn quanta_index_sdk::ReaderClient<'a>::runtime_request(&self, request: quanta_index_contract::query::requests::RuntimeMetadataQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneRuntimeMetadataQueryResponse, quanta_index_sdk::SdkError>
@@ -1911,6 +2075,7 @@ pub fn quanta_index_sdk::SearchNamespace<'a>::explain_hybrid_under_queries(&self
 pub fn quanta_index_sdk::SearchNamespace<'a>::explain_under_query(&self, generation: quanta_index_contract_base::query::pin::GenerationPin, candidate: quanta_index_contract_base::results::candidates::LexicalCandidate, text_query: quanta_index_contract_base::query::requests::TextQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchNamespace<'a>::go_test_trace_file_request(&self, request: quanta_index_contract::query::go_test_trace_file::GoTestTraceFileQueryRequestV1) -> core::result::Result<quanta_index_contract::results::go_test_trace_file::GoTestTraceFileQueryResponseV1, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid(&self) -> quanta_index_sdk::HybridQueryBuilder<'a>
+pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid_file_request(&self, request: quanta_index_contract::query::hybrid_file::HybridFileQueryRequestV1) -> core::result::Result<quanta_index_contract::results::hybrid_file::HybridFileQueryResponseV1, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid_request(&self, request: quanta_index_contract::query::requests::HybridQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::HybridQueryResponse, quanta_index_sdk::SdkError>
 pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid_seed(&self) -> quanta_index_sdk::HybridSeedQueryBuilder<'a>
 pub fn quanta_index_sdk::SearchNamespace<'a>::hybrid_seed_request(&self, request: quanta_index_contract::query::requests::HybridSeedQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::HybridSeedQueryResponse, quanta_index_sdk::SdkError>
@@ -2050,6 +2215,7 @@ impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool>
 impl<'a, const HAS_TEXT: bool, const HAS_SELECTION: bool, const HAS_TOP_K: bool> !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::SymbolQueryBuilder<'a, HAS_TEXT, HAS_SELECTION, HAS_TOP_K>
 pub const quanta_index_sdk::SDK_WIRE_ROUTES_V1: &[quanta_index_sdk::binding::SdkWireRouteV1]
 pub const quanta_index_sdk::SDK_WIRE_ROUTE_EXCLUSIONS_V1: &[(&str, &str)]
+pub const quanta_index_sdk::UNSUPPORTED_QUERY_DIAGNOSTIC_VERSION: u32
 pub trait quanta_index_sdk::AdmittedAuxiliaryResponseOwnerV1: core::clone::Clone + quanta_index_contract_base::admitted_decode::identity::SourceIdentityDecodeAdmissionV1 + ciborium::de::codec::FiniteParserAllocationAdmissionV3
 impl<T> quanta_index_sdk::AdmittedAuxiliaryResponseOwnerV1 for T where T: core::clone::Clone + quanta_index_contract_base::admitted_decode::identity::SourceIdentityDecodeAdmissionV1 + ciborium::de::codec::FiniteParserAllocationAdmissionV3
 pub trait quanta_index_sdk::DiagnosticAttemptGuardV1: core::fmt::Debug + core::marker::Send

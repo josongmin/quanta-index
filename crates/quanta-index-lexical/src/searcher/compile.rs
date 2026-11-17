@@ -10,11 +10,45 @@ use crate::predicate_registry::{PREDICATE_OWNER, PredicateKind, kind_of, unimple
 use crate::searcher::authorities::NativeQueryScope;
 use crate::{PreparedExecutableQuery, PreparedPredicatePlan, QueryDocKind, TantivySearcher};
 use quanta_index_contract::{
-    LqExpr, LqFilter, LqLeaf, LqOptions, LqPatternType, LqQuery, QueryConstraintSetV1,
+    LqExpr, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg, LqQuery,
+    QueryConstraintSetV1,
 };
 use quanta_index_core::{CoreError, RequestBudgetV1, timeref::is_rev_at_time_spec};
 use std::sync::Arc;
 use tantivy::query::{AllQuery, BooleanQuery, Occur, Query};
+
+/// Exact name equality uses dedicated STRING fields and the shared NFC/case policy.
+pub(crate) fn exact_symbol_name_query(
+    fields: &crate::SchemaFields,
+    name: &str,
+    args: &[LqPredicateArg],
+    options: &quanta_index_contract::LqOptions,
+) -> Result<Option<Box<dyn tantivy::query::Query>>, quanta_index_core::CoreError> {
+    use crate::normalize::{CaseMode, apply_case, nfc};
+    use quanta_index_core::LexicalPredicateV1;
+    let Some(predicate) = LexicalPredicateV1::from_canonical_name(name) else {
+        return Ok(None);
+    };
+    let Some(value) = predicate.exact_symbol_name_argument(args)? else {
+        return Ok(None);
+    };
+    let sensitive = options.case_mode() == CaseMode::Sensitive;
+    let field = match (predicate, sensitive) {
+        (LexicalPredicateV1::SymbolLocalNameExact, true) => fields.symbol_local_name,
+        (LexicalPredicateV1::SymbolLocalNameExact, false) => fields.symbol_local_name_folded,
+        (LexicalPredicateV1::SymbolQualifiedNameExact, true) => fields.symbol_qualified_name,
+        (LexicalPredicateV1::SymbolQualifiedNameExact, false) => {
+            fields.symbol_qualified_name_folded
+        }
+        _ => return Ok(None),
+    };
+    let normalized = nfc(value);
+    let term = apply_case(&normalized, options.case_mode());
+    Ok(Some(Box::new(tantivy::query::TermQuery::new(
+        tantivy::Term::from_field_text(field, &term),
+        tantivy::schema::IndexRecordOption::Basic,
+    ))))
+}
 
 impl TantivySearcher {
     pub(crate) fn compile_expr(
@@ -106,7 +140,7 @@ impl TantivySearcher {
     ) -> Result<Box<dyn Query>, CoreError> {
         if let LqLeaf::Predicate { name, args } = leaf
             && let Some(exact) =
-                crate::symbol::exact_symbol_name_query(&self.fields, name, args, options)?
+                exact_symbol_name_query(&self.fields, name, args, options)?
         {
             return Ok(exact);
         }
@@ -500,5 +534,96 @@ impl TantivySearcher {
             predicate_plan,
             doc_kind,
         }))
+    }
+}
+
+#[cfg(test)]
+mod l3_exact_indexed_tests {
+    #![expect(clippy::panic_in_result_fn, reason = "assertions are test failure reporting")]
+    use super::*;
+    use quanta_index_contract::LqCase;
+    use tantivy::collector::Count;
+    use tantivy::{Index, IndexWriter, TantivyDocument, doc};
+
+    #[test]
+    fn l3_exact_names_are_separate_whole_string_fields_with_nfc_and_case()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fields = crate::SchemaFields::build();
+        let index = Index::create_in_ram(fields.schema.clone());
+        crate::analyzer::register_analyzers(&index);
+        let mut writer: IndexWriter<TantivyDocument> =
+            index.writer_with_num_threads(1, 15_000_000)?;
+        // Fixed postings are the oracle; no production name extractor builds these.
+        for (local, folded, qualified, qualified_folded) in [
+            ("Café", "café", "One::Café", "one::café"),
+            ("Café", "café", "Two::Café", "two::café"),
+            ("CaféExtra", "caféextra", "One::CaféExtra", "one::caféextra"),
+            ("Café", "café", "One::Café", "one::café"), // Overload remains a distinct row.
+            ("Inner", "inner", "Café::Inner", "café::inner"),
+        ] {
+            let _op = writer.add_document(doc!(fields.symbol_local_name => local,
+                fields.symbol_local_name_folded => folded, fields.symbol_qualified_name => qualified,
+                fields.symbol_qualified_name_folded => qualified_folded))?;
+        }
+        let _commit = writer.commit()?;
+        writer.wait_merging_threads()?;
+        let searcher = index.reader()?.searcher();
+        for (name, value, case, expected) in [
+            ("symbol.local_name.exact", "CAFE\u{301}", None, 3),
+            (
+                "symbol.local_name.exact",
+                "Café",
+                Some(LqCase::Sensitive),
+                3,
+            ),
+            (
+                "symbol.local_name.exact",
+                "café",
+                Some(LqCase::Sensitive),
+                0,
+            ),
+            ("symbol.local_name.exact", "Caf", None, 0),
+            ("symbol.local_name.exact", "One::Café", None, 0),
+            ("symbol.qualified_name.exact", "ONE::CAFE\u{301}", None, 2),
+            ("symbol.qualified_name.exact", "Café", None, 0),
+            ("symbol.qualified_name.exact", "Café::Inner", None, 1),
+            ("symbol.local_name.exact", "NoSymbol", None, 0),
+        ] {
+            let options = LqOptions {
+                case,
+                ..LqOptions::defaults()
+            };
+            let query = exact_symbol_name_query(
+                &fields,
+                name,
+                &[LqPredicateArg::Keyword(value.into())],
+                &options,
+            )?
+            .expect("exact");
+            assert_eq!(
+                searcher.search(query.as_ref(), &Count)?,
+                expected,
+                "{name} {value}"
+            );
+        }
+        assert!(
+            exact_symbol_name_query(
+                &fields,
+                "symbol.has.name",
+                &[LqPredicateArg::Keyword("Caf".into())],
+                &LqOptions::defaults()
+            )?
+            .is_none()
+        );
+        assert!(
+            exact_symbol_name_query(
+                &fields,
+                "symbol.local_name.exact",
+                &[LqPredicateArg::Phrase("Café".into())],
+                &LqOptions::defaults()
+            )
+            .is_err()
+        );
+        Ok(())
     }
 }

@@ -462,6 +462,7 @@ mod tests {
             bytes: ObjectRef(Digest([1; 32])),
             byte_len: 5,
             text: SourceTextAdmission::Excluded,
+            source_repo_id: None,
         };
         let mut future = bridge.embed(EmbeddingInput {
             owner: OwnerKey {

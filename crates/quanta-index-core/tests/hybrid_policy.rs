@@ -7,9 +7,10 @@
 use std::error::Error;
 
 use quanta_index_contract::{
-    HighlightSpan, LexicalCandidate, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
+    GenerationPin, HighlightSpan, LexicalCandidate, ManifestGeneration, RepoId, RepoRelativePath,
+    RevisionId, SourceFileKey,
 };
-use quanta_index_core::{CoreError, HybridOrchestratorPolicy};
+use quanta_index_core::{CoreError, GenericFileRankPolicyV1, HybridOrchestratorPolicy};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -94,6 +95,124 @@ fn slow_rrf_oracle(lanes: &[&[String]]) -> Vec<String> {
 
 fn strings(ids: &[&str]) -> Vec<String> {
     ids.iter().map(|id| (*id).to_string()).collect()
+}
+
+#[test]
+fn typed_file_rrf_collapses_multi_chunk_lanes_before_file_top_k() -> TestResult {
+    use quanta_index_core::FusedLaneRankV1;
+
+    let chunk = |id: &str, path: &str| {
+        let mut row = candidate(id);
+        row.repo_relative_path = RepoRelativePath::new(path);
+        row
+    };
+    let lexical = vec![
+        chunk("a-1", "tests/a_test.go"),
+        chunk("a-2", "tests/a_test.go"),
+        chunk("b-1", "src/b.go"),
+        chunk("c-1", "docs/c.md"),
+    ];
+    let dense = vec![
+        chunk("d-1", "src/d.go"),
+        chunk("d-2", "src/d.go"),
+        chunk("b-2", "src/b.go"),
+        chunk("c-2", "docs/c.md"),
+    ];
+    // The existing chunk wire caps candidate identities before a file view.
+    // The two duplicate-file pairs consume all four chunk slots.
+    let chunk_top = HybridOrchestratorPolicy::fuse_rrf_candidates(&lexical, &dense, 4)?;
+    let mut chunk_files = Vec::new();
+    for hit in &chunk_top {
+        let path = hit.candidate.repo_relative_path.as_str();
+        if !chunk_files.contains(&path) {
+            chunk_files.push(path);
+        }
+    }
+    assert_eq!(chunk_files, ["tests/a_test.go", "src/d.go"]);
+
+    // Independent file oracle: the first chunk per (source repo, path) owns
+    // its lane witness. Later chunks from that file do not consume file ranks.
+    let file_lane = |rows: &[LexicalCandidate]| {
+        let mut files = Vec::<SourceFileKey>::new();
+        for row in rows {
+            let file = SourceFileKey {
+                source_repo_id: row.source_repo_id.clone(),
+                repo_relative_path: row.repo_relative_path.clone(),
+            };
+            if !files.contains(&file) {
+                files.push(file);
+            }
+        }
+        files
+    };
+    let lexical_files = file_lane(&lexical);
+    let dense_files = file_lane(&dense);
+    let fused = HybridOrchestratorPolicy::fuse_rrf_key_lanes_with_provenance(
+        &[&lexical_files, &dense_files],
+        4,
+    );
+    let paths = fused
+        .iter()
+        .map(|row| row.key.repo_relative_path.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        ["src/b.go", "docs/c.md", "tests/a_test.go", "src/d.go"]
+    );
+    assert_eq!(
+        fused[0].lanes,
+        [
+            FusedLaneRankV1 { lane: 0, rank: 2 },
+            FusedLaneRankV1 { lane: 1, rank: 2 },
+        ]
+    );
+    assert_eq!(fused[0].fused_score.to_bits(), (2.0_f64 / 62.0).to_bits());
+    assert_eq!(
+        fused[1].lanes,
+        [
+            FusedLaneRankV1 { lane: 0, rank: 3 },
+            FusedLaneRankV1 { lane: 1, rank: 3 },
+        ]
+    );
+    let pin = GenerationPin::new(
+        RepoId::new("r")?,
+        RevisionId::new("v")?,
+        ManifestGeneration::new(1),
+    );
+    let product = GenericFileRankPolicyV1::rank(&pin, &lexical, &dense, 4)?;
+    assert_eq!(product.bounded_file_count, 4);
+    assert_eq!(
+        product
+            .results
+            .iter()
+            .map(|hit| hit.file.repo_relative_path.as_str())
+            .collect::<Vec<_>>(),
+        paths
+    );
+    assert_eq!(
+        product.results[0]
+            .lexical
+            .as_ref()
+            .map(|w| (w.file_rank, w.chunk_rank)),
+        Some((2, 3))
+    );
+    assert_eq!(
+        product.results[0]
+            .dense
+            .as_ref()
+            .map(|w| (w.file_rank, w.chunk_rank)),
+        Some((2, 3))
+    );
+    assert_eq!(
+        GenericFileRankPolicyV1::rank(&pin, &lexical, &dense, 2)?
+            .results
+            .len(),
+        2
+    );
+    let mut foreign = lexical.clone();
+    foreign[0].revision_id = RevisionId::new("other")?;
+    assert!(GenericFileRankPolicyV1::rank(&pin, &foreign, &dense, 4).is_err());
+    Ok(())
 }
 
 #[test]

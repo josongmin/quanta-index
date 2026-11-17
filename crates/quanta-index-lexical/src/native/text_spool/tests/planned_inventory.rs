@@ -447,7 +447,7 @@ fn reset_reuses_stable_key_only_after_completed_packet() -> Result<(), IndexErro
             .inventory_cursor(1)?
             .next_edit(&mut work)?
             .ok_or(IndexError::ResourceLimited)?;
-        check_eq!(row.edit.next, Some(reference.into()));
+        check_eq!(row.next()?, Some(reference.into()));
         spool.reset_inventories(&mut work)?;
     }
     Ok(())

@@ -377,6 +377,12 @@ targets = [
   "benchmark-lexical-scorer-python-owner",
   "benchmark-lexical-five-product-oracle-python-owner",
   "benchmark-no-answer-evidence-python-owner",
+  "benchmark-native-file-evidence-python-owner",
+  "benchmark-native-file-cohort-python-owner",
+  "benchmark-native-file-decision-python-owner",
+  "benchmark-native-file-decision-cli-python-owner",
+  "benchmark-native-file-capture-python-owner",
+  "benchmark-native-composite-source-python-owner",
   "benchmark-identifier-robustness-report-python-owner",
   "benchmark-identifier-robustness-strata-python-owner",
   "benchmark-codesearchnet-qrels-python-owner",
@@ -589,6 +595,42 @@ rail = "pr-benchmark-control-python"
 id = "benchmark-lexical-five-product-oracle-python-owner"
 path = "tools/ci/tests/test_lexical_five_product_oracle.py"
 owner = "tools/benchmark/retrieval/lexical_five_product_oracle.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-native-file-evidence-python-owner"
+path = "tools/ci/tests/test_native_file_evidence.py"
+owner = "tools/benchmark/retrieval/native_file_evidence.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-native-composite-source-python-owner"
+path = "tools/ci/tests/test_composite_source_binding.py"
+owner = "tools/benchmark/retrieval/composite_source_binding.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-native-file-cohort-python-owner"
+path = "tools/ci/tests/test_native_file_cohort.py"
+owner = "tools/benchmark/retrieval/evaluator.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-native-file-decision-python-owner"
+path = "tools/ci/tests/test_native_file_decision.py"
+owner = "tools/benchmark/retrieval/native_file_decision.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-native-file-decision-cli-python-owner"
+path = "tools/ci/tests/test_native_file_decision_cli.py"
+owner = "tools/benchmark/retrieval/decision.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-native-file-capture-python-owner"
+path = "tools/ci/tests/test_native_file_capture.py"
+owner = "tools/benchmark/native_file_capture.py"
 rail = "pr-benchmark-control-python"
 
 [[python_targets]]
@@ -874,6 +916,18 @@ owner = "quanta-index-contract"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "contract-native-cutover-ordinary-source-codec"
+path = "crates/quanta-index-contract/tests/native_cutover_ordinary_source_codec.rs"
+owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "contract-history-input"
+path = "crates/quanta-index-contract/tests/history_input_contract.rs"
+owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "contract-scv2-semantic-source-wire"
 path = "crates/quanta-index-contract/tests/scv2_01_semantic_source_wire.rs"
 owner = "quanta-index-contract"
@@ -936,6 +990,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "lexical-planner-authority"
 path = "crates/quanta-index-lexical/tests/planner_authority.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lexical-legacy-existing"
+path = "crates/quanta-index-lexical/tests/legacy_existing.rs"
 owner = "quanta-index-lexical"
 rail = "pr-workspace-nextest"
 
@@ -1129,6 +1189,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "ipc-socket-access"
 path = "crates/quanta-index-ipc/tests/socket_access.rs"
+owner = "quanta-index-ipc"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "ipc-native-send-observer-v1"
+path = "crates/quanta-index-ipc/tests/native_send_observer_v1.rs"
 owner = "quanta-index-ipc"
 rail = "pr-workspace-nextest"
 
@@ -2101,6 +2167,13 @@ id = "kernel-native-projection"
 path = "crates/quanta-index-kernel/tests/native_projection.rs"
 owner = "quanta-index-kernel"
 target = "native_projection"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "sdk-native-default-frontdoor"
+path = "crates/quanta-index-sdk/tests/sdk_native_default.rs"
+owner = "quanta-index-sdk"
+target = "sdk_native_default"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]

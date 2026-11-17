@@ -16,7 +16,7 @@ use quanta_index_core::{
         effort::{DecisionReason, EffortPreference},
     },
 };
-use quanta_index_ipc::{DispatchContextV1, IpcError, IpcPlane, StreamDispatch};
+use quanta_index_ipc::{DispatchContextV1, IpcError, StreamDispatch};
 
 use crate::{
     native::{NativeDispatcher, wire_error},
@@ -184,6 +184,12 @@ pub(super) fn dispatch_stream(
     budget: &RequestBudgetV1,
     emit: &mut dyn FnMut(NativeReply) -> Result<(), IpcError>,
 ) -> StreamDispatch<NativeReply> {
+    let authorized = crate::native_dispatch::request_authorized(
+        context.plane,
+        context.principal,
+        context.owner_uid,
+        &request,
+    );
     let NativeIndexRequest::QueryEffortStream {
         selection,
         text_instance,
@@ -196,12 +202,10 @@ pub(super) fn dispatch_stream(
     else {
         return StreamDispatch::Unsupported;
     };
-    if !matches!(context.principal, Some(peer) if peer.uid == context.owner_uid || peer.uid == 0)
-        || context.plane != IpcPlane::Control
-    {
+    if !authorized {
         return StreamDispatch::Terminal(NativeReply::Error(NativeIndexWireError {
             code: NativeIndexErrorCode::Denied,
-            message: "native effort stream requires a kernel-authenticated operator".into(),
+            message: "native effort stream requires an admitted kernel-authenticated reader".into(),
         }));
     }
     let overlay = match overlay

@@ -276,6 +276,84 @@ fn byte_array_uses_the_existing_u8_and_length_predicates_v1() {
     assert_byte_array_uses_the_existing_u8_and_length_predicates_v1::<32>();
 }
 
+#[test]
+fn cutover_digest64_reuses_retained_scalar_data_and_stops_at_first_owned_error_v1() {
+    use crate::NativeCutoverDigest64V1;
+
+    let mut valid: Vec<_> = (0..64).map(|_| Some(Input::Unsigned(7))).collect();
+    let mut data = NativeRetainedScalarDecodeDataV1::<NativeCutoverDigest64V1>::new_v1();
+    let mut failure = None;
+    let polls = Cell::new(0);
+    data.try_decode_into_v1(
+        ArrayDeserializer {
+            elements: &mut valid,
+            polls: &polls,
+        },
+        &mut failure,
+    )
+    .unwrap();
+    let mut output = None;
+    data.complete_into_slot_v1(&mut output).unwrap();
+    assert_eq!(output, Some(NativeCutoverDigest64V1([7; 64])));
+    assert_eq!(polls.get(), 64);
+    assert!(failure.is_none());
+
+    for wrong_index in [0, 32, 63, 64] {
+        let first = String::from("first owned digest input");
+        let pointer = first.as_ptr();
+        let second = String::from("unpolled nested input");
+        let second_pointer = second.as_ptr();
+        let mut elements: Vec<_> = (0..wrong_index)
+            .map(|_| Some(Input::Unsigned(1)))
+            .chain([Some(Input::String(first)), Some(Input::String(second))])
+            .collect();
+        let polls = Cell::new(0);
+        let mut data = NativeRetainedScalarDecodeDataV1::<NativeCutoverDigest64V1>::new_v1();
+        let mut failure = None;
+        assert_eq!(
+            data.try_decode_into_v1(
+                ArrayDeserializer {
+                    elements: &mut elements,
+                    polls: &polls
+                },
+                &mut failure,
+            ),
+            Err(Refusal::OperationRefused)
+        );
+        assert_eq!(failure.as_ref().unwrap().kind, ErrorKind::Type);
+        assert_eq!(polls.get(), wrong_index + 1);
+        assert_eq!(data.retained_string_v1().unwrap().as_ptr(), pointer);
+        match elements[wrong_index + 1].as_ref().unwrap() {
+            Input::String(value) => assert_eq!(value.as_ptr(), second_pointer),
+            _ => panic!("second owned input was consumed"),
+        }
+        assert_eq!(
+            data.try_decode_into_v1(
+                ArrayDeserializer {
+                    elements: &mut elements,
+                    polls: &polls
+                },
+                &mut failure,
+            ),
+            Err(Refusal::OccupiedOutput)
+        );
+        assert_eq!(polls.get(), wrong_index + 1);
+        let mut retry_failure = None;
+        assert_eq!(
+            data.try_decode_into_v1(
+                ArrayDeserializer {
+                    elements: &mut elements,
+                    polls: &polls
+                },
+                &mut retry_failure,
+            ),
+            Err(Refusal::UsedData)
+        );
+        assert!(retry_failure.is_none());
+        assert_eq!(polls.get(), wrong_index + 1);
+    }
+}
+
 fn assert_byte_array_uses_the_existing_u8_and_length_predicates_v1<const N: usize>()
 where
     [u8; N]: NativeRetainedScalarLeafV1,

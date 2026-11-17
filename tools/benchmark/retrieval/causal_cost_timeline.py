@@ -29,6 +29,19 @@ MAX_CONFIGURED_CAPTURE_BYTES = 1_073_741_824
 JS_SAFE_INTEGER = (1 << 53) - 1
 U64_MAX = (1 << 64) - 1
 NATIVE_IO_SUMMARY_COUNTERS = frozenset({"sync_calls", "sync_failures", "sync_elapsed_ns"})
+TEXT_COLD_SHAPE_COUNTERS = frozenset(
+    {
+        "text_case_occurrences",
+        "text_unique_canonical_terms",
+        "text_occurrence_key_bytes",
+        "text_unique_key_bytes",
+        "text_cold_alias_owners",
+        "text_cold_direct_owners",
+        "text_cold_sql_owners",
+        "text_cold_empty_owners",
+        "text_shape_complete_owners",
+    }
+)
 TEXT_OCCURRENCE_DIFF_COUNTERS = frozenset(
     {
         "text_occurrence_prior_validation_attempts",
@@ -41,6 +54,37 @@ TEXT_OCCURRENCE_DIFF_COUNTERS = frozenset(
 )
 MAP_ROOT_REUSE_COUNTERS = frozenset(
     {"map_root_reuse_candidates", "map_root_reuses", "map_root_builds"}
+)
+MANAGED_EXTERNAL_CHILD_COUNTERS = frozenset(
+    {
+        "managed_object_external_child_references",
+        "managed_object_unique_external_children",
+        "managed_object_guarded_repeated_external_children",
+    }
+)
+MANAGED_REUSED_EXTERNAL_CHILD_COUNTER = "managed_object_reused_external_child_validations"
+MANAGED_CROSS_GROUP_CHILD_COUNTERS = frozenset(
+    {
+        "managed_object_cross_group_external_child_overlap",
+        "managed_object_cross_group_repeated_child_path_checks",
+        "managed_object_child_path_checks",
+    }
+)
+MAP_INPUT_NEXT_COUNTERS = frozenset(
+    {
+        "map_input_next_absent_values",
+        "map_input_next_object_values",
+        "map_input_next_inline_values",
+        "map_input_next_inline_data_bytes",
+        "map_input_next_inline_child_refs",
+        "map_input_next_wire_bytes",
+    }
+)
+OBJECT_PORT_READ_ROUTES = ("object_port_get", "object_port_retained")
+OBJECT_PORT_READ_COUNTERS = frozenset(
+    f"{route}_{measure}"
+    for route in OBJECT_PORT_READ_ROUTES
+    for measure in ("calls", "succeeded", "wire_bytes")
 )
 BM25_AGGREGATE_STAGES = {
     "bm25_census_aggregate": "bm25_census_build",
@@ -122,6 +166,7 @@ SQLITE_CACHE_COUNTERS = frozenset(
         "sqlite_cache_spills",
     }
 )
+SQLITE_CACHE_OWNER_SPANS = frozenset({("catalog_lock_hold", 0), ("native_text_posting_edit", 35)})
 SQLITE_WRITER_SETTINGS_COUNTERS = frozenset(
     {
         "sqlite_page_size_bytes",
@@ -399,9 +444,11 @@ def _dispatch_v5_validators(
     for reference in references:
         name = reference["$ref"].removeprefix("#/$defs/")
         branch = definitions[name]
-        key = branch["prefixItems"][0]["const"] if name in (
-            "spanBeginV5", "spanEndV5", "counterV5"
-        ) else branch["properties"]["type"]["const"]
+        key = (
+            branch["prefixItems"][0]["const"]
+            if name in ("spanBeginV5", "spanEndV5", "counterV5")
+            else branch["properties"]["type"]["const"]
+        )
         selected = dict(schema)
         selected_defs = dict(definitions)
         selected_event = dict(definitions["event"])
@@ -430,8 +477,18 @@ def _schema_for_version(schema: dict[str, Any], version: int) -> dict[str, Any]:
             "map_apply"
         )
         selected["$defs"]["counterKey"]["enum"] = [
-            key for key in selected["$defs"]["counterKey"]["enum"]
-            if key not in MAP_ROOT_REUSE_COUNTERS
+            key
+            for key in selected["$defs"]["counterKey"]["enum"]
+            if key
+            not in (
+                MAP_ROOT_REUSE_COUNTERS
+                | MAP_INPUT_NEXT_COUNTERS
+                | OBJECT_PORT_READ_COUNTERS
+                | TEXT_COLD_SHAPE_COUNTERS
+                | MANAGED_EXTERNAL_CHILD_COUNTERS
+                | MANAGED_CROSS_GROUP_CHILD_COUNTERS
+                | {MANAGED_REUSED_EXTERNAL_CHILD_COUNTER}
+            )
         ]
     if version < 4:
         selected["$defs"]["event"]["properties"]["kind"]["oneOf"] = [
@@ -666,6 +723,12 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
                     raise ValueError("text occurrence Diff counter has no existing owner span")
                 if kind["key"] in MAP_ROOT_REUSE_COUNTERS:
                     raise ValueError("map root reuse counter has no existing owner span")
+                if kind["key"] in MAP_INPUT_NEXT_COUNTERS:
+                    raise ValueError("map input next counter has no existing owner span")
+                if kind["key"] in OBJECT_PORT_READ_COUNTERS:
+                    raise ValueError("object port read counter has no existing owner span")
+                if kind["key"] in (MANAGED_EXTERNAL_CHILD_COUNTERS | MANAGED_CROSS_GROUP_CHILD_COUNTERS) or kind["key"] == MANAGED_REUSED_EXTERNAL_CHILD_COUNTER:
+                    raise ValueError("managed external child counter has no existing owner span")
                 if kind["key"] in THREAD_CPU_COUNTERS:
                     raise ValueError("thread CPU counter has no existing owner span")
                 if kind["key"] in (
@@ -677,9 +740,17 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
                 orphan_events += 1
                 continue
             key = kind["key"]
+            if key in TEXT_COLD_SHAPE_COUNTERS and key in span["counters"]:
+                raise ValueError("text shape counter is duplicated")
             if key in TEXT_OCCURRENCE_DIFF_COUNTERS:
-                if version != 5 or span["stage"] != "native_text_inventory_diff" or span["lane_id"] != 2:
-                    raise ValueError("text occurrence Diff counter targets wrong version, stage or lane")
+                if (
+                    version != 5
+                    or span["stage"] != "native_text_inventory_diff"
+                    or span["lane_id"] != 2
+                ):
+                    raise ValueError(
+                        "text occurrence Diff counter targets wrong version, stage or lane"
+                    )
                 if span["end_ns"] is not None:
                     raise ValueError("text occurrence Diff counter follows span end")
                 if key in span["counters"]:
@@ -691,6 +762,28 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
                     raise ValueError("map root reuse counter follows span end")
                 if key in span["counters"]:
                     raise ValueError("map root reuse counter is duplicated")
+            if key in MAP_INPUT_NEXT_COUNTERS:
+                if version != 5 or span["stage"] != "map_apply" or span["lane_id"] != 0:
+                    raise ValueError("map input next counter targets wrong version, stage or lane")
+                if span["end_ns"] is not None:
+                    raise ValueError("map input next counter follows span end")
+                if key in span["counters"]:
+                    raise ValueError("map input next counter is duplicated")
+            if key in (MANAGED_EXTERNAL_CHILD_COUNTERS | MANAGED_CROSS_GROUP_CHILD_COUNTERS) or key == MANAGED_REUSED_EXTERNAL_CHILD_COUNTER:
+                if version != 5 or span["stage"] != "managed_object_install" or span["lane_id"] != 3:
+                    raise ValueError("managed external child counter targets wrong owner span")
+                if span["end_ns"] is not None:
+                    raise ValueError("managed external child counter follows span end")
+                if key in span["counters"]:
+                    raise ValueError("managed external child counter is duplicated")
+            if key in OBJECT_PORT_READ_COUNTERS and (
+                version != 5
+                or span["stage"] not in ("native_source_apply", "build_prepare")
+                or span["lane_id"] != 3
+                or span["end_ns"] is not None
+                or key in span["counters"]
+            ):
+                raise ValueError("invalid object port read counter owner or duplicate")
             if (
                 version >= 2
                 and key in NATIVE_IO_SUMMARY_COUNTERS
@@ -713,11 +806,15 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
                         and parent["stage"] == "map_apply"
                         and parent["lane_id"] == (1 if span["lane_id"] == 2 else 0)
                     )
-                allowed = stage in (THREAD_CPU_V5_STAGES if version == 5 else THREAD_CPU_STAGES) or (
-                    version == 5
-                    and stage == "sqlite_work"
-                    and span["lane_id"] in THREAD_CPU_V5_SQLITE_LANES
-                ) or map_apply_lane
+                allowed = (
+                    stage in (THREAD_CPU_V5_STAGES if version == 5 else THREAD_CPU_STAGES)
+                    or (
+                        version == 5
+                        and stage == "sqlite_work"
+                        and span["lane_id"] in THREAD_CPU_V5_SQLITE_LANES
+                    )
+                    or map_apply_lane
+                )
                 if not allowed:
                     raise ValueError("thread CPU counter targets wrong stage")
                 if key in span["counters"]:
@@ -915,9 +1012,14 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
             ):
                 raise ValueError("owned renewal execution expiry lacks expired deadline")
             owned_renewal_refusals.append(
-                {"span_id": kind["span_id"], "ts_ns": event["ts_ns"],
-                 "reason": kind["reason"], "now_ms": kind["now_ms"],
-                 "lease_until_ms": kind["lease_until_ms"], "deadline_ms": kind["deadline_ms"]}
+                {
+                    "span_id": kind["span_id"],
+                    "ts_ns": event["ts_ns"],
+                    "reason": kind["reason"],
+                    "now_ms": kind["now_ms"],
+                    "lease_until_ms": kind["lease_until_ms"],
+                    "deadline_ms": kind["deadline_ms"],
+                }
             )
         elif event_type == "link":
             links.append(
@@ -1185,6 +1287,21 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
         if health:
             raise ValueError("complete capture contradicts loss or invalidity health")
     for span_id, span in spans.items():
+        counts = span["counters"]
+        observed = set(counts) & OBJECT_PORT_READ_COUNTERS
+        if not observed:
+            continue
+        if complete and observed != OBJECT_PORT_READ_COUNTERS:
+            raise ValueError(f"object port read counter family is partial: {span_id}")
+        for route in OBJECT_PORT_READ_ROUTES:
+            calls = counts.get(f"{route}_calls")
+            succeeded = counts.get(f"{route}_succeeded")
+            wire_bytes = counts.get(f"{route}_wire_bytes")
+            if (
+                calls is not None and succeeded is not None and succeeded > calls
+            ) or (succeeded == 0 and wire_bytes not in (None, 0)):
+                raise ValueError(f"object port read counters contradict: {span_id}")
+    for span_id, span in spans.items():
         observed = set(span["counters"]) & TEXT_OCCURRENCE_DIFF_COUNTERS
         if not observed:
             continue
@@ -1213,6 +1330,60 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
             > span["counters"]["map_root_reuse_candidates"]
         ):
             raise ValueError(f"map root reuses exceed candidates: {span_id}")
+    for span_id, span in spans.items():
+        observed = set(span["counters"]) & MAP_INPUT_NEXT_COUNTERS
+        if not observed:
+            continue
+        if complete and observed != MAP_INPUT_NEXT_COUNTERS:
+            raise ValueError(f"map input next counter family is partial: {span_id}")
+        if observed != MAP_INPUT_NEXT_COUNTERS:
+            continue
+        counts = span["counters"]
+        objects = counts["map_input_next_object_values"]
+        inlines = counts["map_input_next_inline_values"]
+        data_bytes = counts["map_input_next_inline_data_bytes"]
+        child_refs = counts["map_input_next_inline_child_refs"]
+        if data_bytes > 32 * inlines:
+            raise ValueError(f"map input next inline data exceeds bound: {span_id}")
+        if child_refs > 5 * inlines:
+            raise ValueError(f"map input next child refs exceed bound: {span_id}")
+        wire_bytes = 33 * objects + 3 * inlines + data_bytes + 32 * child_refs
+        if wire_bytes > U64_MAX:
+            raise ValueError(f"map input next wire sum exceeds u64: {span_id}")
+        if wire_bytes != counts["map_input_next_wire_bytes"]:
+            raise ValueError(f"map input next wire bytes disagree: {span_id}")
+    for span_id, span in spans.items():
+        observed = set(span["counters"]) & MANAGED_EXTERNAL_CHILD_COUNTERS
+        if not observed:
+            continue
+        if complete and observed != MANAGED_EXTERNAL_CHILD_COUNTERS:
+            raise ValueError(f"managed external child counter family is partial: {span_id}")
+        if observed == MANAGED_EXTERNAL_CHILD_COUNTERS:
+            counts = span["counters"]
+            external = counts["managed_object_external_child_references"]
+            unique = counts["managed_object_unique_external_children"]
+            repeated = counts["managed_object_guarded_repeated_external_children"]
+            if unique > external or repeated > external - unique:
+                raise ValueError(f"managed external child counters contradict: {span_id}")
+            reused = counts.get(MANAGED_REUSED_EXTERNAL_CHILD_COUNTER)
+            if reused is not None and reused > repeated:
+                raise ValueError(f"managed reused external child validations exceed guarded repeats: {span_id}")
+    for span_id, span in spans.items():
+        counts = span["counters"]
+        observed = set(counts) & MANAGED_CROSS_GROUP_CHILD_COUNTERS
+        if not observed:
+            continue
+        if complete and observed != MANAGED_CROSS_GROUP_CHILD_COUNTERS:
+            raise ValueError(f"managed cross-group child counter family is partial: {span_id}")
+        if observed != MANAGED_CROSS_GROUP_CHILD_COUNTERS:
+            continue
+        overlap = counts["managed_object_cross_group_external_child_overlap"]
+        repeated_checks = counts["managed_object_cross_group_repeated_child_path_checks"]
+        path_checks = counts["managed_object_child_path_checks"]
+        if repeated_checks > path_checks or (overlap == 0 and repeated_checks != 0):
+            raise ValueError(f"managed cross-group child counters contradict: {span_id}")
+        if MANAGED_EXTERNAL_CHILD_COUNTERS <= counts.keys() and overlap > counts["managed_object_unique_external_children"]:
+            raise ValueError(f"managed cross-group child overlap exceeds unique external children: {span_id}")
     pager_counts = Counter(
         (counter["span_id"], counter["key"])
         for counter in counters
@@ -1227,7 +1398,7 @@ def parse_stream(stream: BinaryIO, *, max_capture_bytes: int = MAX_CAPTURE_BYTES
     for span_id, span in spans.items():
         observed_cache = set(span["counters"]) & SQLITE_CACHE_COUNTERS
         if observed_cache:
-            if span["stage"] != "catalog_lock_hold" or span["lane_id"] != 0:
+            if (span["stage"], span["lane_id"]) not in SQLITE_CACHE_OWNER_SPANS:
                 raise ValueError(f"SQLite cache counters target wrong owner span: {span_id}")
             if any(pager_counts[(span_id, key)] != 1 for key in observed_cache):
                 raise ValueError(f"SQLite cache counter is duplicated: {span_id}")

@@ -108,11 +108,19 @@ pub fn read_map_edit_budgeted(
     budget: &mut WorkBudget,
 ) -> Result<OrdinalMapEdit, IndexError> {
     let key = crate::bounded_blob(row.get_ref(0).map_err(|error| sql(&error))?, key_bound)?;
+    let minimum = OrdinalMapEdit::allocation_bytes(key.len(), None, None)?;
     budget.charge(WorkUsage {
-        bytes: OrdinalMapEdit::allocation_bytes(key.len())?,
+        bytes: minimum,
         ..WorkUsage::default()
     })?;
-    crate::read_map_edit(row, key_bound, root, budget)
+    let expected = crate::optional_map_value(row.get_ref(1).map_err(|error| sql(&error))?)?;
+    let next = crate::optional_map_value(row.get_ref(2).map_err(|error| sql(&error))?)?;
+    let actual = OrdinalMapEdit::allocation_bytes(key.len(), expected, next)?;
+    budget.charge(WorkUsage {
+        bytes: actual.checked_sub(minimum).ok_or(IndexError::ResourceLimited)?,
+        ..WorkUsage::default()
+    })?;
+    OrdinalMapEdit::copy_key(root, key, expected, next, budget)
 }
 
 #[cfg(test)]
@@ -195,7 +203,9 @@ mod tests {
         let position = first.clone();
         drop(first);
         drop(page);
-        if ledger.live.load(Ordering::SeqCst) != OrdinalMapEdit::allocation_bytes(2)? {
+        if ledger.live.load(Ordering::SeqCst)
+            != OrdinalMapEdit::allocation_bytes(2, position.expected()?, position.next()?)?
+        {
             return Err(IndexError::BackendViolation(
                 "shared edit lost or duplicated key custody".into(),
             ));
@@ -263,7 +273,7 @@ mod tests {
             read_map_edit_budgeted(row, 1024, 0, budget)
         })?;
         let first = page.pop()?.ok_or(IndexError::ResourceLimited)?;
-        if first.edit.key.as_slice() != b"\0a" || page.complete() {
+        if first.key() != b"\0a" || page.complete() {
             return Err(IndexError::BackendViolation(
                 "malformed page hid a row or became EOF".into(),
             ));

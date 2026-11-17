@@ -236,6 +236,17 @@ mod managed_install_trace_tests {
     static PROTECTION_STATEMENTS: AtomicU64 = AtomicU64::new(0);
     static LIFECYCLE_UPDATES: AtomicU64 = AtomicU64::new(0);
     static CONFIRM_QUEUE_WRITES: AtomicU64 = AtomicU64::new(0);
+    static NAMESPACE_SELECTS: AtomicU64 = AtomicU64::new(0);
+
+    fn observe_namespace(event: rusqlite::trace::TraceEvent<'_>) {
+        if let rusqlite::trace::TraceEvent::Profile(statement, _duration) = event
+            && statement
+                .sql()
+                .starts_with("SELECT length(payload),length(row_digest)")
+        {
+            let _prior = NAMESPACE_SELECTS.fetch_add(1, Ordering::SeqCst);
+        }
+    }
 
     fn observe_lifecycle_update(event: rusqlite::trace::TraceEvent<'_>) {
         if let rusqlite::trace::TraceEvent::Profile(statement, _duration) = event {
@@ -456,6 +467,7 @@ mod managed_install_trace_tests {
                 params![object_key(invalid.reference)],
                 |row| row.get(0),
             )?;
+            drop(guard);
             check_eq!(invalid_rows, 0);
         }
 
@@ -500,6 +512,284 @@ mod managed_install_trace_tests {
         drop(catalog);
         let reopened = open(directory.path())?;
         check_eq!(counts(&reopened, &objects)?, [2, 0, 2]);
+        Ok(())
+    }
+
+    #[test]
+    fn attempt_advance_reuses_protected_children_in_the_same_transaction() -> TestResult {
+        let execute = |atomic| -> Result<WorkUsage, Box<dyn Error>> {
+            let (_directory, catalog, _ingress) = managed_adoption_fixture()?;
+            let attempt = managed_attempt(&catalog)?;
+            let scope = ObjectInstallScope::Attempt(attempt);
+            let leaf = object(231, vec![]);
+            let parent = object(232, vec![leaf.reference]);
+            let confirmed = std::slice::from_ref(&leaf);
+            let next = std::slice::from_ref(&parent);
+            catalog.reserve_managed(scope, confirmed, &mut admission_budget())?;
+            let mut budget = admission_budget();
+            if atomic {
+                catalog.advance_attempt_managed(attempt, confirmed, next, &mut budget)?;
+            } else {
+                catalog.confirm_managed(scope, confirmed, &mut budget)?;
+                catalog.reserve_managed(scope, next, &mut budget)?;
+            }
+            check_eq!(counts(&catalog, &[leaf, parent])?, [1, 1, 1]);
+            Ok(budget.usage())
+        };
+        let split = execute(false)?;
+        let atomic = execute(true)?;
+        // The stored leaf and checksum are 76 bytes. The guarded read and
+        // registration validation each visit them. The split reservation now
+        // reuses its namespace proof, leaving four dynamic and four adoption
+        // reads removed by the confirmed-input proof in the atomic advance.
+        check_eq!(split.bytes.checked_sub(atomic.bytes), Some(152));
+        check_eq!(split.reads.checked_sub(atomic.reads), Some(8));
+        check_eq!(atomic.writes, split.writes);
+        check_eq!(atomic.mutations, split.mutations);
+        Ok(())
+    }
+
+    #[test]
+    fn managed_attempt_reuses_one_bound_namespace_for_distinct_live_children() -> TestResult {
+        let (directory, catalog, _ingress) = managed_adoption_fixture()?;
+        let attempt = managed_attempt(&catalog)?;
+        let scope = ObjectInstallScope::Attempt(attempt);
+        let leaves: Vec<_> = (240..243).map(|id| object(id, vec![])).collect();
+        catalog.reserve_managed(scope, &leaves, &mut admission_budget())?;
+        catalog.confirm_managed(scope, &leaves, &mut admission_budget())?;
+        let parent = object(243, leaves.iter().map(|leaf| leaf.reference).collect());
+
+        let mut reserve_budget = admission_budget();
+        NAMESPACE_SELECTS.store(0, Ordering::SeqCst);
+        {
+            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            guard.trace_v2(
+                rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
+                Some(observe_namespace),
+            );
+        }
+        let reserve =
+            catalog.reserve_managed(scope, std::slice::from_ref(&parent), &mut reserve_budget);
+        {
+            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+        }
+        reserve?;
+        check_eq!(NAMESPACE_SELECTS.load(Ordering::SeqCst), 1);
+        // One phase binding, three complete child checks and the original
+        // conservative attempt-reservation envelope; three namespace probes
+        // are absent only because the authenticated connection stayed read-only.
+        check_eq!(reserve_budget.usage().reads, 54);
+
+        let mut confirm_budget = admission_budget();
+        NAMESPACE_SELECTS.store(0, Ordering::SeqCst);
+        {
+            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            guard.trace_v2(
+                rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
+                Some(observe_namespace),
+            );
+        }
+        let confirm =
+            catalog.confirm_managed(scope, std::slice::from_ref(&parent), &mut confirm_budget);
+        {
+            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+        }
+        confirm?;
+        check_eq!(NAMESPACE_SELECTS.load(Ordering::SeqCst), 1);
+        check_eq!(confirm_budget.usage().reads, 37);
+        drop(catalog);
+        let reopened = open(directory.path())?;
+        let guard = reopened.lock().map_err(|error| error.to_string())?;
+        check!(object_install::confirmed_matches(&guard, &parent)?);
+        Ok(())
+    }
+
+    #[test]
+    fn managed_bound_namespace_reauthenticates_after_queue_trigger_write() -> TestResult {
+        let (directory, catalog, _ingress) = managed_adoption_fixture()?;
+        let attempt = managed_attempt(&catalog)?;
+        let scope = ObjectInstallScope::Attempt(attempt);
+        let leaves = [object(244, vec![]), object(245, vec![])];
+        catalog.reserve_managed(scope, &leaves, &mut admission_budget())?;
+        catalog.confirm_managed(scope, &leaves, &mut admission_budget())?;
+        {
+            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            reclaim::release(&guard, leaves[0].reference)?;
+            guard.execute_batch(
+                "CREATE TEMP TRIGGER poison_namespace_on_queue_delete
+                 AFTER DELETE ON native_gc_queue_v1
+                 BEGIN UPDATE native_gc_namespace_v1 SET row_digest=zeroblob(32) WHERE singleton=1; END",
+            )?;
+        }
+        let parent = object(246, leaves.iter().map(|leaf| leaf.reference).collect());
+        NAMESPACE_SELECTS.store(0, Ordering::SeqCst);
+        {
+            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            guard.trace_v2(
+                rusqlite::trace::TraceEventCodes::SQLITE_TRACE_PROFILE,
+                Some(observe_namespace),
+            );
+        }
+        let result = catalog.reserve_managed(
+            scope,
+            std::slice::from_ref(&parent),
+            &mut admission_budget(),
+        );
+        {
+            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+        }
+        check!(
+            matches!(result, Err(IndexError::Storage(message)) if message == "native catalog row digest mismatch")
+        );
+        check_eq!(NAMESPACE_SELECTS.load(Ordering::SeqCst), 2);
+        {
+            let guard = catalog.lock().map_err(|error| error.to_string())?;
+            reclaim::require_bound(&guard)?;
+            let queue: i64 = guard.query_row(
+                "SELECT COUNT(*) FROM native_gc_queue_v1 WHERE object=?1",
+                params![object_key(leaves[0].reference)],
+                |row| row.get(0),
+            )?;
+            check_eq!(queue, 1);
+            check!(!object_install::registered_matches(&guard, &parent)?);
+        }
+        drop(catalog);
+        let reopened = open(directory.path())?;
+        let guard = reopened.lock().map_err(|error| error.to_string())?;
+        reclaim::require_bound(&guard)?;
+        check!(!object_install::registered_matches(&guard, &parent)?);
+        Ok(())
+    }
+
+    #[test]
+    fn attempt_packet_boundaries_keep_three_commits_and_reopen_custody() -> TestResult {
+        for width in [95usize, 96, 160, 161, 256] {
+            let (directory, catalog, _ingress) = managed_adoption_fixture()?;
+            let attempt = managed_attempt(&catalog)?;
+            let scope = ObjectInstallScope::Attempt(attempt);
+            let packet = |packet: u8| -> Result<Vec<RegisteredObject>, Box<dyn Error>> {
+                (0..width)
+                    .map(|ordinal| {
+                        let mut digest = [0u8; 32];
+                        digest
+                            .get_mut(..8)
+                            .ok_or("missing packet namespace")?
+                            .copy_from_slice(b"E-packet");
+                        *digest.get_mut(8).ok_or("missing packet tag")? = packet;
+                        digest
+                            .get_mut(9..17)
+                            .ok_or("missing packet ordinal")?
+                            .copy_from_slice(&u64::try_from(ordinal)?.to_be_bytes());
+                        Ok(RegisteredObject::unscoped(
+                            ObjectRef(Digest(digest)),
+                            16,
+                            vec![],
+                        ))
+                    })
+                    .collect()
+            };
+            let first = packet(1)?;
+            let next = packet(2)?;
+            catalog.reserve_managed(scope, &first, &mut admission_budget())?;
+
+            // Even a final-row successor error must roll back the entire
+            // preceding confirmation and leave only its original reservation.
+            let mut invalid_next = next.clone();
+            let last = invalid_next.last_mut().ok_or("empty packet fixture")?;
+            *last = RegisteredObject::unscoped(
+                last.reference,
+                last.bytes,
+                vec![ObjectRef(Digest([254; 32]))],
+            );
+            check!(matches!(
+                catalog.advance_attempt_managed(
+                    attempt,
+                    &first,
+                    &invalid_next,
+                    &mut admission_budget(),
+                ),
+                Err(IndexError::CorruptObject(_))
+            ));
+            drop(catalog);
+            let catalog = open(directory.path())?;
+            {
+                let guard = catalog.lock().map_err(|error| error.to_string())?;
+                for object in &first {
+                    object_install::require_reserved(&guard, object)?;
+                    check!(!object_install::registered_matches(&guard, object)?);
+                }
+                for object in &next {
+                    check!(!object_install::registered_matches(&guard, object)?);
+                    let provisional: i64 = guard.query_row(
+                        "SELECT COUNT(*) FROM native_object_install_v1 WHERE object=?1",
+                        params![object_key(object.reference)],
+                        |row| row.get(0),
+                    )?;
+                    check_eq!(provisional, 0);
+                }
+                drop(guard);
+            }
+
+            let Observation {
+                mut budget,
+                events,
+                root,
+                ..
+            } = request(true, true)?;
+            // Replay of the existing reservation is intentional: it makes
+            // the measured scope the full reserve/advance/confirm contract.
+            catalog.reserve_managed(scope, &first, &mut budget)?;
+            catalog.advance_attempt_managed(attempt, &first, &next, &mut budget)?;
+            {
+                let guard = catalog.lock().map_err(|error| error.to_string())?;
+                for object in &first {
+                    check!(object_install::confirmed_matches(&guard, object)?);
+                }
+                for object in &next {
+                    object_install::require_reserved(&guard, object)?;
+                    check!(!object_install::registered_matches(&guard, object)?);
+                }
+            }
+            catalog.confirm_managed(scope, &next, &mut budget)?;
+            if let Some(root) = root {
+                root.finish(DiagnosticTerminalV1::Ok)?;
+            }
+            let rows = events.rows.lock().map_err(|error| error.to_string())?;
+            let commits = rows
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event.kind,
+                        DiagnosticEventKindV1::SpanBegin {
+                            stage: DiagnosticStageV1::SqliteWork,
+                            lane: DiagnosticLaneV1(3),
+                            ..
+                        }
+                    )
+                })
+                .count();
+            check_eq!(commits, 3);
+            drop(rows);
+            drop(catalog);
+            let reopened = open(directory.path())?;
+            let guard = reopened.lock().map_err(|error| error.to_string())?;
+            for object in first.iter().chain(&next) {
+                check!(object_install::confirmed_matches(&guard, object)?);
+                let (provisional, protected, queued): (i64, i64, i64) = guard.query_row(
+                    "SELECT
+                     (SELECT COUNT(*) FROM native_object_install_v1 WHERE object=?1),
+                     (SELECT COUNT(*) FROM native_attempt_object_v1 WHERE object=?1),
+                     (SELECT COUNT(*) FROM native_gc_queue_v1 WHERE object=?1)",
+                    params![object_key(object.reference)],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                check_eq!((provisional, protected, queued), (0, 1, 0));
+            }
+            drop(guard);
+        }
         Ok(())
     }
 

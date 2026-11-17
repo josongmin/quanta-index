@@ -3,7 +3,12 @@ crate quanta_index_kernel
 ├── mod attempt_reads: pub(crate)
 │   ├── struct AttemptObjectReads: pub(crate)
 │   ├── struct Entry: pub(self)
-│   └── struct Window: pub(self)
+│   ├── struct ReadSnapshot: pub(crate)
+│   ├── struct ReadTally: pub(self)
+│   ├── struct Window: pub(self)
+│   └── mod source_text: pub(self)
+│       ├── struct Claim: pub(self)
+│       └── struct SourceTextChecks: pub(super)
 ├── mod binding_metadata: pub(crate)
 │   └── enum MemberChildren: pub(crate)
 ├── mod boot: pub(crate)
@@ -57,7 +62,12 @@ crate quanta_index_kernel
 │   ├── trait ErasedOwnerAdapter: pub(self)
 │   ├── trait ErasedProjectionAdapter: pub(self)
 │   ├── struct OwnerAdapter: pub(self)
-│   └── struct ProjectionAdapter: pub(self)
+│   ├── enum OwnerRegistration: pub(self)
+│   ├── type OwnerValidator: pub(self)
+│   ├── struct ProjectionAdapter: pub(self)
+│   └── mod history: pub(self)
+│       ├── trait ErasedHistoryAdapter: pub(super)
+│       └── struct HistoryAdapter: pub(self)
 ├── mod request_decode: pub(crate)
 │   ├── struct CountEvents: pub(self)
 │   │   ├── type Value: pub(self)
@@ -66,6 +76,9 @@ crate quanta_index_kernel
 │   │   ├── type Value: pub(self)
 │   │   └── type Value: pub(self)
 │   ├── struct Header: pub(self)
+│   ├── struct HistoryCutNames: pub(self)
+│   ├── struct HistoryGenerationNames: pub(self)
+│   ├── struct HistoryNameLayout: pub(self)
 │   ├── enum KindTag: pub(self)
 │   ├── struct LoadedRequest: pub(crate)
 │   ├── struct MaterializeParts: pub(self)
@@ -73,7 +86,8 @@ crate quanta_index_kernel
 │   ├── struct RawKind: pub(self)
 │   ├── struct ReconfigureParts: pub(self)
 │   ├── struct ResyncParts: pub(self)
-│   └── struct SourceParts: pub(self)
+│   ├── struct SourceParts: pub(self)
+│   └── struct StringBytes: pub(self)
 ├── mod request_preparation: pub(crate)
 │   └── struct PreparedEvents: pub(crate)
 ├── mod source: pub(crate)
@@ -98,7 +112,8 @@ crate quanta_index_kernel
 ├── mod staging_payload: pub(crate)
 ├── mod ticket: pub(crate)
 │   ├── struct ReadTicket: pub
-│   └── trait TicketCatalog: pub(crate)
+│   ├── trait TicketCatalog: pub(crate)
+│   └── struct TicketReadAttempt: pub
 └── mod update: pub(crate)
     ├── trait ControlCatalog: pub
     ├── struct FrozenQuery: pub(self)
@@ -114,5 +129,9 @@ crate quanta_index_kernel
     ├── struct PinnedQuerySession: pub
     ├── struct PreparedQuery: pub
     ├── struct PreparedQueryStage: pub
+    ├── struct QueryExecutionTimings: pub
+    ├── struct ReadSessionProfile: pub
     ├── enum ResumeDispatch: pub
-    └── enum SessionTicket: pub(self)
+    ├── enum SessionTicket: pub(self)
+    ├── mod history: pub(self)
+    └── mod publication_result: pub(self)

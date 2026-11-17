@@ -68,6 +68,15 @@ root; external trust anchors and root/daemon fencing are separate obligations.
   generation-wide retirement; return `StillReferenced` without waiting for an
   opener. GC, repair and quarantine defer physical deletion on that result.
 
+Qualified Legacy SearchCorpus retention removes retired authority files through
+its admitted deletion owner, settling parent sync and refund on the same capacity
+ledger. An exact publication retry reconciles pending deletions before returning
+the retained-set receipt, including unlinks whose files are already absent.
+Post-rename and qualified deletion failures preserve the rollback fence. A
+pre-mutation refusal may clear only the fence installed by that attempt. See
+[retention and replay](../../crates/quanta-index-search-plane/src/readiness/search_corpus_history.rs)
+and [runtime admission](../../crates/quanta-index-searchd-runtime/src/durable_control_admission.rs).
+
 ### Supervised terminal truth and backend observations
 
 - Observe every registered finished child, including `reports_exit` children.

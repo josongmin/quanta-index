@@ -184,7 +184,7 @@ impl ScrubSchedulerV1 {
         candidates.retain(|key, _| {
             self.deferred_paused
                 .get(&key.0)
-                .map_or(true, |(parked, _)| parked == key)
+                .is_none_or(|(parked, _)| parked == key)
         });
         self.attempted_cycle
             .retain(|key| !listed_ports.contains(&key.0) || candidates.contains_key(key));

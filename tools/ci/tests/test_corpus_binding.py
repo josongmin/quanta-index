@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import shutil
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -642,6 +643,97 @@ def test_leakage_fingerprints_ignore_layout_but_not_tokens():
     )
 
 
+@pytest.mark.parametrize("historical_revisions", [63, 64])
+def test_near_copy_survives_repeated_development_revisions(historical_revisions):
+    # Revisions have distinct bytes and commits, but one upstream/path retains
+    # the same substantial source body. The holdout adds a different tail.
+    body = b"\n".join(
+        f"func f{i}(x int) int {{ return x + {i} }}".encode() for i in range(80)
+    )
+    development = []
+    for revision in range(historical_revisions):
+        raw = body + f"\nfunc revision_{revision}(x int) int {{ return x * 3 }}\n".encode()
+        development.append(
+            (
+                "same-upstream",
+                "https://example.invalid/dev",
+                "src/code.go",
+                hashlib.sha256(raw).digest(),
+                binding._fingerprints(raw),
+            )
+        )
+    held = body + b"\nfunc holdout(x int) int { return x * 7 }\n"
+    assert all(row[3] != hashlib.sha256(held).digest() for row in development)
+    holdout = [
+        (
+            "unrelated-upstream",
+            "https://example.invalid/holdout",
+            "lib/code.go",
+            hashlib.sha256(held).digest(),
+            binding._fingerprints(held),
+        )
+    ]
+    with pytest.raises(EvidenceError, match="near-duplicate source"):
+        binding._refuse_cross_split_source(
+            {"development": development, "holdout": holdout}
+        )
+
+
+@pytest.mark.parametrize("independent_identity", ["upstream", "path"])
+@pytest.mark.parametrize("development_documents", [63, 64])
+def test_near_copy_document_frequency_counts_independent_sources(
+    independent_identity, development_documents
+):
+    body = b"\n".join(
+        f"func f{i}(x int) int {{ return x + {i} }}".encode() for i in range(80)
+    )
+    development = []
+    for index in range(development_documents):
+        raw = body + f"\nfunc revision_{index}(x int) int {{ return x * 3 }}\n".encode()
+        url = (
+            f"https://example.invalid/dev-{index}"
+            if independent_identity == "upstream"
+            else "https://example.invalid/dev"
+        )
+        path = "src/code.go" if independent_identity == "upstream" else f"src/code-{index}.go"
+        development.append(
+            ("development", url, path, hashlib.sha256(raw).digest(), binding._fingerprints(raw))
+        )
+    held = body + b"\nfunc holdout(x int) int { return x * 7 }\n"
+    holdout = [
+        (
+            "holdout",
+            "https://example.invalid/holdout",
+            "lib/code.go",
+            hashlib.sha256(held).digest(),
+            binding._fingerprints(held),
+        )
+    ]
+    sources = {"development": development, "holdout": holdout}
+    if development_documents == 63:
+        with pytest.raises(EvidenceError, match="near-duplicate source"):
+            binding._refuse_cross_split_source(sources)
+    else:
+        binding._refuse_cross_split_source(sources)
+
+
+def test_exact_clone_is_refused_after_repeated_development_revisions():
+    raw = b"func identical(x int) int { return x + 1 }\n" * 20
+    digest = hashlib.sha256(raw).digest()
+    fingerprints = binding._fingerprints(raw)
+    development = [
+        ("development", "https://example.invalid/dev", "src/code.go", digest, fingerprints)
+        for _ in range(64)
+    ]
+    holdout = [
+        ("holdout", "https://example.invalid/holdout", "lib/code.go", digest, fingerprints)
+    ]
+    with pytest.raises(EvidenceError, match="identical source"):
+        binding._refuse_cross_split_source(
+            {"development": development, "holdout": holdout}
+        )
+
+
 @pytest.mark.parametrize(
     "mutation,error",
     [
@@ -725,3 +817,120 @@ def test_split_manifest_refuses_one_upstream_on_both_sides(split_releases):
     )
     with pytest.raises(EvidenceError, match="repeats one upstream"):
         binding.validate_split_manifest(canonical(manifest), releases)
+
+
+def test_split_manifest_accepts_distinct_historical_revisions_on_development_side(
+    split_releases, tmp_path
+):
+    import corpus_release as corpus
+
+    dev_root, dev_doc = split_releases["dev_only"]
+    hold_root, hold_doc = split_releases["hold_only"]
+    checkout = tmp_path / "checkouts" / "historical-alpha"
+    checkout.parent.mkdir()
+    subprocess.run(
+        ["git", "clone", "-q", str(dev_root / "bundles" / "alpha.bundle"), str(checkout)],
+        check=True,
+    )
+    subprocess_git(checkout, "config", "user.name", "Fixture")
+    subprocess_git(checkout, "config", "user.email", "fixture@localhost")
+    original_commit = dev_doc["repositories"][0]["recipe"]["revision"]
+    assert subprocess_git(checkout, "rev-parse", "HEAD").decode().strip() == original_commit
+
+    def capture(name, revision):
+        shutil.copytree(checkout, checkout.parent / name)
+        recipe = {
+            "source_revision": "fixed historical Git fixture",
+            "repositories": [
+                {
+                    "name": name,
+                    "language": "rust",
+                    "url": "https://EXAMPLE.invalid/alpha.git/",
+                    "revision": revision,
+                    "benchmark_root": "",
+                    "upstream_semble_benchmark_overlap": False,
+                }
+            ],
+        }
+        spec = tmp_path / f"{name}-recipe.json"
+        spec.write_text(json.dumps(recipe))
+        return corpus.create(spec, checkout.parent, tmp_path / "releases" / name)
+
+    old_copy = capture("historical-alpha-old", original_commit)
+    (checkout / "src" / "revision.rs").write_text("pub fn second_revision() -> bool { true }\n")
+    subprocess_git(checkout, "add", "src/revision.rs")
+    subprocess_git(checkout, "commit", "-qm", "second historical revision")
+    second_commit = subprocess_git(checkout, "rev-parse", "HEAD").decode().strip()
+    assert second_commit != original_commit
+    second = capture("historical-alpha-new", second_commit)
+
+    old_root = tmp_path / "releases" / "historical-alpha-old"
+    new_root = tmp_path / "releases" / "historical-alpha-new"
+    assignments = [
+        (dev_root, dev_doc, "alpha", "development", ["dev-alpha-1"]),
+        (new_root, second, "historical-alpha-new", "development", ["dev-alpha-2"]),
+        (hold_root, hold_doc, "beta", "holdout", ["hold-beta-1"]),
+    ]
+    manifest, releases = split_manifest(assignments)
+    assert binding.validate_split_manifest(canonical(manifest), releases) == manifest
+
+    assignments[1] = (
+        old_root, old_copy, "historical-alpha-old", "development", ["dev-alpha-2"]
+    )
+    manifest, releases = split_manifest(assignments)
+    with pytest.raises(EvidenceError, match="repeats one upstream"):
+        binding.validate_split_manifest(canonical(manifest), releases)
+
+
+def test_split_manifest_accepts_129_historical_revisions_and_disjoint_holdout(
+    split_releases, tmp_path
+):
+    import corpus_release as corpus
+
+    dev_root, _dev_doc = split_releases["dev_only"]
+    hold_root, hold_doc = split_releases["hold_only"]
+    source = tmp_path / "historical-source"
+    subprocess.run(
+        ["git", "clone", "-q", str(dev_root / "bundles" / "alpha.bundle"), str(source)],
+        check=True,
+    )
+    subprocess_git(source, "config", "user.name", "Fixture")
+    subprocess_git(source, "config", "user.email", "fixture@localhost")
+    revisions = [subprocess_git(source, "rev-parse", "HEAD").decode().strip()]
+    for index in range(1, 129):
+        (source / "src" / "revision.rs").write_text(
+            f"pub const HISTORICAL_REVISION: usize = {index};\n"
+        )
+        subprocess_git(source, "add", "src/revision.rs")
+        subprocess_git(source, "commit", "-qm", f"historical revision {index}")
+        revisions.append(subprocess_git(source, "rev-parse", "HEAD").decode().strip())
+    assert len(set(revisions)) == 129
+
+    checkouts = tmp_path / "historical-checkouts"
+    checkouts.mkdir()
+    entries = []
+    for index, revision in enumerate(revisions):
+        name = f"historical-alpha-{index:03d}"
+        subprocess_git(source, "worktree", "add", "--detach", "-q", str(checkouts / name), revision)
+        entries.append(
+            {
+                "name": name,
+                "language": "rust",
+                "url": "https://example.invalid/alpha.git",
+                "revision": revision,
+                "benchmark_root": "",
+                "upstream_semble_benchmark_overlap": False,
+            }
+        )
+    spec = tmp_path / "historical-recipe.json"
+    spec.write_text(json.dumps({"source_revision": "fixed historical Git fixture", "repositories": entries}))
+    release = tmp_path / "historical-release"
+    document = corpus.create(spec, checkouts, release)
+    assignments = [
+        (release, document, entry["name"], "development", [f"dev-revision-{index:03d}"])
+        for index, entry in enumerate(entries)
+    ]
+    assignments.append((hold_root, hold_doc, "beta", "holdout", ["hold-beta-1"]))
+    manifest, releases = split_manifest(assignments)
+    assert len(manifest["repositories"]) == 130
+    assert binding.validate_split_manifest(canonical(manifest), releases) == manifest

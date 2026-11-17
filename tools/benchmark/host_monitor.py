@@ -55,7 +55,11 @@ def lock_path() -> Path:
 
 def observe() -> tuple[dict, dict]:
     """Collect bounded, non-secret facts; command arguments never enter output."""
-    from tools.ci.timing.check_host_contention import RUST_PROCESS, ancestor_pids, parse_processes
+    from tools.ci.timing.check_host_contention import (
+        ancestor_pids,
+        is_rust_executable,
+        parse_processes,
+    )
 
     cpus, hostname, arch = os.cpu_count(), platform.node(), platform.machine()
     if type(cpus) is not int or cpus < 1 or not hostname or not arch:
@@ -100,7 +104,7 @@ def observe() -> tuple[dict, dict]:
         "foreign_rust": [
             {"pid": p.pid, "ppid": p.ppid, "command_sha256": digest_bytes(p.command.encode())}
             for p in processes
-            if p.pid not in excluded and RUST_PROCESS.search(p.command)
+            if p.pid not in excluded and is_rust_executable(p.command)
         ],
     }
     _facts(facts)

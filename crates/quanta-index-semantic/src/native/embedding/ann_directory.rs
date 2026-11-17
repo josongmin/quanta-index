@@ -6,21 +6,22 @@
 use std::io;
 
 use quanta_index_core::index::{
-    AttemptContext, Digest, IndexError, InstanceSpec, MapEdit, MapPage, MapRoot, MemoryLease,
-    MemoryLifetime, ObjectChildren, ObjectRef, OwnerKey, OwnerMemberBinding, StoredObject,
-    WorkBudget, WorkUsage, owner_map_key,
+    AttemptContext, CoverageBinding, Digest, IndexError, InstanceSpec, MapEdit, MapPage, MapRoot,
+    MemoryLease, MemoryLifetime, ObjectChildren, ObjectRef, OwnerKey, OwnerMemberBinding,
+    StoredObject, WorkBudget, WorkUsage, owner_map_key,
 };
 
 use crate::codec::cbor_serde;
 
+use super::native_graph;
+use super::selected_owner::scan_ordered_page;
 use super::{EmbeddingRecipe, LoadedOwnerArtifact, ReadContext, load_query_owner_artifact};
-use crate::native::{ann_files, ann_lance};
 
 mod consolidation;
 mod maintenance;
 mod source_reverse;
 
-const DIRECTORY_FORMAT: u32 = 3;
+const DIRECTORY_FORMAT: u32 = 4;
 const MAX_DIRECTORY_BYTES: usize = 4096;
 const MAX_DESCRIPTOR_BYTES: usize = 256 * 1024;
 pub(super) const MAX_REGIONS: u64 = 4096;
@@ -52,6 +53,15 @@ impl ValidatedDeltaMember {
         context: &mut AttemptContext<'_>,
     ) -> Result<Self, IndexError> {
         let binding = load_member(reference, owner, context.objects, context.budget)?;
+        Self::from_binding(reference, binding, recipe, context)
+    }
+
+    pub(super) fn from_binding(
+        reference: ObjectRef,
+        binding: OwnerMemberBinding,
+        recipe: &EmbeddingRecipe,
+        context: &mut AttemptContext<'_>,
+    ) -> Result<Self, IndexError> {
         let artifact =
             load_query_owner_artifact(context.objects, context.budget, &binding, recipe)?;
         Ok(Self {
@@ -154,6 +164,26 @@ fn corrupt(message: &'static str) -> IndexError {
     IndexError::CorruptObject(message.into())
 }
 
+pub(super) fn validate_coverage_layout(coverage: &CoverageBinding) -> Result<(), IndexError> {
+    if coverage.owners.0.is_some() {
+        if coverage.searchable.is_none() {
+            return Err(corrupt("Native ANN coverage has no searchable directory"));
+        }
+        if coverage.searchable == coverage.owners.0 {
+            return Err(IndexError::RebuildRequired);
+        }
+    }
+    Ok(())
+}
+
+// Use only after an edit whose expected and next values differ.
+fn require_changed_map_root(previous: MapRoot, next: MapRoot) -> Result<MapRoot, IndexError> {
+    if previous == next {
+        return Err(corrupt("Native ANN map edit did not change the root"));
+    }
+    Ok(next)
+}
+
 fn refs(roots: [Option<ObjectRef>; 3]) -> ObjectChildren {
     ObjectChildren::from_references([roots[0], roots[1], roots[2], None])
 }
@@ -167,24 +197,32 @@ fn directory_refs(directory: &AnnDirectory) -> ObjectChildren {
     ])
 }
 
+fn validate_delta_counts(owners: u32, rows: u32) -> Result<(), IndexError> {
+    if owners > MAX_DELTA_OWNERS
+        || rows > MAX_DELTA_ROWS
+        || (owners == 0 && rows != 0)
+        || rows < owners
+    {
+        return Err(corrupt("Native ANN delta counters are invalid"));
+    }
+    Ok(())
+}
+
 fn validate_directory(directory: &AnnDirectory) -> Result<(), IndexError> {
     if directory.format != DIRECTORY_FORMAT
         || u64::from(directory.region_count) > MAX_REGIONS
         || u64::from(directory.region_count) > directory.next_region
-        || directory.delta_owners > MAX_DELTA_OWNERS
-        || directory.delta_rows > MAX_DELTA_ROWS
         || (directory.region_count == 0) != directory.regions.0.is_none()
         || directory
             .maintenance_after
             .is_some_and(|id| id >= directory.next_region)
         || (directory.region_count == 0 && directory.maintenance_after.is_some())
         || (directory.delta_owners == 0) != directory.delta.0.is_none()
-        || (directory.delta_owners == 0 && directory.delta_rows != 0)
         || (directory.owners.0.is_none() && directory.source_reverse.0.is_some())
     {
         return Err(corrupt("Native ANN directory shape is invalid"));
     }
-    Ok(())
+    validate_delta_counts(directory.delta_owners, directory.delta_rows)
 }
 
 fn validate_descriptor(descriptor: &RegionDescriptor, dimension: u32) -> Result<(), IndexError> {
@@ -192,13 +230,13 @@ fn validate_descriptor(descriptor: &RegionDescriptor, dimension: u32) -> Result<
     let dimension = usize::try_from(dimension).map_err(|_error| IndexError::ResourceLimited)?;
     if descriptor.members.0.is_none()
         || rows == 0
-        || rows > ann_lance::MAX_REGION_ROWS
+        || rows > native_graph::MAX_REGION_ROWS
         || dimension == 0
-        || dimension > ann_lance::MAX_REGION_DIMENSION
+        || dimension > native_graph::MAX_REGION_DIMENSION
         || descriptor.center.len() != dimension
         || rows
             .checked_mul(dimension)
-            .is_none_or(|cells| cells > ann_lance::MAX_REGION_CELLS)
+            .is_none_or(|cells| cells > native_graph::MAX_REGION_CELLS)
         || descriptor.center.iter().any(|value| !value.is_finite())
         || descriptor
             .center
@@ -338,6 +376,24 @@ fn require_directory_format(
 }
 
 impl AnnDirectory {
+    pub(super) fn load_for_coverage(
+        coverage: &CoverageBinding,
+        recipe: &EmbeddingRecipe,
+        read: &mut ReadContext<'_>,
+    ) -> Result<Option<Self>, IndexError> {
+        if coverage.searchable == coverage.owners.0 {
+            return Ok(None);
+        }
+        let reference = coverage
+            .searchable
+            .ok_or_else(|| corrupt("Native ANN coverage has no searchable directory"))?;
+        let directory = Self::load(reference, recipe.fingerprint(), read)?;
+        if directory.owners != coverage.owners {
+            return Err(corrupt("Native ANN directory selects different owners"));
+        }
+        Ok(Some(directory))
+    }
+
     /// Derive the complete projected source membership from the immutable
     /// prior and next coverage roots inside this publication attempt.
     pub(super) fn refresh_source_reverse(
@@ -357,14 +413,16 @@ impl AnnDirectory {
     }
 
     /// Coalesce small immutable runs inside this original publication attempt.
+    /// Commit caller metadata only after every source and staging step succeeds.
+    /// An aborted attempt still owns any unreachable COW objects it staged.
     pub(super) fn consolidated_members(
         &mut self,
         recipe: &EmbeddingRecipe,
         context: &mut AttemptContext<'_>,
     ) -> Result<consolidation::RegionMembers, IndexError> {
-        // Separate carry work from Lance build and managed file installation.
+        // Separate carry work from native graph build and installation.
         // The existing optional producer starts no clock when tracing is Off.
-        let span = crate::build::begin_build_stage(
+        let span = crate::build_diagnostic::begin_build_stage(
             context.budget.request().diagnostic_context(),
             quanta_index_core::DiagnosticStageV1::Compaction,
         );
@@ -375,6 +433,7 @@ impl AnnDirectory {
                 .diagnostic_context()
                 .map(|diagnostic| diagnostic.child_context(span))
         });
+        let mut next = *self;
         let result = {
             let mut budget = context.budget.scoped_diagnostic_context(child);
             let scoped = &mut AttemptContext {
@@ -386,19 +445,21 @@ impl AnnDirectory {
                 budget: &mut budget,
             };
             (|| {
-                validate_directory(self)?;
-                if self.recipe != recipe.fingerprint() {
+                validate_directory(&next)?;
+                if next.recipe != recipe.fingerprint() {
                     return Err(invalid("Native ANN consolidation recipe mismatch"));
                 }
-                consolidation::prepare(self, recipe, scoped)
+                consolidation::prepare(&mut next, recipe, scoped)
             })()
         };
         if result.is_err() {
             context
                 .budget
                 .record_failed_stage(quanta_index_core::DiagnosticStageV1::Compaction);
+        } else {
+            *self = next;
         }
-        crate::build::finish_build_stage(span, result.is_ok());
+        crate::build_diagnostic::finish_build_stage(span, result.is_ok());
         result
     }
 
@@ -522,10 +583,23 @@ impl AnnDirectory {
     ) -> Result<(), IndexError> {
         if let Some(prepared) = self.prepare_validated_delta(validated, recipe, context)? {
             let root = context.apply(self.delta, std::slice::from_ref(&prepared.edit))?;
-            self.delta = root;
-            self.delta_owners = prepared.next_owners;
-            self.delta_rows = prepared.next_rows;
+            self.assign_edited_delta(root, prepared.next_owners, prepared.next_rows)?;
         }
+        Ok(())
+    }
+
+    pub(super) fn assign_edited_delta(
+        &mut self,
+        root: MapRoot,
+        owners: u32,
+        rows: u32,
+    ) -> Result<(), IndexError> {
+        let mut next = *self;
+        next.delta = require_changed_map_root(self.delta, root)?;
+        next.delta_owners = owners;
+        next.delta_rows = rows;
+        validate_directory(&next)?;
+        *self = next;
         Ok(())
     }
 
@@ -542,6 +616,9 @@ impl AnnDirectory {
         let owner = validated.binding.owner;
         let member_ref = validated.reference;
         let new_rows = validated.rows()?;
+        if new_rows == 0 {
+            return Err(invalid("Native ANN delta member has no searchable rows"));
+        }
         // The row count is now bound to the authenticated member. Release its
         // decode lease before reading a replacement or staging a COW map edit.
         drop(validated);
@@ -570,6 +647,7 @@ impl AnnDirectory {
         if next_owners > MAX_DELTA_OWNERS || next_rows > MAX_DELTA_ROWS {
             return Err(IndexError::ResourceLimited);
         }
+        validate_delta_counts(next_owners, next_rows)?;
         let key_memory = context
             .budget
             .reserve_memory(38, MemoryLifetime::Temporary)?;
@@ -602,6 +680,17 @@ impl AnnDirectory {
             return Ok(());
         };
         let rows = member_rows(reference, owner, recipe, context.objects, context.budget)?;
+        let next_owners = self
+            .delta_owners
+            .checked_sub(1)
+            .ok_or_else(|| corrupt("ANN delta owner count underflow"))?;
+        let next_rows = self
+            .delta_rows
+            .checked_sub(rows)
+            .ok_or_else(|| corrupt("ANN delta row count underflow"))?;
+        // Counter corruption must refuse before staging any COW write. Keep
+        // the caller's directory intact through both admission and apply errors.
+        validate_delta_counts(next_owners, next_rows)?;
         let _memory = context
             .budget
             .reserve_memory(38, MemoryLifetime::Temporary)?;
@@ -613,16 +702,7 @@ impl AnnDirectory {
                 next: None,
             }],
         )?;
-        self.delta = root;
-        self.delta_owners = self
-            .delta_owners
-            .checked_sub(1)
-            .ok_or_else(|| corrupt("ANN delta owner count underflow"))?;
-        self.delta_rows = self
-            .delta_rows
-            .checked_sub(rows)
-            .ok_or_else(|| corrupt("ANN delta row count underflow"))?;
-        validate_directory(self)
+        self.assign_edited_delta(root, next_owners, next_rows)
     }
 
     pub(super) fn append_region(
@@ -630,15 +710,59 @@ impl AnnDirectory {
         descriptor: &RegionDescriptor,
         context: &mut AttemptContext<'_>,
     ) -> Result<ObjectRef, IndexError> {
+        let span = crate::build_diagnostic::begin_build_stage(
+            context.budget.request().diagnostic_context(),
+            quanta_index_core::DiagnosticStageV1::SemanticSeal,
+        );
+        let ordinal = self.next_region;
+        let result = self.append_region_inner(descriptor, context);
+        // The directory owns the authenticated descriptor identity. A graph
+        // build or put alone cannot certify a successful region append.
+        if let (Some(diagnostic), Some(span), Ok(reference)) = (
+            context.budget.request().diagnostic_context(),
+            span.as_ref(),
+            result.as_ref(),
+        ) {
+            diagnostic.ann_region_observation(
+                span,
+                quanta_index_core::DiagnosticAnnRegionObservationV1 {
+                    phase: quanta_index_core::DiagnosticAnnRegionPhaseV1::Installed,
+                    fileset_ref: descriptor.fileset.0.0,
+                    descriptor_ref: Some(reference.0.0),
+                    ordinal,
+                    rows: descriptor.rows,
+                    index_kind: quanta_index_core::DiagnosticAnnIndexKindV1::Hnsw,
+                    files: 1,
+                    chunks: 1,
+                },
+            );
+        }
+        crate::build_diagnostic::finish_build_stage(span, result.is_ok());
+        result
+    }
+
+    fn append_region_inner(
+        &mut self,
+        descriptor: &RegionDescriptor,
+        context: &mut AttemptContext<'_>,
+    ) -> Result<ObjectRef, IndexError> {
         validate_directory(self)?;
-        if u64::from(self.region_count) >= MAX_REGIONS || self.next_region.checked_add(1).is_none()
-        {
+        if u64::from(self.region_count) >= MAX_REGIONS {
             return Err(IndexError::ResourceLimited);
         }
-        let fileset = ann_files::load_fileset(context.objects, descriptor.fileset, context.budget)?;
-        validate_descriptor(descriptor, fileset.seal.dimension)?;
-        if fileset.seal.recipe != self.recipe || fileset.seal.rows != descriptor.rows {
-            return Err(corrupt("Native ANN region file-set seal mismatch"));
+        let generation = self
+            .next_region
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        let graph = native_graph::load(context.objects, descriptor.fileset, context.budget)?;
+        let seal = graph.seal;
+        drop(graph);
+        validate_descriptor(descriptor, seal.dimension)?;
+        if seal.recipe != self.recipe
+            || seal.rows != descriptor.rows
+            || seal.generation != generation
+        {
+            return Err(corrupt("Native ANN region graph seal mismatch"));
         }
         if self.delta_owners != 0
             && descriptor.members == self.delta
@@ -652,11 +776,14 @@ impl AnnDirectory {
         )?;
         let payload = encode(descriptor, MAX_DESCRIPTOR_BYTES, context.budget)?;
         let children = refs([Some(descriptor.fileset), descriptor.members.0, None]);
-        let reference = context.put(&payload, children.as_slice())?;
-        let key_memory = context
+        let _key_memory = context
             .budget
             .reserve_memory(8, MemoryLifetime::Temporary)?;
-        let key = self.next_region.to_be_bytes().to_vec();
+        let mut key = Vec::new();
+        key.try_reserve_exact(8)
+            .map_err(|_| IndexError::ResourceLimited)?;
+        key.extend_from_slice(&self.next_region.to_be_bytes());
+        let reference = context.put(&payload, children.as_slice())?;
         let regions = context.apply(
             self.regions,
             &[MapEdit {
@@ -665,21 +792,17 @@ impl AnnDirectory {
                 next: Some((reference).into()),
             }],
         )?;
-        drop(key_memory);
-        self.regions = regions;
-        self.next_region = self
-            .next_region
-            .checked_add(1)
-            .ok_or(IndexError::ResourceLimited)?;
-        self.region_count = self
-            .region_count
-            .checked_add(1)
-            .ok_or(IndexError::ResourceLimited)?;
-        if self.delta_owners != 0 && descriptor.members == self.delta {
-            self.delta = MapRoot(None);
-            self.delta_owners = 0;
-            self.delta_rows = 0;
+        let mut next = *self;
+        next.regions = require_changed_map_root(self.regions, regions)?;
+        next.next_region = generation;
+        next.region_count += 1; // Bounded by MAX_REGIONS above.
+        if descriptor.members == next.delta {
+            next.delta = MapRoot(None);
+            next.delta_owners = 0;
+            next.delta_rows = 0;
         }
+        validate_directory(&next)?;
+        *self = next;
         Ok(reference)
     }
 
@@ -726,6 +849,7 @@ impl AnnDirectory {
         &self,
         after: Option<u64>,
         limit: u32,
+        continuation: bool,
         read: &mut ReadContext<'_>,
     ) -> Result<MapPage, IndexError> {
         read.budget.checkpoint()?;
@@ -734,33 +858,38 @@ impl AnnDirectory {
             return Err(invalid("Native ANN region page limit is invalid"));
         }
         let cursor = after.map(u64::to_be_bytes);
-        let page = read.maps.scan(
+        let page = scan_ordered_page(
             self.regions,
             cursor.as_ref().map(<[u8; 8]>::as_slice),
             limit,
-            read.budget,
+            continuation,
+            read,
         )?;
-        if page.entries.len()
-            > usize::try_from(limit).map_err(|_error| IndexError::ResourceLimited)?
-            || (page.entries.is_empty() && page.has_more)
+        let entries = u32::try_from(page.entries.len()).map_err(|_| IndexError::ResourceLimited)?;
+        // A scan from the beginning can prove the declared count at EOF.
+        // A continuation promises at least one additional active region.
+        if entries > self.region_count
+            || (page.has_more && entries == self.region_count)
+            || (after.is_none() && !page.has_more && entries != self.region_count)
         {
-            return Err(IndexError::BackendViolation(
-                "Native ANN region scan exceeded its page or made no progress".into(),
-            ));
+            return Err(corrupt("Native ANN region page differs from active count"));
         }
-        let mut prior = after;
+        let mut last = after;
         for (key, _reference) in &page.entries {
             let id = u64::from_be_bytes(
                 key.as_slice()
                     .try_into()
                     .map_err(|_error| corrupt("Native ANN region key width is invalid"))?,
             );
-            if id >= self.next_region || prior.is_some_and(|previous| id <= previous) {
-                return Err(corrupt(
-                    "Native ANN region key order or identity is invalid",
-                ));
+            if id >= self.next_region {
+                return Err(corrupt("Native ANN region key identity is invalid"));
             }
-            prior = Some(id);
+            last = Some(id);
+        }
+        if page.has_more && last == self.next_region.checked_sub(1) {
+            return Err(corrupt(
+                "Native ANN region page continues past its last ordinal",
+            ));
         }
         Ok(page)
     }
@@ -848,7 +977,7 @@ impl AnnDirectory {
     }
 }
 
-fn load_member(
+pub(super) fn load_member(
     reference: ObjectRef,
     owner: OwnerKey,
     objects: &dyn quanta_index_core::index::ports::ImmutableObjectPort,
@@ -905,6 +1034,33 @@ mod source_reverse_format_tests {
                 .checked_add(Duration::from_secs(5))
                 .ok_or(IndexError::ResourceLimited)?,
         ))
+    }
+
+    #[test]
+    fn delta_counter_shape_requires_a_row_for_every_nonempty_owner() -> Result<(), IndexError> {
+        let reference = ObjectRef(Digest([7; 32]));
+        for (owners, rows) in [(1, 0), (2, 1), (64, 63)] {
+            let mut directory = AnnDirectory::empty(Digest([3; 32]), MapRoot(Some(reference)));
+            directory.delta = MapRoot(Some(reference));
+            directory.delta_owners = owners;
+            directory.delta_rows = rows;
+            if !matches!(
+                validate_directory(&directory),
+                Err(IndexError::CorruptObject(_))
+            ) {
+                return Err(IndexError::BackendViolation(
+                    "delta counters admitted fewer rows than nonempty owners".into(),
+                ));
+            }
+        }
+        for (owners, rows) in [(0, 0), (1, 1), (2, 3), (64, MAX_DELTA_ROWS)] {
+            let mut directory = AnnDirectory::empty(Digest([3; 32]), MapRoot(Some(reference)));
+            directory.delta = MapRoot((owners != 0).then_some(reference));
+            directory.delta_owners = owners;
+            directory.delta_rows = rows;
+            validate_directory(&directory)?;
+        }
+        Ok(())
     }
 
     #[test]

@@ -1,8 +1,8 @@
 # IPC transport
 
 CBOR framing, admission, and Unix-domain socket transport for typed
-contract payloads. This crate transports requests; the search-plane crate
-owns their state transitions.
+contract payloads. Legacy state transitions belong to the search plane;
+Native state transitions belong to Kernel/Catalog through the Native runtime.
 
 Start with [public exports](src/lib.rs), [admission](src/admission.rs),
 [codec](src/codec.rs), [server dispatch](src/server.rs), and the split

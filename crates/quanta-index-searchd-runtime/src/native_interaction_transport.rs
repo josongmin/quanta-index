@@ -86,6 +86,7 @@ pub(super) fn dispatch(
         | NativeIndexRequest::BeginInput(_)
         | NativeIndexRequest::StageSource { .. }
         | NativeIndexRequest::StageSources { .. }
+        | NativeIndexRequest::StageRepositorySources { .. }
         | NativeIndexRequest::StageProfile { .. }
         | NativeIndexRequest::StageProjectionOutput { .. }
         | NativeIndexRequest::StageProjectionOwner { .. }
@@ -95,6 +96,7 @@ pub(super) fn dispatch(
         | NativeIndexRequest::DiscardInput(_)
         | NativeIndexRequest::SearchLiteral { .. }
         | NativeIndexRequest::QueryPaths { .. }
+        | NativeIndexRequest::QueryRepositoryPaths { .. }
         | NativeIndexRequest::SearchOverlayText(_)
         | NativeIndexRequest::ReadSession(_)
         | NativeIndexRequest::SearchText { .. }
@@ -103,6 +105,8 @@ pub(super) fn dispatch(
         | NativeIndexRequest::Submit(_)
         | NativeIndexRequest::Resume(_)
         | NativeIndexRequest::ReadView(_)
+        | NativeIndexRequest::ObserveRootView(_)
+        | NativeIndexRequest::PublishedViewMetadata(_)
         | NativeIndexRequest::ReadProjection { .. }
         | NativeIndexRequest::LookupProjectionOwners { .. }
         | NativeIndexRequest::Status(_)

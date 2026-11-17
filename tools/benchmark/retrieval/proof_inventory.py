@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect the exact pytest identities required by the retrieval contract rail."""
+"""Select and collect the Python tests required by the retrieval contract rail."""
 
 from __future__ import annotations
 
@@ -29,6 +29,9 @@ def _evidence_bytes(value: Path | RawFile | bytes) -> bytes:
 
 PYTHON_SELECTORS = (
     "tools/ci/tests/test_retrieval_benchmark.py",
+    "tools/ci/tests/test_retrieval_result_window.py",
+    "tools/ci/tests/test_retrieval_hybrid_file_evidence.py",
+    "tools/ci/tests/test_retrieval_default_decision.py",
     "tools/ci/tests/test_source_oracle_suite.py",
     "tools/ci/tests/test_holdout_review.py",
     "tools/ci/tests/test_completed_response_timing.py",
@@ -158,6 +161,7 @@ def main() -> int:
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--out", type=Path)
     target.add_argument("--verify", type=Path)
+    target.add_argument("--run-local", action="store_true", help="run the selected Python tests")
     parser.add_argument("--role", choices=("python", "rust", "sdk"))
     args = parser.parse_args()
     if args.verify is not None:
@@ -170,6 +174,8 @@ def main() -> int:
         return 0
     if args.role is not None:
         parser.error("--role applies only to --verify")
+    if args.run_local:
+        return int(pytest.main([*PYTHON_SELECTORS, "-q"]))
     payload = collect_pytest()
     authority = _load_json(DEFAULT_AUTHORITY)
     if not isinstance(authority, dict) or payload["tests"] != _identities(

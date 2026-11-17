@@ -15,6 +15,7 @@ import tempfile
 import unicodedata
 from collections import defaultdict
 from importlib.metadata import PackageNotFoundError, version
+from itertools import groupby
 from pathlib import Path
 
 try:
@@ -41,20 +42,24 @@ from tools.benchmark.retrieval.retrieval_contract import GOLD_RUNTIME_PACKAGES, 
 
 MAX_CAPSULE_BYTES = 256 * 1024 * 1024
 GOLD_DOCUMENT_BYTES = 32 * 1024 * 1024
-MAX_SPLIT_REPOSITORIES = 64
+# Split entries are source snapshots: one upstream may have several historical
+# revisions on the development side. Keep a bounded inventory above the
+# known 123 development snapshots plus 12 holdout snapshots.
+MAX_SPLIT_SNAPSHOT_ENTRIES = 256
 MAX_SPLIT_FAMILIES = 100_000
 GOLD_RUNTIME_SOURCE_ROOT = Path(__file__).resolve().parents[2]
 # Cross-split source leakage is checked over code_only bytes. Exact copies are
 # refused from a byte floor that skips empty package stubs; near duplicates use
 # winnowed token k-gram fingerprints (Schleimer et al., SIGMOD 2003) and refuse
 # when either file's informative fingerprints are mostly contained in the other.
-# Fingerprints present in more files than the frequency bound are treated as
-# shared boilerplate (license headers, imports) and dropped on both sides.
+# Fingerprints present in more independent upstream/path documents than the
+# frequency bound are treated as shared boilerplate (license headers, imports)
+# and dropped on both sides. Historical snapshots of one path count once.
 SPLIT_LEAKAGE_POLICY = {
-    "id": "repository-disjoint-code-only-v1",
+    "id": "repository-disjoint-code-only-v3",
     "view": "code_only",
     "split_sides": ["development", "holdout"],
-    "repository_identity": "url_casefold_without_dot_git_and_revision_unique",
+    "repository_identity": "url_disjoint_across_splits_and_revision_globally_unique",
     "query_families": "globally_unique_one_repository",
     "exact_file_min_bytes": 256,
     "near_duplicate": {
@@ -64,6 +69,7 @@ SPLIT_LEAKAGE_POLICY = {
         "hash": "sha256_first_8_bytes_big_endian",
         "min_informative_fingerprints": 16,
         "max_document_frequency": 64,
+        "document_identity": "canonical_upstream_url_and_path",
         "containment_threshold": 0.8,
     },
 }
@@ -272,21 +278,8 @@ def _replay(capsule: RawFile, selection: dict, suite: bytes, pack: bytes) -> dic
         }
         if set(names) != wanted:
             raise EvidenceError("release capsule repository bundle inventory differs")
-        checkouts = scratch / "checkouts"
-        checkouts.mkdir()
-        for entry in entries:
-            corpus.git(
-                checkouts,
-                "clone",
-                "--quiet",
-                "--",
-                str(held / f"bundles/{entry['name']}.bundle"),
-                str(checkouts / entry["name"]),
-            )
         restored = scratch / "release"
-        expected = corpus.build(spec, checkouts, restored, bundles=held / "bundles")
-        if expected != document:
-            raise EvidenceError("retained release metadata differs from real Git objects")
+        expected = corpus.replay_bundles(spec, held / "bundles", restored, document)
         repository = next(
             (
                 row
@@ -359,9 +352,10 @@ def _validated_split_manifest(
     """Prove a corpus-wide repository-disjoint split against validated releases.
 
     Every repository of every bound release is assigned exactly once. Query
-    families are globally unique, a repository (URL or revision) never appears
-    twice, and no development/holdout code_only file pair is an exact or near
-    copy. This is not evaluator experiment custody and admits no labels.
+    families and revisions are globally unique, one upstream URL may have
+    multiple revisions within a split but never across splits, and no
+    development/holdout code_only file pair is an exact or near copy. This is
+    not evaluator experiment custody and admits no labels.
     """
     manifest = _json(raw)
     if (
@@ -372,7 +366,7 @@ def _validated_split_manifest(
         or manifest["kind"] != "repository_disjoint_split_manifest"
         or manifest["leakage_policy"] != SPLIT_LEAKAGE_POLICY
         or not isinstance(manifest["repositories"], list)
-        or not 2 <= len(manifest["repositories"]) <= MAX_SPLIT_REPOSITORIES
+        or not 2 <= len(manifest["repositories"]) <= MAX_SPLIT_SNAPSHOT_ENTRIES
     ):
         raise EvidenceError("split manifest identity, policy or repository inventory is invalid")
     entries = [_split_entry(entry) for entry in manifest["repositories"]]
@@ -389,9 +383,9 @@ def _validated_split_manifest(
     ):
         raise EvidenceError("split manifest release paths differ from its release inventory")
     families: set[str] = set()
-    urls: set[str] = set()
+    url_sides: dict[str, str] = {}
     commits: set[str] = set()
-    sources: dict[str, list[tuple[str, str, bytes | None, set[int]]]] = {
+    sources: dict[str, list[tuple[str, str, str, bytes | None, set[int]]]] = {
         side: [] for side in SPLIT_LEAKAGE_POLICY["split_sides"]
     }
     documents: dict[str, dict] = {}
@@ -412,9 +406,13 @@ def _validated_split_manifest(
                 or entry["code_only_universe_digest"] != view["file_universe_digest"]
             ):
                 raise EvidenceError("split manifest repository commit or source differs")
-            if url in urls or entry["repository_commit"] in commits:
+            prior_side = url_sides.get(url)
+            if (
+                (prior_side is not None and prior_side != entry["split"])
+                or entry["repository_commit"] in commits
+            ):
                 raise EvidenceError("split manifest repeats one upstream repository")
-            urls.add(url)
+            url_sides[url] = entry["split"]
             commits.add(entry["repository_commit"])
             repeated = families & set(entry["query_family_ids"])
             families.update(entry["query_family_ids"])
@@ -432,31 +430,37 @@ def _validated_split_manifest(
                     else None
                 )
                 sources[entry["split"]].append(
-                    (entry["repository"], row["path"], exact, _fingerprints(raw))
+                    (entry["repository"], url, row["path"], exact, _fingerprints(raw))
                 )
     _refuse_cross_split_source(sources)
     return manifest, documents
 
 
 def _refuse_cross_split_source(
-    sources: dict[str, list[tuple[str, str, bytes | None, set[int]]]],
+    sources: dict[str, list[tuple[str, str, str, bytes | None, set[int]]]],
 ) -> None:
     development, holdout = (sources[side] for side in SPLIT_LEAKAGE_POLICY["split_sides"])
-    exact = {digest: (name, path) for name, path, digest, _ in development if digest}
-    for name, path, digest, _values in holdout:
+    exact = {digest: (name, path) for name, _url, path, digest, _ in development if digest}
+    for name, _url, path, digest, _values in holdout:
         if digest and (match := exact.get(digest)):
             raise EvidenceError(
                 f"split leakage: identical source {match[0]}:{match[1]} / {name}:{path}"
             )
     near = SPLIT_LEAKAGE_POLICY["near_duplicate"]
     frequency: dict[int, int] = defaultdict(int)
-    for rows in sources.values():
-        for *_identity, values in rows:
-            for value in values:
-                frequency[value] += 1
+    ordered = sorted(
+        (row for rows in sources.values() for row in rows),
+        key=lambda row: (row[1], row[2]),
+    )
+    for _identity, revisions in groupby(ordered, key=lambda row: (row[1], row[2])):
+        document_values: set[int] = set()
+        for _name, _url, _path, _digest, values in revisions:
+            document_values.update(values)
+        for value in document_values:
+            frequency[value] += 1
     common = {value for value, count in frequency.items() if count > near["max_document_frequency"]}
     informative = {
-        side: [(name, path, values - common) for name, path, _digest, values in rows]
+        side: [(name, path, values - common) for name, _url, path, _digest, values in rows]
         for side, rows in sources.items()
     }
     posting: dict[int, list[int]] = defaultdict(list)

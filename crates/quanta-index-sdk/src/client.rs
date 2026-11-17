@@ -17,7 +17,7 @@ use crate::DiagnosticAttemptSourceV1;
 
 use crate::binding::{
     ControlCallBinding, IngestCallBinding, QueryCallBinding, bind_control_response,
-    bind_ingest_response, bind_query_response, is_rev_at_time_query,
+    bind_ingest_response, bind_query_response,
 };
 use crate::{
     ClientProfile, ConnectOptions, GenerationNamespace, HistoryNamespace, LexicalNamespace,
@@ -31,6 +31,12 @@ use crate::{ControlTransport, IngestTransport};
 // Transports have exactly the client's lifetime. Only the complete client is
 // shared; no independent header or retain is needed for a transport dispatch.
 enum ClientTransports {
+    Native {
+        query: crate::native_uds::NativeUdsClient,
+        selection: quanta_index_contract::index::ViewSelection,
+        profile: ClientProfile,
+        io_policy: quanta_index_ipc::ClientIoPolicy,
+    },
     Uds {
         query: UdsQueryTransport,
         control: Option<UdsControlTransport>,
@@ -45,16 +51,20 @@ enum ClientTransports {
 }
 
 impl ClientTransports {
-    fn query(&self) -> &dyn QueryTransport {
+    fn query(&self, payload: &SearchPlaneQueryIpcRequest) -> Result<&dyn QueryTransport, SdkError> {
         match self {
-            Self::Uds { query, .. } => query,
+            Self::Native { .. } => Err(SdkError::UnsupportedNativeQuery {
+                capability: crate::LegacyQueryCapabilityV1::from_request(payload),
+            }),
+            Self::Uds { query, .. } => Ok(query),
             #[cfg(test)]
-            Self::Injected { query, .. } => query.as_ref(),
+            Self::Injected { query, .. } => Ok(query.as_ref()),
         }
     }
 
     fn control(&self) -> Option<&dyn ControlTransport> {
         match self {
+            Self::Native { .. } => None,
             Self::Uds { control, .. } => control
                 .as_ref()
                 .map(|transport| -> &dyn ControlTransport { transport }),
@@ -65,6 +75,7 @@ impl ClientTransports {
 
     fn ingest(&self) -> Option<&dyn IngestTransport> {
         match self {
+            Self::Native { .. } => None,
             Self::Uds { ingest, .. } => ingest
                 .as_ref()
                 .map(|transport| -> &dyn IngestTransport { transport }),
@@ -117,6 +128,7 @@ impl ClientQueryRpcKindV1 {
             | SearchPlaneQueryIpcRequest::Semantic(_)
             | SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcRequest::Hybrid(_)
+            | SearchPlaneQueryIpcRequest::HybridFileV1(_)
             | SearchPlaneQueryIpcRequest::HybridSeed(_)
             | SearchPlaneQueryIpcRequest::GoTestTraceFileV1(_)
             | SearchPlaneQueryIpcRequest::History(_)
@@ -159,6 +171,65 @@ impl std::ops::Deref for QuantaIndex {
 }
 
 impl QuantaIndex {
+    /// Explicit compatibility rail for existing Legacy producers and benchmarks.
+    pub fn connect_legacy(options: ConnectOptions) -> Result<Self, SdkError> {
+        if options.native_selection.is_some() {
+            return Err(SdkError::Usage(
+                "Legacy connect cannot accept Native selection".into(),
+            ));
+        }
+        Ok(Self::from_resolved(
+            options.resolve_legacy_profile(ClientProfile::Full)?,
+        ))
+    }
+
+    pub fn connect_legacy_query_only(options: ConnectOptions) -> Result<Self, SdkError> {
+        if options.native_selection.is_some() {
+            return Err(SdkError::Usage(
+                "Legacy connect cannot accept Native selection".into(),
+            ));
+        }
+        Ok(Self::from_resolved(
+            options.resolve_legacy_profile(ClientProfile::QueryOnly)?,
+        ))
+    }
+
+    pub fn connect_legacy_with_diagnostic_attempts(
+        options: ConnectOptions,
+        source: Arc<dyn DiagnosticAttemptSourceV1>,
+    ) -> Result<Self, SdkError> {
+        if options.native_selection.is_some() {
+            return Err(SdkError::Usage(
+                "Legacy connect cannot accept Native selection".into(),
+            ));
+        }
+        let resolved = options.resolve_legacy_profile(ClientProfile::Full)?;
+        Ok(Self {
+            inner: Arc::new(
+                QuantaIndexClientPayloadV1::from_resolved(resolved)
+                    .with_diagnostic_attempt_source(source),
+            ),
+        })
+    }
+
+    pub fn connect_legacy_query_only_with_diagnostic_attempts(
+        options: ConnectOptions,
+        source: Arc<dyn DiagnosticAttemptSourceV1>,
+    ) -> Result<Self, SdkError> {
+        if options.native_selection.is_some() {
+            return Err(SdkError::Usage(
+                "Legacy connect cannot accept Native selection".into(),
+            ));
+        }
+        let resolved = options.resolve_legacy_profile(ClientProfile::QueryOnly)?;
+        Ok(Self {
+            inner: Arc::new(
+                QuantaIndexClientPayloadV1::from_resolved(resolved)
+                    .with_diagnostic_attempt_source(source),
+            ),
+        })
+    }
+
     pub fn connect(options: ConnectOptions) -> Result<Self, SdkError> {
         let resolved = options.resolve()?;
         Ok(Self::from_resolved(resolved))
@@ -321,7 +392,10 @@ impl QuantaIndexClientPayloadV1 {
         mut self,
         source: Arc<dyn DiagnosticAttemptSourceV1>,
     ) -> Self {
-        self.diagnostic_attempt_source = Some(source);
+        match &mut self.transports {
+            ClientTransports::Native { query, .. } => query.set_diagnostic_attempt_source(source),
+            _ => self.diagnostic_attempt_source = Some(source),
+        }
         self
     }
 
@@ -431,27 +505,37 @@ impl QuantaIndexClientPayloadV1 {
         payload: SearchPlaneQueryIpcRequest,
         mut observation: Option<&mut Vec<ClientQueryRpcObservationV1>>,
     ) -> Result<SearchPlaneQueryIpcResponse, SdkError> {
+        // Refuse by canonical request kind before Legacy selector resolution or I/O.
+        let _transport = self.transports.query(&payload)?;
         Self::validate_query_selection(&payload)?;
-        let selected_lexical_pin =
-            self.resolve_lexical_query_generation(&payload, observation.as_deref_mut())?;
         let mut binding = QueryCallBinding::from_request(&payload);
-        if let Some(pin) = selected_lexical_pin {
+        if let Some(pin) =
+            self.resolve_lexical_query_generation(&payload, &binding, observation.as_deref_mut())?
+        {
             binding = binding.with_resolved_lexical_generation(pin);
         }
+        self.dispatch_bound_query(payload, &binding, observation)
+    }
+
+    fn dispatch_bound_query(
+        &self,
+        payload: SearchPlaneQueryIpcRequest,
+        binding: &QueryCallBinding,
+        observation: Option<&mut Vec<ClientQueryRpcObservationV1>>,
+    ) -> Result<SearchPlaneQueryIpcResponse, SdkError> {
         let request_id = self.next_request_id();
         let observed_kind = observation
             .as_ref()
             .map(|_| ClientQueryRpcKindV1::from_request(&payload))
             .transpose()?;
+        let transport = self.transports.query(&payload)?;
         let envelope = SearchPlaneQueryIpcRequestEnvelope {
             request_id,
             payload,
             diagnostic_attempt: DiagnosticAttemptFieldV1::Absent,
         };
         let response = if let Some(trace) = observation {
-            let (response, ipc) = self
-                .transports
-                .query()
+            let (response, ipc) = transport
                 .send_observed_traced(envelope, self.diagnostic_attempt_source.as_deref())?;
             let kind = observed_kind.ok_or_else(|| {
                 SdkError::Protocol("observed query RPC kind disappeared".to_string())
@@ -463,9 +547,7 @@ impl QuantaIndexClientPayloadV1 {
             });
             response
         } else {
-            self.transports
-                .query()
-                .send_traced(envelope, self.diagnostic_attempt_source.as_deref())?
+            transport.send_traced(envelope, self.diagnostic_attempt_source.as_deref())?
         };
         if response.request_id != request_id {
             return Err(SdkError::Protocol(format!(
@@ -473,7 +555,7 @@ impl QuantaIndexClientPayloadV1 {
                 response.request_id, request_id
             )));
         }
-        bind_query_response(&binding, &response.payload)?;
+        bind_query_response(binding, &response.payload)?;
         match response.payload {
             SearchPlaneQueryIpcResponse::Error(error) => Err(SdkError::Remote {
                 code: error.code,
@@ -487,6 +569,7 @@ impl QuantaIndexClientPayloadV1 {
             | SearchPlaneQueryIpcResponse::Semantic(_)
             | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridFileV1(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
             | SearchPlaneQueryIpcResponse::History(_)
@@ -501,16 +584,18 @@ impl QuantaIndexClientPayloadV1 {
     fn resolve_lexical_query_generation(
         &self,
         request: &SearchPlaneQueryIpcRequest,
+        binding: &QueryCallBinding,
         observation: Option<&mut Vec<ClientQueryRpcObservationV1>>,
     ) -> Result<Option<GenerationPin>, SdkError> {
         let SearchPlaneQueryIpcRequest::Text(query) = request else {
             return Ok(None);
         };
-        if !is_rev_at_time_query(query.syntax, &query.query_text) {
+        let Some(resolution_binding) = binding.lexical_resolution() else {
             return Ok(None);
-        }
-        let response = self.dispatch_query_inner(
+        };
+        let response = self.dispatch_bound_query(
             SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(query.clone()),
+            &resolution_binding,
             observation,
         )?;
         let SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(pin) = response else {
@@ -551,6 +636,7 @@ impl QuantaIndexClientPayloadV1 {
             | SearchPlaneQueryIpcRequest::Semantic(_)
             | SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcRequest::Hybrid(_)
+            | SearchPlaneQueryIpcRequest::HybridFileV1(_)
             | SearchPlaneQueryIpcRequest::HybridSeed(_)
             | SearchPlaneQueryIpcRequest::GoTestTraceFileV1(_)
             | SearchPlaneQueryIpcRequest::History(_)
@@ -778,6 +864,7 @@ impl QuantaIndexClientPayloadV1 {
             SearchPlaneQueryIpcResponse::Semantic(_) => "semantic",
             SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => "semantic_work_bounded_v1",
             SearchPlaneQueryIpcResponse::Hybrid(_) => "hybrid",
+            SearchPlaneQueryIpcResponse::HybridFileV1(_) => "hybrid_file_v1",
             SearchPlaneQueryIpcResponse::HybridSeed(_) => "hybrid_seed",
             SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => "go_test_trace_file_v1",
             SearchPlaneQueryIpcResponse::History(_) => "history",
@@ -853,12 +940,38 @@ impl QuantaIndexClientPayloadV1 {
     }
 
     pub(crate) fn from_resolved(resolved: crate::config::ResolvedConnectOptions) -> Self {
+        if let Some(selection) = resolved.native_selection {
+            return Self::from_native_socket_v1(
+                resolved.query_socket,
+                selection,
+                resolved.profile,
+                resolved.io_policy,
+            );
+        }
         Self::from_socket_paths_v1(
             resolved.query_socket,
             resolved.control_socket,
             resolved.ingest_socket,
             resolved.io_policy,
         )
+    }
+
+    pub(crate) fn from_native_socket_v1(
+        socket: std::path::PathBuf,
+        selection: quanta_index_contract::index::ViewSelection,
+        profile: ClientProfile,
+        io_policy: quanta_index_ipc::ClientIoPolicy,
+    ) -> Self {
+        Self {
+            transports: ClientTransports::Native {
+                query: crate::native_uds::NativeUdsClient::new(socket),
+                selection,
+                profile,
+                io_policy,
+            },
+            next_request_id: AtomicU64::new(1),
+            diagnostic_attempt_source: None,
+        }
     }
 
     pub(crate) fn from_socket_paths_v1(
@@ -925,6 +1038,25 @@ pub struct ReaderClient<'a> {
 }
 
 impl<'a> ReaderClient<'a> {
+    /// Native result contracts use one caller-owned budget and explicit lease.
+    pub fn native(&self) -> Result<crate::NativeQueryReader<'a>, SdkError> {
+        match &self.client.transports {
+            ClientTransports::Native {
+                query,
+                selection,
+                io_policy,
+                ..
+            } => Ok(crate::NativeQueryReader {
+                client: query,
+                selection: *selection,
+                io_policy: *io_policy,
+            }),
+            _ => Err(SdkError::Usage(
+                "Native reader requires a Native connection".into(),
+            )),
+        }
+    }
+
     const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }
@@ -1035,6 +1167,27 @@ pub struct ProducerClient<'a> {
 }
 
 impl<'a> ProducerClient<'a> {
+    /// Full clients may borrow the existing Native publication sender. QueryOnly
+    /// never receives this capability, even when all planes share one endpoint.
+    pub fn native(&self) -> Result<&'a crate::native_uds::NativeUdsClient, SdkError> {
+        match &self.client.transports {
+            ClientTransports::Native {
+                query,
+                profile: ClientProfile::Full,
+                ..
+            } => Ok(query),
+            ClientTransports::Native {
+                profile: ClientProfile::QueryOnly,
+                ..
+            } => Err(SdkError::PlaneUnavailable {
+                plane: "native-write",
+            }),
+            _ => Err(SdkError::Usage(
+                "Native producer requires a Native connection".into(),
+            )),
+        }
+    }
+
     const fn new(client: &'a QuantaIndexClientPayloadV1) -> Self {
         Self { client }
     }

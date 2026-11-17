@@ -13,14 +13,19 @@ Current proposals (not accepted decisions or implementation authority):
 
 - [Search-corpus selection and ingest pressure](OCT-04-001-search-corpus-selection-and-ingest-pressure.md)
 - [Effective configuration and generation policy](OCT-04-002-configuration-and-generation-policy.md)
-- [Optional source-preparation SDK](OCT-04-003-source-preparation-sdk.md)
+
+Scoped implementation records:
+
+- [Source-preparation SDK](OCT-04-003-source-preparation-sdk.md): offline preparation and the generation-based Legacy publication/activation examples are integrated source contracts. Native selected-view IR, actual Semantica caller and product/release acceptance remain separate; [MAY-27-002](MAY-27-002-sdk-ingress-and-public-surface-boundary.md) owns the public contract.
 
 ADR 변경은 decision을 바꾸는 breaking change다. 같은 commit에서 downstream contract, inventory, migration
 class와 proof authority를 갱신한다. optional compatibility field나 dual live decoder로 decision drift를 숨기지 않는다.
 
 ## November 2026 implemented contracts
 
-- [Native Index execution and custody](NOV-07-001-native-index-execution-and-custody.md) covers the Native occurrence policy, publication/readback custody, IPC settlement and the configured provider boundary. The [November recovery entry](../ARCHIVE-INDEX.md#2026-11-07-november-closeout) maps the retired plans and current acceptance owners.
+- [Native Query and semantic engine](NOV-12-001-native-query-and-semantic-engine.md) records Native immutable HNSW, prepared publication, authenticated file candidates, retained pages/Hybrid bounded terminal replies, same-socket root/peer observations, the implemented History source-replay/member/read contract, admitted read DATA custody, historical operation metadata, Semantic failure-atomic directory mutation and pure-recipe admission. NC-C's bounded Query/interface supplier scope is closed; its ticket is retired. It scopes the earlier Lance decisions and retains current product/default/installed acceptance in the Nov-12 packets.
+- [Execution admission and terminal recovery](NOV-12-002-execution-admission-and-terminal-recovery.md) consolidates completed B01–B04 coordinator, QBC claim, Docker recovery and explicit-attempt contracts. B05 retains current repairs, supplier/input work and actual C0/P09 body acceptance.
+- [Native Index execution and custody](NOV-07-001-native-index-execution-and-custody.md) covers the delivered Core/Kernel/Catalog/Storage boundary, Native occurrence policy, publication/readback custody, IPC settlement and the configured provider boundary. It also owns logical identity across Text compaction, authenticated alias/packed Diff, six-counter Inventory Diff observation, Posting scratch, paired Catalog reads, immutable installed baselines, send-observer contracts, the existing-only Semantic physical verifier with borrowed-root custody, and recovery receiver/selection reconciliation custody. The [November recovery entry](../ARCHIVE-INDEX.md#2026-11-07-november-closeout) maps the retired plans and current acceptance owners.
 
 ## OCT-05 implemented contracts
 
@@ -60,7 +65,7 @@ SEP-26 retrieval accepted set:
 
 - [Query, publication and result-proof contracts](SEP-26-001-retrieval-query-publication-and-result-proof.md)
 - [Observation, experiment and default policy](SEP-26-002-retrieval-observation-experiment-and-default-policy.md)
-- [Evidence custody and qualification boundaries](SEP-26-003-retrieval-evidence-custody-and-qualification.md)
+- [Evidence custody and qualification boundaries](SEP-26-003-retrieval-evidence-custody-and-qualification.md), including Native quality/controlled-capture scope without runtime/default promotion
 - [Decision registry](SEP-26-DECISION-REGISTRY.md)
 
 Documentation governance:

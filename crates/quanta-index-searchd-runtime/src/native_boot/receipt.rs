@@ -13,7 +13,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use quanta_index_core::index::{Digest, IndexError, MemoryLifetime, WorkBudget, WorkUsage};
 use quanta_index_searchd::cli::NativeBootIdentityV1;
 use rusqlite::ffi::quanta_capacity_vfs::close_owned_file;
-use rustix::fs::{AtFlags, Mode, OFlags, linkat, open, openat, statat, unlinkat};
+use rustix::fs::{AtFlags, Mode, OFlags, RenameFlags, open, openat, renameat_with, statat, unlinkat};
 use serde::Serialize;
 
 const MAX_RECEIPT_BYTES: u64 = 4096;
@@ -309,18 +309,19 @@ impl ReceiptTarget {
             {
                 bail!("native receipt path changed before publication");
             }
-            linkat(
+            // Publish an absent name in one step. An interruption before the
+            // parent sync must never leave a two-link final receipt.
+            renameat_with(
                 self.parent()?,
                 Path::new(&temporary),
                 self.parent()?,
                 Path::new(&self.name),
-                AtFlags::empty(),
+                RenameFlags::NOREPLACE,
             )?;
             published = true;
             if entry(self.parent()?, &self.name)? != Some(own_inode) {
                 bail!("native receipt publication identity changed");
             }
-            self.unlink_owned(&temporary, own_inode)?;
             sync(self.parent()?)?;
             self.check_parent()?;
             if entry(self.parent()?, &self.name)? != Some(own_inode) {
@@ -449,7 +450,22 @@ mod tests {
         let root = tempfile::tempdir()?;
         let output = tempfile::tempdir()?;
         let path = output.path().join("receipt.json");
-        target(&path, root.path())?.write(boot(), Digest([13; 32]), &mut budget()?)?;
+        let mut syncs = 0;
+        target(&path, root.path())?.write_with_sync(
+            boot(),
+            Digest([13; 32]),
+            &mut budget()?,
+            |file| {
+                syncs += 1;
+                if syncs == 2 {
+                    let metadata = fs::symlink_metadata(&path)?;
+                    if metadata.nlink() != 1 || fs::read_dir(output.path())?.count() != 1 {
+                        return Err(io::Error::other("receipt promotion retained another link"));
+                    }
+                }
+                file.sync_all()
+            },
+        )?;
         ensure!(
             fs::symlink_metadata(&path)?.mode() & 0o777 == 0o600,
             "receipt mode differs"

@@ -21,8 +21,9 @@ use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, AuxiliaryDomainV1, AuxiliaryGenerationKeyV1,
     AuxiliaryMutationBatchV1, AuxiliaryMutationReceiptV1, AuxiliaryRowFamilyV1, AuxiliaryRowKeyV1,
     AuxiliaryRowMutationV1, AuxiliaryRowV1, AuxiliaryTrackRowV1, CoreError,
+    index::{IndexError, MemoryLifetime, WorkBudget, WorkUsage},
 };
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, Params, Row, Statement, TransactionBehavior, params};
 use sha2::{Digest, Sha256};
 
 use crate::connection::{SqliteCatalog, blob32, count_u64, engine_error, generation_i64};
@@ -253,6 +254,19 @@ struct RawRow {
     row_sha256: Vec<u8>,
 }
 
+fn raw_row(row: &Row<'_>) -> rusqlite::Result<RawRow> {
+    Ok(RawRow {
+        domain: row.get(0)?,
+        repo_id: row.get(1)?,
+        revision_id: row.get(2)?,
+        generation: row.get(3)?,
+        family: row.get(4)?,
+        row_key: row.get(5)?,
+        value: row.get(6)?,
+        row_sha256: row.get(7)?,
+    })
+}
+
 fn verified_row(raw: RawRow) -> Result<AuxiliaryRowV1, CoreError> {
     let domain = AuxiliaryDomainV1::from_code_str(&raw.domain).ok_or_else(|| {
         corrupt(format!(
@@ -312,22 +326,127 @@ fn scan_rows(
         )
         .map_err(|error| engine_error("prepare auxiliary scan", path, &error))?;
     let rows = statement
-        .query_map([], |row| {
-            Ok(RawRow {
-                domain: row.get(0)?,
-                repo_id: row.get(1)?,
-                revision_id: row.get(2)?,
-                generation: row.get(3)?,
-                family: row.get(4)?,
-                row_key: row.get(5)?,
-                value: row.get(6)?,
-                row_sha256: row.get(7)?,
-            })
-        })
+        .query_map([], raw_row)
         .map_err(|error| engine_error("scan auxiliary rows", path, &error))?;
     for raw in rows {
         let raw = raw.map_err(|error| engine_error("read auxiliary row", path, &error))?;
         visit(verified_row(raw)?)?;
+    }
+    Ok(())
+}
+
+fn history_work_error(budget: &WorkBudget, error: IndexError) -> CoreError {
+    if let Err(interrupted) = budget.request().checkpoint("Catalog History readback") {
+        return interrupted;
+    }
+    if matches!(
+        error,
+        IndexError::ResourceLimited | IndexError::WorkLimitExceeded
+    ) {
+        CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
+            message: "Catalog History readback exceeds its admitted work".into(),
+        }
+    } else {
+        CoreError::Storage(format!("Catalog History readback: {error}"))
+    }
+}
+
+fn scan_history_rows(
+    statement: &mut Statement<'_>,
+    address: impl Params,
+    path: &Path,
+    budget: &mut WorkBudget,
+    visit: &mut dyn FnMut(AuxiliaryRowV1, &mut WorkBudget) -> Result<(), CoreError>,
+) -> Result<bool, CoreError> {
+    let mut rows = statement
+        .query(address)
+        .map_err(|error| engine_error("scan Catalog History rows", path, &error))?;
+    let mut seen = false;
+    loop {
+        budget.request().checkpoint("Catalog History row read")?;
+        let Some(row) = rows
+            .next()
+            .map_err(|error| engine_error("read Catalog History row", path, &error))?
+        else {
+            return Ok(seen);
+        };
+        // Charge stored bytes before copying SQLite's borrowed row buffers.
+        let bytes = (0..8).try_fold(0_u64, |total, column| {
+            use rusqlite::types::ValueRef;
+            let value = row
+                .get_ref(column)
+                .map_err(|error| engine_error("size Catalog History row", path, &error))?;
+            let bytes = match value {
+                ValueRef::Text(bytes) | ValueRef::Blob(bytes) => {
+                    count_u64("History row field bytes", bytes.len())?
+                }
+                ValueRef::Integer(_) | ValueRef::Real(_) | ValueRef::Null => 8,
+            };
+            total
+                .checked_add(bytes)
+                .ok_or_else(|| corrupt("Catalog History row size overflow".into()))
+        })?;
+        budget
+            .charge(WorkUsage {
+                reads: 1,
+                bytes,
+                ..WorkUsage::default()
+            })
+            .map_err(|error| history_work_error(budget, error))?;
+        let _row_backing = budget
+            .reserve_memory(bytes, MemoryLifetime::Temporary)
+            .map_err(|error| history_work_error(budget, error))?;
+        let raw = raw_row(row)
+            .map_err(|error| engine_error("decode Catalog History row", path, &error))?;
+        visit(verified_row(raw)?, budget)?;
+        seen = true;
+    }
+}
+
+/// Visit the exact History generation in one caller-owned read snapshot.
+/// Output remains provisional until the caller has closed its snapshot and
+/// physical source admission successfully.
+pub(crate) fn scan_history_generation_v1(
+    connection: &Connection,
+    path: &Path,
+    generation: &AuxiliaryGenerationKeyV1,
+    budget: &mut WorkBudget,
+    visit: &mut dyn FnMut(AuxiliaryRowV1, &mut WorkBudget) -> Result<(), CoreError>,
+) -> Result<(), CoreError> {
+    let address = params![
+        generation.repo_id.as_str(),
+        generation.revision_id.as_str(),
+        generation_i64(generation.generation)?,
+    ];
+    {
+        let mut epoch = connection
+            .prepare(
+                "SELECT domain, repo_id, revision_id, generation, family, row_key, value, row_sha256
+                 FROM auxiliary_rows_v1
+                 WHERE domain='history' AND repo_id=?1 AND revision_id=?2 AND generation=?3
+                   AND family='epoch' AND row_key=x''",
+            )
+            .map_err(|error| engine_error("prepare Catalog History epoch", path, &error))?;
+        if !scan_history_rows(&mut epoch, address, path, budget, visit)? {
+            return Err(CoreError::Typed {
+                code: quanta_index_core::AUX_EPOCH_UNKNOWN_CODE,
+                message: "Catalog History has no durable epoch for the requested generation"
+                    .into(),
+            });
+        }
+    }
+    {
+        let mut rows = connection
+            .prepare(
+                "SELECT domain, repo_id, revision_id, generation, family, row_key, value, row_sha256
+                 FROM auxiliary_rows_v1
+                 WHERE domain='history' AND repo_id=?1 AND revision_id=?2 AND generation=?3
+                   AND (family<>'epoch' OR row_key<>x'')
+                 ORDER BY family, row_key",
+            )
+            .map_err(|error| engine_error("prepare Catalog History scan", path, &error))?;
+        let _present = scan_history_rows(&mut rows, address, path, budget, visit)?;
     }
     Ok(())
 }
@@ -446,10 +565,122 @@ impl AuxiliaryAuthorityCatalogPort for SqliteCatalog {
         outcome
     }
 
+    fn for_each_history_row(
+        &self,
+        generation: &AuxiliaryGenerationKeyV1,
+        budget: &mut WorkBudget,
+        visit: &mut dyn FnMut(AuxiliaryRowV1, &mut WorkBudget) -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        let mut connection = self
+            .lock_native_budget(budget)
+            .map_err(|error| history_work_error(budget, error))?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(|error| engine_error("begin Catalog History snapshot", &self.path, &error))?;
+        scan_history_generation_v1(&transaction, &self.path, generation, budget, visit)?;
+        transaction
+            .commit()
+            .map_err(|error| engine_error("close Catalog History snapshot", &self.path, &error))
+    }
+
     fn track_rows(&self) -> Result<Vec<AuxiliaryTrackRowV1>, CoreError> {
         let connection = self.lock()?;
         let outcome = scan_tracks(&connection, &self.path);
         drop(connection);
         outcome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use quanta_index_core::index::WorkLimits;
+
+    use super::{
+        AuxiliaryAuthorityCatalogPort, AuxiliaryDomainV1, AuxiliaryGenerationKeyV1,
+        AuxiliaryMutationBatchV1, AuxiliaryRowFamilyV1, AuxiliaryRowKeyV1, AuxiliaryRowMutationV1,
+        AuxiliaryRowV1, ManifestGeneration, RepoId, RevisionId, SqliteCatalog, WorkBudget,
+    };
+
+    #[test]
+    fn history_scan_keeps_epoch_and_rows_in_one_wal_snapshot()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let reader = SqliteCatalog::open(root.path(), Duration::from_millis(500))?;
+        let writer = SqliteCatalog::open(root.path(), Duration::from_millis(500))?;
+        let generation = AuxiliaryGenerationKeyV1 {
+            repo_id: RepoId::new("history-repo")?,
+            revision_id: RevisionId::new("history-revision")?,
+            generation: ManifestGeneration::new(7),
+        };
+        let row = |family, key: &[u8], value| AuxiliaryRowV1 {
+            key: AuxiliaryRowKeyV1 {
+                domain: AuxiliaryDomainV1::History,
+                generation: generation.clone(),
+                family,
+                row_key: key.to_vec(),
+            },
+            value: vec![value],
+        };
+        let epoch = |value| row(AuxiliaryRowFamilyV1::Epoch, b"", value);
+        let commit = |value| row(AuxiliaryRowFamilyV1::Commit, b"one", value);
+        let batch = |value| AuxiliaryMutationBatchV1 {
+            rows: vec![
+                AuxiliaryRowMutationV1::Upsert(epoch(value)),
+                AuxiliaryRowMutationV1::Upsert(commit(value)),
+            ],
+            tracks: Vec::new(),
+        };
+        let _initial = writer.apply(&batch(1))?;
+        // A valid row address in another scope must not be verified or
+        // visited by this read, even when that row's stored digest is bad.
+        let connection = writer.lock()?;
+        for (domain, repo, revision, generation) in [
+            ("runtime", "history-repo", "history-revision", 7_i64),
+            ("history", "other-repo", "history-revision", 7),
+            ("history", "history-repo", "other-revision", 7),
+            ("history", "history-repo", "history-revision", 8),
+        ] {
+            let inserted = connection.execute(
+                "INSERT INTO auxiliary_rows_v1
+                 (domain, repo_id, revision_id, generation, family, row_key, value, row_sha256)
+                 VALUES (?1, ?2, ?3, ?4, 'commit', x'01', x'01', zeroblob(32))",
+                rusqlite::params![domain, repo, revision, generation],
+            )?;
+            if inserted != 1 {
+                return Err("Catalog fixture did not insert a foreign row".into());
+            }
+        }
+        drop(connection);
+        let mut budget = WorkBudget::new(
+            WorkLimits {
+                reads: 4,
+                writes: 0,
+                bytes: 4096,
+                mutations: 0,
+            },
+            Instant::now() + Duration::from_secs(60),
+        );
+        let mut rows = Vec::new();
+        reader.for_each_history_row(&generation, &mut budget, &mut |row, _budget| {
+            if row.key.family == AuxiliaryRowFamilyV1::Epoch {
+                let _published = writer.apply(&batch(2))?;
+            }
+            rows.push(row);
+            Ok(())
+        })?;
+        if rows != [epoch(1), commit(1)] {
+            return Err(format!("History read crossed SQLite snapshots: {rows:?}").into());
+        }
+        rows.clear();
+        reader.for_each_history_row(&generation, &mut budget, &mut |row, _budget| {
+            rows.push(row);
+            Ok(())
+        })?;
+        if rows != [epoch(2), commit(2)] {
+            return Err(format!("next History read missed the committed update: {rows:?}").into());
+        }
+        Ok(())
     }
 }

@@ -10,10 +10,11 @@ use quanta_index_core::index::{MAX_MAP_INLINE_BYTES, MAX_MAP_INLINE_CHILDREN, Ma
 /// Persisted inline contribution layout. Small keeps its original count byte;
 /// these tags are outside its valid 0..=INLINE_ENTRIES range.
 pub(super) const LAYOUT_POLICY: &[u8] =
-    b"contribution:inline-small-v1;inline-block-tree-occurrence-v1\0";
+    b"contribution:inline-small-v1;inline-block-tree-occurrence-inventory-directory-v1\0";
 const BLOCK_TAG: u8 = 0x80;
 const TREE_TAG: u8 = 0x81;
 const OCCURRENCE_TAG: u8 = 0x82;
+const DIRECTORY_TAG: u8 = 0x83;
 const ROOT_INLINE_BYTES: usize = 9;
 
 pub(super) fn inline(
@@ -25,6 +26,7 @@ pub(super) fn inline(
         EntryMap::Block(reference) => Some((BLOCK_TAG, reference)),
         EntryMap::Tree(reference) => Some((TREE_TAG, reference)),
         EntryMap::OccurrenceBlock(reference) => Some((OCCURRENCE_TAG, reference)),
+        EntryMap::InventoryDirectory(reference) => Some((DIRECTORY_TAG, reference)),
         EntryMap::Small(_) => None,
         EntryMap::PostingPages(_) => {
             return Err(IndexError::CorruptObject(
@@ -122,7 +124,7 @@ pub(super) fn read(
                 .first()
                 .ok_or_else(|| IndexError::CorruptObject("contribution count missing".into()))?;
             let children = inline.children()?;
-            if matches!(tag, BLOCK_TAG | TREE_TAG | OCCURRENCE_TAG) {
+            if matches!(tag, BLOCK_TAG | TREE_TAG | OCCURRENCE_TAG | DIRECTORY_TAG) {
                 let [record, root] = children else {
                     return Err(IndexError::CorruptObject(
                         "contribution root inline children differ".into(),
@@ -140,7 +142,13 @@ pub(super) fn read(
                     inventory: match tag {
                         BLOCK_TAG => EntryMap::Block(*root),
                         TREE_TAG => EntryMap::Tree(*root),
-                        _ => EntryMap::OccurrenceBlock(*root),
+                        OCCURRENCE_TAG => EntryMap::OccurrenceBlock(*root),
+                        DIRECTORY_TAG => EntryMap::InventoryDirectory(*root),
+                        _ => {
+                            return Err(IndexError::CorruptObject(
+                                "unknown inventory root tag".into(),
+                            ));
+                        }
                     },
                     indexed_tokens: tokens,
                 }

@@ -14,6 +14,7 @@
 //! sidecar is bit-flipped before the inventory runs: the inventory must still
 //! list it, and the validator must still refuse it.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/publication_fixture.rs"]

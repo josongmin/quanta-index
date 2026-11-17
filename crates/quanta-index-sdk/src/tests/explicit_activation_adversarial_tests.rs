@@ -38,6 +38,7 @@ fn explicit_replay_activates_original_revision_without_observation_or_second_ing
     )
     .source_event(sample_source_event());
     let outcome = quanta_index_contract::SearchCorpusPublishOutcome {
+        upload_cleanup: None,
         publication: evidence.publication.clone(),
         receipt: evidence.receipt.clone(),
         observation: None,
@@ -241,7 +242,7 @@ fn explicit_activation_rejects_wrong_root_or_token_ack_and_keeps_evidence() {
 #[test]
 fn query_only_client_reports_unavailable_planes_without_socket_calls() {
     let (batch, evidence) = original_evidence();
-    let client = ok_or_fail!(QuantaIndex::connect_query_only(
+    let client = ok_or_fail!(QuantaIndex::connect_legacy_query_only(
         ConnectOptions::from_state_root("/tmp/qi-explicit-adversarial-query-only"),
     ));
     let activation = client

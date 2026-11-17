@@ -34,10 +34,12 @@ pub(super) struct CorpusPublicationState {
 }
 
 impl CorpusPublicationState {
+    #[cfg(feature = "legacy-bench")]
     pub(super) fn active_event(&self, repo: &RepoId) -> Option<String> {
         self.active_events.get(repo).cloned()
     }
 
+    #[cfg(any(test, feature = "legacy-bench"))]
     pub(super) fn empty_successor(&self) -> Self {
         Self {
             active_events: self.active_events.clone(),
@@ -118,6 +120,7 @@ impl CorpusPublicationState {
         Ok(())
     }
 
+    #[cfg(feature = "legacy-bench")]
     pub(super) fn declare_all_staged_symbols_complete(&mut self) -> Result<()> {
         self.ensure_mutable()?;
         ensure!(
@@ -292,6 +295,7 @@ impl CorpusPublicationState {
         self.frozen = Some(batch);
     }
 
+    #[cfg(any(test, feature = "legacy-bench"))]
     pub(super) fn ensure_publishable(&self, batch: &SearchCorpusIngestBatch) -> Result<()> {
         if let Some(frozen) = &self.frozen {
             ensure!(
@@ -376,6 +380,7 @@ impl CorpusPublicationState {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "legacy-bench"))]
     pub(super) fn finish_frozen(&mut self) {
         self.committed_files = self.files.clone();
         self.dirty.clear();
@@ -385,6 +390,7 @@ impl CorpusPublicationState {
         self.frozen = None;
     }
 
+    #[cfg(any(test, feature = "legacy-bench"))]
     pub(super) fn observe_accepted_activation(
         &mut self,
         repo: &RepoId,
@@ -405,6 +411,7 @@ impl CorpusPublicationState {
         }
     }
 
+    #[cfg(any(test, feature = "legacy-bench"))]
     pub(super) fn activate(
         &mut self,
         repo: &RepoId,

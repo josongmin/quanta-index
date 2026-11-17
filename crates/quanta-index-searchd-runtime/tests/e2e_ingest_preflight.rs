@@ -277,7 +277,7 @@ fn sdk_client(rt: &E2eRuntime) -> Result<QuantaIndex, Box<dyn Error>> {
     let (query, control, ingest) = rt
         .socket_paths()
         .ok_or("the daemon must be running to connect the SDK")?;
-    Ok(QuantaIndex::connect(
+    Ok(QuantaIndex::connect_legacy(
         ConnectOptions::from_state_root(rt.state_root())
             .with_query_socket(query)
             .with_control_socket(control)
@@ -355,7 +355,8 @@ fn sdk_batch(
 fn remote_code(error: &SdkError) -> Option<&str> {
     match error {
         SdkError::Remote { code, .. } => Some(code.as_wire_str()),
-        SdkError::Usage(_)
+        SdkError::UnsupportedNativeQuery { .. }
+        | SdkError::Usage(_)
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)

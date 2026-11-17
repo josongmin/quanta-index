@@ -31,6 +31,7 @@ mod generation_plan;
 mod ports;
 mod search_corpus;
 mod semantic;
+mod staged_admission;
 
 pub use auxiliary::{
     AuxiliaryMaterializerParts, AuxiliaryMutationCoordinator, DirectHistoryMaterializer,

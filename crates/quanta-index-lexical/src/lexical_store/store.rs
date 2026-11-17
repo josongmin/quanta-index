@@ -23,6 +23,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest as _, Sha256};
 
 use super::codec::{BlobRef, ObjectKind, ObjectRef, PageRef};
+use crate::legacy::object_binary::{
+    MAX_OBJECT_BYTES, MAX_OBJECT_DEPS, MAX_OBJECT_PAYLOAD, OBJECT_FORMAT, OBJECT_MAGIC,
+    decode_object, decode_ref, hex_digest, strictly_sorted,
+};
+pub(super) use crate::legacy::object_binary::{corrupt, storage};
 
 mod control_reader;
 mod gc_lifetime;
@@ -48,19 +53,14 @@ pub(crate) use hard_scan_checkpoint::{
     IneligibleReason, ScanLane, WindowWitness,
 };
 
-const POOL_DIR: &str = "lexical-object-pool";
-const OBJECTS_DIR: &str = "objects";
+use crate::legacy::object_binary::OBJECTS_DIR;
+use crate::legacy::object_binary::POOL_DIR;
 const ATTEMPTS_DIR: &str = "attempts";
 const GATE_FILE: &str = ".lifecycle-gate";
 const EPOCH_FILE: &str = ".lifecycle-epoch";
 const EPOCH_MAGIC: &[u8; 8] = b"QLEPOCH1";
 const JOURNAL_HEAD_MAGIC: &[u8; 8] = b"QLAHEAD1";
 const RETIREMENT_MAGIC: &[u8; 8] = b"QLRETIR1";
-const OBJECT_MAGIC: &[u8; 8] = b"QLSTOR01";
-const OBJECT_FORMAT: u16 = 1;
-const MAX_OBJECT_PAYLOAD: usize = 64 * 1024;
-const MAX_OBJECT_BYTES: usize = 96 * 1024;
-const MAX_OBJECT_DEPS: usize = 128;
 const REQUEST_OBJECT_CACHE_BYTES: usize = 4 * 1024 * 1024;
 // Covers both ordered-tree nodes, their duplicated keys and allocator metadata.
 const OBJECT_CACHE_ENTRY_OVERHEAD: usize = 256;
@@ -73,7 +73,7 @@ const MAX_ATTEMPTS: usize = 4096;
 const MAX_ATTEMPT_CONTROL_ENTRIES: usize = MAX_ATTEMPTS
     .saturating_mul(5)
     .saturating_add(MAX_TEMP_CLEANUP_BATCH);
-pub(crate) const MAX_CLOSURE_REFS: usize = 4_000_000;
+pub(crate) use crate::legacy::object_closure::MAX_CLOSURE_REFS;
 const MAX_GC_BATCH: usize = 64;
 const MAX_TEMP_CLEANUP_BATCH: usize = 64;
 // A group uses one AttemptBatch object's dependency list. Keep both writer
@@ -1642,10 +1642,6 @@ fn reach_atomic_cut(
     Ok(())
 }
 
-pub(super) fn storage(context: &str, error: impl std::fmt::Display) -> CoreError {
-    CoreError::Storage(format!("lexical object store {context}: {error}"))
-}
-
 fn with_custody_context(mut primary: CoreError, context: impl std::fmt::Display) -> CoreError {
     let suffix = format!("; physical custody cleanup failed: {context}");
     let message = match &mut primary {
@@ -1659,13 +1655,6 @@ fn with_custody_context(mut primary: CoreError, context: impl std::fmt::Display)
     };
     message.push_str(&suffix);
     primary
-}
-
-pub(super) fn corrupt(reason: &str) -> CoreError {
-    CoreError::Typed {
-        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
-        message: format!("lexical object store: {reason}"),
-    }
 }
 
 pub(super) fn invalid(reason: &str) -> CoreError {
@@ -1733,21 +1722,6 @@ fn ensure_dir_with_sync(
         .map_err(|error| storage("sync new directory parent", error))?;
     }
     Ok(directory)
-}
-
-fn hex_digest(digest: &[u8; 32]) -> String {
-    let mut text = String::with_capacity(64);
-    for byte in digest {
-        for nibble in [byte >> 4, byte & 0x0f] {
-            let digit = if nibble < 10 {
-                b'0'.saturating_add(nibble)
-            } else {
-                b'a'.saturating_add(nibble.saturating_sub(10))
-            };
-            text.push(char::from(digit));
-        }
-    }
-    text
 }
 
 fn decode_hex_digit(byte: u8) -> Result<u8, CoreError> {
@@ -5709,35 +5683,39 @@ impl ObjectStore {
         budget: Option<&RequestBudgetV1>,
         visitor: &mut dyn FnMut(&ObjectRef) -> Result<(), CoreError>,
     ) -> Result<(), CoreError> {
-        let mut pending = Vec::new();
-        pending
-            .try_reserve_exact(roots.len())
-            .map_err(|error| storage("reserve closure roots", error))?;
-        pending.extend_from_slice(roots);
-        let mut visited = BTreeSet::new();
-        while let Some(reference) = pending.pop() {
-            checkpoint(budget, "lexical:object:closure")?;
-            if !visited.insert(reference.clone()) {
-                continue;
-            }
-            if visited.len() > MAX_CLOSURE_REFS {
-                return Err(invalid("object closure exceeds traversal bound"));
-            }
-            let (dependencies, _payload) = self.read_object(&reference, budget)?;
-            visitor(&reference)?;
-            if pending
-                .len()
-                .checked_add(dependencies.len())
-                .is_none_or(|length| length > MAX_CLOSURE_REFS)
-            {
-                return Err(invalid("object closure pending work exceeds bound"));
-            }
-            pending
-                .try_reserve(dependencies.len())
-                .map_err(|error| storage("reserve closure work", error))?;
-            pending.extend(dependencies);
+        struct Ordinary<'a, 'b> {
+            store: &'a ObjectStore,
+            budget: Option<&'a RequestBudgetV1>,
+            visitor: &'b mut dyn FnMut(&ObjectRef) -> Result<(), CoreError>,
         }
-        Ok(())
+        impl crate::legacy::object_closure::ClosureControl for Ordinary<'_, '_> {
+            type Error = CoreError;
+            type Grant = ();
+            type Dependencies = Vec<ObjectRef>;
+            fn checkpoint(&mut self) -> Result<(), CoreError> {
+                checkpoint(self.budget, "lexical:object:closure")
+            }
+            fn reserve(&mut self, _bytes: u64) -> Result<(), CoreError> {
+                Ok(())
+            }
+            fn dependencies(&mut self, reference: &ObjectRef) -> Result<Vec<ObjectRef>, CoreError> {
+                self.store
+                    .read_object(reference, self.budget)
+                    .map(|(dependencies, _payload)| dependencies)
+            }
+            fn visit(&mut self, reference: &ObjectRef) -> Result<(), CoreError> {
+                (self.visitor)(reference)
+            }
+        }
+        crate::legacy::object_closure::walk(
+            roots,
+            MAX_CLOSURE_REFS,
+            &mut Ordinary {
+                store: self,
+                budget,
+                visitor,
+            },
+        )
     }
 }
 
@@ -6771,15 +6749,6 @@ impl ObjectInventoryCursor {
     }
 }
 
-fn strictly_sorted(values: &[ObjectRef]) -> bool {
-    values
-        .windows(2)
-        .all(|pair| match (pair.first(), pair.get(1)) {
-            (Some(a), Some(b)) => a < b,
-            _ => false,
-        })
-}
-
 fn canonical_deps(dependencies: &[ObjectRef]) -> Result<Vec<ObjectRef>, CoreError> {
     if dependencies.len() > MAX_OBJECT_DEPS {
         return Err(invalid("object dependency count exceeds bound"));
@@ -6845,39 +6814,6 @@ fn adoption_entries(
     Ok((entries, chain))
 }
 
-fn decode_ref(bytes: &[u8], offset: &mut usize) -> Result<ObjectRef, CoreError> {
-    let end = offset
-        .checked_add(41)
-        .ok_or_else(|| corrupt("reference offset overflow"))?;
-    let slice = bytes
-        .get(*offset..end)
-        .ok_or_else(|| corrupt("truncated object reference"))?;
-    *offset = end;
-    let kind = ObjectKind::from_code(
-        *slice
-            .first()
-            .ok_or_else(|| corrupt("empty object reference"))?,
-    )
-    .ok_or_else(|| corrupt("unknown object reference kind"))?;
-    let mut width = [0_u8; 8];
-    width.copy_from_slice(
-        slice
-            .get(1..9)
-            .ok_or_else(|| corrupt("truncated reference width"))?,
-    );
-    let mut sha256 = [0_u8; 32];
-    sha256.copy_from_slice(
-        slice
-            .get(9..41)
-            .ok_or_else(|| corrupt("truncated reference digest"))?,
-    );
-    Ok(ObjectRef {
-        kind,
-        bytes: u64::from_be_bytes(width),
-        sha256,
-    })
-}
-
 fn encode_object(
     kind: ObjectKind,
     dependencies: &[ObjectRef],
@@ -6921,81 +6857,6 @@ fn encode_object(
     }
     bytes.extend_from_slice(payload);
     Ok(bytes)
-}
-
-fn decode_object(bytes: &[u8]) -> Result<(ObjectKind, Vec<ObjectRef>, Vec<u8>), CoreError> {
-    if bytes.len() < 21 || bytes.get(..8) != Some(OBJECT_MAGIC.as_slice()) {
-        return Err(corrupt("bad object header"));
-    }
-    let format = u16::from_be_bytes(
-        bytes
-            .get(8..10)
-            .ok_or_else(|| corrupt("truncated format"))?
-            .try_into()
-            .map_err(|_conversion_error| corrupt("format width"))?,
-    );
-    if format != OBJECT_FORMAT {
-        return Err(CoreError::Typed {
-            code:
-                quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
-            message: format!(
-                "lexical object store: unsupported persisted object format {format}; this build supports {OBJECT_FORMAT}"
-            ),
-        });
-    }
-    let kind = ObjectKind::from_code(
-        *bytes
-            .get(10)
-            .ok_or_else(|| corrupt("truncated object kind"))?,
-    )
-    .ok_or_else(|| corrupt("unknown object kind"))?;
-    let count = usize::from(u16::from_be_bytes(
-        bytes
-            .get(11..13)
-            .ok_or_else(|| corrupt("truncated dependency count"))?
-            .try_into()
-            .map_err(|_conversion_error| corrupt("dependency count width"))?,
-    ));
-    let mut payload_len_bytes = [0_u8; 8];
-    payload_len_bytes.copy_from_slice(
-        bytes
-            .get(13..21)
-            .ok_or_else(|| corrupt("truncated payload length"))?,
-    );
-    let payload_len = usize::try_from(u64::from_be_bytes(payload_len_bytes))
-        .map_err(|_conversion_error| corrupt("payload length width"))?;
-    if count > MAX_OBJECT_DEPS || payload_len > MAX_OBJECT_PAYLOAD {
-        return Err(corrupt("object bounds exceeded"));
-    }
-    let expected = 21_usize
-        .checked_add(
-            count
-                .checked_mul(41)
-                .ok_or_else(|| corrupt("dependency length overflow"))?,
-        )
-        .and_then(|value| value.checked_add(payload_len))
-        .ok_or_else(|| corrupt("object length overflow"))?;
-    if bytes.len() != expected {
-        return Err(corrupt("object encoded length differs"));
-    }
-    let mut cursor = 21;
-    let mut deps = Vec::new();
-    deps.try_reserve_exact(count)
-        .map_err(|error| storage("reserve dependencies", error))?;
-    for _ in 0..count {
-        deps.push(decode_ref(bytes, &mut cursor)?);
-    }
-    if !strictly_sorted(&deps) {
-        return Err(corrupt("object dependencies are not canonical"));
-    }
-    Ok((
-        kind,
-        deps,
-        bytes
-            .get(cursor..)
-            .ok_or_else(|| corrupt("payload cursor beyond object"))?
-            .to_vec(),
-    ))
 }
 
 fn encode_blob_node(children: &[(ObjectRef, u64)]) -> Result<(Vec<u8>, Vec<ObjectRef>), CoreError> {

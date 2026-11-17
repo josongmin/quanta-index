@@ -9,8 +9,9 @@ use quanta_index_core::index::{
 };
 
 use super::{
-    AnnDirectory, EmbeddingRecipe, MAX_DELTA_OWNERS, MAX_REGIONS, ReadContext, ann_files,
-    load_member, load_query_owner_artifact, validate_directory,
+    AnnDirectory, EmbeddingRecipe, MAX_DELTA_OWNERS, MAX_REGIONS, ReadContext, load_member,
+    load_query_owner_artifact, native_graph, require_changed_map_root, scan_ordered_page,
+    validate_delta_counts,
 };
 
 const REGION_SCAN_PAGE: u32 = 64;
@@ -23,11 +24,13 @@ fn region_page(
     directory: &AnnDirectory,
     after: Option<u64>,
     limit: u32,
+    continuation: bool,
     context: &mut AttemptContext<'_>,
 ) -> Result<MapPage, IndexError> {
     directory.region_page(
         after,
         limit,
+        continuation,
         &mut ReadContext {
             objects: context.objects,
             maps: context.maps,
@@ -106,7 +109,6 @@ impl SelectedPage {
 pub(super) fn selected_page(
     directory: &AnnDirectory,
     page: &MapPage,
-    after: Option<&[u8]>,
     context: &mut AttemptContext<'_>,
 ) -> Result<SelectedPage, IndexError> {
     let count = page.entries.len();
@@ -115,13 +117,8 @@ pub(super) fn selected_page(
             "ANN lookup page exceeds bounded source page".into(),
         ));
     }
-    let mut previous: Option<&[u8]> = after;
     for (key, _) in &page.entries {
         let _owner = owner_from_map_key(key)?;
-        if previous.is_some_and(|prior| prior >= key.as_slice()) {
-            return Err(corrupt("ANN selected lookup keys are not ordered"));
-        }
-        previous = Some(key);
     }
     let bytes = std::mem::size_of::<Option<MapValue>>()
         .checked_add(std::mem::size_of::<&[u8]>())
@@ -178,13 +175,12 @@ fn fully_obsolete(
     }
     let descriptor = &loaded.descriptor;
     // Retirement needs the authenticated descriptor and seal, but must not
-    // hydrate and hash every Lance data chunk merely to unlink a dead root.
-    let fileset =
-        ann_files::load_fileset_seal(context.objects, descriptor.fileset, context.budget)?;
-    if fileset.seal.recipe != directory.recipe
-        || fileset.seal.generation != id.checked_add(1).ok_or(IndexError::ResourceLimited)?
-        || fileset.seal.rows != descriptor.rows
-        || usize::try_from(fileset.seal.dimension).map_err(|_error| IndexError::ResourceLimited)?
+    // decode every graph vector/adjacency table merely to unlink a dead root.
+    let fileset = native_graph::load_seal(context.objects, descriptor.fileset, context.budget)?;
+    if fileset.recipe != directory.recipe
+        || fileset.generation != id.checked_add(1).ok_or(IndexError::ResourceLimited)?
+        || fileset.rows != descriptor.rows
+        || usize::try_from(fileset.dimension).map_err(|_error| IndexError::ResourceLimited)?
             != descriptor.center.len()
     {
         return Err(corrupt(
@@ -197,20 +193,17 @@ fn fully_obsolete(
     // Only a dead first member needs the original bounded page traversal.
     let mut scan_limit = 1;
     loop {
-        let members = context.maps.scan(
+        let members = scan_ordered_page(
             descriptor.members,
             after.as_ref().map(<[u8; 38]>::as_slice),
             scan_limit,
-            context.budget,
+            after.is_some(),
+            &mut ReadContext {
+                objects: context.objects,
+                maps: context.maps,
+                budget: context.budget,
+            },
         )?;
-        if members.entries.len()
-            > usize::try_from(scan_limit).map_err(|_error| IndexError::ResourceLimited)?
-            || (members.entries.is_empty() && members.has_more)
-        {
-            return Err(IndexError::BackendViolation(
-                "ANN maintenance member page made no bounded progress".into(),
-            ));
-        }
         for (key, member_ref) in &members.entries {
             let member_ref = member_ref.as_object_ref()?;
             context.budget.checkpoint()?;
@@ -218,9 +211,6 @@ fn fully_obsolete(
                 .as_slice()
                 .try_into()
                 .map_err(|_error| corrupt("ANN maintenance member key width differs"))?;
-            if after.is_some_and(|prior| cursor <= prior) {
-                return Err(corrupt("ANN maintenance region members are not ordered"));
-            }
             after = Some(cursor);
             inspected = inspected
                 .checked_add(1)
@@ -264,9 +254,17 @@ pub(super) fn prune_delta(
     if directory.delta_owners == 0 {
         return Ok(());
     }
-    let page = context
-        .maps
-        .scan(directory.delta, None, MAX_DELTA_OWNERS, context.budget)?;
+    let page = scan_ordered_page(
+        directory.delta,
+        None,
+        MAX_DELTA_OWNERS,
+        false,
+        &mut ReadContext {
+            objects: context.objects,
+            maps: context.maps,
+            budget: context.budget,
+        },
+    )?;
     if page.has_more
         || page.entries.len()
             != usize::try_from(directory.delta_owners)
@@ -274,13 +272,8 @@ pub(super) fn prune_delta(
     {
         return Err(corrupt("ANN maintenance delta count differs from map"));
     }
-    let mut previous: Option<&[u8]> = None;
     for (key, _reference) in &page.entries {
         context.budget.checkpoint()?;
-        if previous.is_some_and(|prior| prior >= key.as_slice()) {
-            return Err(corrupt("ANN maintenance delta entries are not ordered"));
-        }
-        previous = Some(key);
         let _owner = owner_from_map_key(key)?;
     }
     let capacity = page.entries.len();
@@ -358,16 +351,9 @@ pub(super) fn prune_delta(
     if pending.edits.is_empty() {
         return Ok(());
     }
-    let mut next = *directory;
-    next.delta_owners = remaining_owners;
-    next.delta_rows = remaining_rows;
-    if next.delta_owners == 0 && next.delta_rows != 0 {
-        return Err(corrupt("ANN delta row count differs from members"));
-    }
-    next.delta = context.apply(directory.delta, &pending.edits)?;
-    validate_directory(&next)?;
-    *directory = next;
-    Ok(())
+    validate_delta_counts(remaining_owners, remaining_rows)?;
+    let root = context.apply(directory.delta, &pending.edits)?;
+    directory.assign_edited_delta(root, remaining_owners, remaining_rows)
 }
 
 pub(super) fn unlink(
@@ -381,18 +367,33 @@ pub(super) fn unlink(
         .budget
         .reserve_memory(8, MemoryLifetime::Temporary)?;
     let key = id.to_be_bytes().to_vec();
-    let regions = context.apply(
-        directory.regions,
+    unlink_edits(
+        directory,
         &[MapEdit {
             key,
-            expected: Some((reference).into()),
+            expected: Some(reference.into()),
             next: None,
         }],
-    )?;
+        context,
+    )
+}
+
+pub(super) fn unlink_edits(
+    directory: &mut AnnDirectory,
+    edits: &[MapEdit],
+    context: &mut AttemptContext<'_>,
+) -> Result<(), IndexError> {
+    if edits.is_empty() {
+        return Ok(());
+    }
+    context.budget.checkpoint()?;
+    let removed = u32::try_from(edits.len()).map_err(|_| IndexError::ResourceLimited)?;
     let count = directory
         .region_count
-        .checked_sub(1)
+        .checked_sub(removed)
         .ok_or_else(|| corrupt("ANN maintenance region count underflow"))?;
+    let regions = context.apply(directory.regions, edits)?;
+    let regions = require_changed_map_root(directory.regions, regions)?;
     if (count == 0) != regions.0.is_none() {
         return Err(corrupt("ANN maintenance region map/count mismatch"));
     }
@@ -415,9 +416,9 @@ pub(super) fn sweep(
         directory.maintenance_after = None;
         return Ok(());
     }
-    let mut page = region_page(directory, directory.maintenance_after, 1, context)?;
+    let mut page = region_page(directory, directory.maintenance_after, 1, false, context)?;
     if page.entries.is_empty() && directory.maintenance_after.is_some() && !page.has_more {
-        page = region_page(directory, None, 1, context)?;
+        page = region_page(directory, None, 1, false, context)?;
     }
     let (key, reference) = page
         .entries
@@ -449,7 +450,7 @@ fn ensure_capacity_at(
             "ANN region capacity test limit differs from policy".into(),
         ));
     }
-    // The next seal generation is id + 1. Refuse overflow before opening Lance.
+    // The next seal generation is id + 1. Refuse overflow before opening a graph.
     let _generation = directory
         .next_region
         .checked_add(1)
@@ -465,16 +466,10 @@ fn ensure_capacity_at(
     let mut retired = None;
     loop {
         context.budget.checkpoint()?;
-        let page = region_page(directory, after, REGION_SCAN_PAGE, context)?;
-        if page.entries.is_empty() && page.has_more {
-            return Err(corrupt("ANN maintenance full-cap scan made no progress"));
-        }
+        let page = region_page(directory, after, REGION_SCAN_PAGE, after.is_some(), context)?;
         for (key, reference) in &page.entries {
             let reference = reference.as_object_ref()?;
             let id = ordinal(key)?;
-            if after.is_some_and(|previous| id <= previous) {
-                return Err(corrupt("ANN maintenance region scan did not advance"));
-            }
             inspected = inspected
                 .checked_add(1)
                 .ok_or(IndexError::ResourceLimited)?;

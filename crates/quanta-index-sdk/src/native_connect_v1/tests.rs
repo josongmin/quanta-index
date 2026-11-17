@@ -135,6 +135,25 @@ impl NativeSdkConnectAdmissionV1 for Admission {
 }
 type Data = NativeSdkConnectDataV1<Box<u8>, Funding, InlineOwner>;
 
+fn selection() -> quanta_index_contract::index::ViewSelection {
+    use quanta_index_contract::index::{
+        CollectionId, SlotId, TenantId, ViewSelection, WorkspaceKey, WorktreeId,
+    };
+    ViewSelection::Latest {
+        workspace: WorkspaceKey {
+            tenant: TenantId([1; 16]),
+            collection: CollectionId([2; 16]),
+            worktree: WorktreeId([3; 16]),
+            slot: SlotId([4; 16]),
+        },
+        epoch: 1,
+    }
+}
+
+fn native_options(socket: &Path) -> ConnectOptions<&Path> {
+    ConnectOptions::borrow_query_socket_v1(socket).with_native_selection(selection())
+}
+
 #[test]
 fn native_policy_rejects_invalid_deadline_and_timeout_before_any_path_birth() {
     for elapsed in [false, true] {
@@ -190,7 +209,7 @@ fn native_refusal_keeps_full_noncopy_error_and_partial_paths() {
         let mut data = Data::new_v1();
         assert_eq!(
             try_connect_native_into_v1(
-                ConnectOptions::borrow_state_root_v1(Path::new("root")),
+                native_options(Path::new("/root.sock")),
                 ClientProfile::Full,
                 &mut admission,
                 &mut data
@@ -251,7 +270,7 @@ fn native_path_callback_protocol_cannot_publish_an_unborn_client() {
         let mut data = Data::new_v1();
         assert_eq!(
             try_connect_native_into_v1(
-                ConnectOptions::borrow_state_root_v1(Path::new("root")),
+                native_options(Path::new("/root.sock")),
                 ClientProfile::Full,
                 &mut admission,
                 &mut data
@@ -299,18 +318,21 @@ fn query_only_never_builds_unused_planes_and_output_transfer_is_pure() {
     let mut admission = Admission::default();
     let mut data = Data::new_v1();
     let deadline = Instant::now() + Duration::from_secs(5);
-    let options = ConnectOptions::borrow_state_root_v1(Path::new("missing-root"))
-        .with_borrowed_control_socket_v1(Path::new("ignored-control"))
-        .with_borrowed_ingest_socket_v1(Path::new("ignored-ingest"))
-        .with_request_io_deadline(deadline);
+    let options =
+        native_options(Path::new("/missing-native.sock")).with_request_io_deadline(deadline);
     assert!(
         try_connect_native_into_v1(options, ClientProfile::QueryOnly, &mut admission, &mut data)
             .is_ok()
     );
     assert_eq!((admission.births, admission.headers), (1, 1));
     let client = data.client_v1().expect("producer-complete client");
-    assert_eq!(client.test_next_request_id(), 1);
-    assert_eq!(client.test_next_request_id(), 2);
+    assert!(client.reader().native().is_ok());
+    assert!(matches!(
+        client.producer().native(),
+        Err(crate::SdkError::PlaneUnavailable {
+            plane: "native-write"
+        })
+    ));
     assert!(matches!(
         client.generations().status(
             crate::RepoId::new("r").unwrap(),
@@ -343,22 +365,29 @@ fn query_only_never_builds_unused_planes_and_output_transfer_is_pure() {
 }
 
 #[test]
-fn missing_full_profile_socket_keeps_earlier_path_and_exact_failure() {
-    let mut data = Data::new_v1();
-    let mut admission = Admission::default();
-    let options = ConnectOptions::borrow_query_socket_v1(Path::new("query.sock"));
-    assert_eq!(
-        try_connect_native_into_v1(options, ClientProfile::Full, &mut admission, &mut data),
-        Err(NativeSdkConnectRefusalV1::OperationRefused)
-    );
-    assert_eq!(data.paths[0], Path::new("query.sock"));
-    assert!(matches!(
-        data.failure_v1(),
-        Some(NativeSdkConnectFailureV1::SocketUnresolved(
-            "control socket unresolved: set state root or explicit control socket"
-        ))
-    ));
-    assert_eq!((admission.births, admission.headers), (1, 0));
+fn native_constructor_rejects_missing_selection_and_mixed_or_relative_endpoints_before_birth() {
+    let cases = [
+        ConnectOptions::borrow_query_socket_v1(Path::new("/query.sock")),
+        native_options(Path::new("relative.sock")),
+        native_options(Path::new("/query.sock"))
+            .with_borrowed_control_socket_v1(Path::new("/legacy-control.sock")),
+    ];
+    for (index, options) in cases.into_iter().enumerate() {
+        let mut data = Data::new_v1();
+        let mut admission = Admission::default();
+        assert_eq!(
+            try_connect_native_into_v1(options, ClientProfile::Full, &mut admission, &mut data),
+            Err(NativeSdkConnectRefusalV1::OperationRefused)
+        );
+        assert!(match (index, data.failure_v1()) {
+            (0, Some(NativeSdkConnectFailureV1::NativeSelectionRequired))
+            | (1, Some(NativeSdkConnectFailureV1::NativeSocketNotAbsolute))
+            | (2, Some(NativeSdkConnectFailureV1::MixedLegacyEndpoints)) => true,
+            _ => false,
+        });
+        assert_eq!((admission.births, admission.headers), (0, 0));
+        assert!(data.paths.iter().all(|path| path.capacity() == 0));
+    }
 }
 
 #[test]
@@ -412,7 +441,7 @@ fn admitted_paths_match_std_path_semantics_including_non_unicode_unix_bytes() {
 #[test]
 fn elapsed_absolute_deadline_is_not_restarted_after_native_construction() {
     let deadline = Instant::now() + Duration::from_millis(30);
-    let options = ConnectOptions::borrow_state_root_v1(Path::new("/missing-native-connect-root"))
+    let options = native_options(Path::new("/missing-native-connect.sock"))
         .with_request_io_deadline(deadline);
     let mut admission = Admission::default();
     let mut data = Data::new_v1();
@@ -425,16 +454,16 @@ fn elapsed_absolute_deadline_is_not_restarted_after_native_construction() {
     let result = data
         .client_v1()
         .expect("producer-complete client")
-        .observability()
-        .metrics_snapshot();
+        .reader()
+        .native()
+        .expect("Native reader")
+        .open(
+            [2; 32],
+            &quanta_index_ipc::RequestBudgetV1::for_duration(Duration::from_secs(1)),
+        );
     assert!(
-        matches!(
-            result,
-            Err(crate::SdkError::Transport(
-                IpcError::ClientIoDeadlineElapsed
-            ))
-        ),
-        "must reject before trying the missing socket: {result:?}"
+        matches!(result, Err(crate::NativeQueryError::Transport(crate::native_uds::NativeUdsError::Transport(message))) if message.contains("deadline")),
+        "the constructor's absolute deadline must expire before the missing socket is dialed"
     );
 }
 
@@ -465,6 +494,7 @@ where
                 Err(cause) => return Err(IpcError::Io(cause)),
             }
         };
+        stream.set_nonblocking(false).map_err(IpcError::Io)?;
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))
             .map_err(IpcError::Io)?;
@@ -478,104 +508,114 @@ where
 }
 
 #[test]
-fn native_payload_uses_same_three_uds_routes_codec_binding_and_request_counter() {
-    use quanta_index_contract::*;
+fn native_payload_uses_one_native_endpoint_codec_binding_and_request_counter() {
+    use quanta_index_contract::{index::OperationKey, native_protocol::*};
     use std::os::unix::net::UnixListener;
     let temporary = tempfile::tempdir().unwrap();
-    let root = temporary.path();
-    std::fs::create_dir(root.join("search-plane")).unwrap();
-    let query = UnixListener::bind(root.join("search-plane/query.sock")).unwrap();
-    let control_path = root.join("control-override.sock");
-    let control = UnixListener::bind(&control_path).unwrap();
-    let ingest = UnixListener::bind(root.join("search-plane/ingest.sock")).unwrap();
-    let refusal = |message: &str| SearchPlaneIpcError {
-        code: SearchPlaneErrorCodeV2::InvalidRequest,
-        message: message.to_owned(),
-        repair: None,
-    };
-    let query_error = refusal("query-route");
-    let control_error = refusal("control-route");
-    let ingest_error = refusal("ingest-route");
-    let query_server = serve_once(query, move |request: SearchPlaneQueryIpcRequestEnvelope| {
-        assert_eq!(request.request_id, 1);
-        assert!(matches!(
-            request.payload,
-            SearchPlaneQueryIpcRequest::Text(_)
-        ));
-        SearchPlaneQueryIpcResponseEnvelope {
-            request_id: request.request_id,
-            payload: SearchPlaneQueryIpcResponse::Error(query_error),
-        }
-    });
-    let control_server = serve_once(
-        control,
-        move |request: SearchPlaneControlIpcRequestEnvelope| {
-            assert_eq!(request.request_id, 2);
-            assert!(matches!(
-                request.payload,
-                SearchPlaneControlIpcRequest::MetricsSnapshot(_)
-            ));
-            SearchPlaneControlIpcResponseEnvelope {
+    let socket = temporary.path().join("native.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let query = serve_once(
+        listener.try_clone().unwrap(),
+        move |request: NativeIndexRequestEnvelope| {
+            assert_eq!(request.request_id, 1);
+            assert!(
+                matches!(request.payload, NativeIndexRequest::ReadSession(NativeReadSessionRequest::Open {selection:actual,open_key}) if actual==selection() && open_key==[91;32])
+            );
+            NativeIndexResponseEnvelope {
                 request_id: request.request_id,
-                payload: SearchPlaneControlIpcResponse::Error(control_error),
-            }
-        },
-    );
-    let ingest_server = serve_once(
-        ingest,
-        move |request: SearchPlaneIngestIpcRequestEnvelope| {
-            assert_eq!(request.request_id, 3);
-            assert!(matches!(
-                request.payload,
-                SearchPlaneIngestIpcRequest::PublishDirtyBatch(_)
-            ));
-            SearchPlaneIngestIpcResponseEnvelope {
-                request_id: request.request_id,
-                payload: SearchPlaneIngestIpcResponse::Error(ingest_error),
+                payload: NativeIndexResponse::Error(NativeIndexWireError {
+                    code: NativeIndexErrorCode::InvalidInput,
+                    message: "native-query-route".into(),
+                }),
             }
         },
     );
     let mut admission = Admission::default();
     let mut data = Data::new_v1();
-    let options = ConnectOptions::borrow_state_root_v1(root)
-        .with_borrowed_control_socket_v1(&control_path)
-        .with_request_io_timeout(Duration::from_secs(1));
     assert!(
-        try_connect_native_into_v1(options, ClientProfile::Full, &mut admission, &mut data).is_ok()
+        try_connect_native_into_v1(
+            native_options(&socket),
+            ClientProfile::Full,
+            &mut admission,
+            &mut data
+        )
+        .is_ok()
     );
-    let client = data.client_v1().expect("producer-complete client");
-    let repo = RepoId::new("repo").unwrap();
-    let revision = RevisionId::new("revision").unwrap();
-    let pin = GenerationPin {
-        repo_id: repo.clone(),
-        revision_id: revision.clone(),
-        manifest_generation: ManifestGeneration::new(1),
+    assert_eq!((admission.births, admission.headers), (1, 1));
+    let client = data.client_v1().expect("producer-complete Native payload");
+    let query_result = client.reader().native().expect("Native reader").open(
+        [91; 32],
+        &quanta_index_ipc::RequestBudgetV1::for_duration(Duration::from_secs(1)),
+    );
+    assert!(query.join().expect("Native query peer").is_ok());
+    assert!(
+        matches!(query_result,Err(crate::NativeQueryError::Transport(crate::native_uds::NativeUdsError::Refused(error))) if error.message=="native-query-route")
+    );
+    let control = serve_once(
+        listener.try_clone().unwrap(),
+        move |request: NativeIndexRequestEnvelope| {
+            assert_eq!(request.request_id, 2);
+            assert!(
+                matches!(request.payload,NativeIndexRequest::CreateWorkspace {workspace:actual,epoch:1} if actual==workspace())
+            );
+            NativeIndexResponseEnvelope {
+                request_id: request.request_id,
+                payload: NativeIndexResponse::Error(NativeIndexWireError {
+                    code: NativeIndexErrorCode::Denied,
+                    message: "native-control-route".into(),
+                }),
+            }
+        },
+    );
+    let full = client
+        .producer()
+        .native()
+        .expect("Full Native publication capability");
+    let result = full.request(
+        NativeIndexRequest::CreateWorkspace {
+            workspace: workspace(),
+            epoch: 1,
+        },
+        &quanta_index_ipc::RequestBudgetV1::for_duration(Duration::from_secs(1)),
+    );
+    assert!(control.join().expect("Native control peer").is_ok());
+    assert!(
+        matches!(result,Err(crate::native_uds::NativeUdsError::Refused(error)) if error.message=="native-control-route")
+    );
+    let operation = OperationKey {
+        workspace: workspace(),
+        epoch: 1,
+        producer: quanta_index_contract::index::ProducerId([5; 16]),
+        stream: quanta_index_contract::index::StreamId([6; 16]),
+        stream_epoch: 1,
+        sequence: 1,
     };
-    let query_result = client
-        .lexical()
-        .query()
-        .native("sample")
-        .pinned(pin)
-        .top_k(1)
-        .execute();
-    let control_result = client.observability().metrics_snapshot();
-    let ingest_result = client.runtime().publish_dirty(
-        &crate::DirtyBatch::new(repo, revision, ManifestGeneration::new(1), 1)
-            .delete(ChunkId::new("doc:removed")),
+    let status_peer = serve_once(listener, move |request: NativeIndexRequestEnvelope| {
+        assert_eq!(request.request_id, 3);
+        assert!(matches!(request.payload,NativeIndexRequest::Status(actual) if actual==operation));
+        NativeIndexResponseEnvelope {
+            request_id: request.request_id,
+            payload: NativeIndexResponse::Error(NativeIndexWireError {
+                code: NativeIndexErrorCode::InvalidInput,
+                message: "native-status-route".into(),
+            }),
+        }
+    });
+    let result = full.status(
+        operation,
+        &quanta_index_ipc::RequestBudgetV1::for_duration(Duration::from_secs(1)),
     );
-    // Join all bounded servers before assertions, including on SDK failure.
-    assert!(query_server.join().expect("query server").is_ok());
-    assert!(control_server.join().expect("control server").is_ok());
-    assert!(ingest_server.join().expect("ingest server").is_ok());
+    assert!(status_peer.join().expect("Native status peer").is_ok());
     assert!(
-        matches!(query_result,Err(crate::SdkError::Remote {message,..}) if message == "query-route")
+        matches!(result,Err(crate::native_uds::NativeUdsError::Refused(error)) if error.message=="native-status-route")
     );
-    assert!(
-        matches!(control_result,Err(crate::SdkError::Remote {message,..}) if message == "control-route")
-    );
-    assert!(
-        matches!(ingest_result,Err(crate::SdkError::Remote {message,..}) if message == "ingest-route")
-    );
+}
+
+fn workspace() -> quanta_index_contract::index::WorkspaceKey {
+    match selection() {
+        quanta_index_contract::index::ViewSelection::Latest { workspace, .. } => workspace,
+        _ => panic!("fixed Latest fixture"),
+    }
 }
 
 // Source-only diagnostic probes. These mocks exercise SDK protocol/custody;
@@ -773,7 +813,7 @@ fn opaque_shared_completion_borrows_only_complete_handles_and_preserves_slots() 
     assert!(!data.is_complete_v1());
     assert!(data.complete_shared_v1().is_none());
     try_connect_native_into_v1(
-        ConnectOptions::borrow_state_root_v1(Path::new("root")),
+        native_options(Path::new("/root.sock")),
         ClientProfile::QueryOnly,
         &mut admission,
         &mut data,
@@ -785,7 +825,7 @@ fn opaque_shared_completion_borrows_only_complete_handles_and_preserves_slots() 
     let mut other = OpaqueData::new_v1();
     let mut other_admission = OpaqueAdmission::default();
     try_connect_native_into_v1(
-        ConnectOptions::borrow_state_root_v1(Path::new("other-root")),
+        native_options(Path::new("/other-root.sock")),
         ClientProfile::QueryOnly,
         &mut other_admission,
         &mut other,
@@ -824,7 +864,7 @@ fn opaque_shared_completion_borrows_only_complete_handles_and_preserves_slots() 
         }
         assert_eq!(
             try_connect_native_into_v1(
-                ConnectOptions::borrow_state_root_v1(Path::new("refused-root")),
+                native_options(Path::new("/refused-root.sock")),
                 ClientProfile::QueryOnly,
                 &mut admission,
                 &mut data,
@@ -898,7 +938,7 @@ fn host_cannot_publish_handle_while_funding_remains_in_data() {
     let mut data = NativeSdkConnectDataV1::new_v1();
     assert_eq!(
         try_connect_native_into_v1(
-            ConnectOptions::borrow_state_root_v1(Path::new("root")),
+            native_options(Path::new("/root.sock")),
             ClientProfile::QueryOnly,
             &mut admission,
             &mut data,
@@ -937,7 +977,7 @@ fn host_cannot_publish_without_a_path_funding_bank() {
     let mut data = Data::new_v1();
     assert_eq!(
         try_connect_native_into_v1(
-            ConnectOptions::borrow_state_root_v1(Path::new("root")),
+            native_options(Path::new("/root.sock")),
             ClientProfile::QueryOnly,
             &mut admission,
             &mut data,
@@ -959,30 +999,31 @@ fn host_cannot_publish_without_a_path_funding_bank() {
 }
 
 #[test]
-fn zero_byte_explicit_path_can_be_funded_by_header_birth() {
+fn zero_byte_explicit_native_endpoint_is_refused_before_header_birth() {
     let mut admission = Admission {
         mode: BirthMode::HeaderOnly,
         ..Admission::default()
     };
     let alive = Rc::clone(&admission.alive);
     let mut data = Data::new_v1();
-    assert!(
+    assert_eq!(
         try_connect_native_into_v1(
-            ConnectOptions::borrow_query_socket_v1(Path::new("")),
+            native_options(Path::new("")),
             ClientProfile::QueryOnly,
             &mut admission,
-            &mut data,
-        )
-        .is_ok()
+            &mut data
+        ),
+        Err(NativeSdkConnectRefusalV1::OperationRefused)
     );
-    assert_eq!((admission.births, admission.headers), (0, 1));
-    assert!(data.is_complete_v1());
-    let mut output = None;
-    data.complete_into_slot_v1(&mut output)
-        .expect("header-funded completion");
+    assert!(matches!(
+        data.failure_v1(),
+        Some(NativeSdkConnectFailureV1::NativeSocketNotAbsolute)
+    ));
+    assert_eq!((admission.births, admission.headers), (0, 0));
+    assert!(!data.is_complete_v1());
+    assert!(data.shared.is_none());
+    assert!(data.funding.is_none());
     drop(admission);
     drop(data);
-    assert_eq!(alive.get(), 1);
-    drop(output);
     assert_eq!(alive.get(), 0);
 }

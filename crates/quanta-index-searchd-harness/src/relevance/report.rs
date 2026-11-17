@@ -271,7 +271,10 @@ fn prepare_semantic_relevance_runtime_with_profile(
     profile: SemanticEmbedderProfile,
 ) -> AnyResult<E2eRuntime> {
     use quanta_index_contract::SearchPlaneTrackKind;
-    let grant = if matches!(profile, SemanticEmbedderProfile::OpenAi { .. }) {
+    let grant = if matches!(
+        profile,
+        SemanticEmbedderProfile::OpenAi { .. } | SemanticEmbedderProfile::LocalCode { .. }
+    ) {
         ProviderEgressGrantConfig::from_env()?
     } else {
         ProviderEgressGrantConfig::default()
@@ -709,6 +712,7 @@ pub fn openai_profile_from_env_for_relevance_ab() -> AnyResult<SemanticEmbedderP
         profile @ SemanticEmbedderProfile::OpenAi { .. } => Ok(profile),
         other @ (SemanticEmbedderProfile::Hash { .. }
         | SemanticEmbedderProfile::PotionCode { .. }
+        | SemanticEmbedderProfile::LocalCode { .. }
         | SemanticEmbedderProfile::Unavailable) => Err(anyhow::anyhow!(
             "local OpenAI A/B requires an OpenAi semantic profile; got {other:?}"
         )),

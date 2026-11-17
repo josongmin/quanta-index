@@ -426,24 +426,43 @@ mod tests {
     #[test]
     fn independent_wire_vector_and_exact_lookup() {
         let expected = page(*b"abc", 1);
-        let mut page_wire = vec![
+        let literal_block = |page_wire: &[u8]| {
+            let page_width = u32::try_from(page_wire.len()).expect("test page width");
+            let mut wire = Vec::new();
+            wire.extend_from_slice(b"QIRB");
+            wire.push(2);
+            wire.extend_from_slice(&1_u16.to_be_bytes());
+            wire.extend_from_slice(&20_u32.to_be_bytes());
+            wire.extend_from_slice(&page_width.to_be_bytes());
+            wire.extend_from_slice(&[2, b'a', b'b', b'c', 0, 0, 0, 0, 0, 0, 0, 0]);
+            wire.extend_from_slice(&0_u32.to_be_bytes());
+            wire.extend_from_slice(&page_width.to_be_bytes());
+            wire.extend_from_slice(page_wire);
+            wire
+        };
+
+        let mut v2_page_wire = vec![
             0x86, 2, 2, 0x83, 0x18, b'a', 0x18, b'b', 0x18, b'c', 0, 0x81, 0x98, 32,
         ];
-        page_wire.extend_from_slice(&[7; 32]);
-        page_wire.extend_from_slice(&[0x81, 0x82, 1, 0]);
-        let page_width = u32::try_from(page_wire.len()).expect("test page width");
-        let mut wire = Vec::new();
-        wire.extend_from_slice(b"QIRB");
-        wire.push(2);
-        wire.extend_from_slice(&1_u16.to_be_bytes());
-        wire.extend_from_slice(&20_u32.to_be_bytes());
-        wire.extend_from_slice(&page_width.to_be_bytes());
-        wire.extend_from_slice(&[2, b'a', b'b', b'c', 0, 0, 0, 0, 0, 0, 0, 0]);
-        wire.extend_from_slice(&0_u32.to_be_bytes());
-        wire.extend_from_slice(&page_width.to_be_bytes());
-        wire.extend_from_slice(&page_wire);
+        v2_page_wire.extend_from_slice(&[7; 32]);
+        v2_page_wire.extend_from_slice(&[0x81, 0x82, 1, 0]);
+        let old_block = ImmutableRunBlock::decode(literal_block(&v2_page_wire))
+            .expect("literal v2 block remains readable");
+        assert_eq!(
+            old_block
+                .get(&expected.key().expect("key"))
+                .expect("v2 lookup"),
+            Some(expected.clone())
+        );
+
+        let mut v3_page_wire = vec![
+            0x86, 3, 2, 0x83, 0x18, b'a', 0x18, b'b', 0x18, b'c', 0, 0x81, 0x58, 0x20,
+        ];
+        v3_page_wire.extend_from_slice(&[7; 32]);
+        v3_page_wire.extend_from_slice(&[0x81, 0x82, 1, 0]);
+        let wire = literal_block(&v3_page_wire);
         assert_eq!(build(&[expected.clone()]), wire);
-        let block = ImmutableRunBlock::decode(wire).expect("dictionary");
+        let block = ImmutableRunBlock::decode(wire).expect("v3 dictionary");
         assert_eq!(block.page_count(), 1);
         assert_eq!(
             block.first_key().expect("first"),
@@ -552,7 +571,7 @@ mod tests {
             })
             .collect();
         let page = RunPostingPage::new(2, [255; 3], u64::MAX >> 8, rows).expect("max page");
-        let bytes = page.encode().expect("canonical v2");
+        let bytes = super::super::page_wire::encode_v2(&page).expect("canonical v2");
         let mut builder = ImmutableRunBlockBuilder::new();
         assert!(matches!(
             builder.try_push(page.key().expect("key"), &bytes),

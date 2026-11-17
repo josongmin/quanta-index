@@ -10,16 +10,16 @@ use crate::metadata_normalize::{
     normalize_contributor_identity, normalize_language, normalize_owner_identity,
     normalize_repo_meta_pattern, normalize_repo_topic_value,
 };
+use crate::plan::{RepoFileConstraint, RepoFileMatcher};
 use crate::predicate_registry::{
     ContentPathScope, ContentPredicateArgError, ContentPredicateConstraint, ContentScalarArg,
     ContentScalarArgError, ContributorPattern, FileContributorArg, FileContributorArgError,
     FileOwnerArg, FileOwnerArgError, MetaPattern, PREDICATE_OWNER, RepoDescriptionArg,
-    RepoDescriptionArgError, RepoFileArgError, RepoFileConstraint, RepoFileMatcher, RepoMetaArg,
-    RepoMetaArgError, RepoTopicArg, RepoTopicArgError, TimerefScalarArgError,
-    canonicalize_predicate_call, parse_content_predicate_constraint, parse_content_scalar_arg,
-    parse_file_contributor_arg, parse_file_owner_arg, parse_repo_description_arg,
-    parse_repo_file_matchers, parse_repo_meta_arg, parse_repo_topic_arg, parse_timeref_scalar_arg,
-    unimplemented_predicate,
+    RepoDescriptionArgError, RepoFileArgError, RepoMetaArg, RepoMetaArgError, RepoTopicArg,
+    RepoTopicArgError, TimerefScalarArgError, canonicalize_predicate_call,
+    parse_content_predicate_constraint, parse_content_scalar_arg, parse_file_contributor_arg,
+    parse_file_owner_arg, parse_repo_description_arg, parse_repo_file_matchers,
+    parse_repo_meta_arg, parse_repo_topic_arg, parse_timeref_scalar_arg, unimplemented_predicate,
 };
 use crate::searcher::authorities::NativeQueryScope;
 use crate::searcher::query_rewrite::content_leaf_from_scalar;

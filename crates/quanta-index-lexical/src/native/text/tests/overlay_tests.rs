@@ -2,8 +2,13 @@ use super::super::super::text_overlay::{TextOverlayCorpus, TextOverlayDocument, 
 use super::super::super::text_query::{
     Bm25Policy, NativeTextHitSource, NativeTextRanking, TextContentExecution, TextOverlaySource,
 };
+use super::super::super::text_reader::{
+    NativeTextReader, PlannedTextRead, TextOverlayReadDocument, TextReadResult,
+};
 use super::*;
 use quanta_index_contract::{LqCase, LqCountBound, LqExpr, LqLeaf, LqQuery, LqSpan};
+use quanta_index_core::index::FiniteScore;
+use quanta_index_core::index::{IndexQueryPort, QueryReadContext, effort::ResourceNeed};
 
 fn fixture_and_corpus() -> Result<
     (
@@ -131,6 +136,7 @@ fn search(
         TextContentExecution {
             top_k: 5,
             policy: Bm25Policy { k1: 1.2, b: 0.75 },
+            rank_after: None,
         },
         Some((corpus, sources)),
         TextReadContext {
@@ -447,6 +453,7 @@ fn overlay_corpus_rejects_foreign_selected_view_and_member() -> Result<(), Index
     let execution = TextContentExecution {
         top_k: 5,
         policy: Bm25Policy { k1: 1.2, b: 0.75 },
+        rank_after: None,
     };
     let mut foreign_ticket = fixture.ticket.clone();
     foreign_ticket.view.identity.sequence = foreign_ticket
@@ -560,6 +567,219 @@ fn masked_owner_df_refuses_inverse_posting_without_inventory() -> Result<(), Ind
     if !matches!(result, Err(IndexError::CorruptObject(_))) {
         return Err(IndexError::BackendViolation(
             "inverse-only masked term changed virtual DF".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn reader_overlay(
+    fixture: &VisitorFixture,
+    documents: Vec<TextOverlayReadDocument>,
+    constraints: &quanta_index_contract::QueryConstraintSetV1,
+    top_k: u32,
+) -> Result<TextReadResult, IndexError> {
+    reader_overlay_after(fixture, documents, constraints, top_k, None)
+}
+
+fn reader_overlay_after(
+    fixture: &VisitorFixture,
+    documents: Vec<TextOverlayReadDocument>,
+    constraints: &quanta_index_contract::QueryConstraintSetV1,
+    top_k: u32,
+    after: Option<(FiniteScore, OwnerKey)>,
+) -> Result<TextReadResult, IndexError> {
+    let reader = NativeTextReader::new(
+        fixture.recipe,
+        Bm25Policy { k1: 1.2, b: 0.75 },
+        ResourceNeed {
+            cpu_units: 1,
+            io_bytes: 64 * 1024,
+            memory_bytes: 4 * 1024 * 1024,
+            provider_units: 0,
+        },
+    )?;
+    let request = PlannedTextRead::new(
+        plan(keyword("one"), None)?,
+        top_k,
+        constraints,
+        |_bytes, _lifetime| Ok(None),
+    )?
+    .with_overlay(documents, None)
+    .with_rank_after(after);
+    let instance = context(fixture.recipe, fixture.ticket.view.source.owners).instance;
+    let outcome = reader.query(
+        &request,
+        &mut QueryReadContext {
+            ticket: &fixture.ticket,
+            instance: &instance,
+            objects: &fixture.objects,
+            maps: &fixture.maps,
+            budget: &mut budget()?,
+        },
+    )?;
+    if outcome.view() != fixture.ticket.view.identity || !outcome.exhaustive() {
+        return Err(IndexError::BackendViolation(
+            "reader overlay changed selected view or exhaustive traversal".into(),
+        ));
+    }
+    Ok(outcome.into_result())
+}
+
+fn captured_overlay(
+    owner: OwnerKey,
+    path: Option<&str>,
+    text: Option<&str>,
+) -> TextOverlayReadDocument {
+    TextOverlayReadDocument {
+        owner,
+        revision: 19,
+        path: path.map(Arc::<str>::from),
+        text: text.map(Arc::<str>::from),
+    }
+}
+
+#[test]
+fn reader_keeps_producer_identity_in_equal_score_file_ties() -> Result<(), IndexError> {
+    let fixture = visitor_fixture()?;
+    let low = OwnerKey {
+        producer: ProducerId([10; 16]),
+        stable_id: StableOwnerId([44; 16]),
+    };
+    let high = OwnerKey {
+        producer: ProducerId([11; 16]),
+        stable_id: low.stable_id,
+    };
+    let documents = || {
+        vec![
+            captured_overlay(low, Some("left/shared.rs"), Some("one")),
+            captured_overlay(high, Some("right/shared.rs"), Some("one")),
+            captured_overlay(fixture.owner, None, None),
+        ]
+    };
+    let constraints = quanta_index_contract::QueryConstraintSetV1::unconstrained();
+    let result = reader_overlay(&fixture, documents(), &constraints, 2)?;
+    if result.matched != 2
+        || result.hits.len() != 2
+        || result
+            .hits
+            .first()
+            .is_none_or(|hit| hit.owner != low || hit.path != "left/shared.rs")
+        || result
+            .hits
+            .get(1)
+            .is_none_or(|hit| hit.owner != high || hit.path != "right/shared.rs")
+        || result
+            .hits
+            .first()
+            .zip(result.hits.get(1))
+            .is_none_or(|(a, b)| a.score != b.score)
+    {
+        return Err(IndexError::BackendViolation(
+            "reader conflated producers or changed fixed equal-score order".into(),
+        ));
+    }
+    let top = reader_overlay(&fixture, documents(), &constraints, 1)?;
+    if top.matched != 2
+        || top.hits.len() != 1
+        || top.hits.first().is_none_or(|hit| hit.owner != low)
+    {
+        return Err(IndexError::BackendViolation(
+            "bounded heap changed full-producer tie gold".into(),
+        ));
+    }
+    let hit = top.hits.first().ok_or(IndexError::Conflict)?;
+    let next = reader_overlay_after(
+        &fixture,
+        documents(),
+        &constraints,
+        1,
+        Some((hit.score, hit.owner)),
+    )?;
+    if next.matched != 2
+        || next.remaining != 1
+        || next.hits.len() != 1
+        || next
+            .hits
+            .first()
+            .is_none_or(|hit| hit.owner != high || hit.path != "right/shared.rs")
+    {
+        return Err(IndexError::BackendViolation(
+            "rank-after skipped another producer with the same stable ID".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reader_refuses_two_producers_claiming_one_selected_file_path() -> Result<(), IndexError> {
+    let fixture = visitor_fixture()?;
+    let low = OwnerKey {
+        producer: ProducerId([10; 16]),
+        stable_id: StableOwnerId([44; 16]),
+    };
+    let high = OwnerKey {
+        producer: ProducerId([11; 16]),
+        stable_id: low.stable_id,
+    };
+    let documents = vec![
+        captured_overlay(low, Some("shared.rs"), Some("one")),
+        captured_overlay(high, Some("shared.rs"), Some("one")),
+    ];
+    if !matches!(
+        reader_overlay(
+            &fixture,
+            documents,
+            &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            2
+        ),
+        Err(IndexError::Conflict)
+    ) {
+        return Err(IndexError::BackendViolation(
+            "two producers claimed the same source path without refusal".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn reader_rename_filters_current_path_without_mutating_durable_source() -> Result<(), IndexError> {
+    let (mut fixture, second) = two_owner_phrase_fixture()?;
+    seed_phrase_source_paths(&mut fixture, second)?;
+    let renamed = || {
+        vec![captured_overlay(
+            fixture.owner,
+            Some("renamed.rs"),
+            Some("one"),
+        )]
+    };
+    let old = reader_overlay(&fixture, renamed(), &exact_path("a")?, 1)?;
+    if old.matched != 0 || !old.hits.is_empty() {
+        return Err(IndexError::BackendViolation(
+            "renamed overlay leaked its durable path".into(),
+        ));
+    }
+    let current = reader_overlay(&fixture, renamed(), &exact_path("renamed.rs")?, 1)?;
+    if current.matched != 1
+        || current.hits.first().is_none_or(|hit| {
+            hit.owner != fixture.owner
+                || hit.path != "renamed.rs"
+                || hit.source != (NativeTextHitSource::Overlay { revision: 19 })
+        })
+    {
+        return Err(IndexError::BackendViolation(
+            "reader rename lost canonical owner/path/revision".into(),
+        ));
+    }
+    let durable = reader_overlay(&fixture, Vec::new(), &exact_path("a")?, 1)?;
+    if durable.matched != 1
+        || durable.hits.first().is_none_or(|hit| {
+            hit.owner != fixture.owner
+                || hit.path != "a"
+                || hit.source != NativeTextHitSource::Durable(fixture.source_ref)
+        })
+    {
+        return Err(IndexError::BackendViolation(
+            "overlay rename mutated the selected durable source".into(),
         ));
     }
     Ok(())

@@ -226,7 +226,7 @@ fn l4_sdk_preview_uses_matcher_ranges_and_original_source_bytes() -> TestResult 
     let (query_socket, control_socket, ingest_socket) = runtime
         .socket_paths()
         .ok_or("started harness has no query/control/ingest sockets")?;
-    let client = QuantaIndex::connect(
+    let client = QuantaIndex::connect_legacy(
         ConnectOptions::from_state_root(runtime.state_root())
             .with_query_socket(query_socket)
             .with_control_socket(control_socket)

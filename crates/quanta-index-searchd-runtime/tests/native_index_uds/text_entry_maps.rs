@@ -2,6 +2,10 @@
 
 use super::*;
 
+use quanta_index_searchd_harness::scenarios::{
+    LEXICAL_CORPUS, NATIVE_TEXT_FILE_SCENARIOS, TOP_K, scenario_by_id,
+};
+
 fn configured_text_view(
     client: &NativeUdsClient,
 ) -> TestResult<quanta_index_contract::index::ViewRef> {
@@ -98,6 +102,149 @@ fn query_ids(
 }
 
 #[test]
+fn native_text_dsl_fixture_returns_exact_published_files() -> TestResult {
+    use std::fmt::Write as _;
+
+    use quanta_index_contract::native_protocol::NativeTextPage;
+    use quanta_index_sdk::{ConnectOptions, QuantaIndex};
+
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let service = NativeServiceGuard::start(super::read_sessions::read_session_service(
+        root.path(),
+        &socket,
+        Duration::from_secs(30),
+    )?);
+    let client = NativeUdsClient::new(socket.clone());
+    let configured = configured_text_view(&client)?;
+    let ingress = client.begin_input(operation(2), &budget())?;
+    let sources = LEXICAL_CORPUS
+        .iter()
+        .map(|(path, text)| SourceInput {
+            path: (*path).into(),
+            bytes: text.as_bytes().to_vec(),
+            text: SourceTextAdmission::Utf8 {
+                policy: Digest([31; 32]),
+            },
+        })
+        .collect();
+    let staged = client.stage_sources(ingress, sources, &budget())?;
+    assert_eq!(staged.len(), LEXICAL_CORPUS.len());
+    let mutations = staged
+        .into_iter()
+        .enumerate()
+        .map(|(slot, reference)| -> TestResult<OwnerMutation> {
+            let ordinal = slot.checked_add(1).ok_or("text fixture ordinal overflow")?;
+            let stable = u8::try_from(ordinal)?;
+            Ok(OwnerMutation {
+                owner: OwnerKey {
+                    producer: operation(2).producer,
+                    stable_id: StableOwnerId([stable; 16]),
+                },
+                expected: None,
+                next: Some(reference),
+            })
+        })
+        .collect::<TestResult<Vec<_>>>()?;
+    let view = advance_text_owners(&client, configured, 2, ingress, mutations)?;
+
+    for &(id, expected_paths) in NATIVE_TEXT_FILE_SCENARIOS {
+        let scenario = scenario_by_id(id).ok_or_else(|| format!("unknown DSL scenario {id}"))?;
+        let mut query = native_text_request(&scenario.query.resolve(), TOP_K);
+        query.syntax = scenario.syntax.into();
+        let result = client.search_text(
+            ViewSelection::Exact(view),
+            native_text_spec().instance,
+            query,
+            &budget(),
+        )?;
+        assert_eq!(result.view, view, "{id}");
+        assert!(result.exhaustive, "{id}");
+        assert_eq!(result.matched, u64::try_from(expected_paths.len())?, "{id}");
+        let mut paths = result
+            .hits
+            .iter()
+            .map(|hit| hit.path.as_str())
+            .collect::<Vec<_>>();
+        paths.sort_unstable();
+        assert_eq!(paths.as_slice(), expected_paths, "{id}");
+    }
+
+    let spec = native_text_spec();
+    let instance = spec.instance;
+    let mut scoped = native_text_request("path:^src/other[.]rs$ parity_needle_alpha", TOP_K);
+    scoped.syntax = TextQuerySyntax::Sourcegraph;
+    let sdk = QuantaIndex::connect_query_only(ConnectOptions::from_native_socket(
+        &socket,
+        ViewSelection::Exact(view),
+    ))?;
+    let mut session = sdk.reader().native()?.open([73; 32], &budget())?;
+    assert_eq!(session.load_profile(&budget())?.view.identity, view);
+    let page = session.text_page(&spec, scoped.clone(), None, &budget())?;
+    assert_eq!(page.view, view);
+    assert_eq!(page.matched, 1);
+    assert!(page.after.is_none());
+    assert_eq!(
+        page.hits
+            .iter()
+            .map(|hit| hit.path.as_str())
+            .collect::<Vec<_>>(),
+        ["src/other.rs"]
+    );
+    let mut instance_hex = String::new();
+    for byte in instance.0 {
+        write!(instance_hex, "{byte:02x}")?;
+    }
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let exit = quanta_index_searchctl::run(
+        [
+            "search-text-page".into(),
+            "--socket".into(),
+            socket.to_str().ok_or("socket path is not UTF-8")?.into(),
+            "--session-json".into(),
+            serde_json::to_string(session.status())?,
+            "--instance".into(),
+            instance_hex,
+            "--query-text".into(),
+            scoped.query_text,
+            "--syntax".into(),
+            "sourcegraph".into(),
+            "--top-k".into(),
+            TOP_K.to_string(),
+            "--output".into(),
+            "json".into(),
+        ],
+        &mut stdout,
+        &mut stderr,
+    );
+    assert_eq!(
+        exit,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        String::from_utf8_lossy(&stderr)
+    );
+    let cli_page: NativeTextPage = serde_json::from_slice(&stdout)?;
+    assert_eq!(cli_page, page);
+    let _has_remaining_pins = session.release(&budget())?;
+
+    let mut counted = native_text_request("parity_needle_alpha count:1", TOP_K);
+    counted.syntax = TextQuerySyntax::Sourcegraph;
+    let result = client.search_text(ViewSelection::Exact(view), instance, counted, &budget())?;
+    assert_eq!(result.view, view);
+    assert_eq!(result.hits.len(), 1);
+
+    let mut unsupported = native_text_request("lang:rust parity_needle_alpha", TOP_K);
+    unsupported.syntax = TextQuerySyntax::Sourcegraph;
+    let error = client.search_text(ViewSelection::Exact(view), instance, unsupported, &budget());
+    assert!(matches!(
+        error,
+        Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::InvalidInput
+    ));
+    service.stop()
+}
+
+#[test]
 fn block_queries_preserve_fixed_gold_across_delta_delete_noop_and_reopen() -> TestResult {
     let root = private_root()?;
     let socket = root.path().join("native.sock");
@@ -184,6 +331,63 @@ fn block_queries_preserve_fixed_gold_across_delta_delete_noop_and_reopen() -> Te
         eight_needle.hits
     );
     assert_eq!(query_ids(&client, nine, "solo", &[1])?.hits, solo.hits);
+    reopened.stop()
+}
+
+#[test]
+fn cold_multiblock_owner_queries_first_middle_last_after_reopen() -> TestResult {
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let service = NativeServiceGuard::start(bind_native_text_service(root.path(), &socket)?);
+    let client = NativeUdsClient::new(socket.clone());
+    let configured = configured_text_view(&client)?;
+    let ingress = client.begin_input(operation(2), &budget())?;
+    // 257 distinct ASCII words produce 514 case keys, exceeding one packed
+    // occurrence block's 512-term envelope.
+    let body = (0..257_u16)
+        .map(|ordinal| format!("term{ordinal:03}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let staged = client.stage_sources(
+        ingress,
+        vec![SourceInput {
+            path: "multiblock.rs".into(),
+            bytes: body.into_bytes(),
+            text: SourceTextAdmission::Utf8 {
+                policy: Digest([31; 32]),
+            },
+        }],
+        &budget(),
+    )?;
+    let source = *staged.first().ok_or("multiblock source was not staged")?;
+    assert_eq!(staged.len(), 1);
+    let view = advance_text_owners(
+        &client,
+        configured,
+        2,
+        ingress,
+        vec![OwnerMutation {
+            owner: OwnerKey {
+                producer: operation(2).producer,
+                stable_id: StableOwnerId([1; 16]),
+            },
+            expected: None,
+            next: Some(source),
+        }],
+    )?;
+    let mut before = Vec::new();
+    for term in ["term000", "term128", "term256"] {
+        let result = query_ids(&client, view, term, &[1])?;
+        assert_eq!(result.hits[0].path, "multiblock.rs");
+        before.push(result);
+    }
+    service.stop()?;
+
+    let reopened = NativeServiceGuard::start(bind_native_text_service(root.path(), &socket)?);
+    for (term, original) in ["term000", "term128", "term256"].into_iter().zip(before) {
+        let result = query_ids(&client, view, term, &[1])?;
+        assert_eq!(result.hits, original.hits, "reopened {term} differs");
+    }
     reopened.stop()
 }
 

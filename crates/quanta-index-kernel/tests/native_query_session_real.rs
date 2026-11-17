@@ -216,19 +216,18 @@ fn fixture(root: &Path) -> TestResult<Fixture> {
 }
 
 fn fixture_with_clock(root: &Path, clock: Arc<dyn CatalogClockPort>) -> TestResult<Fixture> {
-    fixture_with_options(root, clock, None)
+    fixture_with_options(root, clock, false)
 }
 
-fn fixture_with_ann(root: &Path, runtime: Arc<tokio::runtime::Runtime>) -> TestResult<Fixture> {
-    fixture_with_options(root, Arc::new(SystemCatalogClock), Some(runtime))
+fn fixture_with_ann(root: &Path) -> TestResult<Fixture> {
+    fixture_with_options(root, Arc::new(SystemCatalogClock), true)
 }
 
 fn fixture_with_options(
     root: &Path,
     clock: Arc<dyn CatalogClockPort>,
-    ann_runtime: Option<Arc<tokio::runtime::Runtime>>,
+    ann_enabled: bool,
 ) -> TestResult<Fixture> {
-    let ann_enabled = ann_runtime.is_some();
     let read_lease = if ann_enabled {
         Duration::from_secs(120)
     } else {
@@ -315,8 +314,8 @@ fn fixture_with_options(
             need: semantic_need,
         },
     )?;
-    let semantic_reader = if let Some(runtime) = ann_runtime {
-        semantic_reader.with_ann(runtime)
+    let semantic_reader = if ann_enabled {
+        semantic_reader.with_ann()
     } else {
         semantic_reader
     };

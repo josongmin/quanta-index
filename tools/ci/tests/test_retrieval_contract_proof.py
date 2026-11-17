@@ -90,7 +90,7 @@ def test_sourcegraph_junit_matches_each_required_case(tmp_path: Path) -> None:
     assert passed_names == expected
 
 
-def test_local_and_formal_contract_rails_include_holdout_review() -> None:
+def test_local_and_formal_contract_rails_include_holdout_review(monkeypatch) -> None:
     """Local and formal rails must exercise review and completed-clock admission."""
     completed = subprocess.run(
         ["just", "--dry-run", "retrieval-contract-local"],
@@ -100,16 +100,29 @@ def test_local_and_formal_contract_rails_include_holdout_review() -> None:
         text=True,
     )
     commands = completed.stdout + completed.stderr
-    python_line = next(line for line in commands.splitlines() if "-m pytest " in line)
-    arguments = shlex.split(python_line)
+    assert (
+        "uv run --frozen --extra dev python tools/benchmark/retrieval/proof_inventory.py --run-local"
+        in commands.splitlines()
+    )
     expected = {
         "tools/ci/tests/test_retrieval_benchmark.py",
+        "tools/ci/tests/test_retrieval_result_window.py",
+        "tools/ci/tests/test_retrieval_hybrid_file_evidence.py",
+        "tools/ci/tests/test_retrieval_default_decision.py",
         "tools/ci/tests/test_source_oracle_suite.py",
         "tools/ci/tests/test_holdout_review.py",
         "tools/ci/tests/test_completed_response_timing.py",
     }
-    assert {arg for arg in arguments if arg.endswith(".py")} == expected
-    assert set(portable_proof.proof_inventory.PYTHON_SELECTORS) == expected
+    inventory = portable_proof.proof_inventory
+    assert set(inventory.PYTHON_SELECTORS) == expected
+
+    def run_local(args):
+        assert args == [*inventory.PYTHON_SELECTORS, "-q"]
+        return pytest.ExitCode.TESTS_FAILED
+
+    monkeypatch.setattr(sys, "argv", [str(inventory.__file__), "--run-local"])
+    monkeypatch.setattr(inventory.pytest, "main", run_local)
+    assert inventory.main() == pytest.ExitCode.TESTS_FAILED
 
 
 def test_proof_recipes_capture_source_once_before_execution(tmp_path: Path) -> None:

@@ -29,10 +29,13 @@ use crate::offered_load::{
     self, ArrivalModel, OfferedConfig, OfferedProgress, OfferedRun, OfferedTask,
 };
 
-use super::super::{ScopedFile, repo_query_token};
+use crate::source_fixture::{ScopedFile, repo_query_token};
 #[path = "mixed_snapshot.rs"]
 mod mixed_snapshot;
 use mixed_snapshot::{QuerySnapshot, SnapshotReads};
+#[path = "mixed_diagnostics.rs"]
+mod mixed_diagnostics;
+use mixed_diagnostics::{QueryFailures, bounded_diagnostic};
 
 use super::retained_read::{
     HeldRead, QUERY_DEADLINE, retained_witness, session_key, text_query, verify_witness,
@@ -187,6 +190,7 @@ struct QueryProgress {
     completed: AtomicU64,
     failed: AtomicU64,
     first_failure: Mutex<Option<Value>>,
+    failure_counts: Mutex<QueryFailures>,
 }
 
 impl QueryProgress {
@@ -194,18 +198,21 @@ impl QueryProgress {
         let Some(error) = completion.result.as_ref().err() else {
             return;
         };
-        if let Ok(mut first) = self.first_failure.lock() {
-            if first.is_none() {
-                let message: String = format!("{error:#}").chars().take(512).collect();
-                *first = Some(json!({
-                    "task_id":task.id,
-                    "class":completion.class.name(),
-                    "stage":completion.failure_stage,
-                    "error":message,
-                    "queue_ms":completion.queue_ms,
-                    "latency_ms":completion.latency_ms,
-                }));
-            }
+        if let Ok(mut counts) = self.failure_counts.lock() {
+            counts.record(completion.class, completion.failure_stage, error);
+        }
+        if let Ok(mut first) = self.first_failure.lock()
+            && first.is_none()
+        {
+            let message = bounded_diagnostic(format_args!("{error:#}"));
+            *first = Some(json!({
+                "task_id":task.id,
+                "class":completion.class.name(),
+                "stage":completion.failure_stage,
+                "error":message,
+                "queue_ms":completion.queue_ms,
+                "latency_ms":completion.latency_ms,
+            }));
         }
     }
 
@@ -214,7 +221,12 @@ impl QueryProgress {
             |_poison| json!({"capture_error":"mixed query progress poisoned"}),
             |first| json!(&*first),
         );
+        let failure_counts = self.failure_counts.lock().map_or_else(
+            |_poison| json!({"capture_error":"mixed query failure counters poisoned"}),
+            |counts| counts.detail(),
+        );
         json!({
+            "failure_counts":failure_counts,
             "dispatched":self.dispatched.load(Ordering::Acquire),
             "completed":self.completed.load(Ordering::Acquire),
             "failed":self.failed.load(Ordering::Acquire),
@@ -331,11 +343,11 @@ fn record_publisher_failure(
     stage: &'static str,
     error: &anyhow::Error,
 ) {
-    if let Ok(mut progress) = progress.lock() {
-        if progress.failure_stage.is_none() {
-            progress.failure_stage = Some(stage);
-            progress.failure_error = Some(format!("{error:#}").chars().take(512).collect());
-        }
+    if let Ok(mut progress) = progress.lock()
+        && progress.failure_stage.is_none()
+    {
+        progress.failure_stage = Some(stage);
+        progress.failure_error = Some(bounded_diagnostic(format_args!("{error:#}")));
     }
 }
 
@@ -712,7 +724,7 @@ fn execute_query(
         let budget = query_budget(task, timeout)?;
         stage = "snapshot_capture";
         let captured = capture_query_snapshot(snapshot, &budget)?;
-        let state = &captured.state;
+        let current = &captured.state;
         let client = NativeUdsClient::new(socket.to_path_buf());
         match class {
             QueryClass::Unique => {
@@ -729,7 +741,7 @@ fn execute_query(
                 stage = "unique_read_session_search";
                 let page = captured.search(&client, &expected.token, 1, &budget)?;
                 stage = "unique_verify";
-                verify_unique(&page, state.view.identity, expected)?;
+                verify_unique(&page, current.view.identity, expected)?;
             }
             QueryClass::Broad => {
                 stage = "broad_fixture";
@@ -742,7 +754,7 @@ fn execute_query(
                 stage = "broad_read_session_search";
                 let page = captured.search(&client, &token, 20, &budget)?;
                 stage = "broad_verify";
-                verify_broad(&page, state.view.identity, repo, state, fixture)?;
+                verify_broad(&page, current.view.identity, repo, current, fixture)?;
             }
             QueryClass::Miss => {
                 let token = format!("{}{:016x}", fixture.missing_prefix, task.id);
@@ -750,7 +762,7 @@ fn execute_query(
                 let page = captured.search(&client, &token, 1, &budget)?;
                 stage = "miss_verify";
                 ensure!(
-                    page.view == state.view.identity && page.exhaustive,
+                    page.view == current.view.identity && page.exhaustive,
                     "mixed miss coverage/view differs"
                 );
                 ensure!(
@@ -1033,7 +1045,7 @@ impl HeldWorkerProgress {
 fn record_held_failure(progress: &Mutex<HeldWorkerProgress>, error: &anyhow::Error) {
     if let Ok(mut progress) = progress.lock() {
         progress.failure_stage = Some(progress.current_stage);
-        progress.failure_error = Some(format!("{error:#}").chars().take(512).collect());
+        progress.failure_error = Some(bounded_diagnostic(format_args!("{error:#}")));
     }
 }
 
@@ -1209,13 +1221,11 @@ fn publisher(
         SnapshotReads::reap_shared(snapshot, |session| {
             release_snapshot(&client, session).context("retired snapshot release")
         })
-        .map_err(|error| {
-            record_publisher_failure(progress, "retired_snapshot_reap", &error);
-            error
+        .inspect_err(|error| {
+            record_publisher_failure(progress, "retired_snapshot_reap", error);
         })?;
-        let captured = lock_snapshot(snapshot).map_err(|error| {
-            record_publisher_failure(progress, "snapshot_capture", &error);
-            error
+        let captured = lock_snapshot(snapshot).inspect_err(|error| {
+            record_publisher_failure(progress, "snapshot_capture", error);
         })?;
         let state = &captured.state;
         let mut progress_lock = lock_progress(progress)?;
@@ -1262,9 +1272,8 @@ fn publisher(
                 }
                 progress_guard.records.push(json!({"operation_sequence":state.next_operation_sequence,"status":"published","audit":audit_detail,"timing":timing_detail}));
                 drop(progress_lock);
-                let session = open_snapshot(&client, &next).map_err(|error| {
-                    record_publisher_failure(progress, "next_snapshot_open", &error);
-                    error
+                let session = open_snapshot(&client, &next).inspect_err(|error| {
+                    record_publisher_failure(progress, "next_snapshot_open", error);
                 })?;
                 snapshot
                     .lock()
@@ -1279,9 +1288,9 @@ fn publisher(
                         .checked_add(1)
                         .context("mixed ACK count overflow")?;
                 }
-                let message = format!("{error:#}");
+                let message = bounded_diagnostic(format_args!("{error:#}"));
                 progress_guard.last_error = Some(message.clone());
-                let failure_error = message.chars().take(512).collect();
+                let failure_error = message.clone();
                 progress_guard.records.push(json!({"operation_sequence":state.next_operation_sequence,"status":"failed","error":message,"audit":audit_detail,"timing":timing_detail}));
                 progress_lock.failure_stage = timings.failure_stage;
                 progress_lock.failure_error = Some(failure_error);
@@ -1351,7 +1360,10 @@ fn summarize_queries(run: OfferedRun<QueryCompletion>, duration: Duration) -> Re
                     .checked_add(1)
                     .context("mixed query error count overflow")?;
                 if first_error.is_none() {
-                    first_error = Some(format!("task {} {name}: {error:#}", completion.task.id));
+                    first_error = Some(bounded_diagnostic(format_args!(
+                        "task {} {name}: {error:#}",
+                        completion.task.id
+                    )));
                 }
             }
         }
@@ -1390,19 +1402,28 @@ fn summarize_queries(run: OfferedRun<QueryCompletion>, duration: Duration) -> Re
     }))
 }
 
-fn warmup_query_count() -> u64 {
-    WARMUP.as_secs() * u64::from(RATE_QPS)
+fn warmup_query_count() -> Result<u64> {
+    WARMUP
+        .as_secs()
+        .checked_mul(u64::from(RATE_QPS))
+        .context("mixed warmup count overflow")
 }
 
-fn is_warmup_query(id: u64) -> bool {
-    id <= warmup_query_count()
+fn is_warmup_query(id: u64) -> Result<bool> {
+    Ok(id <= warmup_query_count()?)
 }
 
 fn summarize_query_windows(run: OfferedRun<QueryCompletion>) -> Result<(Value, Value)> {
-    let warmup_offered = warmup_query_count();
-    let measure_offered = MEASURE.as_secs() * u64::from(RATE_QPS);
+    let warmup_offered = warmup_query_count()?;
+    let measure_offered = MEASURE
+        .as_secs()
+        .checked_mul(u64::from(RATE_QPS))
+        .context("mixed measure count overflow")?;
     ensure!(
-        run.offered == warmup_offered + measure_offered,
+        run.offered
+            == warmup_offered
+                .checked_add(measure_offered)
+                .context("mixed combined count overflow")?,
         "mixed combined offered count differs"
     );
     ensure!(
@@ -1424,7 +1445,7 @@ fn summarize_query_windows(run: OfferedRun<QueryCompletion>) -> Result<(Value, V
             (1..=run.offered).contains(&completion.task.id),
             "mixed completion ID outside combined schedule"
         );
-        if is_warmup_query(completion.task.id) {
+        if is_warmup_query(completion.task.id)? {
             let offset = completion
                 .task
                 .scheduled
@@ -1534,8 +1555,10 @@ fn run_windows(
                     &pub_cancel,
                 )
             }));
-            let result =
-                result.unwrap_or_else(|panic| Err(anyhow!("mixed publisher panicked: {panic:?}")));
+            let result = match result {
+                Ok(result) => result,
+                Err(panic) => Err(anyhow!("mixed publisher panicked: {panic:?}")),
+            };
             if let Err(error) = &result {
                 record_publisher_failure(&pub_progress, "publisher_worker", error);
                 mark_failure(&pub_failure, FAILURE_PUBLISHER, &pub_cancel);
@@ -1564,8 +1587,10 @@ fn run_windows(
                 let origin = held_origin.recv().context("mixed held start unavailable")?;
                 held_worker(held_socket, origin, &held_read, &held_status, &held_cancel)
             }));
-            let result = result
-                .unwrap_or_else(|panic| Err(anyhow!("mixed held worker panicked: {panic:?}")));
+            let result = match result {
+                Ok(result) => result,
+                Err(panic) => Err(anyhow!("mixed held worker panicked: {panic:?}")),
+            };
             if let Err(error) = &result {
                 record_held_failure(&held_status, error);
                 mark_failure(&held_failure, FAILURE_HELD, &held_cancel);
@@ -1610,7 +1635,10 @@ fn run_windows(
     if scheduled.is_err() {
         mark_failure(&failure_owner, FAILURE_SCHEDULER, &cancel);
     }
-    let offered_aggregate = scheduled.as_ref().ok().map(offered_aggregate);
+    let offered_aggregate = match &scheduled {
+        Ok(run) => Some(offered_aggregate(run)),
+        Err(_error) => None,
+    };
     let scheduler_partial = scheduled
         .as_ref()
         .err()
@@ -1636,7 +1664,7 @@ fn run_windows(
     let measure_publisher = progress_guard.measure.detail();
     drop(progress_guard);
     let held_worker_detail = held_progress.lock().map_or_else(
-        |error| json!({"progress_error":format!("{error}")}),
+        |error| json!({"progress_error":bounded_diagnostic(format_args!("{error}"))}),
         |progress| progress.detail(),
     );
     let (query_values, mut query_failure) = match scheduled.and_then(summarize_query_windows) {
@@ -1660,13 +1688,13 @@ fn run_windows(
         "warmup":warmup_detail,
         "measure":measure_detail,
         "query_progress":query_progress.detail(),
-        "scheduler_error":query_failure.as_ref().map(|error| format!("{error:#}")),
+        "scheduler_error":query_failure.as_ref().map(|error| bounded_diagnostic(format_args!("{error:#}"))),
         "scheduler_partial":scheduler_partial,
         "offered_aggregate":offered_aggregate,
         "publisher_aggregate":publication_detail,
-        "publisher_error":publisher_failure.as_ref().map(|error| format!("{error:#}")),
+        "publisher_error":publisher_failure.as_ref().map(|error| bounded_diagnostic(format_args!("{error:#}"))),
         "held_worker":held_worker_detail,
-        "held_worker_error":held_failure.as_ref().map(|error| format!("{error:#}")),
+        "held_worker_error":held_failure.as_ref().map(|error| bounded_diagnostic(format_args!("{error:#}"))),
         "first_failure_owner":match failure_owner.load(Ordering::Acquire) {
             FAILURE_PUBLISHER => Some("publisher"),
             FAILURE_HELD => Some("held_read"),
@@ -1776,11 +1804,13 @@ pub(super) fn run(
             .lock()
             .map_err(|error| anyhow!("mixed snapshot poisoned: {error}"))?
             .install(start, session);
-        let (measured, warm_detail, measure_detail) =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_windows(socket, seed, original, fixture, &snapshot, &held)
-            }))
-            .unwrap_or_else(|panic| Err(anyhow!("mixed windows panicked: {panic:?}")))?;
+        let window_run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_windows(socket, seed, original, fixture, &snapshot, &held)
+        }));
+        let (measured, warm_detail, measure_detail) = match window_run {
+            Ok(result) => result,
+            Err(panic) => Err(anyhow!("mixed windows panicked: {panic:?}")),
+        }?;
         let retained_detail = {
             let retained = held
                 .lock()
@@ -1808,7 +1838,10 @@ pub(super) fn run(
         .and_then(|snapshots| {
             SnapshotReads::drain_owned(snapshots, |session| release_snapshot(&client, session))
         });
-    let snapshot_cleanup_error = cleanup.as_ref().err().map(|error| format!("{error:#}"));
+    let snapshot_cleanup_error = cleanup
+        .as_ref()
+        .err()
+        .map(|error| bounded_diagnostic(format_args!("{error:#}")));
     let result = match (result, cleanup) {
         (Ok(outcome), Ok(())) => Ok(outcome),
         (Err(error), Ok(())) => Err(error),
@@ -1835,7 +1868,9 @@ pub(super) fn run(
                 Ok(())
             };
             let held_detail = retained.detail();
-            let cleanup_error = cleanup.err().map(|failure| format!("{failure:#}"));
+            let cleanup_error = cleanup
+                .err()
+                .map(|failure| bounded_diagnostic(format_args!("{failure:#}")));
             if let Some(object) = detail.as_object_mut() {
                 let _previous = object.insert("retained_read".into(), held_detail);
                 let _previous =
@@ -1963,19 +1998,16 @@ mod tests {
             },
         );
         let first = progress.detail();
-        assert_eq!(first.pointer("/first_failure/task_id"), Some(&json!(7)));
-        assert_eq!(
-            first.pointer("/first_failure/stage"),
-            Some(&json!("broad_read_session_search"))
-        );
-        assert_eq!(
+        ensure!(first.pointer("/first_failure/task_id") == Some(&json!(7)));
+        ensure!(first.pointer("/first_failure/stage") == Some(&json!("broad_read_session_search")));
+        ensure!(
             first
                 .pointer("/first_failure/error")
                 .and_then(Value::as_str)
                 .context("first query error absent")?
                 .chars()
-                .count(),
-            512
+                .count()
+                == 512
         );
         Ok(())
     }
@@ -2277,11 +2309,12 @@ mod tests {
         lock_progress(&progress)?.record_reached_tick(WARMUP.as_secs())?;
         record_publisher_failure(&progress, "snapshot_capture", &anyhow!("snapshot failed"));
         let recorded = lock_progress(&progress)?;
-        assert_eq!(recorded.warmup.scheduled, 0);
-        assert_eq!(recorded.measure.scheduled, 1);
-        assert_eq!(recorded.measure.attempted, 0);
-        assert_eq!(recorded.failure_stage, Some("snapshot_capture"));
-        assert!(validate_publisher_counts(&recorded.measure, Duration::from_secs(1)).is_err());
+        ensure!(recorded.warmup.scheduled == 0);
+        ensure!(recorded.measure.scheduled == 1);
+        ensure!(recorded.measure.attempted == 0);
+        ensure!(recorded.failure_stage == Some("snapshot_capture"));
+        ensure!(validate_publisher_counts(&recorded.measure, Duration::from_secs(1)).is_err());
+        drop(recorded);
         Ok(())
     }
 
@@ -2295,43 +2328,53 @@ mod tests {
             .context("mixed test deadline overflow")?;
         progress.record_reached_tick(tick)?;
         let window = progress.for_tick(tick);
-        assert!(!window.skip_expired_tick(scheduled, deadline)?);
-        assert_eq!(window.missed_late, 0);
-        assert!(window.skip_expired_tick(deadline, deadline)?);
-        assert_eq!(window.scheduled, 1);
-        assert_eq!(window.missed_late, 1);
-        assert_eq!(window.attempted, 0);
-        assert!(validate_publisher_counts(window, PUBLISH_PERIOD).is_err());
+        ensure!(!window.skip_expired_tick(scheduled, deadline)?);
+        ensure!(window.missed_late == 0);
+        ensure!(window.skip_expired_tick(deadline, deadline)?);
+        ensure!(window.scheduled == 1);
+        ensure!(window.missed_late == 1);
+        ensure!(window.attempted == 0);
+        ensure!(validate_publisher_counts(window, PUBLISH_PERIOD).is_err());
         Ok(())
     }
 
     #[test]
     fn combined_schedule_split_has_exact_warmup_boundary() -> Result<()> {
         let mut progress = PublisherProgress::default();
-        progress.for_tick(WARMUP.as_secs() - 1).scheduled += 1;
-        progress.for_tick(WARMUP.as_secs()).scheduled += 1;
-        assert_eq!(progress.warmup.scheduled, 1);
-        assert_eq!(progress.measure.scheduled, 1);
-        assert_eq!(warmup_query_count(), 3_000);
-        assert_eq!(TOTAL.as_secs(), 960);
-        assert!(is_warmup_query(3_000));
-        assert!(!is_warmup_query(3_001));
+        let last_warmup = WARMUP
+            .as_secs()
+            .checked_sub(1)
+            .context("warmup boundary underflow")?;
+        progress.for_tick(last_warmup).scheduled = 1;
+        progress.for_tick(WARMUP.as_secs()).scheduled = 1;
+        ensure!(progress.warmup.scheduled == 1);
+        ensure!(progress.measure.scheduled == 1);
+        ensure!(warmup_query_count()? == 3_000);
+        ensure!(TOTAL.as_secs() == 960);
+        ensure!(is_warmup_query(3_000)?);
+        ensure!(!is_warmup_query(3_001)?);
         let origin = Instant::now();
         let completions = (1_u64..=48_000)
-            .map(|id| offered_load::OfferedCompletion {
-                task: OfferedTask {
-                    id,
-                    scheduled: origin + Duration::from_millis((id - 1) * 20),
-                },
-                value: QueryCompletion {
-                    class: QueryClass::for_id(id),
-                    latency_ms: if id == 3_000 { 270.0 } else { 5.0 },
-                    queue_ms: 0.0,
-                    failure_stage: None,
-                    result: Ok(()),
-                },
+            .map(|id| {
+                let offset_ms = id
+                    .checked_sub(1)
+                    .and_then(|offset| offset.checked_mul(20))
+                    .context("fixture query offset overflow")?;
+                let scheduled = origin
+                    .checked_add(Duration::from_millis(offset_ms))
+                    .context("fixture query instant overflow")?;
+                Ok(offered_load::OfferedCompletion {
+                    task: OfferedTask { id, scheduled },
+                    value: QueryCompletion {
+                        class: QueryClass::for_id(id),
+                        latency_ms: if id == 3_000 { 270.0 } else { 5.0 },
+                        queue_ms: 0.0,
+                        failure_stage: None,
+                        result: Ok(()),
+                    },
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         let (warmup, measure) = summarize_query_windows(OfferedRun {
             offered: 48_000,
             dropped_queue_full: 0,
@@ -2339,10 +2382,10 @@ mod tests {
             completions,
             drain_secs: 960.5,
         })?;
-        assert_eq!(json_u64(&warmup, "offered")?, 3_000);
-        assert_eq!(json_u64(&measure, "offered")?, 45_000);
-        assert!((json_f64(&warmup, "drain_secs")? - 60.25).abs() < 1e-9);
-        assert!((json_f64(&measure, "drain_secs")? - 900.5).abs() < 1e-9);
+        ensure!(json_u64(&warmup, "offered")? == 3_000);
+        ensure!(json_u64(&measure, "offered")? == 45_000);
+        ensure!((json_f64(&warmup, "drain_secs")? - 60.25).abs() < 1e-9);
+        ensure!((json_f64(&measure, "drain_secs")? - 900.5).abs() < 1e-9);
         Ok(())
     }
 }

@@ -6,13 +6,22 @@
 //! publication, FD or cross-window authority. The borrowed artifact adds no
 //! table or lease and cannot outlive the selected pinned view.
 
-use std::sync::{Mutex, MutexGuard, TryLockError};
+mod source_text;
+
+use std::sync::{
+    Mutex, MutexGuard, TryLockError,
+    atomic::{AtomicBool, AtomicU64, Ordering},
+};
+
+use quanta_index_core::{DiagnosticCounterV1, DiagnosticHealthCodeV1, DiagnosticSpanGuardV1};
 
 use quanta_index_core::index::{
     IndexError, MemoryLease, MemoryLifetime, ObjectBatchInput, ObjectRef, RegisteredObject,
     RegisteredObjectBatch, StoredObject, WorkBudget,
-    ports::{ImmutableObjectPort, ObjectWriteSink},
+    ports::{ImmutableObjectPort, ObjectWriteSink, visit_utf8_leaf},
 };
+
+use self::source_text::SourceTextChecks;
 
 const MAX_SLOTS: u64 = 32_768;
 const SOURCE_RECORD_RESERVE: u64 = 2 * 1024 * 1024;
@@ -32,6 +41,71 @@ struct Window {
     memory: Option<MemoryLease>,
 }
 
+/// Counts lower-port calls, not device cache misses. A failed call or foreign
+/// returned reference contributes to `calls` but not identity-bound success bytes.
+#[derive(Default)]
+struct ReadTally {
+    get_calls: AtomicU64,
+    get_succeeded: AtomicU64,
+    get_wire_bytes: AtomicU64,
+    retained_calls: AtomicU64,
+    retained_succeeded: AtomicU64,
+    retained_wire_bytes: AtomicU64,
+    overflowed: AtomicBool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ReadSnapshot {
+    get_calls: u64,
+    get_succeeded: u64,
+    get_wire_bytes: u64,
+    retained_calls: u64,
+    retained_succeeded: u64,
+    retained_wire_bytes: u64,
+}
+
+impl ReadSnapshot {
+    fn checked_delta(self, before: Self) -> Option<[u64; 6]> {
+        Some([
+            self.get_calls.checked_sub(before.get_calls)?,
+            self.get_succeeded.checked_sub(before.get_succeeded)?,
+            self.get_wire_bytes.checked_sub(before.get_wire_bytes)?,
+            self.retained_calls.checked_sub(before.retained_calls)?,
+            self.retained_succeeded
+                .checked_sub(before.retained_succeeded)?,
+            self.retained_wire_bytes
+                .checked_sub(before.retained_wire_bytes)?,
+        ])
+    }
+}
+
+impl ReadTally {
+    fn add(&self, counter: &AtomicU64, value: u64) {
+        if counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+                old.checked_add(value)
+            })
+            .is_err()
+        {
+            self.overflowed.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn snapshot(&self) -> Option<ReadSnapshot> {
+        if self.overflowed.load(Ordering::Relaxed) {
+            return None;
+        }
+        Some(ReadSnapshot {
+            get_calls: self.get_calls.load(Ordering::Relaxed),
+            get_succeeded: self.get_succeeded.load(Ordering::Relaxed),
+            get_wire_bytes: self.get_wire_bytes.load(Ordering::Relaxed),
+            retained_calls: self.retained_calls.load(Ordering::Relaxed),
+            retained_succeeded: self.retained_succeeded.load(Ordering::Relaxed),
+            retained_wire_bytes: self.retained_wire_bytes.load(Ordering::Relaxed),
+        })
+    }
+}
+
 pub(crate) struct AttemptObjectReads<'a> {
     objects: &'a dyn ImmutableObjectPort,
     selected: Option<&'a StoredObject>,
@@ -39,9 +113,164 @@ pub(crate) struct AttemptObjectReads<'a> {
     byte_limit: u64,
     source_record_reserve: u64,
     window: Mutex<Window>,
+    source_text: Option<Mutex<Option<SourceTextChecks>>>,
+    read_tally: Option<ReadTally>,
 }
 
 impl<'a> AttemptObjectReads<'a> {
+    pub(crate) fn plan_source_text_checks(
+        &mut self,
+        owner_count: u64,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        self.source_text =
+            SourceTextChecks::try_new(owner_count, budget)?.map(|checks| Mutex::new(Some(checks)));
+        Ok(())
+    }
+
+    fn source_text_checks(
+        &self,
+    ) -> Result<Option<MutexGuard<'_, Option<SourceTextChecks>>>, IndexError> {
+        self.source_text
+            .as_ref()
+            .map(|checks| {
+                checks.lock().map_err(|_poisoned| {
+                    IndexError::BackendViolation("source text validation table poisoned".into())
+                })
+            })
+            .transpose()
+    }
+
+    pub(crate) fn defer_source_text(
+        &self,
+        reference: ObjectRef,
+        byte_len: u64,
+    ) -> Result<bool, IndexError> {
+        Ok(self
+            .source_text_checks()?
+            .as_mut()
+            .and_then(|guard| guard.as_mut())
+            .is_some_and(|checks| checks.defer(reference, byte_len)))
+    }
+
+    pub(crate) fn finish_source_text_collection(&self) -> Result<(), IndexError> {
+        if let Some(checks) = self
+            .source_text_checks()?
+            .as_mut()
+            .and_then(|guard| guard.as_mut())
+        {
+            checks.finish_collection();
+        }
+        Ok(())
+    }
+
+    /// Consume every pending claim before this attempt can publish. No
+    /// adapter, text reuse or memory-credit path can waive an unproved claim.
+    pub(crate) fn validate_remaining_source_text(
+        &self,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        let Some(checks) = self
+            .source_text_checks()?
+            .as_mut()
+            .and_then(|guard| guard.take())
+        else {
+            return Ok(());
+        };
+        for (reference, byte_len) in checks.remaining() {
+            crate::diagnostic::source_owner_step(
+                budget,
+                crate::diagnostic::SourceOwnerStep::BodyGetValidate,
+                |budget| {
+                    visit_utf8_leaf(self, reference, byte_len, budget, &mut |_text, _budget| {
+                        Ok(())
+                    })
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Arm only for a diagnostic Source attempt. Off keeps no per-read atomics.
+    pub(crate) fn observe_source_attempt(&mut self) {
+        self.read_tally = Some(ReadTally::default());
+    }
+
+    pub(crate) fn read_snapshot(&self) -> Option<ReadSnapshot> {
+        self.read_tally.as_ref().and_then(ReadTally::snapshot)
+    }
+
+    pub(crate) fn emit_read_delta(
+        &self,
+        budget: &WorkBudget,
+        span: Option<&DiagnosticSpanGuardV1>,
+        before: Option<ReadSnapshot>,
+    ) {
+        let (Some(tally), Some(span), Some(context)) = (
+            self.read_tally.as_ref(),
+            span,
+            budget.request().diagnostic_context(),
+        ) else {
+            return;
+        };
+        let Some(values) = before
+            .zip(tally.snapshot())
+            .and_then(|(before, after)| after.checked_delta(before))
+        else {
+            context.health(DiagnosticHealthCodeV1::CounterOverflow);
+            return;
+        };
+        for (key, value) in [
+            DiagnosticCounterV1::ObjectPortGetCalls,
+            DiagnosticCounterV1::ObjectPortGetSucceeded,
+            DiagnosticCounterV1::ObjectPortGetWireBytes,
+            DiagnosticCounterV1::ObjectPortRetainedCalls,
+            DiagnosticCounterV1::ObjectPortRetainedSucceeded,
+            DiagnosticCounterV1::ObjectPortRetainedWireBytes,
+        ]
+        .into_iter()
+        .zip(values)
+        {
+            context.counter(span, key, value);
+        }
+    }
+
+    fn underlying_get(
+        &self,
+        reference: ObjectRef,
+        budget: &mut WorkBudget,
+    ) -> Result<StoredObject, IndexError> {
+        if let Some(tally) = &self.read_tally {
+            tally.add(&tally.get_calls, 1);
+        }
+        let result = self.objects.get(reference, budget);
+        if let (Some(tally), Ok(object)) = (&self.read_tally, &result)
+            && object.registration.reference == reference
+        {
+            tally.add(&tally.get_succeeded, 1);
+            tally.add(&tally.get_wire_bytes, object.registration.bytes);
+        }
+        result
+    }
+
+    fn underlying_retained(
+        &self,
+        object: &StoredObject,
+        budget: &mut WorkBudget,
+    ) -> Result<StoredObject, IndexError> {
+        if let Some(tally) = &self.read_tally {
+            tally.add(&tally.retained_calls, 1);
+        }
+        let result = self.objects.read_retained(object, budget);
+        if let (Some(tally), Ok(retained)) = (&self.read_tally, &result)
+            && retained.registration.reference == object.registration.reference
+        {
+            tally.add(&tally.retained_succeeded, 1);
+            tally.add(&tally.retained_wire_bytes, retained.registration.bytes);
+        }
+        result
+    }
+
     pub(crate) fn for_source_attempt(
         objects: &'a dyn ImmutableObjectPort,
         slot_hint: u64,
@@ -85,6 +314,8 @@ impl<'a> AttemptObjectReads<'a> {
                 general_retained: 0,
                 memory: None,
             }),
+            source_text: None,
+            read_tally: None,
         }
     }
 
@@ -101,6 +332,8 @@ impl<'a> AttemptObjectReads<'a> {
                 general_retained: 0,
                 memory: None,
             }),
+            source_text: None,
+            read_tally: None,
         }
     }
 
@@ -250,6 +483,27 @@ impl<'a> AttemptObjectReads<'a> {
 }
 
 impl ImmutableObjectPort for AttemptObjectReads<'_> {
+    fn install_batch_memory_bound(
+        &self,
+        shape: quanta_index_core::index::ports::ObjectInstallMemoryShape,
+    ) -> Result<Option<quanta_index_core::index::MemoryCreditLimits>, IndexError> {
+        self.objects.install_batch_memory_bound(shape)
+    }
+
+    fn try_prepare_leaf_install_run(
+        &self,
+        attempt: quanta_index_core::index::AttemptRef,
+        maximum_payload: usize,
+        packet_bytes: usize,
+        budget: &mut WorkBudget,
+    ) -> Result<
+        Option<Box<dyn quanta_index_core::index::object_install::PreparedObjectInstallRun + '_>>,
+        IndexError,
+    > {
+        self.objects
+            .try_prepare_leaf_install_run(attempt, maximum_payload, packet_bytes, budget)
+    }
+
     fn identify(
         &self,
         payload: &[u8],
@@ -295,6 +549,25 @@ impl ImmutableObjectPort for AttemptObjectReads<'_> {
         self.get_with_retention(reference, false, budget)
     }
 
+    fn visit_utf8_leaf(
+        &self,
+        reference: ObjectRef,
+        byte_len: u64,
+        budget: &mut WorkBudget,
+        visit: &mut dyn FnMut(&str, &mut WorkBudget) -> Result<(), IndexError>,
+    ) -> Result<(), IndexError> {
+        visit_utf8_leaf(self, reference, byte_len, budget, &mut |text, budget| {
+            if let Some(checks) = self
+                .source_text_checks()?
+                .as_mut()
+                .and_then(|guard| guard.as_mut())
+            {
+                checks.observe(reference, byte_len);
+            }
+            visit(text, budget)
+        })
+    }
+
     fn read_retained(
         &self,
         object: &StoredObject,
@@ -304,7 +577,7 @@ impl ImmutableObjectPort for AttemptObjectReads<'_> {
         // not make its reuse depend on whether the bounded lookup window kept
         // the slot. The selected port retains its original charge and refusal.
         budget.checkpoint()?;
-        let retained = self.objects.read_retained(object, budget)?;
+        let retained = self.underlying_retained(object, budget)?;
         if retained.registration.reference != object.registration.reference {
             return Err(IndexError::CorruptObject(
                 "retained object reference mismatch".into(),
@@ -323,10 +596,10 @@ impl AttemptObjectReads<'_> {
     ) -> Result<StoredObject, IndexError> {
         if let Some(selected) = self.selected {
             if selected.registration.reference != reference {
-                return self.objects.get(reference, budget);
+                return self.underlying_get(reference, budget);
             }
             budget.checkpoint()?;
-            let object = self.objects.read_retained(selected, budget)?;
+            let object = self.underlying_retained(selected, budget)?;
             if object.registration.reference != reference {
                 return Err(IndexError::CorruptObject(
                     "retained object reference mismatch".into(),
@@ -335,7 +608,7 @@ impl AttemptObjectReads<'_> {
             return Ok(object);
         }
         if self.slot_limit == 0 {
-            return self.objects.get(reference, budget);
+            return self.underlying_get(reference, budget);
         }
         budget.checkpoint()?;
         let candidates = self.slots(reference)?;
@@ -350,7 +623,7 @@ impl AttemptObjectReads<'_> {
         });
         drop(window);
         if let Some((object, already_source_record)) = hit {
-            let object = self.objects.read_retained(&object, budget)?;
+            let object = self.underlying_retained(&object, budget)?;
             if object.registration.reference != reference {
                 return Err(IndexError::CorruptObject(
                     "retained object reference mismatch".into(),
@@ -361,7 +634,7 @@ impl AttemptObjectReads<'_> {
             }
             return Ok(object);
         }
-        let object = self.objects.get(reference, budget)?;
+        let object = self.underlying_get(reference, budget)?;
         if object.registration.reference != reference {
             return Err(IndexError::BackendViolation(
                 "object read returned another identity".into(),

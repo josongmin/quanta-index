@@ -21,7 +21,7 @@ use quanta_index_core::index::{
     SourcePathKey, SourceRecord, SourceRecordOwner, StorageFormatId, ViewSelection, WorkBudget,
     WorkUsage,
     effort::ResourceNeed,
-    member_map_key, owner_from_path_map_value, owner_map_key,
+    member_map_key, owner_map_key,
     ports::{
         CatalogReadPort, ImmutableObjectPort, IndexFuture, IndexOwnerBuildPort, PersistentMapPort,
     },
@@ -39,6 +39,9 @@ use super::chunks::{
 mod ann_directory;
 mod ann_materialization;
 mod ann_query;
+mod native_graph;
+mod source_file;
+pub use source_file::{SemanticSourceFile, SemanticSourceFileHitParts};
 mod chunk_materialization;
 mod chunk_reuse;
 mod lexical_scope;
@@ -77,6 +80,33 @@ fn whole_file_output_policy() -> Digest {
     Digest(Sha256::digest(WHOLE_FILE_POLICY).into())
 }
 
+fn text_model_identity(model_id: &str, model_revision: &str) -> Result<Digest, IndexError> {
+    if model_id.is_empty()
+        || model_revision.is_empty()
+        || model_id.len() > 1024
+        || model_revision.len() > 1024
+    {
+        return Err(IndexError::InvalidInput(
+            "text provider lacks a bounded model identity and revision".into(),
+        ));
+    }
+    let mut hash = Sha256::new();
+    hash.update(MODEL_DOMAIN);
+    hash.update(
+        u64::try_from(model_id.len())
+            .map_err(|_conversion_error| IndexError::ResourceLimited)?
+            .to_be_bytes(),
+    );
+    hash.update(model_id.as_bytes());
+    hash.update(
+        u64::try_from(model_revision.len())
+            .map_err(|_conversion_error| IndexError::ResourceLimited)?
+            .to_be_bytes(),
+    );
+    hash.update(model_revision.as_bytes());
+    Ok(Digest(hash.finalize().into()))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EmbeddingInputPolicy {
     SourceUtf8,
@@ -103,6 +133,15 @@ quanta_index_contract::native_serde_enum!(VectorNormalization {
     records {}
 });
 
+impl From<EmbeddingNormalization> for VectorNormalization {
+    fn from(normalization: EmbeddingNormalization) -> Self {
+        match normalization {
+            EmbeddingNormalization::None => Self::CosineRaw,
+            EmbeddingNormalization::L2Unit => Self::L2Unit,
+        }
+    }
+}
+
 /// `max_vectors` and `max_source_bytes` are admission limits; they do not
 /// alter output identity. The remaining fields are pinned by `fingerprint`.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -118,6 +157,43 @@ pub struct EmbeddingRecipe {
 }
 
 impl EmbeddingRecipe {
+    /// Compose the existing text recipe from pinned, explicit model metadata.
+    /// This performs no provider, transport, credential or environment access.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the existing recipe's independent identity and admission inputs are explicit"
+    )]
+    pub fn from_text_model(
+        model_id: &str,
+        model_revision: &str,
+        dimension: u32,
+        normalization: VectorNormalization,
+        input_policy: EmbeddingInputPolicy,
+        chunk_policy: Option<Utf8ChunkPolicy>,
+        max_vectors: u32,
+        max_source_bytes: u64,
+    ) -> Result<Self, IndexError> {
+        let model_identity = text_model_identity(model_id, model_revision)?;
+        let output_policy = match input_policy {
+            EmbeddingInputPolicy::ProjectionChunks { .. } => certified_chunks::output_policy(),
+            EmbeddingInputPolicy::SourceUtf8 | EmbeddingInputPolicy::ProjectionUtf8 { .. } => {
+                chunk_policy.map_or_else(whole_file_output_policy, Utf8ChunkPolicy::output_policy)
+            }
+        };
+        let recipe = Self {
+            input_policy,
+            model_identity,
+            dimension,
+            normalization,
+            output_policy,
+            chunk_policy,
+            max_vectors,
+            max_source_bytes,
+        };
+        recipe.validate()?;
+        Ok(recipe)
+    }
+
     pub fn validate(&self) -> Result<(), IndexError> {
         if self.is_certified_chunks()
             && (self.chunk_policy.is_some()
@@ -376,15 +452,7 @@ impl<P: TextEmbeddingProvider> TextEmbeddingBridge<P> {
     pub fn new(provider: P) -> Result<Self, IndexError> {
         let model_id = provider.model_id();
         let model_revision = provider.model_revision();
-        if model_id.is_empty()
-            || model_revision.is_empty()
-            || model_id.len() > 1024
-            || model_revision.len() > 1024
-        {
-            return Err(IndexError::InvalidInput(
-                "text provider lacks a bounded model identity and revision".into(),
-            ));
-        }
+        let model_identity = text_model_identity(model_id, model_revision)?;
         let model_id = model_id.to_owned();
         let model_revision = model_revision.to_owned();
         let dimension = u32::try_from(provider.dimension())
@@ -394,25 +462,7 @@ impl<P: TextEmbeddingProvider> TextEmbeddingBridge<P> {
                 "text provider dimension exceeds native semantic limit".into(),
             ));
         }
-        let normalization = match provider.normalization() {
-            EmbeddingNormalization::None => VectorNormalization::CosineRaw,
-            EmbeddingNormalization::L2Unit => VectorNormalization::L2Unit,
-        };
-        let mut hash = Sha256::new();
-        hash.update(MODEL_DOMAIN);
-        hash.update(
-            u64::try_from(model_id.len())
-                .map_err(|_conversion_error| IndexError::ResourceLimited)?
-                .to_be_bytes(),
-        );
-        hash.update(model_id.as_bytes());
-        hash.update(
-            u64::try_from(model_revision.len())
-                .map_err(|_conversion_error| IndexError::ResourceLimited)?
-                .to_be_bytes(),
-        );
-        hash.update(model_revision.as_bytes());
-        let model_identity = Digest(hash.finalize().into());
+        let normalization = VectorNormalization::from(provider.normalization());
         let output_policy = whole_file_output_policy();
         Ok(Self {
             provider,
@@ -456,22 +506,15 @@ impl<P: TextEmbeddingProvider> TextEmbeddingBridge<P> {
                 "bridge has no certified chunk policy".into(),
             ));
         }
-        let recipe = EmbeddingRecipe {
-            input_policy: EmbeddingInputPolicy::ProjectionChunks {
+        self.recipe_for_input(
+            EmbeddingInputPolicy::ProjectionChunks {
                 projection,
                 producer,
                 schema,
             },
-            model_identity: self.model_identity,
-            dimension: self.dimension,
-            normalization: self.normalization,
-            output_policy: self.output_policy,
-            chunk_policy: None,
+            max_input_bytes,
             max_vectors,
-            max_source_bytes: max_input_bytes,
-        };
-        recipe.validate()?;
-        Ok(recipe)
+        )
     }
 
     pub fn chunk_recipe(
@@ -484,10 +527,16 @@ impl<P: TextEmbeddingProvider> TextEmbeddingBridge<P> {
                 "bridge has no chunk policy".into(),
             ));
         }
-        let mut recipe = self.recipe(max_source_bytes)?;
-        recipe.max_vectors = max_vectors;
-        recipe.validate()?;
-        Ok(recipe)
+        if self.output_policy == certified_chunks::output_policy() {
+            return Err(IndexError::InvalidInput(
+                "certified bridge requires projection identity".into(),
+            ));
+        }
+        self.recipe_for_input(
+            EmbeddingInputPolicy::SourceUtf8,
+            max_source_bytes,
+            max_vectors,
+        )
     }
 
     pub fn recipe(&self, max_source_bytes: u64) -> Result<EmbeddingRecipe, IndexError> {
@@ -496,18 +545,7 @@ impl<P: TextEmbeddingProvider> TextEmbeddingBridge<P> {
                 "certified bridge requires projection identity".into(),
             ));
         }
-        let recipe = EmbeddingRecipe {
-            input_policy: EmbeddingInputPolicy::SourceUtf8,
-            model_identity: self.model_identity,
-            dimension: self.dimension,
-            normalization: self.normalization,
-            output_policy: self.output_policy,
-            chunk_policy: self.chunk_policy,
-            max_vectors: 1,
-            max_source_bytes,
-        };
-        recipe.validate()?;
-        Ok(recipe)
+        self.recipe_for_input(EmbeddingInputPolicy::SourceUtf8, max_source_bytes, 1)
     }
 
     pub fn projection_recipe(
@@ -517,13 +555,38 @@ impl<P: TextEmbeddingProvider> TextEmbeddingBridge<P> {
         schema: SchemaId,
         max_input_bytes: u64,
     ) -> Result<EmbeddingRecipe, IndexError> {
-        let mut recipe = self.recipe(max_input_bytes)?;
-        recipe.input_policy = EmbeddingInputPolicy::ProjectionUtf8 {
-            projection,
-            producer,
-            schema,
-        };
-        Ok(recipe)
+        if self.output_policy == certified_chunks::output_policy() {
+            return Err(IndexError::InvalidInput(
+                "certified bridge requires projection identity".into(),
+            ));
+        }
+        self.recipe_for_input(
+            EmbeddingInputPolicy::ProjectionUtf8 {
+                projection,
+                producer,
+                schema,
+            },
+            max_input_bytes,
+            1,
+        )
+    }
+
+    fn recipe_for_input(
+        &self,
+        input_policy: EmbeddingInputPolicy,
+        max_source_bytes: u64,
+        max_vectors: u32,
+    ) -> Result<EmbeddingRecipe, IndexError> {
+        EmbeddingRecipe::from_text_model(
+            &self.model_id,
+            &self.model_revision,
+            self.dimension,
+            self.normalization,
+            input_policy,
+            self.chunk_policy,
+            max_vectors,
+            max_source_bytes,
+        )
     }
 
     fn validate_text_input(&self, input: &EmbeddingInput<'_>) -> Result<(), IndexError> {
@@ -580,7 +643,7 @@ impl<P: TextEmbeddingProvider> TextEmbeddingBridge<P> {
         // Observe only the provider invocation envelope. Descriptor checks,
         // request checkpoints, cardinality and vector validation retain their
         // original order outside this span.
-        let span = crate::build::begin_build_stage(
+        let span = crate::build_diagnostic::begin_build_stage(
             budget.diagnostic_context(),
             quanta_index_core::DiagnosticStageV1::QueryEmbedding,
         );
@@ -980,14 +1043,22 @@ fn load_source_record_from_objects(
     objects: &dyn ImmutableObjectPort,
     budget: &mut WorkBudget,
 ) -> Result<SourceRecordOwner, IndexError> {
+    load_source_record_with_lifetime(reference, objects, budget, MemoryLifetime::Temporary)
+}
+
+fn load_source_record_with_lifetime(
+    reference: ObjectRef,
+    objects: &dyn ImmutableObjectPort,
+    budget: &mut WorkBudget,
+    lifetime: MemoryLifetime,
+) -> Result<SourceRecordOwner, IndexError> {
     let stored = objects.get(reference, budget)?;
     if stored.registration.reference != reference {
         return Err(IndexError::CorruptObject(
             "source record reference mismatch".into(),
         ));
     }
-    let source =
-        SourceRecordOwner::decode_json(&stored.payload, budget, MemoryLifetime::Temporary)?;
+    let source = SourceRecordOwner::decode_json(&stored.payload, budget, lifetime)?;
     if stored.registration.children.as_slice() != [source.bytes] {
         return Err(IndexError::CorruptObject(
             "source record edges mismatch".into(),
@@ -1074,13 +1145,13 @@ impl<P: EmbeddingProvider> NativeSemantic<P> {
     }
 }
 
-fn validate_semantic_instance<P: EmbeddingProvider>(
-    provider: &P,
+/// Validate the existing recipe/spec binding without an executable provider.
+/// Registry kind/format and executable authority remain separate admission checks.
+pub fn validate_semantic_recipe_instance(
     recipe: &EmbeddingRecipe,
     instance: &InstanceSpec,
 ) -> Result<(), IndexError> {
     recipe.validate()?;
-    verify_provider_recipe(provider, recipe)?;
     let domain_matches = match recipe.input_policy {
         EmbeddingInputPolicy::SourceUtf8 => instance.input_domain == InputDomain::SourceLocal,
         EmbeddingInputPolicy::ProjectionUtf8 {
@@ -1112,12 +1183,23 @@ fn validate_semantic_instance<P: EmbeddingProvider>(
     Ok(())
 }
 
+fn validate_semantic_instance<P: EmbeddingProvider>(
+    provider: &P,
+    recipe: &EmbeddingRecipe,
+    instance: &InstanceSpec,
+) -> Result<(), IndexError> {
+    // Keep the live path's original failure precedence before pure admission.
+    recipe.validate()?;
+    verify_provider_recipe(provider, recipe)?;
+    validate_semantic_recipe_instance(recipe, instance)
+}
+
 impl<P: EmbeddingProvider> IndexOwnerBuildPort for NativeSemantic<P> {
     type Candidate = SemanticCandidate;
 
     fn validate_coverage(&self, coverage: &CoverageBinding) -> Result<(), IndexError> {
-        if self.ann && coverage.owners.0.is_some() && coverage.searchable == coverage.owners.0 {
-            return Err(IndexError::RebuildRequired);
+        if self.ann {
+            ann_directory::validate_coverage_layout(coverage)?;
         }
         Ok(())
     }
@@ -1550,12 +1632,24 @@ impl<P: EmbeddingProvider> IndexOwnerBuildPort for NativeSemantic<P> {
                 &self.recipe,
                 context.budget,
             )?;
-            validate_chunk_artifact(
-                context.objects,
-                &candidate_owner.artifact,
-                &self.recipe,
-                context.budget,
-            )?;
+            if self.recipe.uses_chunks() {
+                let _source = validate_artifact_input(
+                    context.objects,
+                    &candidate_owner.artifact,
+                    &self.recipe,
+                    None,
+                    MemoryLifetime::Temporary,
+                    context.budget,
+                )?;
+            } else {
+                validate_chunk_artifact(
+                    context.objects,
+                    &candidate_owner.artifact,
+                    &self.recipe,
+                    None,
+                    context.budget,
+                )?;
+            }
             let payload = encode_owner_artifact(&candidate_owner.artifact, context.budget)?;
             let children = artifact_children(&candidate_owner.artifact);
             let artifact = context.put(&payload.bytes, children.as_ref())?;
@@ -1637,7 +1731,15 @@ fn load_owner_artifact(
     member: &OwnerMemberBinding,
     recipe: &EmbeddingRecipe,
 ) -> Result<LoadedOwnerArtifact, IndexError> {
-    load_owner_artifact_scoped(objects, budget, member, recipe, MemoryLifetime::Retained)
+    load_owner_artifact_scoped(
+        objects,
+        budget,
+        member,
+        recipe,
+        MemoryLifetime::Retained,
+        None,
+        false,
+    )
 }
 fn load_query_owner_artifact(
     objects: &dyn ImmutableObjectPort,
@@ -1645,13 +1747,43 @@ fn load_query_owner_artifact(
     member: &OwnerMemberBinding,
     recipe: &EmbeddingRecipe,
 ) -> Result<LoadedOwnerArtifact, IndexError> {
-    load_owner_artifact_scoped(objects, budget, member, recipe, MemoryLifetime::Temporary)
+    load_owner_artifact_scoped(
+        objects,
+        budget,
+        member,
+        recipe,
+        MemoryLifetime::Temporary,
+        None,
+        false,
+    )
 }
 
 struct LoadedOwnerArtifact {
     artifact: OwnerArtifact,
+    source: Option<SourceRecordOwner>,
     // Partial decoding and moved-vector iteration keep this allowance alive.
     decode_memory: Option<MemoryLease>,
+}
+
+/// An input already authenticated through the selected view.
+enum SelectedArtifactInput {
+    Source {
+        reference: ObjectRef,
+        record: SourceRecordOwner,
+    },
+    Projection {
+        contribution: ProjectionOwnerContribution,
+        file_record: Option<source_file::FileRecord>,
+    },
+}
+
+impl SelectedArtifactInput {
+    fn projection(contribution: ProjectionOwnerContribution) -> Self {
+        Self::Projection {
+            contribution,
+            file_record: None,
+        }
+    }
 }
 
 impl std::ops::Deref for LoadedOwnerArtifact {
@@ -1667,6 +1799,8 @@ fn load_owner_artifact_scoped(
     member: &OwnerMemberBinding,
     recipe: &EmbeddingRecipe,
     lifetime: MemoryLifetime,
+    selected_input: Option<SelectedArtifactInput>,
+    retain_source: bool,
 ) -> Result<LoadedOwnerArtifact, IndexError> {
     let stored = objects.get(member.artifact, budget)?;
     if stored.registration.reference != member.artifact
@@ -1678,17 +1812,120 @@ fn load_owner_artifact_scoped(
     }
     // Covers geometric vector/ID backing and JSON parser scratch, including
     // malformed over-bound arrays before the independent recipe validation.
-    let memory = reserve_json_decode(stored.payload.len(), budget, lifetime)?;
+    let encoded_bytes = stored.payload.len();
+    let memory = reserve_json_decode(encoded_bytes, budget, lifetime)?;
     let artifact: OwnerArtifact = serde_json::from_slice(&stored.payload)
         .map_err(|error| IndexError::CorruptObject(format!("owner vectors: {error}")))?;
     budget.checkpoint()?;
-    let loaded = LoadedOwnerArtifact {
+    validate_owner_artifact(&stored, &artifact, member, recipe, budget)?;
+    // The encoded vectors need no custody once their binding is checked.
+    drop(stored);
+    let source = validate_artifact_input(
+        objects,
+        &artifact,
+        recipe,
+        selected_input,
+        if retain_source {
+            MemoryLifetime::Retained
+        } else {
+            MemoryLifetime::Temporary
+        },
+        budget,
+    )?;
+    Ok(LoadedOwnerArtifact {
         artifact,
+        source: if retain_source { source } else { None },
         decode_memory: memory,
+    })
+}
+
+/// Validate the payload edge against its producer, reusing selected input when available.
+fn validate_artifact_input(
+    objects: &dyn ImmutableObjectPort,
+    artifact: &OwnerArtifact,
+    recipe: &EmbeddingRecipe,
+    selected_input: Option<SelectedArtifactInput>,
+    source_lifetime: MemoryLifetime,
+    budget: &mut WorkBudget,
+) -> Result<Option<SourceRecordOwner>, IndexError> {
+    let source = match recipe.input_policy {
+        EmbeddingInputPolicy::SourceUtf8 => {
+            if artifact.input.projection.is_some()
+                || artifact.input.producer_context != Digest([0; 32])
+            {
+                return Err(IndexError::CorruptObject(
+                    "semantic source policy mismatch".into(),
+                ));
+            }
+            let reference = artifact.input.source.ok_or_else(|| {
+                IndexError::CorruptObject("semantic source record missing".into())
+            })?;
+            let source = match selected_input {
+                Some(SelectedArtifactInput::Source {
+                    reference: selected,
+                    record,
+                }) if selected == reference => record,
+                None => {
+                    load_source_record_with_lifetime(reference, objects, budget, source_lifetime)?
+                }
+                Some(_) => {
+                    return Err(IndexError::CorruptObject(
+                        "selected semantic source differs from artifact input".into(),
+                    ));
+                }
+            };
+            if source.bytes != artifact.payload_ref || source.byte_len > recipe.max_source_bytes {
+                return Err(IndexError::CorruptObject(
+                    "semantic source payload mismatch".into(),
+                ));
+            }
+            Some(source)
+        }
+        EmbeddingInputPolicy::ProjectionUtf8 {
+            projection,
+            producer,
+            ..
+        }
+        | EmbeddingInputPolicy::ProjectionChunks {
+            projection,
+            producer,
+            ..
+        } => {
+            let reference = artifact.input.projection.ok_or_else(|| {
+                IndexError::CorruptObject("semantic projection contribution missing".into())
+            })?;
+            let contribution = match selected_input {
+                Some(SelectedArtifactInput::Projection { contribution, .. }) => contribution,
+                None => load_contribution_from_objects(reference, objects, budget)?,
+                Some(SelectedArtifactInput::Source { .. }) => {
+                    return Err(IndexError::CorruptObject(
+                        "selected semantic source cannot authorize projection input".into(),
+                    ));
+                }
+            };
+            if contribution.projection != projection
+                || contribution.producer != producer
+                || contribution.owner != artifact.owner
+                || contribution.source != artifact.input.source
+                || contribution.source_owner.is_some() != contribution.source.is_some()
+                || contribution_context(contribution) != artifact.input.producer_context
+                || contribution.output != Some(artifact.payload_ref)
+            {
+                return Err(IndexError::CorruptObject(
+                    "semantic projection stamp mismatch".into(),
+                ));
+            }
+            None
+        }
     };
-    validate_owner_artifact(&stored, &loaded.artifact, member, recipe, budget)?;
-    validate_chunk_artifact(objects, &loaded.artifact, recipe, budget)?;
-    Ok(loaded)
+    validate_chunk_artifact(
+        objects,
+        artifact,
+        recipe,
+        source.as_ref().map(|source| source.byte_len),
+        budget,
+    )?;
+    Ok(source)
 }
 
 fn validate_owner_artifact(
@@ -1713,6 +1950,7 @@ fn validate_owner_artifact(
     if artifact.owner != member.owner
         || artifact.input != member.input
         || artifact.recipe != recipe.fingerprint()
+        || artifact.input.derivation_policy != artifact.recipe
         || !stored.registration.children.iter().copied().eq(children)
     {
         return Err(IndexError::CorruptObject(
@@ -1822,7 +2060,7 @@ pub struct NativeSemanticReader<P> {
     bridge: Arc<TextEmbeddingBridge<P>>,
     recipe: EmbeddingRecipe,
     config: NativeSemanticReadConfig,
-    ann_runtime: Option<Arc<tokio::runtime::Runtime>>,
+    ann_enabled: bool,
 }
 
 impl<P: TextEmbeddingProvider> NativeSemanticReader<P> {
@@ -1838,14 +2076,14 @@ impl<P: TextEmbeddingProvider> NativeSemanticReader<P> {
             bridge,
             recipe,
             config,
-            ann_runtime: None,
+            ann_enabled: false,
         })
     }
 
-    /// Use the product region layout; the caller owns the bounded async runtime.
+    /// Use the native region layout under the original request budget.
     #[must_use]
-    pub fn with_ann(mut self, runtime: Arc<tokio::runtime::Runtime>) -> Self {
-        self.ann_runtime = Some(runtime);
+    pub fn with_ann(mut self) -> Self {
+        self.ann_enabled = true;
         self
     }
 
@@ -1909,7 +2147,11 @@ impl<P: TextEmbeddingProvider> IndexQueryPort<SemanticReadRequest, SearchResult>
             maps: context.maps,
             budget: &mut *context.budget,
         };
-        let (coverage, projection) = load_selected_search(
+        let SelectedSearch {
+            coverage,
+            projection,
+            directory,
+        } = load_selected_search(
             &context.ticket.view,
             context.instance,
             context.instance.format,
@@ -1922,12 +2164,12 @@ impl<P: TextEmbeddingProvider> IndexQueryPort<SemanticReadRequest, SearchResult>
             &coverage,
             projection.as_ref(),
             context.ticket.view.source.owners,
-            &self.recipe,
+            directory.as_ref(),
             self.config.max_owners,
             &mut read,
         )?;
         if request.query.constraints.repo_relative_path_exact.is_some()
-            && (projection.is_none() || self.ann_runtime.is_some())
+            && (projection.is_none() || self.ann_enabled)
             && matches!(coverage.status, CoverageStatus::Complete)
         {
             validate_path_roots(
@@ -1935,10 +2177,8 @@ impl<P: TextEmbeddingProvider> IndexQueryPort<SemanticReadRequest, SearchResult>
                 context.ticket.view.source.paths,
             )?;
         }
-        if self.ann_runtime.is_some() {
-            if coverage.owners.0.is_some() && coverage.searchable == coverage.owners.0 {
-                return Err(IndexError::RebuildRequired);
-            }
+        if self.ann_enabled {
+            ann_directory::validate_coverage_layout(&coverage)?;
         } else if coverage.searchable != coverage.owners.0 {
             return Err(IndexError::RebuildRequired);
         }
@@ -1994,6 +2234,7 @@ impl<P: TextEmbeddingProvider> IndexQueryPort<SemanticReadRequest, SearchResult>
             .bridge
             .embed_query(&request.query.query_text, read.budget.request())?;
         let query = SearchQuery {
+            source_files: request.source_files,
             lexical_eligibility: request.lexical_eligibility.as_ref(),
             lexical_owners: lexical.as_ref().map(|scope| scope.owners.as_slice()),
             exact_path: request
@@ -2020,15 +2261,12 @@ impl<P: TextEmbeddingProvider> IndexQueryPort<SemanticReadRequest, SearchResult>
                 bridge: self.bridge.as_ref(),
             }),
         };
-        let result = if let Some(runtime) = &self.ann_runtime {
-            crate::run_blocking(runtime, ann_query::search(&query, &mut read))?
+        let result = if self.ann_enabled {
+            ann_query::search_loaded(&query, directory.as_ref(), &mut read)?
         } else {
-            if coverage.searchable != coverage.owners.0 {
-                return Err(IndexError::RebuildRequired);
-            }
             match lexical_scope::search(&query, &mut read)? {
                 Some(result) => result,
-                None => match search_selected_exact_path(&query, &mut read)? {
+                None => match search_selected_exact_path(&query, None, &mut read)? {
                     Some(result) => result,
                     None => search_exact(&query, &mut read)?,
                 },
@@ -2046,6 +2284,7 @@ impl<P: TextEmbeddingProvider> IndexQueryPort<SemanticReadRequest, SearchResult>
 }
 
 struct SearchQuery<'a> {
+    pub source_files: bool,
     pub lexical_eligibility: Option<&'a SemanticLexicalEligibility>,
     pub lexical_owners: Option<&'a [selected_owner::SelectedOwner]>,
     pub exact_path: Option<&'a str>,
@@ -2173,10 +2412,14 @@ fn search_exact_at_view(
         .iter()
         .find(|spec| spec.instance == query.instance)
         .ok_or(IndexError::SnapshotUnavailable)?;
-    let (coverage, projection) =
-        load_selected_search(view, spec, query.format, query.recipe, context)?;
+    let SelectedSearch {
+        coverage,
+        projection,
+        ..
+    } = load_selected_search(view, spec, query.format, query.recipe, context)?;
     search_exact(
         &SearchQuery {
+            source_files: false,
             lexical_eligibility: None,
             lexical_owners: None,
             exact_path: None,
@@ -2197,6 +2440,12 @@ fn search_exact_at_view(
     )
 }
 
+struct SelectedSearch {
+    coverage: CoverageBinding,
+    projection: Option<ProjectionBinding>,
+    directory: Option<ann_directory::AnnDirectory>,
+}
+
 /// Resolve only the selected ticket's coverage and producer provenance. The
 /// kernel already resolved the stored profile for a registered read port.
 fn load_selected_search(
@@ -2205,7 +2454,7 @@ fn load_selected_search(
     format: StorageFormatId,
     recipe: &EmbeddingRecipe,
     context: &mut ReadContext<'_>,
-) -> Result<(CoverageBinding, Option<ProjectionBinding>), IndexError> {
+) -> Result<SelectedSearch, IndexError> {
     context.budget.checkpoint()?;
     if view
         .identity_digest()
@@ -2259,18 +2508,7 @@ fn load_selected_search(
             "ticket coverage binding mismatch".into(),
         ));
     }
-    if coverage.searchable != coverage.owners.0 {
-        let reference = coverage
-            .searchable
-            .ok_or_else(|| IndexError::CorruptObject("semantic search directory absent".into()))?;
-        let directory =
-            ann_directory::AnnDirectory::load(reference, recipe.fingerprint(), context)?;
-        if directory.owners != coverage.owners {
-            return Err(IndexError::CorruptObject(
-                "semantic directory selects different owners".into(),
-            ));
-        }
-    }
+    let directory = ann_directory::AnnDirectory::load_for_coverage(&coverage, recipe, context)?;
     let projection = match (recipe.input_policy, spec.input_domain) {
         (EmbeddingInputPolicy::SourceUtf8, InputDomain::SourceLocal) => None,
         (
@@ -2351,7 +2589,11 @@ fn load_selected_search(
             "ticket coverage binding mismatch".into(),
         ));
     }
-    Ok((coverage, projection))
+    Ok(SelectedSearch {
+        coverage,
+        projection,
+        directory,
+    })
 }
 
 #[derive(Debug)]
@@ -2364,6 +2606,7 @@ pub struct SearchHit {
     pub chunk: Option<NativeSemanticChunk>,
     /// Request-local editor text provenance; never a durable source object.
     pub overlay: Option<SemanticOverlayHit>,
+    source_file: Option<SemanticSourceFile>,
     vector_id_memory: Option<MemoryLease>,
 }
 
@@ -2374,6 +2617,7 @@ impl PartialEq for SearchHit {
             && self.cosine == other.cosine
             && self.chunk == other.chunk
             && self.overlay == other.overlay
+            && self.source_file == other.source_file
     }
 }
 
@@ -2392,6 +2636,7 @@ impl SearchHit {
             cosine,
             chunk: None,
             overlay: None,
+            source_file: None,
             vector_id_memory,
         }
     }
@@ -2482,6 +2727,13 @@ impl Ord for RankedHit {
             .0
             .cosine
             .total_cmp(&self.0.cosine)
+            .then_with(|| {
+                self.0
+                    .source_file
+                    .as_ref()
+                    .map(|file| file.owner)
+                    .cmp(&other.0.source_file.as_ref().map(|file| file.owner))
+            })
             .then_with(|| self.0.owner.cmp(&other.0.owner))
             .then_with(|| self.0.vector_id.cmp(&other.0.vector_id))
     }
@@ -2490,6 +2742,18 @@ impl Ord for RankedHit {
 /// Exact cosine oracle for bounded owner populations. Budget exhaustion and
 /// object failures propagate; neither can be represented as an empty result.
 fn validate_search_query(query: &SearchQuery<'_>) -> Result<f64, IndexError> {
+    if query.source_files
+        && (query.lexical_eligibility.is_some()
+            || query.lexical_owners.is_some()
+            || query
+                .overlay
+                .as_ref()
+                .is_some_and(|overlay| !overlay.documents.is_empty()))
+    {
+        return Err(IndexError::InvalidInput(
+            "file semantic discovery cannot intersect lexical or overlay rows".into(),
+        ));
+    }
     query.recipe.validate()?;
     let recipe_fingerprint = query.recipe.fingerprint();
     if query.instance != query.coverage.instance
@@ -2534,6 +2798,14 @@ fn search_exact(
     query: &SearchQuery<'_>,
     context: &mut ReadContext<'_>,
 ) -> Result<SearchResult, IndexError> {
+    search_exact_with_delta(query, None, context)
+}
+
+fn search_exact_with_delta(
+    query: &SearchQuery<'_>,
+    delta: Option<&ann_query::ExactDeltaMembers>,
+    context: &mut ReadContext<'_>,
+) -> Result<SearchResult, IndexError> {
     let query_norm = validate_search_query(query)?;
     let mut traversal = NativeSemanticTraversal::ExactExhausted;
     let mut scanned_owners = 0u32;
@@ -2561,41 +2833,45 @@ fn search_exact(
     let mut heap = BinaryHeap::new();
     heap.try_reserve_exact(top_k)
         .map_err(|_error| IndexError::ResourceLimited)?;
-    loop {
+    'pages: loop {
         if durable_limit == 0 {
             if query.coverage.owners != MapRoot(None) {
                 traversal = NativeSemanticTraversal::ExactCapped;
             }
             break;
         }
-        context.budget.checkpoint()?;
-        let page = context.maps.scan(
+        let page = selected_owner::scan_ordered_page(
             query.coverage.owners,
             after.as_ref().map(<[u8; 38]>::as_slice),
             query.page_size,
-            context.budget,
+            after.is_some(),
+            context,
         )?;
-        if page.entries.is_empty() && page.has_more {
-            return Err(IndexError::BackendViolation(
-                "map scan made no progress".into(),
-            ));
-        }
-        let page_len = page.entries.len();
-        for (offset, (key, reference)) in page.entries.iter().enumerate() {
+        for (key, reference) in &page.entries {
+            if !query.source_files && scanned_owners == durable_limit {
+                traversal = NativeSemanticTraversal::ExactCapped;
+                break 'pages;
+            }
+            let selected = selected_owner::SelectedOwner::load(key, *reference, query, context)?;
+            let selected_input = if query.source_files {
+                let std::ops::ControlFlow::Continue(input) =
+                    selected.rank_input(query, None, context)?
+                else {
+                    continue;
+                };
+                input
+            } else {
+                None
+            };
             if scanned_owners == durable_limit {
                 traversal = NativeSemanticTraversal::ExactCapped;
-                break;
+                break 'pages;
             }
             scanned_owners = scanned_owners
                 .checked_add(1)
                 .ok_or(IndexError::ResourceLimited)?;
-            let selected = selected_owner::SelectedOwner::load(key, *reference, query, context)?;
             let owner = selected.coverage;
-            let contribution = selected.contribution;
-            if owner.covered == Some(owner.desired)
-                && owner.searchable.is_none()
-                && contribution.is_some_and(|value| value.output.is_none())
-            {
+            if selected.has_no_candidate(false) {
                 continue;
             }
             if owner.covered != Some(owner.desired) || owner.searchable.is_none() {
@@ -2604,13 +2880,31 @@ fn search_exact(
                     .ok_or(IndexError::ResourceLimited)?;
                 continue;
             }
-            let member = selected.current_member(query, context)?;
-            if !selected.matches_exact_path(query, context)? {
-                continue;
-            }
-            rank_member(
-                &member,
-                contribution,
+            let owned_member;
+            let member =
+                match delta.and_then(|members| members.current(owner.owner, owner.searchable?)) {
+                    Some(member) => {
+                        selected.validate_member_identity(member, query)?;
+                        member
+                    }
+                    None => {
+                        owned_member = selected.current_member(query, context)?;
+                        &owned_member
+                    }
+                };
+            let selected_input = if query.source_files {
+                selected_input
+            } else {
+                let std::ops::ControlFlow::Continue(input) =
+                    selected.rank_input(query, None, context)?
+                else {
+                    continue;
+                };
+                input
+            };
+            let _rescored = rank_member(
+                member,
+                selected_input,
                 None,
                 query,
                 query_norm,
@@ -2618,14 +2912,8 @@ fn search_exact(
                 &mut heap,
                 context,
             )?;
-            if scanned_owners == durable_limit
-                && (offset.saturating_add(1) < page_len || page.has_more)
-            {
-                traversal = NativeSemanticTraversal::ExactCapped;
-                break;
-            }
         }
-        if scanned_owners == durable_limit {
+        if !query.source_files && scanned_owners == durable_limit {
             if page.has_more {
                 traversal = NativeSemanticTraversal::ExactCapped;
             }
@@ -2696,7 +2984,9 @@ fn finish_ranked(
         .checked_add(overlay_rows)
         .ok_or(IndexError::ResourceLimited)?;
     let mut ranked = heap.into_vec();
-    ranked.sort();
+    // The full score/owner/vector-ID order needs no stable tie ordering.
+    // Reuse the admitted heap backing instead of allocating sort scratch.
+    ranked.sort_unstable();
     let result_bytes = ranked
         .len()
         .checked_mul(std::mem::size_of::<SearchHit>())
@@ -2728,57 +3018,143 @@ fn finish_ranked(
     Ok(result)
 }
 
+/// Report actual original-vector scoring, independently of bounded heap
+/// admission. Ineligible members must not consume ANN's rescore window.
 fn rank_member(
     member: &OwnerMemberBinding,
-    contribution: Option<ProjectionOwnerContribution>,
+    selected_input: Option<SelectedArtifactInput>,
     only: Option<&[u8]>,
     query: &SearchQuery<'_>,
     query_norm: f64,
     top_k: usize,
     heap: &mut BinaryHeap<RankedHit>,
     context: &mut ReadContext<'_>,
-) -> Result<(), IndexError> {
-    let recipe_fingerprint = query.recipe.fingerprint();
-    let artifact =
-        load_query_owner_artifact(context.objects, context.budget, member, query.recipe)?;
-    if contribution.is_some_and(|value| value.output != Some(artifact.artifact.payload_ref)) {
-        return Err(IndexError::CorruptObject(
-            "owner artifact binding mismatch".into(),
-        ));
-    }
-    if only.is_some_and(|id| {
-        !artifact
-            .vectors
-            .iter()
-            .any(|vector| vector.id.as_slice() == id)
-    }) {
+) -> Result<bool, IndexError> {
+    let (mut artifact, file) = load_rank_member(member, selected_input, only, query, context)?;
+    rank_decoded_member(
+        member.owner,
+        &mut artifact.artifact,
+        file,
+        only,
+        query,
+        query_norm,
+        top_k,
+        heap,
+        context,
+    )
+}
+
+fn load_rank_member(
+    member: &OwnerMemberBinding,
+    mut selected_input: Option<SelectedArtifactInput>,
+    only: Option<&[u8]>,
+    query: &SearchQuery<'_>,
+    context: &mut ReadContext<'_>,
+) -> Result<(LoadedOwnerArtifact, Option<SemanticSourceFile>), IndexError> {
+    let (contribution, file_record) = match &mut selected_input {
+        Some(SelectedArtifactInput::Projection {
+            contribution,
+            file_record,
+        }) => (Some(*contribution), file_record.take()),
+        _ => (None, None),
+    };
+    let mut artifact = load_owner_artifact_scoped(
+        context.objects,
+        context.budget,
+        member,
+        query.recipe,
+        MemoryLifetime::Temporary,
+        selected_input,
+        query.source_files,
+    )?;
+    // Verify the candidate before opening any separate source-file record.
+    validate_rank_vector(&artifact, only)?;
+    let file = if query.source_files {
+        source_file::load(
+            member,
+            contribution,
+            file_record.or_else(|| artifact.source.take().map(source_file::FileRecord::Owned)),
+            query,
+            context,
+        )?
+    } else {
+        None
+    };
+    Ok((artifact, file))
+}
+
+fn validate_rank_vector(artifact: &OwnerArtifact, only: Option<&[u8]>) -> Result<(), IndexError> {
+    if only.is_some_and(|id| !artifact.vectors.iter().any(|vector| vector.id == id)) {
         return Err(IndexError::CorruptObject(
             "ANN candidate vector is absent from its member".into(),
         ));
     }
-    if query
-        .overlay
-        .as_ref()
-        .is_some_and(|overlay| overlay::masks(overlay.documents, member.owner))
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "ranking shares the authenticated artifact and bounded result heap"
+)]
+fn rank_decoded_member(
+    owner: OwnerKey,
+    artifact: &mut OwnerArtifact,
+    mut file: Option<SemanticSourceFile>,
+    only: Option<&[u8]>,
+    query: &SearchQuery<'_>,
+    query_norm: f64,
+    top_k: usize,
+    heap: &mut BinaryHeap<RankedHit>,
+    context: &mut ReadContext<'_>,
+) -> Result<bool, IndexError> {
+    if query.source_files && file.is_none()
+        || query
+            .overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay::masks(overlay.documents, owner))
     {
-        return Ok(());
+        return Ok(false);
     }
-    let chunk_lookup = ChunkLookup::new(&artifact.artifact.chunks, context.budget)?;
-    for vector in artifact.artifact.vectors {
+    let recipe_fingerprint = query.recipe.fingerprint();
+    let file_best = if query.source_files {
+        source_file::best_vector(&artifact.vectors, only, query, query_norm, context)?
+    } else {
+        None
+    };
+    // File selection already evaluated its best original vector, even when
+    // that ID is already retained. Other paths count only computed cosines.
+    let mut rescored = file_best.is_some();
+    let chunk_lookup = ChunkLookup::new(&artifact.chunks, context.budget)?;
+    for (index, vector) in artifact.vectors.iter_mut().enumerate() {
+        if file_best.is_some_and(|(best, _score)| best != index) {
+            continue;
+        }
         if only.is_some_and(|id| id != vector.id.as_slice())
             || heap
                 .iter()
-                .any(|hit| hit.0.owner == member.owner && hit.0.vector_id == vector.id)
+                .any(|hit| hit.0.owner == owner && hit.0.vector_id == vector.id)
         {
             continue;
         }
-        context.budget.charge(WorkUsage {
-            mutations: 1,
-            ..WorkUsage::default()
-        })?;
-        let cosine = cosine(query.vector, query_norm, &vector.values)?;
-        let mut hit = RankedHit(SearchHit::from_parts(member.owner, vector.id, cosine, None));
-        if let Some(member) = chunk_lookup.find(&artifact.artifact.chunks, &hit.0.vector_id)? {
+        let cosine = if let Some((_best, score)) = file_best {
+            score
+        } else {
+            context.budget.charge(WorkUsage {
+                mutations: 1,
+                ..WorkUsage::default()
+            })?;
+            let score = cosine(query.vector, query_norm, &vector.values)?;
+            rescored = true;
+            score
+        };
+        let id = std::mem::take(&mut vector.id);
+        let mut hit = RankedHit(SearchHit::from_parts(owner, id, cosine, None));
+        if query.source_files {
+            hit.0.source_file = Some(file.take().ok_or_else(|| {
+                IndexError::BackendViolation("file semantic rank lost source custody".into())
+            })?);
+        }
+        if let Some(member) = chunk_lookup.find(&artifact.chunks, &hit.0.vector_id)? {
             let span = match (member.location, query.recipe.input_policy) {
                 (ChunkLocation::PayloadBytes { start, end }, EmbeddingInputPolicy::SourceUtf8) => {
                     NativeSemanticChunkSpan::SourcePayload {
@@ -2805,8 +3181,8 @@ fn rank_member(
             };
             let chunk = NativeSemanticChunk {
                 id: member.id,
-                payload: artifact.artifact.payload_ref,
-                input: artifact.artifact.input,
+                payload: artifact.payload_ref,
+                input: artifact.input,
                 input_digest: member.input_digest,
                 span,
             };
@@ -2817,21 +3193,9 @@ fn rank_member(
                 })?;
             hit.0.chunk = Some(chunk);
         }
-        if heap.len() < top_k || heap.peek().is_some_and(|worst| hit < *worst) {
-            // The decode allowance still owns these bytes; admit the
-            // retained ID before transferring it beyond that lifetime.
-            hit.0.vector_id_memory = context.budget.reserve_memory(
-                u64::try_from(hit.0.vector_id.capacity())
-                    .map_err(|_error| IndexError::ResourceLimited)?,
-                MemoryLifetime::Retained,
-            )?;
-            if heap.len() == top_k {
-                drop(heap.pop());
-            }
-            heap.push(hit);
-        }
+        source_file::admit(hit, top_k, heap, context)?;
     }
-    Ok(())
+    Ok(rescored)
 }
 
 fn vector_norm(values: &[f32], dimension: u32) -> Result<f64, IndexError> {
@@ -3252,27 +3616,26 @@ mod tests {
             if root.0.is_none() {
                 return Ok(MapPage::new(Vec::new(), false, Vec::new(), None));
             }
-            if self
+            let filtered: Vec<(Vec<u8>, MapValue)> = if let Some((_, entries)) = self
                 .inline_rooted_entries
                 .iter()
-                .any(|(entry_root, _)| *entry_root == root)
+                .find(|(entry_root, _)| *entry_root == root)
             {
-                return Err(IndexError::BackendViolation(
-                    "test inline-root scan is unsupported".into(),
-                ));
-            }
-            let entries = self
-                .rooted_entries
-                .iter()
-                .find(|(entry_root, _entries)| *entry_root == root)
-                .map_or(self.entries.as_slice(), |(_entry_root, entries)| {
-                    entries.as_slice()
-                });
-            let filtered: Vec<_> = entries
-                .iter()
-                .filter(|(key, _)| after.is_none_or(|after| key.as_slice() > after))
-                .cloned()
-                .collect();
+                entries
+                    .iter()
+                    .filter(|(key, _)| after.is_none_or(|after| key.as_slice() > after))
+                    .cloned()
+                    .collect()
+            } else {
+                self.rooted_entries
+                    .iter()
+                    .find(|(entry_root, _)| *entry_root == root)
+                    .map_or(self.entries.as_slice(), |(_, entries)| entries.as_slice())
+                    .iter()
+                    .filter(|(key, _)| after.is_none_or(|after| key.as_slice() > after))
+                    .map(|(key, value)| (key.clone(), MapValue::Object(*value)))
+                    .collect()
+            };
             let limit =
                 usize::try_from(limit).map_err(|_conversion_error| IndexError::ResourceLimited)?;
             let has_more = filtered.len() > limit;
@@ -3280,7 +3643,6 @@ mod tests {
                 filtered
                     .into_iter()
                     .take(limit)
-                    .map(|(key, value)| (key, value.into()))
                     .collect(),
                 has_more,
                 Vec::new(),
@@ -3583,6 +3945,7 @@ mod tests {
                 bytes: ObjectRef(Digest([1; 32])),
                 byte_len: 6,
                 text: quanta_index_contract::index::SourceTextAdmission::Excluded,
+                source_repo_id: None,
             };
             check_eq!(
                 crate::run_blocking(
@@ -3703,6 +4066,7 @@ mod tests {
             bytes: ObjectRef(Digest([1; 32])),
             byte_len: 6,
             text: quanta_index_contract::index::SourceTextAdmission::Excluded,
+            source_repo_id: None,
         };
         let vectors = crate::run_blocking(
             &runtime,
@@ -4175,6 +4539,7 @@ mod tests {
             bytes,
             byte_len: 6,
             text: quanta_index_contract::index::SourceTextAdmission::Excluded,
+            source_repo_id: None,
         };
         Ok((
             store.insert(serde_json::to_vec(&record)?, vec![bytes])?,
@@ -4210,6 +4575,7 @@ mod tests {
             bytes: payload,
             byte_len: 6,
             text: quanta_index_contract::index::SourceTextAdmission::Excluded,
+            source_repo_id: None,
         };
         let wire = serde_json::to_vec(&record)?;
         let expected = u64::try_from(wire.len())?
@@ -4344,6 +4710,7 @@ mod tests {
             bytes: new_payload,
             byte_len: 7,
             text: quanta_index_contract::index::SourceTextAdmission::Excluded,
+            source_repo_id: None,
         };
         let new_source = store.insert(serde_json::to_vec(&new_record)?, vec![new_payload])?;
         let old_input = OwnerInputBinding {
@@ -4443,6 +4810,301 @@ mod tests {
             Err(IndexError::CorruptObject(_))
         ));
         check_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn pure_text_recipe_preserves_fixed_model_and_all_policy_fingerprints()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Independent fixed SHA-256 literals of the declared model/v4 policy
+        // transcripts; no candidate factory or fingerprint computes the gold.
+        let model_gold = Digest([
+            0x3f, 0x68, 0x9e, 0x26, 0x1c, 0x6f, 0x6f, 0xa1, 0xb2, 0xf6, 0xc9, 0x2f, 0x85, 0x51,
+            0x9f, 0x19, 0x0d, 0x5b, 0x87, 0x41, 0x17, 0xb0, 0x5f, 0x5d, 0xa3, 0x9a, 0x00, 0xbc,
+            0xac, 0x9f, 0x70, 0xda,
+        ]);
+        let fingerprints = [
+            Digest([
+                0x56, 0x71, 0x64, 0x2d, 0x22, 0xed, 0x1f, 0xfd, 0xfb, 0x15, 0x7c, 0xd1, 0x27, 0x7a,
+                0x6c, 0x4a, 0x39, 0xcc, 0x90, 0x81, 0x3e, 0x21, 0x74, 0x14, 0xea, 0x40, 0xf7, 0xff,
+                0xa4, 0x48, 0x36, 0x15,
+            ]),
+            Digest([
+                0xb2, 0x51, 0x52, 0xc7, 0x5e, 0x26, 0x6f, 0x4c, 0x86, 0x12, 0x40, 0x3d, 0xed, 0x08,
+                0x6f, 0x33, 0xf6, 0xd9, 0xe4, 0x8b, 0xa9, 0x8b, 0xda, 0x18, 0xaf, 0x6b, 0x9f, 0xfe,
+                0x35, 0x98, 0x2e, 0x94,
+            ]),
+            Digest([
+                0xb2, 0x0a, 0x13, 0xed, 0x6f, 0xc9, 0x01, 0x80, 0x06, 0xbd, 0xba, 0xe6, 0xe4, 0x59,
+                0x1a, 0xcc, 0x45, 0x92, 0x8e, 0xbc, 0xdc, 0x7c, 0x67, 0x17, 0x59, 0x34, 0x80, 0x6e,
+                0x61, 0x0d, 0xb7, 0x29,
+            ]),
+            Digest([
+                0x16, 0x70, 0x88, 0x80, 0xec, 0x9f, 0xb6, 0x4f, 0xce, 0xa7, 0x23, 0x2c, 0x68, 0xb6,
+                0xd1, 0x0a, 0x85, 0xea, 0x17, 0x78, 0x51, 0x1a, 0xdd, 0x18, 0x0a, 0x2e, 0xa8, 0x8d,
+                0x80, 0x1a, 0xca, 0x12,
+            ]),
+            Digest([
+                0x6c, 0x3c, 0x8b, 0x45, 0x7e, 0x47, 0x85, 0xc4, 0x99, 0x15, 0x0e, 0x22, 0xed, 0xa2,
+                0xab, 0xea, 0x28, 0xa5, 0x0c, 0xff, 0x1e, 0xe9, 0x63, 0xab, 0x97, 0xf0, 0x9d, 0x86,
+                0x74, 0x18, 0x6f, 0xb4,
+            ]),
+        ];
+        let projection = ProjectionId([11; 16]);
+        let producer = ProducerId([12; 16]);
+        let schema = SchemaId([13; 16]);
+        let projected = EmbeddingInputPolicy::ProjectionUtf8 {
+            projection,
+            producer,
+            schema,
+        };
+        let certified = EmbeddingInputPolicy::ProjectionChunks {
+            projection,
+            producer,
+            schema,
+        };
+        let chunk = Utf8ChunkPolicy { max_utf8_bytes: 8 };
+        let mut offline = Vec::new();
+        for (input, chunks, max_vectors) in [
+            (EmbeddingInputPolicy::SourceUtf8, None, 1),
+            (EmbeddingInputPolicy::SourceUtf8, Some(chunk), 3),
+            (projected, None, 1),
+            (projected, Some(chunk), 1),
+            (certified, None, 3),
+        ] {
+            offline.push(EmbeddingRecipe::from_text_model(
+                "fixed-test-model",
+                "revision-1",
+                2,
+                VectorNormalization::L2Unit,
+                input,
+                chunks,
+                max_vectors,
+                1024,
+            )?);
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(2))
+            .ok_or("deadline overflow")?;
+        let provider = || FixedTextProvider {
+            calls: Arc::clone(&calls),
+            deadline,
+            normalization: EmbeddingNormalization::L2Unit,
+        };
+        let whole = TextEmbeddingBridge::new(provider())?;
+        let chunked = TextEmbeddingBridge::with_utf8_chunks(provider(), chunk)?;
+        let certified_bridge = TextEmbeddingBridge::with_certified_chunks(provider())?;
+        let live = [
+            whole.recipe(1024)?,
+            chunked.chunk_recipe(1024, 3)?,
+            whole.projection_recipe(projection, producer, schema, 1024)?,
+            chunked.projection_recipe(projection, producer, schema, 1024)?,
+            certified_bridge.certified_chunk_recipe(projection, producer, schema, 1024, 3)?,
+        ];
+        for ((offline, live), fingerprint) in offline.into_iter().zip(live).zip(fingerprints) {
+            check_eq!(offline.model_identity, model_gold);
+            check_eq!(offline.fingerprint(), fingerprint);
+            check_eq!(&offline, &live);
+            let mut changed_limits = offline.clone();
+            changed_limits.max_vectors = 1;
+            changed_limits.max_source_bytes = 2048;
+            changed_limits.validate()?;
+            check_eq!(changed_limits.fingerprint(), fingerprint);
+        }
+        check_eq!(calls.load(AtomicOrdering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn pure_text_recipe_refuses_invalid_metadata_and_admission_limits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let oversized = "m".repeat(1025);
+        for (model, revision) in [
+            ("", "r"),
+            ("m", ""),
+            (oversized.as_str(), "r"),
+            ("m", oversized.as_str()),
+        ] {
+            check!(matches!(
+                EmbeddingRecipe::from_text_model(
+                    model,
+                    revision,
+                    2,
+                    VectorNormalization::CosineRaw,
+                    EmbeddingInputPolicy::SourceUtf8,
+                    None,
+                    1,
+                    1024,
+                ),
+                Err(IndexError::InvalidInput(_))
+            ));
+        }
+        // Native admission: dimension4096/vectors4096/cells200000/16MiB.
+        for (dimension, vectors, bytes) in [
+            (0, 1, 1024),
+            (4097, 1, 1024),
+            (2, 0, 1024),
+            (2, 4097, 1024),
+            (4096, 49, 1024),
+            (2, 1, 0),
+            (2, 1, 16_777_217),
+        ] {
+            check!(matches!(
+                EmbeddingRecipe::from_text_model(
+                    "m",
+                    "r",
+                    dimension,
+                    VectorNormalization::CosineRaw,
+                    EmbeddingInputPolicy::SourceUtf8,
+                    None,
+                    vectors,
+                    bytes,
+                ),
+                Err(IndexError::InvalidInput(_))
+            ));
+        }
+        check!(matches!(
+            EmbeddingRecipe::from_text_model(
+                "m",
+                "r",
+                2,
+                VectorNormalization::L2Unit,
+                EmbeddingInputPolicy::ProjectionChunks {
+                    projection: ProjectionId([11; 16]),
+                    producer: ProducerId([12; 16]),
+                    schema: SchemaId([13; 16]),
+                },
+                Some(Utf8ChunkPolicy { max_utf8_bytes: 8 }),
+                1,
+                1024,
+            ),
+            Err(IndexError::InvalidInput(_))
+        ));
+        // Generic text providers retain bounded UTF-8 metadata; OpenAI's
+        // stricter ASCII revision contract belongs to its metadata producer.
+        let unicode = EmbeddingRecipe::from_text_model(
+            "모델",
+            "rα",
+            2,
+            VectorNormalization::CosineRaw,
+            EmbeddingInputPolicy::SourceUtf8,
+            None,
+            1,
+            1024,
+        )?;
+        check_eq!(unicode.normalization, VectorNormalization::CosineRaw);
+        Ok(())
+    }
+
+    #[test]
+    fn pure_semantic_instance_binding_needs_no_executable_provider()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = EmbeddingRecipe::from_text_model(
+            "m",
+            "r",
+            2,
+            VectorNormalization::L2Unit,
+            EmbeddingInputPolicy::SourceUtf8,
+            None,
+            1,
+            1024,
+        )?;
+        let valid = instance(&source);
+        validate_semantic_recipe_instance(&source, &valid)?;
+        let mut wrong = valid.clone();
+        wrong.policy = Digest([0; 32]);
+        check!(matches!(
+            validate_semantic_recipe_instance(&source, &wrong),
+            Err(IndexError::InvalidInput(_))
+        ));
+        wrong = valid.clone();
+        wrong.activation = GroupActivation::CoreRequired;
+        check!(matches!(
+            validate_semantic_recipe_instance(&source, &wrong),
+            Err(IndexError::InvalidInput(_))
+        ));
+        let projection = ProjectionId([11; 16]);
+        let producer = ProducerId([12; 16]);
+        let schema = SchemaId([13; 16]);
+        for policy in [
+            EmbeddingInputPolicy::ProjectionUtf8 {
+                projection,
+                producer,
+                schema,
+            },
+            EmbeddingInputPolicy::ProjectionChunks {
+                projection,
+                producer,
+                schema,
+            },
+        ] {
+            let projected = EmbeddingRecipe::from_text_model(
+                "m",
+                "r",
+                2,
+                VectorNormalization::L2Unit,
+                policy,
+                None,
+                1,
+                1024,
+            )?;
+            let mut spec = instance(&projected);
+            check!(matches!(
+                validate_semantic_recipe_instance(&projected, &spec),
+                Err(IndexError::InvalidInput(_))
+            ));
+            spec.input_domain = InputDomain::Projection {
+                projection,
+                producer,
+            };
+            spec.schema = schema;
+            validate_semantic_recipe_instance(&projected, &spec)?;
+            spec.schema = SchemaId([14; 16]);
+            check!(matches!(
+                validate_semantic_recipe_instance(&projected, &spec),
+                Err(IndexError::InvalidInput(_))
+            ));
+            spec.schema = schema;
+            spec.input_domain = InputDomain::Projection {
+                projection,
+                producer: ProducerId([15; 16]),
+            };
+            check!(matches!(
+                validate_semantic_recipe_instance(&projected, &spec),
+                Err(IndexError::InvalidInput(_))
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pure_instance_extraction_preserves_live_provider_parity_and_failure_precedence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let recipe = recipe();
+        let valid = instance(&recipe);
+        validate_semantic_recipe_instance(&recipe, &valid)?;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut different = recipe.clone();
+        different.model_identity = Digest([99; 32]);
+        let provider = FixedProvider {
+            calls: Arc::clone(&calls),
+            output: vec![],
+            descriptor: different,
+        };
+        let mut wrong = valid;
+        wrong.policy = Digest([0; 32]);
+        check!(
+            matches!(validate_semantic_instance(&provider, &recipe, &wrong),
+            Err(IndexError::InvalidInput(message)) if message == "embedding provider does not match pinned recipe")
+        );
+        let mut invalid_recipe = recipe;
+        invalid_recipe.dimension = 0;
+        check!(
+            matches!(validate_semantic_instance(&provider, &invalid_recipe, &wrong),
+            Err(IndexError::InvalidInput(message)) if message == "semantic recipe exceeds exact owner limits")
+        );
+        check_eq!(calls.load(AtomicOrdering::SeqCst), 0);
         Ok(())
     }
 
@@ -4967,6 +5629,7 @@ mod tests {
         };
         let result = search_exact(
             &SearchQuery {
+                source_files: false,
                 lexical_eligibility: None,
                 lexical_owners: None,
                 exact_path: None,
@@ -5000,6 +5663,7 @@ mod tests {
         fully_covered.status = CoverageStatus::Complete;
         let complete = search_exact(
             &SearchQuery {
+                source_files: false,
                 lexical_eligibility: None,
                 lexical_owners: None,
                 exact_path: None,
@@ -5022,6 +5686,7 @@ mod tests {
         check!(complete.traversal == NativeSemanticTraversal::ExactExhausted);
         let truncated = search_exact(
             &SearchQuery {
+                source_files: false,
                 lexical_eligibility: None,
                 lexical_owners: None,
                 exact_path: None,
@@ -5073,6 +5738,7 @@ mod tests {
         };
         let stale = search_exact(
             &SearchQuery {
+                source_files: false,
                 lexical_eligibility: None,
                 lexical_owners: None,
                 exact_path: None,
@@ -5117,6 +5783,7 @@ mod tests {
         };
         let capped_stale = search_exact(
             &SearchQuery {
+                source_files: false,
                 lexical_eligibility: None,
                 lexical_owners: None,
                 exact_path: None,
@@ -5154,6 +5821,7 @@ mod tests {
         check!(matches!(
             search_exact(
                 &SearchQuery {
+                    source_files: false,
                     lexical_eligibility: None,
                     lexical_owners: None,
                     exact_path: None,
@@ -5200,7 +5868,53 @@ mod tests {
         }
     }
 
+    struct StaticReadAttempt<'a> {
+        catalog: &'a StaticCatalog,
+        session: &'a dyn ReadSessionLease,
+        ticket: quanta_index_core::index::ReadTicketLease,
+        budget: &'a WorkBudget,
+        failure: Option<IndexError>,
+    }
+    impl quanta_index_core::index::CatalogReadAttempt for StaticReadAttempt<'_> {
+        fn ticket(&self) -> quanta_index_core::index::ReadTicketLease {
+            self.ticket
+        }
+        fn observe(&mut self) -> Result<(), IndexError> {
+            if let Some(error) = &self.failure {
+                return Err(error.clone());
+            }
+            let result =
+                self.catalog
+                    .validate_ticket_for_request(self.session, self.ticket, self.budget);
+            if let Err(error) = &result {
+                self.failure = Some(error.clone());
+            }
+            result
+        }
+        fn finalize(mut self: Box<Self>) -> Result<(), IndexError> {
+            self.observe()
+        }
+        fn abort(self: Box<Self>) {}
+    }
+
     impl CatalogReadPort for StaticCatalog {
+        fn begin_read_attempt<'a>(
+            &'a self,
+            session: &'a dyn ReadSessionLease,
+            ticket: quanta_index_core::index::ReadTicketLease,
+            budget: &'a WorkBudget,
+        ) -> Result<Box<dyn quanta_index_core::index::CatalogReadAttempt + 'a>, IndexError>
+        {
+            let mut attempt = Box::new(StaticReadAttempt {
+                catalog: self,
+                session,
+                ticket,
+                budget,
+                failure: None,
+            });
+            quanta_index_core::index::CatalogReadAttempt::observe(attempt.as_mut())?;
+            Ok(attempt)
+        }
         fn open_read_session(&self) -> Result<Arc<dyn ReadSessionLease>, IndexError> {
             Ok(Arc::new(StaticSession))
         }
@@ -5529,6 +6243,7 @@ mod tests {
             text: quanta_index_contract::index::SourceTextAdmission::Utf8 {
                 policy: Digest([9; 32]),
             },
+            source_repo_id: None,
         };
         Ok((
             store.insert(serde_json::to_vec(&record)?, vec![payload])?,
@@ -6020,6 +6735,7 @@ mod tests {
             fail: false,
         };
         let mut request = SemanticReadRequest {
+            source_files: false,
             lexical_eligibility: None,
             query: semantic_request("query", 2),
             overlay: vec![
@@ -6151,6 +6867,7 @@ mod tests {
         let projected_reader =
             NativeSemanticReader::new(Arc::clone(&bridge), projected, semantic_read_config(5))?;
         let one = SemanticReadRequest {
+            source_files: false,
             lexical_eligibility: None,
             query: semantic_request("query", 1),
             overlay: vec![SemanticOverlayDocument {
@@ -6171,6 +6888,7 @@ mod tests {
             semantic_read_config(1),
         )?;
         let over_limit = SemanticReadRequest {
+            source_files: false,
             lexical_eligibility: None,
             query: semantic_request("query", 1),
             overlay: vec![
@@ -6194,6 +6912,7 @@ mod tests {
             Err(IndexError::ResourceLimited)
         ));
         let zero_revision = SemanticReadRequest {
+            source_files: false,
             lexical_eligibility: None,
             query: semantic_request("query", 1),
             overlay: vec![SemanticOverlayDocument {
@@ -6256,6 +6975,7 @@ mod tests {
             fail: false,
         };
         let request = SemanticReadRequest {
+            source_files: false,
             lexical_eligibility: None,
             query: semantic_request("query", 2),
             overlay: vec![SemanticOverlayDocument {

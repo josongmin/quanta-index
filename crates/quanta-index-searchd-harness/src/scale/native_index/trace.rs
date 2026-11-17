@@ -30,7 +30,7 @@ impl NativeTrace {
             } else {
                 context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(1))
             };
-            super::super::optional_diagnostic_span(context, entered)
+            crate::scale_diagnostic_span::optional_diagnostic_span(context, entered)
         });
         let context = lease
             .as_ref()
@@ -47,7 +47,7 @@ impl NativeTrace {
     /// unlabelled span instead of inventing an identity or skipping the work.
     pub(super) fn begin(&self, name: &'static str) -> Option<DiagnosticSpanGuardV1> {
         let context = self.context.as_ref()?;
-        let span = super::super::optional_diagnostic_span(
+        let span = crate::scale_diagnostic_span::optional_diagnostic_span(
             context,
             context.enter(DiagnosticStageV1::HarnessPhase, DiagnosticLaneV1(1)),
         )?;

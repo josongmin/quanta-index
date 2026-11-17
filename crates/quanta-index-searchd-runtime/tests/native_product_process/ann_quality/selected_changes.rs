@@ -8,6 +8,43 @@ use quanta_index_contract::{
     native_protocol::{NativeOverlayEffortContext, NativeOverlaySemanticResult},
 };
 
+fn check_exact_path_completion(
+    traversal: NativeSemanticTraversal,
+    exhaustive: bool,
+    skipped_stale: u32,
+) -> TestResult {
+    require_equal(
+        &traversal,
+        &NativeSemanticTraversal::ExactExhausted,
+        "ANN exact-path traversal",
+    )?;
+    require(exhaustive, "ANN exact-path result is not exhaustive")?;
+    require_equal(&skipped_stale, &0, "ANN exact-path stale owners")
+}
+
+#[test]
+fn exact_path_completion_oracle_rejects_capped_approximate_and_stale_results() -> TestResult {
+    check_exact_path_completion(NativeSemanticTraversal::ExactExhausted, true, 0)?;
+    for (traversal, exhaustive, skipped_stale) in [
+        (NativeSemanticTraversal::ExactCapped, false, 0),
+        (
+            NativeSemanticTraversal::Approximate { capped: false },
+            false,
+            0,
+        ),
+        (NativeSemanticTraversal::ExactExhausted, false, 0),
+        (NativeSemanticTraversal::ExactExhausted, true, 1),
+    ] {
+        require(
+            check_exact_path_completion(traversal, exhaustive, skipped_stale).is_err(),
+            format!(
+                "ANN exact-path oracle accepted traversal={traversal:?}, exhaustive={exhaustive}, skipped_stale={skipped_stale}"
+            ),
+        )?;
+    }
+    Ok(())
+}
+
 pub(super) fn check_exact_path_query(
     client: &NativeUdsClient,
     selected: ViewRef,
@@ -48,6 +85,7 @@ pub(super) fn check_exact_path_query(
         &selected_view.source.owners,
         "ANN exact-path selected owner root",
     )?;
+    check_exact_path_completion(result.traversal, result.exhaustive, result.skipped_stale)?;
     require(
         result.scanned_owners <= u32::try_from(QUALITY_MAX_OWNERS)?,
         "ANN exact-path scan exceeded the original candidate cap",
@@ -364,6 +402,12 @@ fn check_overlay_quality_result(
         &selection.config.k,
         "ANN overlay top-k page length",
     )?;
+    check_quality_result_order(
+        result
+            .hits
+            .iter()
+            .map(|hit| (hit.score.get(), hit.owner, hit.vector_id.as_slice())),
+    )?;
     require(
         result.scanned_owners <= u32::try_from(QUALITY_MAX_OWNERS)?,
         "ANN overlay scanned beyond fixed candidate bound",
@@ -426,6 +470,129 @@ fn check_overlay_quality_result(
         }
     }
     Ok(matches)
+}
+
+#[test]
+fn overlay_quality_oracle_rejects_misordered_page() -> TestResult {
+    use quanta_index_contract::{
+        FiniteScore,
+        index::{CoverageBinding, InputBinding, MapRoot},
+        native_protocol::{
+            NativeInteractionPublisherId, NativeOverlayCorpusStamp, NativeOverlayRevision,
+            NativeOverlaySemanticHit, NativeOverlaySemanticHitOrigin,
+        },
+    };
+
+    let config = AnnRailConfig {
+        rows: 3,
+        width: 2,
+        queries: 1,
+        k: 2,
+        recall_floor: 1.0,
+    };
+    let direction = query_direction(0, &config)?;
+    let rows = vec![
+        ("row-0".to_owned(), direction.clone()),
+        (
+            "row-1".to_owned(),
+            direction.iter().map(|value| -*value).collect(),
+        ),
+    ];
+    let overlay_owner = quality_owner(0, &config)?;
+    let durable_owner = quality_owner(1, &config)?;
+    let deleted_owner = quality_owner(2, &config)?;
+    let view = ViewRef {
+        workspace: workspace(),
+        epoch: 1,
+        sequence: 2,
+        digest: Digest([1; 32]),
+    };
+    let source_owners = MapRoot(Some(ObjectRef(Digest([2; 32]))));
+    let instance = IndexInstanceId([3; 16]);
+    let desired = InputBinding {
+        root: source_owners,
+        schema: SchemaId([4; 16]),
+        policy: Digest([5; 32]),
+        context: Digest([6; 32]),
+    };
+    let mut result = NativeOverlaySemanticResult {
+        view,
+        instance,
+        coverage: CoverageBinding {
+            instance,
+            desired,
+            covered: Some(desired),
+            searchable: Some(ObjectRef(Digest([7; 32]))),
+            status: CoverageStatus::Complete,
+            owners: MapRoot(Some(ObjectRef(Digest([8; 32])))),
+        },
+        traversal: NativeSemanticTraversal::Approximate { capped: false },
+        exhaustive: false,
+        scanned_owners: 2,
+        skipped_stale: 0,
+        corpus: NativeOverlayCorpusStamp {
+            session: NativeOverlaySession {
+                workspace: workspace(),
+                publisher: NativeInteractionPublisherId([9; 32]),
+                epoch: 1,
+            },
+            identity: Digest([10; 32]),
+            revisions: vec![
+                NativeOverlayRevision {
+                    owner: overlay_owner,
+                    revision: 1,
+                    deleted: false,
+                    retired: false,
+                },
+                NativeOverlayRevision {
+                    owner: deleted_owner,
+                    revision: 1,
+                    deleted: true,
+                    retired: false,
+                },
+            ],
+        },
+        hits: vec![
+            NativeOverlaySemanticHit {
+                owner: overlay_owner,
+                vector_id: b"whole-file".to_vec(),
+                score: FiniteScore::new(1.0)?,
+                chunk: None,
+                overlay: Some(NativeOverlaySemanticHitOrigin {
+                    revision: 1,
+                    chunk: None,
+                }),
+            },
+            NativeOverlaySemanticHit {
+                owner: durable_owner,
+                vector_id: b"whole-file".to_vec(),
+                score: FiniteScore::new(-1.0)?,
+                chunk: None,
+                overlay: None,
+            },
+        ],
+    };
+    let selection = QualitySelection {
+        view,
+        source_owners,
+        instance,
+        config: &config,
+        rows: &rows,
+    };
+    require_equal(
+        &check_overlay_quality_result(&result, &selection, 0, overlay_owner, deleted_owner, 1)?,
+        &2,
+        "valid overlay quality page",
+    )?;
+    result.hits.swap(0, 1);
+    let refusal =
+        check_overlay_quality_result(&result, &selection, 0, overlay_owner, deleted_owner, 1)
+            .err()
+            .ok_or("the overlay oracle accepted an out-of-order page")?;
+    require(
+        refusal.to_string().contains("ANN result order"),
+        format!("unexpected overlay page refusal: {refusal}"),
+    )
 }
 
 pub(super) fn overlay_quality_sweep(
@@ -542,6 +709,7 @@ pub(super) fn overlay_quality_sweep(
             &selection.source_owners,
             "ANN overlay path selected source root",
         )?;
+        check_exact_path_completion(result.traversal, result.exhaustive, result.skipped_stale)?;
         require_equal(
             &result.corpus.identity,
             &corpus_identity,

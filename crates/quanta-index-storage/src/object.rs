@@ -34,6 +34,7 @@ mod io_observation;
 mod managed_trace_tests;
 mod namespace;
 mod physical_observation;
+mod prepared_leaf_run;
 mod read_io;
 mod read_only;
 mod reclaim;
@@ -43,14 +44,19 @@ mod scalar_sync;
 mod write_io;
 mod write_preparation;
 
-use batch_metadata::{BatchIndex, BatchReferences, BatchShards, RegistrationBatch};
+use batch_metadata::{
+    BatchIndex, BatchReferences, BatchShards, ChildValidationSlot, RegistrationBatch,
+    ValidatedExternalChildren,
+};
 use io_observation::{CustodyKind, SyncKind};
 pub use io_observation::{ObjectIoObservation, ObjectIoSnapshot};
 pub use read_only::FileObjectReader;
 use scalar_sync::ScalarSync;
 
 use namespace::NamespaceLease;
-use physical_observation::{PhysicalObservation, measure_physical};
+use physical_observation::{
+    ChildCheckCounts, CrossGroupChildOverlap, PhysicalObservation, measure_physical,
+};
 #[cfg(target_os = "macos")]
 use read_io::ObjectIoFile;
 use read_io::ReadWire;
@@ -61,9 +67,11 @@ struct SyncedDirectory {
     identity: InodeKey,
 }
 
-const MAGIC: &[u8; 8] = b"QIOBJ001";
-const HASH_DOMAIN: &[u8] = b"quanta-index-immutable-object-v1\0";
-const HEADER_LEN: usize = 16;
+use quanta_index_core::index::{
+    NATIVE_IMMUTABLE_OBJECT_HASH_DOMAIN_V1 as HASH_DOMAIN,
+    NATIVE_IMMUTABLE_OBJECT_HEADER_BYTES_V1 as HEADER_LEN,
+    NATIVE_IMMUTABLE_OBJECT_MAGIC_V1 as MAGIC,
+};
 const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
 const MAX_CHILDREN: usize = MAX_RECLAIM_CHILDREN;
 const MAX_WIRE: usize = HEADER_LEN + MAX_CHILDREN * 32 + MAX_PAYLOAD;
@@ -92,12 +100,25 @@ fn batch_barrier(_file: &File) -> Result<(), IndexError> {
 
 pub(crate) use write_preparation::{AdmittedWire, PreparedObject};
 
+fn batch_preparation_memory_bytes(count: usize) -> Result<u64, IndexError> {
+    let bytes = count
+        .checked_mul(
+            std::mem::size_of::<PreparedObject>()
+                .checked_add(std::mem::size_of::<&PreparedObject>())
+                .ok_or(IndexError::ResourceLimited)?,
+        )
+        .ok_or(IndexError::ResourceLimited)?;
+    u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)
+}
+
 #[derive(Clone, Copy)]
 enum BatchInstallPlan<'a> {
     Single,
     Run {
         attempt: AttemptRef,
         group: &'a PreparedInstallGroup,
+        previous_groups: &'a [Option<PreparedInstallGroup>],
+        gates: &'a InstallGateGuards<'a>,
         reserve: bool,
         confirm: bool,
     },
@@ -106,6 +127,7 @@ enum BatchInstallPlan<'a> {
 struct PreparedInstallGroup {
     references: BatchReferences,
     metadata: RegistrationBatch,
+    shards: BatchShards,
 }
 
 /// A content-addressed object store. Every installed object is immutable and
@@ -602,18 +624,11 @@ impl FileObjectStore {
         if !(2..=MAX_PREPARED_INSTALL_GROUPS).contains(&groups.len()) {
             return Err(IndexError::ResourceLimited);
         }
-        let (authority, attempt) = match (self.authority.as_ref(), sink.managed_scope()) {
-            (Some(authority), Some(ObjectInstallScope::Attempt(attempt)))
-                if authority.supports_atomic_attempt_advance() =>
-            {
-                (authority, attempt)
-            }
-            _ => {
-                return Err(IndexError::BackendViolation(
-                    "prepared install run requires atomic attempt advance".into(),
-                ));
-            }
-        };
+        if !self.can_run_prepared_installs(sink) {
+            return Err(IndexError::BackendViolation(
+                "prepared install run requires atomic attempt advance".into(),
+            ));
+        }
         let mut total_bytes = 0u64;
         for group in groups {
             if group.is_empty() || group.len() > MAX_INSTALL_BATCH_INPUTS {
@@ -632,12 +647,43 @@ impl FileObjectStore {
             std::array::from_fn(|_| None);
         for (index, group) in groups.iter().enumerate() {
             // Validate every packet before the first Catalog or filesystem effect.
+            let references = BatchReferences::new(group, budget)?;
+            let metadata = RegistrationBatch::new(group, budget)?;
             prepared[index] = Some(PreparedInstallGroup {
-                references: BatchReferences::new(group, budget)?,
-                metadata: RegistrationBatch::new(group, budget)?,
+                references,
+                shards: BatchShards::new(&self.objects, metadata.as_slice(), budget)?,
+                metadata,
             });
         }
-        let _gates = self.lock_install_gates(groups, budget)?;
+        self.install_admitted_run(groups, sink, budget, &prepared[..groups.len()])
+    }
+
+    fn install_admitted_run(
+        &self,
+        groups: &[&[&PreparedObject]],
+        sink: &dyn ObjectWriteSink,
+        budget: &mut WorkBudget,
+        prepared: &[Option<PreparedInstallGroup>],
+    ) -> Result<(), IndexError> {
+        if groups.is_empty()
+            || groups.len() > MAX_PREPARED_INSTALL_GROUPS
+            || groups.len() != prepared.len()
+        {
+            return Err(IndexError::ResourceLimited);
+        }
+        let (authority, attempt) = match (self.authority.as_ref(), sink.managed_scope()) {
+            (Some(authority), Some(ObjectInstallScope::Attempt(attempt)))
+                if authority.supports_atomic_attempt_advance() =>
+            {
+                (authority, attempt)
+            }
+            _ => {
+                return Err(IndexError::BackendViolation(
+                    "admitted run scope differs".into(),
+                ));
+            }
+        };
+        let gates = self.lock_install_gates(groups, budget)?;
         for (index, group) in groups.iter().enumerate() {
             let current = prepared[index].as_ref().ok_or_else(|| {
                 IndexError::BackendViolation("prepared run metadata absent".into())
@@ -675,6 +721,8 @@ impl FileObjectStore {
                 BatchInstallPlan::Run {
                     attempt,
                     group: current,
+                    previous_groups: &prepared[..index],
+                    gates: &gates,
                     reserve: index == 0,
                     confirm: index + 1 == groups.len(),
                 },
@@ -775,9 +823,12 @@ impl FileObjectStore {
             ..WorkUsage::default()
         })?;
         let owned_group = if matches!(plan, BatchInstallPlan::Single) {
+            let references = BatchReferences::new(objects, budget)?;
+            let metadata = RegistrationBatch::new(objects, budget)?;
             Some(PreparedInstallGroup {
-                references: BatchReferences::new(objects, budget)?,
-                metadata: RegistrationBatch::new(objects, budget)?,
+                references,
+                shards: BatchShards::new(&self.objects, metadata.as_slice(), budget)?,
+                metadata,
             })
         } else {
             None
@@ -790,7 +841,7 @@ impl FileObjectStore {
         };
         let all_refs = &group.references;
         let registrations = group.metadata.as_slice();
-        let referenced_shards = BatchShards::new(&self.objects, registrations, budget)?;
+        let referenced_shards = &group.shards;
         let _gate_guards = if matches!(plan, BatchInstallPlan::Single) {
             Some(self.lock_install_gates(&[objects], budget)?)
         } else {
@@ -814,6 +865,15 @@ impl FileObjectStore {
         }
         let mut physical =
             PhysicalObservation::new(budget, self.authority.is_some(), objects.len());
+        let protected_gates = match plan {
+            BatchInstallPlan::Single => None,
+            BatchInstallPlan::Run { gates, .. } => Some(gates),
+        };
+        let mut child_checks = ChildCheckCounts::default();
+        let observe_child_checks = physical.is_some();
+        if let (Some(physical), Some(gates)) = (physical.as_ref(), protected_gates) {
+            physical.observe_external_children(budget, registrations, all_refs, gates);
+        }
         let result: Result<(), IndexError> = {
             let child = physical
                 .as_ref()
@@ -822,19 +882,14 @@ impl FileObjectStore {
             let budget = &mut *scoped;
             (|| {
                 measure_physical(&mut physical, InstallPhase::ChildValidation, || {
-                    budget.checkpoint()?;
-                    for object in objects {
-                        for child in &object.registration.children {
-                            if !all_refs.contains(*child)? {
-                                budget.charge(WorkUsage {
-                                    reads: 1,
-                                    ..WorkUsage::default()
-                                })?;
-                                self.validate_child_path(*child)?;
-                            }
-                        }
-                    }
-                    Ok(())
+                    self.validate_prepared_children(
+                        objects,
+                        group,
+                        plan,
+                        observe_child_checks,
+                        &mut child_checks,
+                        budget,
+                    )
                 })?;
 
                 #[cfg(target_os = "macos")]
@@ -1104,6 +1159,9 @@ impl FileObjectStore {
             })()
         };
         if let Some(physical) = physical.as_mut() {
+            if protected_gates.is_some() {
+                physical.observe_child_checks(&child_checks);
+            }
             physical.finish(&result);
         }
         result?;
@@ -1397,6 +1455,87 @@ impl FileObjectStore {
         ))
     }
 
+    fn validate_prepared_children(
+        &self,
+        objects: &[&PreparedObject],
+        group: &PreparedInstallGroup,
+        plan: BatchInstallPlan<'_>,
+        observe: bool,
+        counts: &mut ChildCheckCounts,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        budget.checkpoint()?;
+        let protected = match plan {
+            BatchInstallPlan::Single => None,
+            BatchInstallPlan::Run {
+                gates,
+                previous_groups,
+                ..
+            } => Some((gates, previous_groups)),
+        };
+        let mut validated = if protected.is_some() {
+            let children = objects.iter().try_fold(0usize, |count, object| {
+                count
+                    .checked_add(object.registration.children.len())
+                    .ok_or(IndexError::ResourceLimited)
+            })?;
+            ValidatedExternalChildren::try_new(children, budget)?
+        } else {
+            None
+        };
+        // Admit observation only after the normal validator's own optional
+        // window, and release it before the group can reserve write memory.
+        let overlap = if observe {
+            protected.and_then(|(gates, previous)| {
+                CrossGroupChildOverlap::measure(budget, previous, group, gates)
+            })
+        } else {
+            None
+        };
+        counts.cross_group = overlap.as_ref().map(CrossGroupChildOverlap::counts);
+        for object in objects {
+            for child in &object.registration.children {
+                if group.references.contains(*child)? {
+                    continue;
+                }
+                let slot = if let (Some(validated), Some((gates, _))) = (&validated, protected) {
+                    budget.charge(WorkUsage {
+                        bytes: 1,
+                        ..WorkUsage::default()
+                    })?;
+                    if gates[Self::gate_index(*child)].is_some() {
+                        validated.locate(child, budget)?
+                    } else {
+                        ChildValidationSlot::Untracked
+                    }
+                } else {
+                    ChildValidationSlot::Untracked
+                };
+                if matches!(slot, ChildValidationSlot::Validated) {
+                    counts.reused += 1;
+                    continue;
+                }
+                budget.charge(WorkUsage {
+                    reads: 1,
+                    ..WorkUsage::default()
+                })?;
+                self.validate_child_path(*child)?;
+                if let (Some(overlap), Some(cross_group)) = (&overlap, &mut counts.cross_group) {
+                    cross_group.path_checks += 1;
+                    cross_group.repeated_path_checks += u64::from(overlap.contains(child));
+                }
+                if let (Some(validated), ChildValidationSlot::Vacant(index)) =
+                    (&mut validated, slot)
+                {
+                    // The original gate stays held through the run. A
+                    // physical group never borrows a prior group's witness.
+                    validated.remember(index, child, budget)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn validate_child_path(&self, reference: ObjectRef) -> Result<(), IndexError> {
         self.validate_store_root()?;
         let path = self.path_for(reference);
@@ -1545,7 +1684,114 @@ impl FileObjectStore {
     }
 }
 
+fn local_install_batch_memory_bound(
+    objects: &Path,
+    shape: quanta_index_core::index::ports::ObjectInstallMemoryShape,
+) -> Result<quanta_index_core::index::MemoryCreditLimits, IndexError> {
+    shape.validate()?;
+    if shape.maximum_payload_bytes > MAX_PAYLOAD
+        || u64::try_from(shape.maximum_total_payload_bytes)
+            .map_err(|_error| IndexError::ResourceLimited)?
+            > MAX_BATCH_BYTES
+        || shape.maximum_total_children
+            > shape
+                .maximum_inputs
+                .checked_mul(MAX_CHILDREN)
+                .ok_or(IndexError::ResourceLimited)?
+    {
+        return Err(IndexError::ResourceLimited);
+    }
+    let count = shape.maximum_inputs;
+    let count_u64 = u64::try_from(count).map_err(|_error| IndexError::ResourceLimited)?;
+    let children_u64 = u64::try_from(shape.maximum_total_children)
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    let payload_u64 = u64::try_from(shape.maximum_total_payload_bytes)
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    let wire_bytes = count_u64
+        .checked_mul(u64::try_from(HEADER_LEN).map_err(|_error| IndexError::ResourceLimited)?)
+        .and_then(|bytes| bytes.checked_add(payload_u64))
+        .and_then(|bytes| bytes.checked_add(children_u64.checked_mul(32)?))
+        .ok_or(IndexError::ResourceLimited)?;
+    if wire_bytes > MAX_BATCH_BYTES {
+        return Err(IndexError::ResourceLimited);
+    }
+    let registration_bytes = RegisteredObject::allocation_bytes(0)?
+        .checked_mul(count_u64)
+        .and_then(|bytes| {
+            bytes.checked_add(children_u64.checked_mul(std::mem::size_of::<ObjectRef>() as u64)?)
+        })
+        .ok_or(IndexError::ResourceLimited)?;
+    let path_bytes = BatchShards::allocation_bytes_for_count(objects, count)?;
+    let read_path_bytes = read_io::path_memory_bytes(objects)?;
+    let max_wire = u64::try_from(MAX_WIRE).map_err(|_error| IndexError::ResourceLimited)?;
+    let registration_packet_bytes = RegistrationBatch::allocation_bytes_for_count(count)?;
+    let temporary_data_bytes = batch_preparation_memory_bytes(count)?
+        .checked_add(wire_bytes)
+        .and_then(|bytes| bytes.checked_add(registration_packet_bytes))
+        .and_then(|bytes| bytes.checked_add(path_bytes))
+        .and_then(|bytes| bytes.checked_add(read_path_bytes))
+        .and_then(|bytes| bytes.checked_add(max_wire))
+        .ok_or(IndexError::ResourceLimited)?;
+    Ok(quanta_index_core::index::MemoryCreditLimits {
+        temporary_data_bytes,
+        retained_data_bytes: registration_bytes
+            .checked_add(quanta_index_core::index::RegisteredObjectBatch::allocation_bytes(count)?)
+            .ok_or(IndexError::ResourceLimited)?,
+        max_live_temporary_leases: u32::try_from(
+            count.checked_add(5).ok_or(IndexError::ResourceLimited)?,
+        )
+        .map_err(|_error| IndexError::ResourceLimited)?,
+        max_live_retained_leases: u32::try_from(
+            count.checked_add(1).ok_or(IndexError::ResourceLimited)?,
+        )
+        .map_err(|_error| IndexError::ResourceLimited)?,
+    })
+}
+
 impl ImmutableObjectPort for FileObjectStore {
+    fn install_batch_memory_bound(
+        &self,
+        shape: quanta_index_core::index::ports::ObjectInstallMemoryShape,
+    ) -> Result<Option<quanta_index_core::index::MemoryCreditLimits>, IndexError> {
+        let (Some(authority), Some(read_io), Some(write_io)) =
+            (&self.authority, &self.read_io, &self.write_io)
+        else {
+            return Ok(None);
+        };
+        let local = local_install_batch_memory_bound(&self.objects, shape)?;
+        let Some(catalog) = authority.managed_install_memory_bound(shape)? else {
+            return Ok(None);
+        };
+        let Some(read) = read_io.read_owner_memory_bound()? else {
+            return Ok(None);
+        };
+        let Some(write) = write_io.write_ticket_memory_bound(shape.maximum_inputs)? else {
+            return Ok(None);
+        };
+        // The first matching existing object may pin the macOS barrier FD
+        // while a later existing object is read and authenticated.
+        Ok(Some(
+            local
+                .checked_add(catalog)?
+                .checked_add(read)?
+                .checked_add(read)?
+                .checked_add(write)?,
+        ))
+    }
+
+    fn try_prepare_leaf_install_run(
+        &self,
+        attempt: AttemptRef,
+        maximum_payload: usize,
+        packet_bytes: usize,
+        budget: &mut WorkBudget,
+    ) -> Result<
+        Option<Box<dyn quanta_index_core::index::object_install::PreparedObjectInstallRun + '_>>,
+        IndexError,
+    > {
+        prepared_leaf_run::try_prepare(self, attempt, maximum_payload, packet_bytes, budget)
+    }
+
     fn identify(
         &self,
         payload: &[u8],
@@ -1618,16 +1864,7 @@ impl ImmutableObjectPort for FileObjectStore {
                 .ok_or(IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
-        let metadata_bytes = inputs
-            .len()
-            .checked_mul(
-                std::mem::size_of::<PreparedObject>()
-                    .checked_add(std::mem::size_of::<&PreparedObject>())
-                    .ok_or(IndexError::ResourceLimited)?,
-            )
-            .ok_or(IndexError::ResourceLimited)?;
-        let metadata_bytes =
-            u64::try_from(metadata_bytes).map_err(|_error| IndexError::ResourceLimited)?;
+        let metadata_bytes = batch_preparation_memory_bytes(inputs.len())?;
         let _preparation_memory = if metadata_bytes == 0 {
             None
         } else {
@@ -1723,6 +1960,22 @@ pub(crate) fn decode_stored_wire(
     wire: &[u8],
     budget: &mut WorkBudget,
 ) -> Result<StoredObject, IndexError> {
+    authenticate_scratch_wire(reference, wire)?;
+    decode_authenticated_stored_wire(reference, wire, budget)
+}
+
+pub(crate) fn decode_staged_registration(
+    reference: ObjectRef,
+    wire: &[u8],
+    budget: &mut WorkBudget,
+) -> Result<RegisteredObject, IndexError> {
+    authenticate_scratch_wire(reference, wire)?;
+    let parts = parse_authenticated_wire(wire)?;
+    charge_decoded_wire(&parts, budget)?;
+    decode_wire_registration(reference, wire.len(), parts.children, budget)
+}
+
+fn authenticate_scratch_wire(reference: ObjectRef, wire: &[u8]) -> Result<(), IndexError> {
     if !(HEADER_LEN..=MAX_WIRE).contains(&wire.len()) {
         return Err(IndexError::CorruptObject(
             "scratch object length is out of bounds".into(),
@@ -1733,7 +1986,12 @@ pub(crate) fn decode_stored_wire(
             "scratch object digest mismatch".into(),
         ));
     }
-    decode_authenticated_stored_wire(reference, wire, budget)
+    Ok(())
+}
+
+struct AuthenticatedWireParts<'a> {
+    children: &'a [u8],
+    payload: &'a [u8],
 }
 
 /// Decode a wire whose length and reference hash were authenticated by its
@@ -1743,6 +2001,22 @@ fn decode_authenticated_stored_wire(
     wire: &[u8],
     budget: &mut WorkBudget,
 ) -> Result<StoredObject, IndexError> {
+    let parts = parse_authenticated_wire(wire)?;
+    charge_decoded_wire(&parts, budget)?;
+    let memory = budget.reserve_memory(
+        StoredObject::payload_allocation_bytes(parts.payload.len())?,
+        quanta_index_core::index::MemoryLifetime::Retained,
+    )?;
+    let registration = decode_wire_registration(reference, wire.len(), parts.children, budget)?;
+    let mut payload = Vec::new();
+    payload
+        .try_reserve_exact(parts.payload.len())
+        .map_err(|_allocation_error| IndexError::ResourceLimited)?;
+    payload.extend_from_slice(parts.payload);
+    Ok(StoredObject::new(registration, payload, memory))
+}
+
+fn parse_authenticated_wire(wire: &[u8]) -> Result<AuthenticatedWireParts<'_>, IndexError> {
     if wire.get(..8) != Some(MAGIC.as_slice()) {
         return Err(IndexError::CorruptObject("object magic mismatch".into()));
     }
@@ -1767,9 +2041,22 @@ fn decode_authenticated_stored_wire(
             "encoded lengths do not match object size".into(),
         ));
     }
-    let decoded_bytes = children_len
+    let children = wire
+        .get(HEADER_LEN..payload_at)
+        .ok_or_else(|| IndexError::CorruptObject("truncated child references".into()))?;
+    let payload = wire
+        .get(payload_at..)
+        .ok_or_else(|| IndexError::CorruptObject("truncated payload".into()))?;
+    Ok(AuthenticatedWireParts { children, payload })
+}
+
+fn charge_decoded_wire(
+    parts: &AuthenticatedWireParts<'_>,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    let decoded_bytes = (parts.children.len() / 32)
         .checked_mul(std::mem::size_of::<ObjectRef>())
-        .and_then(|children_bytes| children_bytes.checked_add(payload_len))
+        .and_then(|children_bytes| children_bytes.checked_add(parts.payload.len()))
         .ok_or(IndexError::ResourceLimited)?;
     let decoded_bytes =
         u64::try_from(decoded_bytes).map_err(|_conversion_error| IndexError::ResourceLimited)?;
@@ -1777,39 +2064,27 @@ fn decode_authenticated_stored_wire(
         bytes: decoded_bytes,
         ..WorkUsage::default()
     })?;
-    let memory = budget.reserve_memory(
-        StoredObject::payload_allocation_bytes(payload_len)?,
-        quanta_index_core::index::MemoryLifetime::Retained,
-    )?;
-    let registration = RegisteredObject::copy_from_iter(
+    Ok(())
+}
+
+fn decode_wire_registration(
+    reference: ObjectRef,
+    wire_len: usize,
+    children: &[u8],
+    budget: &WorkBudget,
+) -> Result<RegisteredObject, IndexError> {
+    RegisteredObject::copy_from_iter(
         reference,
-        u64::try_from(wire.len()).map_err(|_error| IndexError::ResourceLimited)?,
-        children_len,
-        (0..children_len).map(|index| {
-            let start = index
-                .checked_mul(32)
-                .and_then(|offset| HEADER_LEN.checked_add(offset))
-                .ok_or(IndexError::ResourceLimited)?;
-            let end = start.checked_add(32).ok_or(IndexError::ResourceLimited)?;
-            let bytes = wire
-                .get(start..end)
-                .ok_or_else(|| IndexError::CorruptObject("truncated child reference".into()))?;
+        u64::try_from(wire_len).map_err(|_error| IndexError::ResourceLimited)?,
+        children.len() / 32,
+        children.chunks_exact(32).map(|bytes| {
             let digest: [u8; 32] = bytes.try_into().map_err(|_conversion_error| {
                 IndexError::CorruptObject("invalid child reference".into())
             })?;
             Ok(ObjectRef(Digest(digest)))
         }),
         budget,
-    )?;
-    let payload_bytes = wire
-        .get(payload_at..)
-        .ok_or_else(|| IndexError::CorruptObject("truncated payload".into()))?;
-    let mut payload = Vec::new();
-    payload
-        .try_reserve_exact(payload_len)
-        .map_err(|_allocation_error| IndexError::ResourceLimited)?;
-    payload.extend_from_slice(payload_bytes);
-    Ok(StoredObject::new(registration, payload, memory))
+    )
 }
 
 fn read_u32(wire: &[u8], at: usize) -> Result<u32, IndexError> {
@@ -2102,6 +2377,47 @@ mod tests {
     use quanta_index_core::index::WorkLimits;
 
     use super::*;
+
+    #[test]
+    fn install_memory_shape_covers_batch_births_and_existing_read() -> Result<(), IndexError> {
+        let objects = Path::new("/private/tmp/qi-test/objects");
+        for (count, children, payload) in [(1, 0, 8192), (64, 2, 8192), (256, 0, 8192)] {
+            let shape = quanta_index_core::index::ports::ObjectInstallMemoryShape {
+                maximum_inputs: count,
+                maximum_total_payload_bytes: count * payload,
+                maximum_payload_bytes: payload,
+                maximum_total_children: count * children,
+            };
+            let bound = local_install_batch_memory_bound(objects, shape)?;
+            let count_u64 = u64::try_from(count).map_err(|_error| IndexError::ResourceLimited)?;
+            let each_wire = u64::try_from(HEADER_LEN + payload + children * 32)
+                .map_err(|_error| IndexError::ResourceLimited)?;
+            let path = u64::try_from(objects.as_os_str().as_encoded_bytes().len() + 3)
+                .map_err(|_error| IndexError::ResourceLimited)?;
+            let actual_temporary = batch_preparation_memory_bytes(count)?
+                + count_u64 * each_wire
+                + RegistrationBatch::allocation_bytes_for_count(count)?
+                + count_u64 * path
+                + u64::try_from(objects.as_os_str().len())
+                    .map_err(|_error| IndexError::ResourceLimited)?
+                    * 3
+                + 512
+                + u64::try_from(MAX_WIRE).map_err(|_error| IndexError::ResourceLimited)?;
+            let actual_retained = RegisteredObject::allocation_bytes(children)? * count_u64
+                + quanta_index_core::index::RegisteredObjectBatch::allocation_bytes(count)?;
+            assert!(bound.temporary_data_bytes >= actual_temporary);
+            assert!(bound.retained_data_bytes >= actual_retained);
+            assert!(
+                bound.max_live_temporary_leases
+                    >= u32::try_from(count + 5).map_err(|_error| IndexError::ResourceLimited)?
+            );
+            assert!(
+                bound.max_live_retained_leases
+                    >= u32::try_from(count + 1).map_err(|_error| IndexError::ResourceLimited)?
+            );
+        }
+        Ok(())
+    }
 
     fn assertion_error<E: From<IndexError>>(detail: String) -> E {
         IndexError::BackendViolation(detail).into()

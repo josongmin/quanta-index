@@ -51,9 +51,13 @@ use sha2::{Digest, Sha256};
 use std::num::NonZeroU64;
 
 use quanta_index_contract::{CandidateCommitmentV1, RepoMapExpectedActiveV2};
-use quanta_index_core::CoreError;
+use quanta_index_core::{
+    CoreError,
+    index::{IndexError, MemoryLifetime, WorkBudget, WorkUsage},
+};
 
 use crate::connection::{SqliteCatalog, blob32, engine_error};
+use crate::integrity::IntegrityCheckError;
 use crate::sequence::{SequenceEventKindV1, append_sequence_event, verify_event_reference};
 
 const CANDIDATE_ROW_DOMAIN: &[u8] = b"quanta-index:catalog:repomap-candidate-row:v1\0";
@@ -141,6 +145,65 @@ pub(crate) fn verify_installed_schema(
             ("table", "repomap_quarantine_event_v1", "repomap quarantine"),
         ],
     )
+}
+
+/// Check whether `RepoMap` has work outside a one-revision replacement.
+///
+/// A source root may retain invalidated or quarantined records. A sealed
+/// candidate can still be activated and another revision may still be active.
+pub(crate) fn has_unresolved_source_scope(
+    connection: &Connection,
+    path: &std::path::Path,
+    expected_repo: &quanta_index_contract::RepoId,
+    expected_revision: &quanta_index_contract::RevisionId,
+) -> Result<bool, CoreError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM repomap_candidate_v1
+                           WHERE repo_id<>?1 OR state=?3 LIMIT 1)
+                 OR EXISTS(SELECT 1 FROM repomap_activation_v1
+                           WHERE repo_id<>?1 OR (active=1 AND revision_id<>?2) LIMIT 1)",
+            rusqlite::params![
+                expected_repo.as_str(),
+                expected_revision.as_str(),
+                RepoMapCandidateStateV1::Sealed.as_code()
+            ],
+            |row| row.get(0),
+        )
+        .map_err(|error| engine_error("inspect RepoMap source scope", path, &error))
+}
+
+/// Borrow the existing row validators inside the held, read-only Catalog
+/// transaction. The caller funds the row backing before this read.
+pub(crate) struct ActiveRepoMapReadbackV1 {
+    pub(crate) candidate: RepoMapCandidateRowV1,
+    pub(crate) activation: RepoMapActivationRowV1,
+    pub(crate) prior_commitment: Option<[u8; 32]>,
+}
+
+pub(crate) fn read_active_recovery_candidate_v1(
+    connection: &Connection,
+    repo: &quanta_index_contract::RepoId,
+    revision: &quanta_index_contract::RevisionId,
+) -> Result<Option<ActiveRepoMapReadbackV1>, CoreError> {
+    let Some(active) =
+        read_activation_row(connection, repo.as_str(), revision.as_str())?.filter(|row| row.active)
+    else {
+        return Ok(None);
+    };
+    let candidate = read_candidate_row(
+        connection,
+        repo.as_str(),
+        revision.as_str(),
+        active.manifest_generation,
+    )?
+    .ok_or_else(|| corrupt("active recovery head names an absent RepoMap candidate"))?;
+    let prior_commitment = read_replayed_prior_activation_commitment(connection, &active)?;
+    Ok(Some(ActiveRepoMapReadbackV1 {
+        candidate,
+        activation: active,
+        prior_commitment,
+    }))
 }
 
 /// The closed candidate state set (SEP-21 S21-02 target state machine).
@@ -445,13 +508,12 @@ pub(crate) fn verify_quarantine_event_pair(
     sequence: i64,
     identity: &[u8; 32],
     payload: &[u8; 32],
-) -> Result<(), CoreError> {
+    budget: Option<&mut WorkBudget>,
+) -> Result<(), IntegrityCheckError> {
     if kind != SequenceEventKindV1::QuarantineRecord
         && kind != SequenceEventKindV1::QuarantineDiscard
     {
-        return Err(corrupt(
-            "non-quarantine event reached quarantine pair verifier",
-        ));
+        return Err(corrupt("non-quarantine event reached quarantine pair verifier").into());
     }
     let sql = if kind == SequenceEventKindV1::QuarantineRecord {
         "SELECT incident_digest, payload_digest, envelope_bytes, envelope_digest,
@@ -464,20 +526,59 @@ pub(crate) fn verify_quarantine_event_pair(
                 discarded, discard_sequence, row_sha256
          FROM repomap_quarantine_event_v1 WHERE discard_sequence = ?1"
     };
-    let raw = connection
-        .query_row(sql, params![sequence], quarantine_raw_row)
-        .optional()
+    let mut statement = connection
+        .prepare(sql)
+        .map_err(|error| engine_error("prepare quarantine event pair", path, &error))?;
+    let mut rows = statement
+        .query(params![sequence])
+        .map_err(|error| engine_error("query quarantine event pair", path, &error))?;
+    let row = rows
+        .next()
         .map_err(|error| engine_error("read quarantine event pair", path, &error))?
         .ok_or_else(|| {
             corrupt(&format!(
                 "quarantine event {sequence} has no exact domain pair"
             ))
         })?;
+    let _memory = if let Some(budget) = budget {
+        // These are borrowed SQLite values. Admit the owned row and its
+        // digest pass before any `row.get` copies a variable-width cell.
+        let mut bytes = 512_u64;
+        for index in [0, 1, 2, 3, 6, 7, 10] {
+            let cell = row
+                .get_ref(index)
+                .map_err(|error| engine_error("inspect quarantine event cell", path, &error))?;
+            let length = match cell {
+                rusqlite::types::ValueRef::Blob(bytes) | rusqlite::types::ValueRef::Text(bytes) => {
+                    bytes.len()
+                }
+                _ => return Err(corrupt("quarantine event cell has the wrong type").into()),
+            };
+            bytes = bytes
+                .checked_add(u64::try_from(length).map_err(|_| IndexError::ResourceLimited)?)
+                .ok_or(IndexError::ResourceLimited)?;
+        }
+        budget.charge(WorkUsage {
+            reads: 1,
+            bytes: bytes.checked_mul(2).ok_or(IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        Some(
+            budget
+                .reserve_memory(bytes, MemoryLifetime::Temporary)?
+                .ok_or(IndexError::ResourceLimited)?,
+        )
+    } else {
+        None
+    };
+    let raw = quarantine_raw_row(row)
+        .map_err(|error| engine_error("decode quarantine event pair", path, &error))?;
     let incident = checked_quarantine_row(raw)?;
     if incident.incident_digest != *identity || incident.payload_digest != *payload {
         return Err(corrupt(&format!(
             "quarantine event {sequence} disagrees with its incident identity or payload"
-        )));
+        ))
+        .into());
     }
     Ok(())
 }
@@ -572,16 +673,23 @@ pub(crate) fn verify_candidate_event_pair(
     sequence: i64,
     identity: &[u8; 32],
     payload: &[u8; 32],
-) -> Result<(), CoreError> {
-    let (sql, label) = match kind {
+    budget: Option<&mut WorkBudget>,
+) -> Result<(), IntegrityCheckError> {
+    let (sql, size_sql, label) = match kind {
         SequenceEventKindV1::CandidateSeal => (
             "SELECT repo_id, revision_id, manifest_generation FROM repomap_candidate_v1
              WHERE terminal_sequence = ?1",
+            "SELECT 2 * (length(CAST(repo_id AS BLOB)) + length(CAST(revision_id AS BLOB)))
+                    + length(CAST(projection_meta AS BLOB))
+             FROM repomap_candidate_v1 WHERE terminal_sequence = ?1",
             "candidate seal",
         ),
         SequenceEventKindV1::RepoMapCandidateQuarantine => (
             "SELECT repo_id, revision_id, manifest_generation FROM repomap_candidate_v1
              WHERE quarantine_sequence = ?1 AND state = 4",
+            "SELECT 2 * (length(CAST(repo_id AS BLOB)) + length(CAST(revision_id AS BLOB)))
+                    + length(CAST(projection_meta AS BLOB))
+             FROM repomap_candidate_v1 WHERE quarantine_sequence = ?1 AND state = 4",
             "candidate quarantine",
         ),
         SequenceEventKindV1::OperationCommitted
@@ -594,11 +702,10 @@ pub(crate) fn verify_candidate_event_pair(
         | SequenceEventKindV1::QuarantineRecord
         | SequenceEventKindV1::QuarantineDiscard
         | SequenceEventKindV1::RepoMapInvalidation => {
-            return Err(corrupt(
-                "non-candidate event reached candidate pair verifier",
-            ));
+            return Err(corrupt("non-candidate event reached candidate pair verifier").into());
         }
     };
+    let _memory = admit_repomap_event_row(connection, path, size_sql, sequence, budget)?;
     let key: Option<(String, String, i64)> = connection
         .query_row(sql, params![sequence], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
@@ -608,7 +715,8 @@ pub(crate) fn verify_candidate_event_pair(
     let Some((repo_id, revision_id, generation)) = key else {
         return Err(corrupt(&format!(
             "{label} event {sequence} has no exact domain pair"
-        )));
+        ))
+        .into());
     };
     let generation = u64::try_from(generation)
         .map_err(|_error| corrupt("candidate event generation does not fit u64"))?;
@@ -619,7 +727,8 @@ pub(crate) fn verify_candidate_event_pair(
     {
         return Err(corrupt(&format!(
             "{label} event {sequence} disagrees with its candidate identity or commitment"
-        )));
+        ))
+        .into());
     }
     Ok(())
 }
@@ -824,6 +933,31 @@ pub(crate) fn verify_repomap_domain_integrity(
             "repo={repo_id} revision={revision_id} has multiple or nonlatest active activation rows"
         )));
     }
+    // The forward ledger pass proves that every activation names a candidate
+    // in the exact state and with the exact commitment. Check that those keys
+    // are unique and cover every candidate that reached activation. Grouping
+    // once avoids searching a revision's entire history for each candidate.
+    let (candidate_count, activation_count, activation_keys): (i64, i64, i64) = connection
+        .query_row(
+            "SELECT (SELECT count(*) FROM repomap_candidate_v1 WHERE state IN (?1, ?2)),
+                    COALESCE(sum(activations), 0), count(*)
+             FROM (SELECT count(*) AS activations FROM repomap_activation_v1
+                   GROUP BY repo_id, revision_id, manifest_generation)",
+            params![
+                RepoMapCandidateStateV1::Activated.as_code(),
+                RepoMapCandidateStateV1::ActivationInvalidated.as_code(),
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|error| {
+            engine_error("verify RepoMap candidate activation history", path, &error)
+        })?;
+    if activation_count != activation_keys || candidate_count != activation_keys {
+        return Err(corrupt(&format!(
+            "RepoMap candidate activation history is not one-to-one: {candidate_count} candidates, \
+             {activation_count} activations over {activation_keys} keys"
+        )));
+    }
     let missing_activation_event: Option<i64> = connection
         .query_row(
             "SELECT a.activation_sequence FROM repomap_activation_v1 AS a
@@ -905,23 +1039,41 @@ pub(crate) fn verify_activation_event_pair(
     sequence: i64,
     identity: &[u8; 32],
     payload: &[u8; 32],
-) -> Result<(), CoreError> {
+    budget: Option<&mut WorkBudget>,
+) -> Result<(), IntegrityCheckError> {
     if kind != SequenceEventKindV1::Activation && kind != SequenceEventKindV1::RepoMapInvalidation {
-        return Err(corrupt(
-            "non-activation event reached activation pair verifier",
-        ));
+        return Err(corrupt("non-activation event reached activation pair verifier").into());
     }
-    let sql = if kind == SequenceEventKindV1::Activation {
-        "SELECT repo_id, revision_id, epoch, manifest_generation, candidate_commitment,
-                active, invalidation_reason, activation_sequence, terminal_sequence,
-                row_sha256
-         FROM repomap_activation_v1 WHERE activation_sequence = ?1"
+    let (sql, size_sql) = if kind == SequenceEventKindV1::Activation {
+        (
+            "SELECT repo_id, revision_id, epoch, manifest_generation, candidate_commitment,
+                    active, invalidation_reason, activation_sequence, terminal_sequence,
+                    row_sha256 FROM repomap_activation_v1 WHERE activation_sequence = ?1",
+            "SELECT 2 * (length(CAST(a.repo_id AS BLOB)) + length(CAST(a.revision_id AS BLOB)))
+                    + COALESCE(length(CAST(a.invalidation_reason AS BLOB)), 0)
+                    + COALESCE(length(CAST(c.projection_meta AS BLOB)), 0)
+             FROM repomap_activation_v1 AS a LEFT JOIN repomap_candidate_v1 AS c
+               ON (c.repo_id, c.revision_id, c.manifest_generation)
+                = (a.repo_id, a.revision_id, a.manifest_generation)
+             WHERE a.activation_sequence = ?1",
+        )
     } else {
-        "SELECT repo_id, revision_id, epoch, manifest_generation, candidate_commitment,
-                active, invalidation_reason, activation_sequence, terminal_sequence,
-                row_sha256
-         FROM repomap_activation_v1 WHERE terminal_sequence = ?1 AND active = 0"
+        (
+            "SELECT repo_id, revision_id, epoch, manifest_generation, candidate_commitment,
+                    active, invalidation_reason, activation_sequence, terminal_sequence,
+                    row_sha256 FROM repomap_activation_v1 WHERE terminal_sequence = ?1 AND active = 0",
+            "SELECT 2 * (length(CAST(a.repo_id AS BLOB)) + length(CAST(a.revision_id AS BLOB)))
+                    + COALESCE(length(CAST(a.invalidation_reason AS BLOB)), 0)
+                    + COALESCE(length(CAST(c.projection_meta AS BLOB)), 0)
+             FROM repomap_activation_v1 AS a LEFT JOIN repomap_candidate_v1 AS c
+               ON (c.repo_id, c.revision_id, c.manifest_generation)
+                = (a.repo_id, a.revision_id, a.manifest_generation)
+             WHERE a.terminal_sequence = ?1 AND a.active = 0",
+        )
     };
+    // The activation and its candidate stay live together. Read both cell
+    // widths by key inside the same Catalog snapshot before copying either.
+    let _memory = admit_repomap_event_row(connection, path, size_sql, sequence, budget)?;
     let raw = connection
         .query_row(sql, params![sequence], activation_raw_row)
         .optional()
@@ -941,7 +1093,8 @@ pub(crate) fn verify_activation_event_pair(
     {
         return Err(corrupt(&format!(
             "activation event {sequence} disagrees with its logical identity or commitment"
-        )));
+        ))
+        .into());
     }
     let candidate = read_candidate_row(
         connection,
@@ -960,22 +1113,54 @@ pub(crate) fn verify_activation_event_pair(
     {
         return Err(corrupt(&format!(
             "activation event {sequence} disagrees with candidate state or commitment"
-        )));
+        ))
+        .into());
     }
     Ok(())
 }
 
+fn admit_repomap_event_row(
+    connection: &Connection,
+    path: &std::path::Path,
+    size_sql: &str,
+    sequence: i64,
+    budget: Option<&mut WorkBudget>,
+) -> Result<Option<quanta_index_core::index::MemoryLease>, IntegrityCheckError> {
+    let Some(budget) = budget else {
+        return Ok(None);
+    };
+    let bytes: Option<i64> = connection
+        .query_row(size_sql, params![sequence], |row| row.get(0))
+        .optional()
+        .map_err(|error| engine_error("measure RepoMap event row", path, &error))?;
+    // A missing row is still classified by the canonical pair verifier.
+    let bytes = u64::try_from(bytes.unwrap_or(0)).map_err(|_| IndexError::ResourceLimited)?;
+    budget.charge(WorkUsage {
+        reads: 4,
+        bytes: bytes
+            .checked_mul(3)
+            .and_then(|bytes| bytes.checked_add(512))
+            .ok_or(IndexError::ResourceLimited)?,
+        ..WorkUsage::default()
+    })?;
+    let memory = bytes.checked_add(4096).ok_or(IndexError::ResourceLimited)?;
+    Ok(Some(
+        budget
+            .reserve_memory(memory, MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?,
+    ))
+}
+
 fn read_replayed_prior_activation_commitment(
     connection: &Connection,
-    repo_id: &str,
-    revision_id: &str,
-    active_epoch: u64,
+    active: &RepoMapActivationRowV1,
 ) -> Result<Option<[u8; 32]>, CoreError> {
-    let Some(prior_epoch) = active_epoch.checked_sub(1).filter(|epoch| *epoch > 0) else {
+    let Some(prior_epoch) = active.epoch.checked_sub(1).filter(|epoch| *epoch > 0) else {
         return Ok(None);
     };
     let prior_epoch = i64::try_from(prior_epoch)
         .map_err(|_error| corrupt("prior activation epoch does not fit i64"))?;
+    let path = std::path::Path::new(":catalog:");
     let fetched = connection
         .query_row(
             "SELECT repo_id, revision_id, epoch, manifest_generation, candidate_commitment,
@@ -983,25 +1168,32 @@ fn read_replayed_prior_activation_commitment(
                     row_sha256
              FROM repomap_activation_v1
              WHERE repo_id = ?1 AND revision_id = ?2 AND epoch = ?3",
-            params![repo_id, revision_id, prior_epoch],
+            params![active.repo_id, active.revision_id, prior_epoch],
             activation_raw_row,
         )
         .optional()
-        .map_err(|error| {
-            engine_error(
-                "read prior repomap activation",
-                std::path::Path::new(":catalog:"),
-                &error,
-            )
-        })?;
+        .map_err(|error| engine_error("read prior repomap activation", path, &error))?;
     let Some(raw) = fetched else {
         return Err(corrupt(
             "active replay is missing its prior activation epoch",
         ));
     };
     let row = checked_activation_row(raw)?;
-    Ok((row.invalidation_reason.as_deref() == Some("superseded"))
-        .then_some(row.candidate_commitment))
+    verify_activation_row_links(connection, path, &row)?;
+    // Superseding allocates the new activation and then the prior head's
+    // invalidation in the same transaction. Explicit invalidation reasons
+    // are caller data and cannot establish that the prior head was active.
+    if row.terminal_sequence < active.activation_sequence {
+        return Ok(None);
+    }
+    if active.activation_sequence.checked_add(1) != Some(row.terminal_sequence)
+        || row.invalidation_reason.as_deref() != Some("superseded")
+    {
+        return Err(corrupt(
+            "prior activation has an invalid supersession sequence",
+        ));
+    }
+    Ok(Some(row.candidate_commitment))
 }
 
 impl SqliteCatalog {
@@ -1202,12 +1394,7 @@ impl SqliteCatalog {
             let Some(active) = existing else {
                 return Err(corrupt("replay check found no activation row"));
             };
-            let replayed_prior = read_replayed_prior_activation_commitment(
-                &transaction,
-                repo_id,
-                revision_id,
-                active.epoch,
-            )?;
+            let replayed_prior = read_replayed_prior_activation_commitment(&transaction, &active)?;
             let replayed_expected = replayed_prior
                 .map(|commitment| {
                     let epoch = active
@@ -1479,22 +1666,28 @@ impl SqliteCatalog {
             terminal_sequence: sequence,
             ..active_row
         };
-        let _invalidated = transaction
+        let epoch = i64::try_from(invalidated.epoch)
+            .map_err(|_error| corrupt("active activation epoch does not fit i64"))?;
+        let updated = transaction
             .execute(
                 "UPDATE repomap_activation_v1
                  SET active = 0, invalidation_reason = ?1,
                      terminal_sequence = ?2,
                      row_sha256 = ?3
-                 WHERE repo_id = ?4 AND revision_id = ?5",
+                 WHERE repo_id = ?4 AND revision_id = ?5 AND epoch = ?6 AND active = 1",
                 params![
                     reason,
                     sequence,
                     activation_row_digest(&invalidated).as_slice(),
                     repo_id,
                     revision_id,
+                    epoch,
                 ],
             )
             .map_err(|error| engine_error("invalidate repomap activation", path, &error))?;
+        if updated != 1 {
+            return Err(corrupt("invalidation did not update the active activation"));
+        }
         let generation_i64 = i64::try_from(manifest_generation).map_err(|error| {
             CoreError::InvalidContract(format!(
                 "catalog: generation {manifest_generation} does not fit the catalog: {error}"
@@ -1965,6 +2158,134 @@ mod tests {
             || second.state != RepoMapCandidateStateV1::Sealed
         {
             return Err("stale invalidation changed the active or sealed generation".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn invalidating_replacement_preserves_prior_activation_history() -> Result<(), Box<dyn Error>> {
+        use std::num::NonZeroU64;
+
+        use quanta_index_contract::{CandidateCommitmentV1, RepoMapExpectedActiveV2};
+
+        let root = tempfile::tempdir()?;
+        let timeout = Duration::from_millis(100);
+        let catalog = SqliteCatalog::open(root.path(), timeout)?;
+        let initial = [1; 32];
+        let replacement = [2; 32];
+        for (generation, commitment) in [(1, initial), (2, replacement)] {
+            let _sealed = catalog.seal_repomap_candidate(
+                "repo",
+                "revision",
+                generation,
+                &commitment,
+                &[3; 32],
+                &[4; 32],
+                5,
+                "{}",
+            )?;
+        }
+        let first = catalog.activate_repomap_candidate("repo", "revision", 1, &initial, None)?;
+        let prior = RepoMapExpectedActiveV2::new(
+            NonZeroU64::new(first.epoch).ok_or("first activation has zero epoch")?,
+            CandidateCommitmentV1::from_bytes(initial),
+        );
+        let second = catalog.activate_repomap_candidate(
+            "repo",
+            "revision",
+            2,
+            &replacement,
+            Some(&prior),
+        )?;
+        let read_first_history = |catalog: &SqliteCatalog| -> Result<_, Box<dyn Error>> {
+            Ok(catalog.lock()?.query_row(
+                "SELECT activation_sequence, terminal_sequence, invalidation_reason, row_sha256
+                 FROM repomap_activation_v1
+                 WHERE repo_id = 'repo' AND revision_id = 'revision' AND epoch = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Vec<u8>>(3)?,
+                    ))
+                },
+            )?)
+        };
+        let first_history = read_first_history(&catalog)?;
+        if first_history.0 != first.terminal_sequence || first_history.2 != "superseded" {
+            return Err("replacement did not preserve the first activation as history".into());
+        }
+        let (expected_invalidation, _) = catalog.sequence_allocator()?;
+        let invalidation =
+            catalog.invalidate_repomap_activation("repo", "revision", 2, "damaged")?;
+        if Some(u64::try_from(invalidation)?) != expected_invalidation {
+            return Err("invalidation did not use the next ledger sequence".into());
+        }
+
+        drop(catalog);
+        let reopened = SqliteCatalog::open(root.path(), timeout)?;
+        let latest = reopened
+            .repomap_activation_row("repo", "revision")?
+            .ok_or("latest activation missing after reopen")?;
+        if latest.epoch != second.epoch
+            || latest.activation_sequence != second.terminal_sequence
+            || latest.terminal_sequence != invalidation
+            || latest.active
+            || latest.invalidation_reason.as_deref() != Some("damaged")
+        {
+            return Err(format!("wrong activation after invalidation: {latest:?}").into());
+        }
+        if read_first_history(&reopened)? != first_history {
+            return Err("invalidation altered the first activation history".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn activation_replay_preserves_absent_prior_after_explicit_invalidation()
+    -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let timeout = Duration::from_millis(100);
+        let catalog = SqliteCatalog::open(root.path(), timeout)?;
+        let initial = [1; 32];
+        let replacement = [2; 32];
+        for (generation, commitment) in [(1, initial), (2, replacement)] {
+            let _sealed = catalog.seal_repomap_candidate(
+                "repo",
+                "revision",
+                generation,
+                &commitment,
+                &[3; 32],
+                &[4; 32],
+                5,
+                "{}",
+            )?;
+        }
+        let _first = catalog.activate_repomap_candidate("repo", "revision", 1, &initial, None)?;
+        let _invalidated =
+            catalog.invalidate_repomap_activation("repo", "revision", 1, "superseded")?;
+        let applied =
+            catalog.activate_repomap_candidate("repo", "revision", 2, &replacement, None)?;
+        if applied.prior_candidate_commitment.is_some() {
+            return Err("new activation used an already-invalidated prior head".into());
+        }
+        let next_sequence = catalog.sequence_allocator()?;
+
+        drop(catalog);
+        let reopened = SqliteCatalog::open(root.path(), timeout)?;
+        let replayed =
+            reopened.activate_repomap_candidate("repo", "revision", 2, &replacement, None)?;
+        if !replayed.replayed
+            || replayed.prior_candidate_commitment.is_some()
+            || replayed.terminal_sequence != applied.terminal_sequence
+            || replayed.epoch != applied.epoch
+            || reopened.sequence_allocator()? != next_sequence
+        {
+            return Err(
+                format!("activation replay changed the durable result: {replayed:?}").into(),
+            );
         }
         Ok(())
     }
@@ -3035,6 +3356,40 @@ mod tests {
         )?;
         if allocator_tables != 0 {
             return Err("candidate schema refusal must roll back allocator schema creation".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn candidate_activation_states_require_matching_activation() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let _sealed = catalog
+            .seal_repomap_candidate("repo", "revision", 1, &[1; 32], &[2; 32], &[3; 32], 4, "{}")?;
+        let connection = catalog.lock()?;
+        crate::integrity::verify_integrity(&connection, catalog.path())?;
+        let mut candidate = read_candidate_row(&connection, "repo", "revision", 1)?
+            .ok_or("sealed candidate missing")?;
+        for state in [
+            RepoMapCandidateStateV1::Activated,
+            RepoMapCandidateStateV1::ActivationInvalidated,
+        ] {
+            candidate.state = state;
+            let updated = connection.execute(
+                "UPDATE repomap_candidate_v1 SET state = ?1, row_sha256 = ?2
+                 WHERE repo_id = 'repo' AND revision_id = 'revision' AND manifest_generation = 1",
+                params![state.as_code(), candidate_row_digest(&candidate).as_slice()],
+            )?;
+            if updated != 1 {
+                return Err("expected one self-consistent orphan candidate".into());
+            }
+            match crate::integrity::verify_integrity(&connection, catalog.path()) {
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    message,
+                }) if message.contains("1 candidates, 0 activations over 0 keys") => {}
+                result => return Err(format!("orphan candidate verification: {result:?}").into()),
+            }
         }
         Ok(())
     }

@@ -494,7 +494,7 @@ fn canonical_consumer_ack_retry_load_discard_restores_boot_ledger() -> TestResul
         "complete ACK offset changed",
     )?;
     require(
-        store.load(identity, &budget)? == batch,
+        store.load(identity, &budget, &mut |_bytes| Ok(()))? == batch,
         "canonical consumer changed fixed batch fields",
     )?;
     store.discard(identity)?;

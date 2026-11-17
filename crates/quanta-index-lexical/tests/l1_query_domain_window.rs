@@ -4,6 +4,7 @@
 //! is never used to discover the expected result set. Counts are checked against
 //! that fixture universe independently from the capped candidate rows.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/publication_fixture.rs"]

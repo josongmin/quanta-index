@@ -281,6 +281,11 @@ fn lane_flags(
             lanes.extend(flags(response.dense_window.coverage().lanes()));
             Ok(lanes)
         }
+        SearchPlaneQueryIpcResponse::HybridFileV1(response) => {
+            let mut lanes = flags(response.lexical_window.coverage().lanes());
+            lanes.extend(flags(response.dense_window.coverage().lanes()));
+            Ok(lanes)
+        }
         // The explain response carries no window: its truth chain is the
         // explanation plus the adapter counts, asserted by the caller.
         SearchPlaneQueryIpcResponse::Explain(_) => Ok(Vec::new()),
@@ -458,6 +463,7 @@ fn go_trace_file_request() -> SearchPlaneQueryIpcRequest {
         failure_source_repo_id: Some(ready_pin().repo_id),
         failure_module_context: None,
         top_k: 10,
+        include_rank_pools: false,
     })
 }
 
@@ -1300,6 +1306,7 @@ fn one_correlation_reaches_every_route_explanation() -> TestResult {
             SearchPlaneQueryIpcResponse::Hybrid(r) => Ok(r.explanation.request_id),
             SearchPlaneQueryIpcResponse::HybridSeed(r) => Ok(r.explanation.request_id),
             SearchPlaneQueryIpcResponse::GoTestTraceFileV1(r) => Ok(r.explanation.request_id),
+            SearchPlaneQueryIpcResponse::HybridFileV1(r) => Ok(r.explanation.request_id),
             SearchPlaneQueryIpcResponse::Explain(r) => Ok(r.explanation.request_id),
             SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
             | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)

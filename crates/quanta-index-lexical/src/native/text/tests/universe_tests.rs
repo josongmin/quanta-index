@@ -49,6 +49,7 @@ fn add_source(
         } else {
             SourceTextAdmission::Excluded
         },
+        source_repo_id: None,
     };
     fixture
         .objects
@@ -199,6 +200,53 @@ fn unanchored_count_and_path_filter_keep_full_matched_count() -> Result<(), Inde
         return Err(IndexError::BackendViolation(
             "exact path did not filter before top-k".into(),
         ));
+    }
+    Ok(())
+}
+
+#[test]
+fn rank_after_zero_score_universe_keeps_strict_owner_ties_and_remaining() -> Result<(), IndexError>
+{
+    use super::super::super::text_query::{Bm25Policy, TextContentExecution};
+    use quanta_index_core::index::FiniteScore;
+
+    let (fixture, first_empty, second_empty, _excluded) = finite_universe()?;
+    let plan = planned_phrase_query(negate(leaf("one")))?;
+    for (anchor, expected, remaining) in [
+        (first_empty, Some(second_empty), 1),
+        (second_empty, None, 0),
+    ] {
+        let ranking = NativeTextIndex::new(fixture.recipe).search_content_with_overlay(
+            &fixture.member,
+            &plan,
+            &quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            TextContentExecution {
+                top_k: 1,
+                policy: Bm25Policy { k1: 1.2, b: 0.75 },
+                rank_after: Some((
+                    FiniteScore::new(-0.0)
+                        .map_err(|error| IndexError::BackendViolation(error.to_string()))?,
+                    anchor,
+                )),
+            },
+            None,
+            TextReadContext {
+                ticket: &fixture.ticket,
+                objects: &fixture.objects,
+                maps: &fixture.maps,
+                budget: &mut budget()?,
+            },
+        )?;
+        if ranking.matched != 2
+            || ranking.remaining != remaining
+            || ranking.hits.len() != usize::from(expected.is_some())
+            || ranking.hits.first().map(|hit| hit.owner) != expected
+            || ranking.hits.iter().any(|hit| hit.score != 0.0)
+        {
+            return Err(IndexError::BackendViolation(
+                "rank-after zero-score complement violated fixed admitted-owner gold".into(),
+            ));
+        }
     }
     Ok(())
 }

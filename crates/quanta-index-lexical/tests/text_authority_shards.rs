@@ -1,6 +1,7 @@
 //! Native text authority: bounded paged segments, immutable shared objects,
 //! independent delta/rebuild query gold, and typed selected-read refusal.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/publication_fixture.rs"]

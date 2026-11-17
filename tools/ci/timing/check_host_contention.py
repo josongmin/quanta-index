@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-RUST_PROCESS = re.compile(r"(?:^|/)(?:cargo(?:-[A-Za-z0-9_-]+)?|rustc)(?:\s|$)")
+RUST_PROCESS = re.compile(r"(?:cargo(?:-[A-Za-z0-9_-]+)?|rustc)")
 MAX_ONE_MINUTE_LOAD_PER_CPU = 0.5
 
 
@@ -25,10 +25,12 @@ MAX_ONE_MINUTE_LOAD_PER_CPU = 0.5
 class Process:
     pid: int
     ppid: int
+    # The OS command path/name from ps comm, never an argv string.
     command: str
 
 
 def parse_processes(output: str) -> list[Process]:
+    """Parse PID, PPID and the complete OS command path from a ps comm snapshot."""
     processes: list[Process] = []
     seen_pids: set[int] = set()
     for line in output.splitlines():
@@ -60,12 +62,17 @@ def ancestor_pids(processes: list[Process], pid: int) -> set[int]:
     return ancestors
 
 
+def is_rust_executable(executable: str) -> bool:
+    """Classify the OS executable basename without interpreting its arguments."""
+    return RUST_PROCESS.fullmatch(Path(executable).name) is not None
+
+
 def foreign_rust_processes(processes: list[Process], pid: int) -> list[Process]:
     own_chain = ancestor_pids(processes, pid)
     return [
         process
         for process in processes
-        if process.pid not in own_chain and RUST_PROCESS.search(process.command)
+        if process.pid not in own_chain and is_rust_executable(process.command)
     ]
 
 
@@ -226,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         print("TIMING_PREFLIGHT_ERROR reason=invalid_run_id", file=sys.stderr)
         return 2
     completed = subprocess.run(
-        ["ps", "-axo", "pid=,ppid=,command="],
+        ["ps", "-axo", "pid=,ppid=,comm="],
         check=False,
         capture_output=True,
         text=True,

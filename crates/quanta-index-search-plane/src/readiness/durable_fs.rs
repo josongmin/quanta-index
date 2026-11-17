@@ -1188,6 +1188,7 @@ mod admitted_tests {
         deleted: Mutex<Vec<PathBuf>>,
         pending: Mutex<Option<PathBuf>>,
         fail_after_first_unlink: AtomicBool,
+        fail_retention_after_unlink: AtomicBool,
     }
 
     impl DurableControlFileAdmissionPort for CleanupAdmission {
@@ -1214,10 +1215,19 @@ mod admitted_tests {
                 .lock()
                 .map_err(|error| CoreError::Storage(format!("fixture delete log: {error}")))?
                 .push(path.to_path_buf());
-            if self.fail_after_first_unlink.swap(false, Ordering::SeqCst) {
+            let fail_cleanup = self.fail_after_first_unlink.swap(false, Ordering::SeqCst);
+            let fail_retention = self
+                .fail_retention_after_unlink
+                .swap(false, Ordering::SeqCst);
+            if fail_cleanup || fail_retention {
                 *self.pending.lock().map_err(|error| {
                     CoreError::Storage(format!("fixture pending delete: {error}"))
                 })? = Some(path.to_path_buf());
+                if fail_retention {
+                    return Err(CoreError::InvalidContract(
+                        "fixture delete settlement failed after unlink".into(),
+                    ));
+                }
                 return Err(CoreError::Storage(
                     "fixture parent sync failed after unlink".into(),
                 ));
@@ -1521,6 +1531,66 @@ mod admitted_tests {
         require(!legacy.exists(), "auxiliary legacy entry survived cleanup")?;
         require_eq(&std::fs::read(&unrelated)?, &b"foreign".to_vec())?;
         require_eq(&cleanup_deletions(&admission)?, &vec![staged, legacy])?;
+        Ok(())
+    }
+
+    #[test]
+    fn qualified_retention_retry_settles_absent_record_before_returning_receipt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
+
+        let root = tempfile::tempdir()?;
+        let repo = RepoId::new("retention-retry")?;
+        let revision = RevisionId::new("revision")?;
+        let last = ManifestGeneration::new(3);
+        let authorities = root.path().join("authorities");
+        let writer = AuxiliaryAuthorityStore::open(
+            &authorities,
+            SearchCorpusHistoryRetentionPolicyV1::new(3, 1024 * 1024, 64, 64 * 1024 * 1024)?,
+        )?;
+        for number in 1..=3 {
+            let _receipt = writer.record_sealed_search_corpus(
+                &repo,
+                &revision,
+                ManifestGeneration::new(number),
+                "fixed-generation-digest",
+            )?;
+        }
+        let reaped =
+            writer.search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(1));
+        drop(writer);
+        let admission = Arc::new(CleanupAdmission {
+            fail_retention_after_unlink: AtomicBool::new(true),
+            ..CleanupAdmission::default()
+        });
+        let store = AuxiliaryAuthorityStore::open_with_lifecycle_and_durable_admission_v1(
+            &authorities,
+            fixture_retention()?,
+            SearchCorpusPairMutationCoordinator::shared(),
+            Arc::new(NoActiveSearchCorpusPinsV1),
+            Arc::new(ScriptedIndexBytesV1),
+            admission.clone(),
+        )?;
+        let first =
+            store.record_sealed_search_corpus(&repo, &revision, last, "fixed-generation-digest");
+        require(
+            matches!(first, Err(CoreError::Storage(message)) if message.contains("fixture delete settlement failed after unlink")),
+            "qualified post-unlink failure must keep rollback fenced",
+        )?;
+        require(
+            !reaped.exists(),
+            "fixture did not unlink the retired record",
+        )?;
+        require_eq(&pending_cleanup(&admission)?, &Some(reaped.clone()))?;
+
+        let retry =
+            store.record_sealed_search_corpus(&repo, &revision, last, "fixed-generation-digest")?;
+        require(
+            retry.reaped_generations().is_empty(),
+            "retry rediscovered an absent record",
+        )?;
+        require_eq(&pending_cleanup(&admission)?, &None)?;
+        require_eq(&cleanup_deletions(&admission)?, &vec![reaped])?;
         Ok(())
     }
 

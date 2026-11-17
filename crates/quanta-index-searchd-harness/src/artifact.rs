@@ -86,6 +86,15 @@ impl BenchSyntax {
     }
 }
 
+impl From<BenchSyntax> for quanta_index_contract::TextQuerySyntax {
+    fn from(syntax: BenchSyntax) -> Self {
+        match syntax {
+            BenchSyntax::Native => Self::Native,
+            BenchSyntax::Sourcegraph => Self::Sourcegraph,
+        }
+    }
+}
+
 /// Cache-state mode under which the benchmark was taken.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum BenchMode {
@@ -468,6 +477,12 @@ pub fn model_revision_of(
             quanta_index_embed::POTION_CODE_MODEL_ID,
             encoding.model_revision(),
             quanta_index_embed::POTION_CODE_DIMENSION
+        )),
+        SemanticEmbedderProfile::LocalCode { .. } => Some(format!(
+            "{}@{}:d{}",
+            quanta_index_embed::LOCAL_CODE_MODEL_ID,
+            quanta_index_embed::LOCAL_CODE_MODEL_REVISION,
+            quanta_index_embed::LOCAL_CODE_DIMENSION
         )),
         SemanticEmbedderProfile::Unavailable => None,
     }

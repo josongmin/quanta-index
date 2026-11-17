@@ -140,6 +140,21 @@ closed_names!(DiagnosticCounterV1, known_counter_name, is_known_counter;
     DiagnosticCounterV1::WorkWrites => "work_writes",
     DiagnosticCounterV1::WorkBytes => "work_bytes",
     DiagnosticCounterV1::WorkMutations => "work_mutations",
+    DiagnosticCounterV1::TextCaseOccurrences => "text_case_occurrences",
+    DiagnosticCounterV1::TextUniqueCanonicalTerms => "text_unique_canonical_terms",
+    DiagnosticCounterV1::TextOccurrenceKeyBytes => "text_occurrence_key_bytes",
+    DiagnosticCounterV1::TextUniqueKeyBytes => "text_unique_key_bytes",
+    DiagnosticCounterV1::TextColdAliasOwners => "text_cold_alias_owners",
+    DiagnosticCounterV1::TextColdDirectOwners => "text_cold_direct_owners",
+    DiagnosticCounterV1::TextColdSqlOwners => "text_cold_sql_owners",
+    DiagnosticCounterV1::TextColdEmptyOwners => "text_cold_empty_owners",
+    DiagnosticCounterV1::TextShapeCompleteOwners => "text_shape_complete_owners",
+    DiagnosticCounterV1::ObjectPortGetCalls => "object_port_get_calls",
+    DiagnosticCounterV1::ObjectPortGetSucceeded => "object_port_get_succeeded",
+    DiagnosticCounterV1::ObjectPortGetWireBytes => "object_port_get_wire_bytes",
+    DiagnosticCounterV1::ObjectPortRetainedCalls => "object_port_retained_calls",
+    DiagnosticCounterV1::ObjectPortRetainedSucceeded => "object_port_retained_succeeded",
+    DiagnosticCounterV1::ObjectPortRetainedWireBytes => "object_port_retained_wire_bytes",
     DiagnosticCounterV1::SqliteRows => "sqlite_rows",
     DiagnosticCounterV1::SqliteBatches => "sqlite_batches",
     DiagnosticCounterV1::SqliteWriteCalls => "sqlite_write_calls",
@@ -190,9 +205,22 @@ closed_names!(DiagnosticCounterV1, known_counter_name, is_known_counter;
     DiagnosticCounterV1::PostingMutations => "posting_mutations",
     DiagnosticCounterV1::MapPageMutations => "map_page_mutations",
     DiagnosticCounterV1::ManagedObjectInputs => "managed_object_inputs",
+    DiagnosticCounterV1::ManagedObjectExternalChildReferences => "managed_object_external_child_references",
+    DiagnosticCounterV1::ManagedObjectUniqueExternalChildren => "managed_object_unique_external_children",
+    DiagnosticCounterV1::ManagedObjectGuardedRepeatedExternalChildren => "managed_object_guarded_repeated_external_children",
+    DiagnosticCounterV1::ManagedObjectCrossGroupExternalChildOverlap => "managed_object_cross_group_external_child_overlap",
+    DiagnosticCounterV1::ManagedObjectCrossGroupRepeatedChildPathChecks => "managed_object_cross_group_repeated_child_path_checks",
+    DiagnosticCounterV1::ManagedObjectChildPathChecks => "managed_object_child_path_checks",
+    DiagnosticCounterV1::ManagedObjectReusedExternalChildValidations => "managed_object_reused_external_child_validations",
     DiagnosticCounterV1::MapRootReuseCandidates => "map_root_reuse_candidates",
     DiagnosticCounterV1::MapRootReuses => "map_root_reuses",
     DiagnosticCounterV1::MapRootBuilds => "map_root_builds",
+    DiagnosticCounterV1::MapInputNextAbsentValues => "map_input_next_absent_values",
+    DiagnosticCounterV1::MapInputNextObjectValues => "map_input_next_object_values",
+    DiagnosticCounterV1::MapInputNextInlineValues => "map_input_next_inline_values",
+    DiagnosticCounterV1::MapInputNextInlineDataBytes => "map_input_next_inline_data_bytes",
+    DiagnosticCounterV1::MapInputNextInlineChildRefs => "map_input_next_inline_child_refs",
+    DiagnosticCounterV1::MapInputNextWireBytes => "map_input_next_wire_bytes",
     DiagnosticCounterV1::TextOccurrencePriorValidationAttempts => "text_occurrence_prior_validation_attempts",
     DiagnosticCounterV1::TextOccurrenceNextValidationAttempts => "text_occurrence_next_validation_attempts",
     DiagnosticCounterV1::TextOccurrenceRamReuses => "text_occurrence_ram_reuses",
@@ -479,6 +507,29 @@ mod tests {
 
     #[test]
     fn managed_object_install_stage_and_aggregate_use_v5_rare_object_path() {
+        for (counter, name) in [
+            (
+                DiagnosticCounterV1::ManagedObjectCrossGroupExternalChildOverlap,
+                "managed_object_cross_group_external_child_overlap",
+            ),
+            (
+                DiagnosticCounterV1::ManagedObjectCrossGroupRepeatedChildPathChecks,
+                "managed_object_cross_group_repeated_child_path_checks",
+            ),
+            (
+                DiagnosticCounterV1::ManagedObjectChildPathChecks,
+                "managed_object_child_path_checks",
+            ),
+        ] {
+            assert_eq!(known_counter_name(counter), Some(name));
+            assert_eq!(
+                normalize_record(5, json!(["e", 1, CAPTURE, 11, ["c", 7, name, 3]]))
+                    .expect("managed child counter"),
+                json!({"record_type":"event","output_seq":1,"capture_id":CAPTURE,
+                    "ts_ns":11,"kind":{"type":"counter","span_id":7,
+                        "key":name,"value":3}})
+            );
+        }
         assert_eq!(
             known_stage_name(DiagnosticStageV1::ManagedObjectInstall),
             Some("managed_object_install")

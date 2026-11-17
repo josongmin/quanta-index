@@ -1,6 +1,7 @@
 //! L2 mutation regressions. The source-file owner must be validated before
 //! preparing a generation or applying any operation from the request.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 #![expect(
     clippy::panic_in_result_fn,

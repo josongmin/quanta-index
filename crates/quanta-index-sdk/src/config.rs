@@ -12,6 +12,7 @@ pub struct ConnectOptions<P = PathBuf> {
     /// QI-SDK-01: typed ingest socket override. Defaults to
     /// `state_root/search-plane/ingest.sock`.
     pub(crate) ingest_socket: Option<P>,
+    pub(crate) native_selection: Option<quanta_index_contract::index::ViewSelection>,
     request_io_timeout: Duration,
     request_io_deadline: Option<Instant>,
 }
@@ -36,6 +37,8 @@ pub(crate) struct ResolvedConnectOptions {
     pub(crate) control_socket: Option<PathBuf>,
     pub(crate) ingest_socket: Option<PathBuf>,
     pub(crate) io_policy: ClientIoPolicy,
+    pub(crate) native_selection: Option<quanta_index_contract::index::ViewSelection>,
+    pub(crate) profile: ClientProfile,
 }
 
 impl Default for ConnectOptions {
@@ -45,6 +48,7 @@ impl Default for ConnectOptions {
             query_socket: None,
             control_socket: None,
             ingest_socket: None,
+            native_selection: None,
             request_io_timeout: ClientIoPolicy::default().request_timeout(),
             request_io_deadline: None,
         }
@@ -78,6 +82,62 @@ impl ConnectOptions {
         self
     }
 
+    /// Use the exact endpoint supplied by the selected Native producer.
+    #[must_use]
+    pub fn from_native_socket(
+        path: impl Into<PathBuf>,
+        selection: quanta_index_contract::index::ViewSelection,
+    ) -> Self {
+        Self::default()
+            .with_query_socket(path)
+            .with_native_selection(selection)
+    }
+
+    pub(crate) fn resolve_native_profile(
+        self,
+        profile: ClientProfile,
+    ) -> Result<ResolvedConnectOptions, SdkError> {
+        let selection = self.native_selection.ok_or_else(|| {
+            SdkError::Usage(
+                "Native connection requires an explicit Native selection (view/workspace) and endpoint"
+                    .into(),
+            )
+        })?;
+        if self.state_root.is_some()
+            || self.control_socket.is_some()
+            || self.ingest_socket.is_some()
+        {
+            return Err(SdkError::Usage(
+                "Native selection cannot be mixed with Legacy root/control/ingest endpoints".into(),
+            ));
+        }
+        let io_policy = self
+            .io_policy_v1()
+            .map_err(|error| SdkError::Usage(error.to_string()))?;
+        if !cfg!(unix) {
+            return Err(SdkError::Usage(
+                "native IPC transport is unavailable on this platform".into(),
+            ));
+        }
+        let query_socket = self
+            .query_socket
+            .filter(|path| path.is_absolute())
+            .ok_or_else(|| {
+                SdkError::Usage(
+                    "Native connection requires an explicit absolute query socket".into(),
+                )
+            })?;
+        Ok(ResolvedConnectOptions {
+            state_root: None,
+            query_socket,
+            control_socket: None,
+            ingest_socket: None,
+            io_policy,
+            native_selection: Some(selection),
+            profile,
+        })
+    }
+
     pub(crate) fn resolve(self) -> Result<ResolvedConnectOptions, SdkError> {
         self.resolve_profile(ClientProfile::Full)
     }
@@ -86,9 +146,21 @@ impl ConnectOptions {
     /// the control and ingest sockets unresolved instead of failing or
     /// inventing defaults for transports the profile never constructs.
     pub(crate) fn resolve_profile(
+        self,
+        profile: ClientProfile,
+    ) -> Result<ResolvedConnectOptions, SdkError> {
+        self.resolve_native_profile(profile)
+    }
+
+    pub(crate) fn resolve_legacy_profile(
         mut self,
         profile: ClientProfile,
     ) -> Result<ResolvedConnectOptions, SdkError> {
+        if self.native_selection.is_some() {
+            return Err(SdkError::Usage(
+                "Legacy connect cannot accept Native selection".into(),
+            ));
+        }
         let io_policy = self
             .io_policy_v1()
             .map_err(|error| SdkError::Usage(error.to_string()))?;
@@ -120,6 +192,8 @@ impl ConnectOptions {
             control_socket,
             ingest_socket,
             io_policy,
+            native_selection: None,
+            profile,
         })
     }
 
@@ -160,6 +234,15 @@ impl ConnectOptions {
 }
 
 impl<P> ConnectOptions<P> {
+    #[must_use]
+    pub fn with_native_selection(
+        mut self,
+        selection: quanta_index_contract::index::ViewSelection,
+    ) -> Self {
+        self.native_selection = Some(selection);
+        self
+    }
+
     #[must_use]
     pub fn with_request_io_timeout(mut self, timeout: Duration) -> Self {
         self.request_io_timeout = timeout;
@@ -203,6 +286,7 @@ impl<'input> ConnectOptions<&'input Path> {
             query_socket: None,
             control_socket: None,
             ingest_socket: None,
+            native_selection: None,
             request_io_timeout: ClientIoPolicy::default().request_timeout(),
             request_io_deadline: None,
         }
@@ -216,6 +300,7 @@ impl<'input> ConnectOptions<&'input Path> {
             query_socket: Some(path),
             control_socket: None,
             ingest_socket: None,
+            native_selection: None,
             request_io_timeout: ClientIoPolicy::default().request_timeout(),
             request_io_deadline: None,
         }
@@ -381,7 +466,7 @@ mod non_unix_tests {
         for profile in [ClientProfile::Full, ClientProfile::QueryOnly] {
             let result = ConnectOptions::from_state_root("state")
                 .with_query_socket("query.sock")
-                .resolve_profile(profile);
+                .resolve_legacy_profile(profile);
             assert!(
                 matches!(result, Err(SdkError::Usage(message)) if message.contains("native IPC transport is unavailable")),
                 "profile {profile:?} must refuse Unix socket fallback"

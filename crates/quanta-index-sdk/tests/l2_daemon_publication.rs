@@ -32,8 +32,15 @@ fn reserved_generation_survives_restart_and_requires_explicit_activation() -> Te
     };
     let binary = std::env::var_os("QUANTA_INDEX_L2_TEST_BINARY")
         .ok_or("QUANTA_INDEX_L2_TEST_BINARY is required")?;
+    // The installed Legacy producer reaches Q through a deep canonical root.
+    // Exercise the real daemon bind, SDK dials, and restart on that layout.
+    let prefix = if cfg!(target_os = "linux") {
+        "source-owner-".repeat(13)
+    } else {
+        "qi-reserve-l2-".to_owned()
+    };
     let root = tempfile::Builder::new()
-        .prefix("qi-reserve-l2-")
+        .prefix(&prefix)
         .tempdir_in("/tmp")?;
     let state = root.path().join("state");
     // Source intent excludes the not-yet-allocated physical target.
@@ -210,12 +217,12 @@ impl Daemon {
         if let Some(point) = crash_point {
             let _configured = command.env("QUANTA_INDEX_CRASH_POINT", point);
         }
-        let client = QuantaIndex::connect(
+        let client = QuantaIndex::connect_legacy(
             ConnectOptions::from_state_root(root).with_request_io_timeout(Duration::from_secs(15)),
         )?;
         let child = command.spawn()?;
         let mut daemon = Self { child, client };
-        let probe = QuantaIndex::connect(
+        let probe = QuantaIndex::connect_legacy(
             ConnectOptions::from_state_root(root)
                 .with_request_io_timeout(Duration::from_millis(200)),
         )?;
@@ -685,7 +692,8 @@ fn activation_failure_preserves_original_publication_across_restart() -> TestRes
             ));
             evidence
         }
-        other @ (SdkError::Usage(_)
+        other @ (SdkError::UnsupportedNativeQuery { .. }
+        | SdkError::Usage(_)
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)

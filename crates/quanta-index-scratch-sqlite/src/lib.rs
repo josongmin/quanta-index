@@ -13,8 +13,10 @@ mod edit_page;
 mod edit_write;
 pub use edit_page::{MapEditPage, read_map_edit_budgeted};
 pub use edit_write::{
-    MapEditFields, max_supported_wide_edit_batch_rows, write_map_edit_batch,
-    write_map_edit_fields_batch, write_map_edit_fields_batch_wide,
+    MapEditFields, map_edit_sql_memory_bound, max_supported_wide_edit_batch_rows,
+    write_map_edit_batch, write_map_edit_fields_batch, write_map_edit_fields_batch_wide,
+    write_ordinal_map_edit_batch,
+    write_posting_edit_fields_batch,
 };
 pub mod physical;
 pub mod retention;
@@ -452,6 +454,7 @@ mod tests {
         use rusqlite::{StatementStatus, limits::Limit, types::ValueRef};
 
         const PREFIX: &str = "INSERT INTO rows(partition,k,p,n) VALUES ";
+        const FIXED_BYTES: u64 = 4096 + 128 * 108;
         let allocation = TestAllocation::new(256 * 1024, 4 * 1024 * 1024, false)?;
         let db = allocation.open()?;
         configure(&db, &allocation)?;
@@ -503,7 +506,6 @@ mod tests {
             check_eq!(statement.get_status(StatementStatus::Run), 1);
             drop(statement);
             check_eq!(budget.usage().writes, 128);
-            const FIXED_BYTES: u64 = 4096 + 128 * 108;
             let expected = u64::try_from(query.len())
                 .map_err(|_error| IndexError::ResourceLimited)?
                 .checked_add(FIXED_BYTES)
@@ -693,9 +695,9 @@ mod tests {
                     |row| Ok(read_map_edit(row, 3, 0, &work)),
                 )
                 .map_err(|error| sql(&error))??;
-            check_eq!(edit.edit.key, key.to_vec());
-            check_eq!(edit.edit.expected, expected);
-            check_eq!(edit.edit.next, replacement);
+            check_eq!(edit.key(), key);
+            check_eq!(edit.expected()?, expected);
+            check_eq!(edit.next()?, replacement);
         }
         for statement in [
             "SELECT zeroblob(4),NULL,zeroblob(32)",
@@ -715,4 +717,5 @@ mod tests {
     }
 
     mod fused_writes;
+    mod posting_value_ids;
 }

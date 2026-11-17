@@ -24,12 +24,17 @@ mod staging_payload;
 mod ticket;
 mod update;
 
-pub use boot::verify_native_boot_inputs;
+pub use boot::{
+    verify_native_boot_captured_request_v1, verify_native_boot_inputs,
+    verify_native_boot_source_target_v1, verify_native_published_full_target_v1,
+    verify_native_published_source_target_v1, with_native_boot_history_full_v1,
+};
 pub use quanta_index_core::index::{SourceChange, SourceDelta};
 pub use query::QueryAdapterRegistry;
 pub use registry::{AdapterDescriptor, AdapterRegistry};
-pub use ticket::ReadTicket;
+pub use ticket::{ReadTicket, TicketReadAttempt};
 pub use update::{
     ControlCatalog, Kernel, KernelServices, OperationExecutionClass, PinnedQuerySession,
-    PreparedQuery, PreparedQueryStage, QueryExecutionTimings, ResumeDispatch,
+    PreparedQuery, PreparedQueryStage, QueryExecutionTimings, ReadSessionProfile, ResumeDispatch,
+    identify_update_request_with,
 };

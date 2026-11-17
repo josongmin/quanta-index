@@ -46,11 +46,12 @@ use quanta_index_contract::{
 use quanta_index_core::domains::semantic::SemanticPolicy;
 use quanta_index_core::publication_admission::PublicationOutputAdmission;
 use quanta_index_core::{
-    CoreError, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticLaneV1, DiagnosticSpanGuardV1,
-    DiagnosticStageV1, DiagnosticTerminalV1, SemanticGenerationContractV1, SemanticIngestHeaderV1,
-    SemanticScopeSource, SemanticScopeWindowV1, SemanticStreamTallyV1, SemanticStreamWindowPolicy,
+    CoreError, DiagnosticContextV1, DiagnosticCounterV1, DiagnosticSpanGuardV1, DiagnosticStageV1,
+    SemanticGenerationContractV1, SemanticIngestHeaderV1, SemanticScopeSource,
+    SemanticScopeWindowV1, SemanticStreamTallyV1, SemanticStreamWindowPolicy,
 };
 
+use crate::build_diagnostic::{begin_build_stage, finish_build_stage};
 use crate::dataset_promotion::DatasetPromotion;
 use crate::durable_write::{AtomicOutput, with_cleanup_context, write_atomic};
 use crate::errors::{arrow_err, fs_err, lancedb_err};
@@ -110,45 +111,6 @@ impl WorkingDatasetOriginV1 {
 struct PreparedWorkingDatasetV1 {
     path: PathBuf,
     origin: WorkingDatasetOriginV1,
-}
-
-pub(crate) fn begin_build_stage(
-    diagnostic: Option<&DiagnosticContextV1>,
-    stage: DiagnosticStageV1,
-) -> Option<DiagnosticSpanGuardV1> {
-    diagnostic.and_then(|context| {
-        context.enter(stage, DiagnosticLaneV1(3)).map_or_else(
-            |trace_error| {
-                context.health(match trace_error {
-                    quanta_index_core::DiagnosticTraceErrorV1::SpanIdentityExhausted => {
-                        quanta_index_core::DiagnosticHealthCodeV1::CounterOverflow
-                    }
-                    quanta_index_core::DiagnosticTraceErrorV1::ClockRegressed => {
-                        quanta_index_core::DiagnosticHealthCodeV1::ClockRegressed
-                    }
-                    quanta_index_core::DiagnosticTraceErrorV1::ForeignCaptureSpan => {
-                        quanta_index_core::DiagnosticHealthCodeV1::ForeignCaptureSpan
-                    }
-                    quanta_index_core::DiagnosticTraceErrorV1::MissingParentSpan => {
-                        quanta_index_core::DiagnosticHealthCodeV1::MissingParentSpan
-                    }
-                });
-                None
-            },
-            Some,
-        )
-    })
-}
-
-pub(crate) fn finish_build_stage(span: Option<DiagnosticSpanGuardV1>, success: bool) {
-    if let Some(span) = span {
-        let outcome = if success {
-            DiagnosticTerminalV1::Ok
-        } else {
-            DiagnosticTerminalV1::Error { code: 1 }
-        };
-        let _trace_completion = span.finish(outcome);
-    }
 }
 
 fn build_counter(

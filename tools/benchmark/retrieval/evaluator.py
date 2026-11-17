@@ -57,7 +57,12 @@ try:
     from tools.benchmark.evidence import (
         _consume_regular_file,
     )
-    from tools.benchmark.retrieval import literal_source_oracle, retrieval_contract, source_oracle
+    from tools.benchmark.retrieval import (
+        hybrid_file_evidence,
+        literal_source_oracle,
+        retrieval_contract,
+        source_oracle,
+    )
     from tools.benchmark.retrieval import query_plan as query_plan_contract
     from tools.benchmark.retrieval.finite_json import is_finite_json_number
 except ModuleNotFoundError:  # direct script invocation
@@ -68,7 +73,12 @@ except ModuleNotFoundError:  # direct script invocation
     from tools.benchmark.evidence import (
         _consume_regular_file,
     )
-    from tools.benchmark.retrieval import literal_source_oracle, retrieval_contract, source_oracle
+    from tools.benchmark.retrieval import (
+        hybrid_file_evidence,
+        literal_source_oracle,
+        retrieval_contract,
+        source_oracle,
+    )
     from tools.benchmark.retrieval import query_plan as query_plan_contract
     from tools.benchmark.retrieval.finite_json import is_finite_json_number
 
@@ -409,7 +419,7 @@ def validate_capture(
         version == 5
         and isinstance(value, dict)
         and isinstance(value.get("execution_profile"), dict)
-        and value["execution_profile"].get("policy") == "code_search_file"
+        and value["execution_profile"].get("policy") in ("code_search_file", "natural_language")
         and ("source_repo_id" in value or "source_revision_id" in value)
     )
     if source_bound:
@@ -468,7 +478,7 @@ def canonical(value: Any) -> bytes:
     return retrieval_contract.canonical(value)
 
 
-def read_json(path: Path) -> Any:
+def _parse_json_text(raw: str) -> Any:
     def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in pairs:
@@ -479,12 +489,21 @@ def read_json(path: Path) -> Any:
     def reject_constant(value: str) -> Any:
         raise EvidenceError("non-finite JSON number: " + value)
 
+    return json.loads(raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
+
+
+def read_json(path: Path) -> Any:
     try:
-        return json.loads(
-            path.read_text(encoding="utf-8"),
-            object_pairs_hook=unique_object,
-            parse_constant=reject_constant,
-        )
+        return _parse_json_text(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise EvidenceError(f"cannot read JSON {path}: {exc}") from exc
+
+
+def read_json_with_bytes(path: Path) -> tuple[bytes, Any]:
+    """Parse the same strict JSON bytes that a caller binds by file digest."""
+    try:
+        raw = path.read_bytes()
+        return raw, _parse_json_text(raw.decode("utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise EvidenceError(f"cannot read JSON {path}: {exc}") from exc
 
@@ -1132,7 +1151,7 @@ def validate_suite(
     suite = object_keys_optional(
         payload,
         required,
-        ["leakage_allowlist", "diagnostic_policy"],
+        ["leakage_allowlist", "diagnostic_policy", "source_provenance"],
         "suite",
     )
     require(
@@ -1149,6 +1168,22 @@ def validate_suite(
         )
         require(contract["top_k"] >= MRR_K, "observed-prefix diagnostics require top_k >= 10")
     string(suite["suite_id"], "suite_id")
+    if "source_provenance" in suite:
+        provenance = suite["source_provenance"]
+        require(isinstance(provenance, dict), "source provenance must be an object")
+        kind = provenance.get("kind")
+        if kind == "single_git_commit_v1":
+            require(set(provenance) == {"kind"}, "single source provenance shape differs")
+        else:
+            require(
+                kind == "composite_git_releases_v1"
+                and set(provenance) == {
+                    "kind", "source_universe_sha256", "source_binding_sha256"
+                },
+                "composite source provenance shape differs",
+            )
+            sha(provenance["source_universe_sha256"], "source_universe_sha256")
+            sha(provenance["source_binding_sha256"], "source_binding_sha256")
     commit = suite["repository_commit"]
     require(
         isinstance(commit, str) and bool(COMMIT_RE.fullmatch(commit)),
@@ -1892,6 +1927,13 @@ def _validate_run(
         set(provenance) == set(suite["routes"]),
         f"route_provenance has missing/unknown routes: {sorted(set(provenance) ^ set(suite['routes']))}",
     )
+    declared_file_cap = run.get("file_top_k")
+    if version == RUNNER_SCHEMA_VERSION and hybrid_file_evidence.ROUTE in provenance:
+        require(type(declared_file_cap) is int and 1 <= declared_file_cap <= contract["top_k"],
+                "hybrid_file runner record lacks a valid declared file cap")
+    else:
+        require(declared_file_cap is None and "file_top_k" not in run,
+                "file cap requires the explicit hybrid_file runner route")
     if version == 5 and any(
         entry["system"] == "quanta" and entry["execution_profile"]["policy"] == "exact_symbol_name"
         for entry in captures.values()
@@ -1907,6 +1949,17 @@ def _validate_run(
             capture_id in captures,
             f"route_provenance.{route} references unknown capture_id: {capture_id}",
         )
+    if version == RUNNER_SCHEMA_VERSION:
+        quanta_routes = {
+            route: binding
+            for route, binding in provenance.items()
+            if captures[binding["capture_id"]]["system"] == "quanta"
+        }
+        if quanta_routes:
+            try:
+                retrieval_contract.validate_quanta_route_models(captures, quanta_routes)
+            except ValueError as exc:
+                raise EvidenceError(str(exc)) from exc
     evaluation_contract = declared_evaluation_contract(suite["tasks"])
     if evaluation_contract is not None:
         require(version == RUNNER_SCHEMA_VERSION, "evaluation_contract requires runner v5")
@@ -1973,7 +2026,7 @@ def _validate_run(
             object_keys_optional(
                 raw,
                 result_keys,
-                ["rank_unit", "ordering", "score_evidence", "file_collection"],
+                ["rank_unit", "ordering", "score_evidence", "file_collection", "hybrid_file_evidence"],
                 "result",
             )
             if version == RUNNER_SCHEMA_VERSION
@@ -2006,6 +2059,17 @@ def _validate_run(
             )
         ordering = result.get("ordering")
         score_evidence = result.get("score_evidence")
+        try:
+            hybrid_file_evidence.validate_result(
+                result, capture, contract["top_k"],
+                declared_file_top_k=declared_file_cap,
+            )
+        except hybrid_file_evidence.HybridFileEvidenceError as exc:
+            raise EvidenceError(str(exc)) from exc
+        generic_files = key[1] == hybrid_file_evidence.ROUTE
+        if generic_files:
+            require(version == 5 and "semantic_input" not in pack_queries[key[0]],
+                    f"hybrid_file requires original natural-language query input: {key}")
         if profile_policy in query_plan_contract.FILE_PAIR_POLICIES:
             require(
                 span_protocol == 1,
@@ -2021,7 +2085,8 @@ def _validate_run(
                     profile_policy in query_plan_contract.SCORED_QUANTA_FILE_POLICIES
                     and score_evidence == "native_sdk_score_v1"
                 )
-                or (semble_file and score_evidence == "semble_bm25_score_v1"),
+                or (semble_file and score_evidence == "semble_bm25_score_v1")
+                or (generic_files and score_evidence == hybrid_file_evidence.SCORE_EVIDENCE),
                 f"score evidence requires a scored Quanta file policy with native SDK scores or Semble lexical-file BM25 scores: {key}",
             )
         if profile_policy in query_plan_contract.SCORED_QUANTA_FILE_POLICIES or semble_file:
@@ -2034,7 +2099,9 @@ def _validate_run(
                 )
             else:
                 score_evidence_by_route[key[1]] = score_evidence
-        if profile_policy in query_plan_contract.FILE_PROJECTION_ORDERING:
+        if generic_files:
+            pass  # The explicit file-RRF contract was checked against SDK witnesses above.
+        elif profile_policy in query_plan_contract.FILE_PROJECTION_ORDERING:
             require(
                 key[1] == "lexical" and rank_unit == "distinct_file",
                 f"{profile_policy} profile requires lexical distinct_file result: {key}",
@@ -2072,7 +2139,7 @@ def _validate_run(
                 rank_unit is None,
                 f"Semble capture has no verified distinct_file rank authority: {key}",
             )
-        if profile_policy not in query_plan_contract.FILE_PROJECTION_ORDERING and not semble_file:
+        if profile_policy not in query_plan_contract.FILE_PROJECTION_ORDERING and not semble_file and not generic_files:
             require(ordering is None, f"ordering applies only to file projections: {key}")
         if not semble_file:
             require(
@@ -2244,7 +2311,7 @@ def _validate_run(
                 candidate=True,
                 universe=universe,
                 allow_span_accounting=version == 5 and capture["system"] == "quanta",
-                allow_score=score_evidence in ("native_sdk_score_v1", "semble_bm25_score_v1"),
+                allow_score=score_evidence in ("native_sdk_score_v1", "semble_bm25_score_v1", hybrid_file_evidence.SCORE_EVIDENCE),
             )
             if (
                 profile_policy in ("code_search_file", "code_search_exact_content_file")
@@ -2381,7 +2448,7 @@ def validate_evidence_against_suite(
             "route_provenance",
             "results",
         ],
-        ["span_accounting_version"] if version == RUNNER_SCHEMA_VERSION else [],
+        ["span_accounting_version", "file_top_k"] if version == RUNNER_SCHEMA_VERSION else [],
         "runner record",
     )
     _validate_run(run, pack, suite, source)
@@ -2718,6 +2785,7 @@ def file_recall_at_k_judged(
 
 #: How a route's rank metrics may be read, from its bound ordering contract.
 RANK_METRIC_INTERPRETATION = {
+    hybrid_file_evidence.ORDERING: "scored_file_rrf_ranking",
     "score_desc_path_tiebreak": "scored_ranking",
     "score_desc_native_tiebreak": "scored_ranking_native_ties",
     "path_order_constant_score": "observed_path_order_prefix",
@@ -2729,6 +2797,10 @@ def _route_ordering(run: dict[str, Any], route: str, results: dict, task_ids: li
     capture = run["captures"][run["route_provenance"][route]["capture_id"]]
     policy = capture.get("execution_profile", {}).get("policy")
     derived = query_plan_contract.FILE_PROJECTION_ORDERING.get(policy)
+    if route == hybrid_file_evidence.ROUTE:
+        require(capture.get("system") == "quanta" and policy == "natural_language",
+                "hybrid_file ordering requires its bound natural-language capture")
+        derived = hybrid_file_evidence.ORDERING
     if (
         capture.get("system") == "semble"
         and capture.get("execution_profile", {}).get("mode") == "lexical-file"
@@ -3000,7 +3072,7 @@ def judgment_diagnostics(
                 "score_evidence": (
                     _route_score_evidence(results, route, answerable_ids)
                     if kind == "file_judgments"
-                    and ordering in ("score_desc_path_tiebreak", "score_desc_native_tiebreak")
+                    and ordering in ("score_desc_path_tiebreak", "score_desc_native_tiebreak", hybrid_file_evidence.ORDERING)
                     else "not_applicable"
                 ),
                 "rank_metric_interpretation": RANK_METRIC_INTERPRETATION.get(
@@ -3389,6 +3461,13 @@ def repository_cluster_ci(
     }
 
 
+def rank_task_answerable(task: dict[str, Any], primary_metric: str) -> bool:
+    """Use the declared file oracle without fabricating legacy span gold."""
+    if primary_metric in {"file_mrr_at_10", "file_recall_at_10"}:
+        return strict_bool(task.get("answerable"), "cluster file answerability")
+    return bool(task["gold"])
+
+
 def paired_query_family_rows(
     suite: dict[str, Any],
     report: dict[str, Any],
@@ -3408,7 +3487,15 @@ def paired_query_family_rows(
     require(isinstance(comparison, dict), "cluster comparison is missing")
     primary = comparison.get("primary_metric")
     require(
-        isinstance(primary, str) and primary in {"ndcg_at_10", "recall_at_10", "file_ndcg_at_10"},
+        isinstance(primary, str)
+        and primary
+        in {
+            "ndcg_at_10",
+            "recall_at_10",
+            "file_ndcg_at_10",
+            "file_mrr_at_10",
+            "file_recall_at_10",
+        },
         "unsupported cluster primary metric",
     )
     require(
@@ -3465,6 +3552,8 @@ def paired_query_family_rows(
         "ndcg_at_10": "ndcg_at_10",
         "recall_at_10": "chunk_recall_at_10",
         "file_ndcg_at_10": "file_ndcg_at_10",
+        "file_mrr_at_10": "file_mrr_at_10",
+        "file_recall_at_10": "file_recall_at_10",
     }[primary]
     rows = []
     for task_id, task in sorted(eval_tasks.items()):
@@ -3472,7 +3561,7 @@ def paired_query_family_rows(
             (task_id, baseline) in by_key and (task_id, candidate) in by_key,
             "cluster report is missing a paired task row",
         )
-        if not task["gold"]:
+        if not rank_task_answerable(task, primary):
             continue
         before = by_key[(task_id, baseline)].get(field)
         after = by_key[(task_id, candidate)].get(field)
@@ -3549,11 +3638,20 @@ def repository_cluster_ci_from_reports(
 
 
 def _task_language(task: dict[str, Any]) -> str:
+    labels = task["gold"]
+    if (
+        not labels
+        and task.get("answerable") is True
+        and task.get("evaluation_contract", {}).get("gold_unit") == "distinct_file"
+    ):
+        labels = [
+            row
+            for row in task.get("file_judgments", [])
+            if judgment_grade(row["grade"], "file language stratum") > 0
+        ]
+        require(bool(labels), "answerable file language stratum lacks positive judgments")
     suffixes = sorted(
-        {
-            (Path(label["path"]).suffix.lower().lstrip(".") or "extensionless")
-            for label in task["gold"]
-        }
+        {(Path(label["path"]).suffix.lower().lstrip(".") or "extensionless") for label in labels}
     )
     if not suffixes:
         return "not_applicable:no_gold"
@@ -4390,10 +4488,115 @@ def evaluate_complete_scored_file_evidence(
     }
 
 
+def load_native_file_replay(
+    repo: Path,
+    suite_path: Path,
+    query_pack_path: Path,
+    capture_path: Path,
+    source_inputs: tuple[Path, Path, Path, Path, str] | None = None,
+) -> dict[str, dict]:
+    """Authenticate frozen inputs, then replay one Native file capture."""
+    from tools.benchmark.retrieval import native_file_evidence
+
+    suite, pack, source = validate_suite(repo.resolve(), read_json(suite_path))
+    pack_bytes, observed_pack = read_json_with_bytes(query_pack_path)
+    require(observed_pack == pack, "Native frozen blind pack differs")
+    capture = read_json(capture_path)
+    require(
+        capture.get("query_pack_file_sha256") == digest(pack_bytes),
+        "Native blind pack file digest differs",
+    )
+    report = native_file_evidence.evaluate(suite, pack, capture, source, source_inputs)
+    return {"suite": suite, "capture": capture, "report": report}
+
+
+def _native_cohort_manifest(path: Path) -> tuple[bytes, dict]:
+    """Read a path-only manifest without accepting duplicate or extra JSON keys."""
+    from tools.benchmark.evidence import read_control
+
+    raw = read_control(path.resolve())
+    manifest = _parse_json_text(raw.decode("utf-8"))
+    require(
+        isinstance(manifest, dict)
+        and set(manifest)
+        == {"schema_version", "profile", "repositories", "repository_strata", "families"}
+        and type(manifest["schema_version"]) is int
+        and manifest["schema_version"] == 1
+        and manifest["profile"] == "native_file_family_cohort",
+        "Native cohort manifest shape differs",
+    )
+    require(
+        isinstance(manifest["repositories"], dict)
+        and bool(manifest["repositories"])
+        and isinstance(manifest["repository_strata"], dict)
+        and set(manifest["repositories"]) == set(manifest["repository_strata"])
+        and isinstance(manifest["families"], list)
+        and bool(manifest["families"]),
+        "Native cohort target roster or families differ",
+    )
+    fields = {
+        "repo", "suite", "query_pack", "capture", "source_universe",
+        "source_binding", "base_release", "target_releases", "family_id",
+    }
+    seen_families: set[str] = set()
+    seen_captures: set[Path] = set()
+    for family in manifest["families"]:
+        require(
+            isinstance(family, dict)
+            and set(family) == fields
+            and all(isinstance(family[key], str) and bool(family[key]) for key in fields),
+            "Native cohort family input shape differs",
+        )
+        family_id = family["family_id"]
+        capture = (path.parent / family["capture"]).resolve()
+        require(
+            family_id not in seen_families and capture not in seen_captures,
+            "Native cohort family or capture is repeated",
+        )
+        seen_families.add(family_id)
+        seen_captures.add(capture)
+    return raw, manifest
+
+
+def evaluate_native_file_cohort(path: Path) -> dict:
+    """Replay each family from files before repository-cluster aggregation."""
+    from tools.benchmark.retrieval import native_file_evidence
+
+    raw, manifest = _native_cohort_manifest(path)
+
+    def bound_path(value: str) -> Path:
+        return (path.parent / value).resolve()
+
+    families = []
+    for item in manifest["families"]:
+        source_inputs = (
+            bound_path(item["source_universe"]),
+            bound_path(item["source_binding"]),
+            bound_path(item["base_release"]),
+            bound_path(item["target_releases"]),
+            item["family_id"],
+        )
+        replay = load_native_file_replay(
+            bound_path(item["repo"]), bound_path(item["suite"]),
+            bound_path(item["query_pack"]), bound_path(item["capture"]), source_inputs,
+        )
+        binding = replay["report"].get("composite_source_binding")
+        require(
+            isinstance(binding, dict) and binding.get("family_id") == item["family_id"],
+            "Native replay family differs from cohort manifest",
+        )
+        families.append(replay)
+    result = native_file_evidence.repository_cluster_ci_from_native_families(
+        families, manifest["repositories"], manifest["repository_strata"]
+    )
+    result["manifest_file_sha256"] = digest(raw)
+    return result
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("freeze", "evaluate", "evaluate-diagnostic"):
+    for command in ("freeze", "evaluate", "evaluate-diagnostic", "evaluate-native-file"):
         child = sub.add_parser(command)
         child.add_argument("--repo", type=Path, required=True)
         child.add_argument("--suite", type=Path, required=True)
@@ -4404,10 +4607,40 @@ def main(argv: Sequence[str] | None = None) -> int:
             child.add_argument("--candidate-route", required=True)
         if command == "evaluate-diagnostic":
             child.add_argument("--runner", type=Path, required=True)
+        if command == "evaluate-native-file":
+            child.add_argument("--runner", type=Path, required=True)
+            child.add_argument("--query-pack", type=Path, required=True)
+            child.add_argument("--source-universe", type=Path)
+            child.add_argument("--source-binding", type=Path)
+            child.add_argument("--base-release", type=Path)
+            child.add_argument("--target-releases", type=Path)
+            child.add_argument("--source-family")
+    cohort = sub.add_parser("evaluate-native-file-cohort")
+    cohort.add_argument("--manifest", type=Path, required=True)
+    cohort.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "freeze":
             _, value, _ = validate_suite(args.repo.resolve(), read_json(args.suite))
+        elif args.command == "evaluate-native-file-cohort":
+            value = evaluate_native_file_cohort(args.manifest)
+        elif args.command == "evaluate-native-file":
+            source_inputs = (
+                args.source_universe,
+                args.source_binding,
+                args.base_release,
+                args.target_releases,
+                args.source_family,
+            )
+            require(
+                all(value is None for value in source_inputs)
+                or all(value is not None for value in source_inputs),
+                "composite source binding requires all five inputs",
+            )
+            value = load_native_file_replay(
+                args.repo, args.suite, args.query_pack, args.runner,
+                source_inputs if all(value is not None for value in source_inputs) else None,
+            )["report"]
         elif args.command == "evaluate":
             suite, pack, run = load_evidence(args.repo.resolve(), args.suite, args.runner)
             value = evaluate(
@@ -4426,7 +4659,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             sys.stdout.write(rendered)
         return 0
-    except (EvidenceError, OSError) as exc:
+    except (EvidenceError, OSError, KeyError, TypeError, ValueError) as exc:
         print("ERROR: " + str(exc), file=sys.stderr)
         return 2
 

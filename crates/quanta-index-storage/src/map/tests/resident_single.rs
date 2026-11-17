@@ -107,7 +107,7 @@ fn resident_single_edit_matches_stream_and_avoids_scratch_allocation() -> TestRe
                 expected: None,
                 next: Some(old.into()),
             },
-        ));
+        )?);
     }
     let mut setup_cursor = TestEditCursor(setup.into_iter());
     let base_roots = store.apply_stream(&[MapRoot(None)], &mut setup_cursor, &sink, &mut work)?;
@@ -148,7 +148,7 @@ fn resident_single_edit_matches_stream_and_avoids_scratch_allocation() -> TestRe
             "{label} allocated scratch"
         );
 
-        let mut cursor = TestEditCursor(vec![OrdinalMapEdit::unscoped(0, edit)].into_iter());
+        let mut cursor = TestEditCursor(vec![OrdinalMapEdit::unscoped(0, edit)?].into_iter());
         let before_stream = scratch.allocated();
         let streamed = store.apply_stream(&[base], &mut cursor, &sink, &mut work)?;
         check_eq!(

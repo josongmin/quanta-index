@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
-    ExactRepoRelativePathV1, ExecutionOutcomeV2, GenerationPin, GoTestTraceFileLaneWitnessV1,
-    GoTestTraceFrameClassV1, GoTestTraceModuleCacheFrameV1, GoTestTraceModuleContextV1,
-    GoTestTraceSourceFramesV1, LexicalCandidate, ManifestGeneration, QueryResultWindowV2, RepoId,
-    RevisionId, TextRankUnit,
+    ExactRepoRelativePathV1, GenerationPin, GoTestTraceFileLaneWitnessV1, GoTestTraceFrameClassV1,
+    GoTestTraceModuleCacheFrameV1, GoTestTraceModuleContextV1, GoTestTraceSourceFramesV1,
+    LexicalCandidate, ManifestGeneration, QueryConstraintSetV1, QueryResultWindowV2, RepoId,
+    RevisionId, SEMANTIC_WORK_OPERATIONAL_CAP_V1, SemanticQueryRequest,
+    SemanticWorkBoundedQueryRequestV1, TextRankUnit,
 };
 use quanta_index_retrieval_bench::query_plan::{
     NlPlanConfig, QueryInputPolicy, QueryPlan, execution_profile_id,
@@ -17,8 +18,9 @@ use quanta_index_retrieval_bench::record::{
     GENERIC_SEMANTIC_REPRESENTATION_POLICY, GO_TRACE_SEMANTIC_PROFILE, GoTraceSemanticInput,
     QueryPack, load_query_pack_with_file_digest,
 };
+use quanta_index_retrieval_bench::sdk::top_k_window_scoreable;
 use quanta_index_retrieval_bench::symbols::extract_symbols;
-use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
+use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_file_hex, sha256_hex};
 use quanta_index_sdk::{ConnectOptions, QuantaIndex};
 use serde_json::{Value, json};
 
@@ -29,14 +31,12 @@ fn bound_window(
     expected: &GenerationPin,
     actual: &GenerationPin,
     window: &QueryResultWindowV2,
+    top_k: u32,
 ) -> BenchResult<()> {
     if actual != expected {
         return Err(BenchError::Protocol(format!("{route}: generation drift")));
     }
-    if matches!(
-        window.outcome(),
-        ExecutionOutcomeV2::InterruptedPartial { .. } | ExecutionOutcomeV2::CappedUnknown { .. }
-    ) {
+    if !top_k_window_scoreable(window.outcome(), window.returned(), top_k) {
         return Err(BenchError::Protocol(format!(
             "{route}: execution did not produce a complete bounded window"
         )));
@@ -85,11 +85,11 @@ struct BoundModuleContext {
     frame: Option<Value>,
 }
 
-/// Parse the first matching module function/source pair in the first goroutine
-/// after the last panic marker. Earlier runtime and other-module pairs are
-/// skipped, but a malformed matching pair refuses the whole frame. A bare
-/// `*.go:<line>` mention cannot pass this parser. Returned coordinates remain
-/// untrusted until bound to frozen source.
+/// Parse the first matching module function/source pair after the last panic.
+///
+/// Earlier runtime and other-module pairs are skipped, but a malformed matching
+/// pair refuses the whole frame. A bare `*.go:<line>` mention cannot pass this
+/// parser. Returned coordinates remain untrusted until bound to frozen source.
 fn workspace_panic_frame(
     excerpt: &str,
     module_path: &str,
@@ -115,8 +115,9 @@ fn workspace_panic_frame(
             let (prefix, _) = line.split_once("panic:")?;
             prefix.ends_with(": ").then_some((index, prefix))
         })
-        .last()?;
-    let mut tail = lines[panic_index + 1..].iter();
+        .next_back()?;
+    let tail_index = panic_index.checked_add(1)?;
+    let mut tail = lines.get(tail_index..)?.iter();
     let header = loop {
         let line = tail.next()?.strip_prefix(log_prefix)?.trim();
         if line.is_empty() || line.starts_with("[signal ") {
@@ -161,21 +162,26 @@ fn workspace_panic_frame(
         return None;
     }
     if let Some(offset) = coordinate_parts.next() {
-        if !offset.starts_with("+0x")
-            || offset.len() == 3
-            || !offset[3..].bytes().all(|byte| byte.is_ascii_hexdigit())
+        let hex = offset.strip_prefix("+0x")?;
+        if hex.is_empty()
+            || !hex.bytes().all(|byte| byte.is_ascii_hexdigit())
             || coordinate_parts.next().is_some()
         {
             return None;
         }
     }
-    let line = number.parse::<std::num::NonZeroU32>().ok()?.get();
+    let Ok(line) = number.parse::<std::num::NonZeroU32>() else {
+        return None;
+    };
+    let line = line.get();
     let relative = if stem.starts_with('/') {
         stem.strip_prefix(checkout_prefix)?.strip_prefix('/')?
     } else {
         stem.strip_prefix("./").unwrap_or(stem)
     };
-    let path = ExactRepoRelativePathV1::new(format!("{relative}.go")).ok()?;
+    let Ok(path) = ExactRepoRelativePathV1::new(format!("{relative}.go")) else {
+        return None;
+    };
     if path.as_str().ends_with("_test.go") {
         return None;
     }
@@ -274,6 +280,28 @@ fn read_json(path: &Path) -> BenchResult<(Value, String)> {
     Ok((value, sha256_hex(&bytes)))
 }
 
+/// Optional fields keep the existing fail-closed checks local to their use.
+/// Unrelated sections of reviewed artifacts remain outside this boundary.
+struct SourceFields<'a>(&'a Value);
+
+impl<'a> SourceFields<'a> {
+    fn value(&self, key: &str) -> &'a Value {
+        self.0.get(key).unwrap_or(&Value::Null)
+    }
+
+    fn text(&self, key: &str) -> Option<&'a str> {
+        self.value(key).as_str()
+    }
+
+    fn array(&self, key: &str) -> Option<&'a Vec<Value>> {
+        self.value(key).as_array()
+    }
+
+    fn nested(&self, key: &str) -> Self {
+        Self(self.value(key))
+    }
+}
+
 fn source_owner_binding(
     args: &Args,
     pack: &QueryPack,
@@ -292,31 +320,33 @@ fn source_owner_binding(
     };
     let (plan, plan_sha256) = read_json(Path::new(plan_path))?;
     let (inputs, input_sha256) = read_json(Path::new(input_path))?;
-    if plan["input_sha256"].as_str() != Some(input_sha256.as_str()) {
+    let plan_fields = SourceFields(&plan);
+    if plan_fields.text("input_sha256") != Some(input_sha256.as_str()) {
         return Err(BenchError::Config(
             "source-owner inputs do not match the frozen plan".into(),
         ));
     }
-    let matches = plan["plans"]
-        .as_array()
+    let matches = plan_fields
+        .array("plans")
         .ok_or_else(|| BenchError::Config("source-owner plan lacks cases".into()))?
         .iter()
-        .filter(|case| case["pack_sha256"].as_str() == Some(pack_file_sha256))
+        .filter(|case| SourceFields(case).text("pack_sha256") == Some(pack_file_sha256))
         .collect::<Vec<_>>();
     let [case] = matches.as_slice() else {
         return Err(BenchError::Config(
             "source-owner plan must have exactly one matching pack case".into(),
         ));
     };
-    if case["repo_id"].as_str() != Some(requested_repo_id.as_str())
-        || case["commit"].as_str() != Some(pack.repository_commit.as_str())
+    let case_fields = SourceFields(case);
+    if case_fields.text("repo_id") != Some(requested_repo_id.as_str())
+        || case_fields.text("commit") != Some(pack.repository_commit.as_str())
     {
         return Err(BenchError::Config(
             "source-owner case differs from the selected repository or commit".into(),
         ));
     }
-    let task_ids = case["task_ids"]
-        .as_array()
+    let task_ids = case_fields
+        .array("task_ids")
         .ok_or_else(|| BenchError::Config("source-owner case lacks task IDs".into()))?;
     if task_ids.len() != pack.tasks.len()
         || pack
@@ -329,29 +359,31 @@ fn source_owner_binding(
             "source-owner case task IDs differ from the query pack".into(),
         ));
     }
-    let directory = case["directory"]
-        .as_str()
+    let directory = case_fields
+        .text("directory")
         .ok_or_else(|| BenchError::Config("source-owner case lacks directory".into()))?;
     let (manifest, manifest_sha256) = read_json(&Path::new(directory).join("manifest.json"))?;
-    if case["manifest_sha256"].as_str() != Some(manifest_sha256.as_str())
-        || manifest["repository_commit"].as_str() != Some(pack.repository_commit.as_str())
+    let manifest_fields = SourceFields(&manifest);
+    if case_fields.text("manifest_sha256") != Some(manifest_sha256.as_str())
+        || manifest_fields.text("repository_commit") != Some(pack.repository_commit.as_str())
     {
         return Err(BenchError::Config(
             "source-owner manifest differs from the frozen case".into(),
         ));
     }
-    let manifest_files = manifest["files"]
-        .as_array()
+    let manifest_files = manifest_fields
+        .array("files")
         .ok_or_else(|| BenchError::Config("source-owner manifest lacks files".into()))?
         .iter()
         .map(|file| {
+            let fields = SourceFields(file);
             Ok((
-                file["path"]
-                    .as_str()
+                fields
+                    .text("path")
                     .ok_or_else(|| BenchError::Config("manifest file lacks path".into()))?
                     .to_owned(),
-                file["file_sha256"]
-                    .as_str()
+                fields
+                    .text("file_sha256")
                     .ok_or_else(|| BenchError::Config("manifest file lacks digest".into()))?
                     .to_owned(),
             ))
@@ -374,7 +406,7 @@ fn source_owner_binding(
         };
         let matches = inputs
             .iter()
-            .filter(|input| input["task_id"].as_str() == Some(task.task_id.as_str()))
+            .filter(|input| SourceFields(input).text("task_id") == Some(task.task_id.as_str()))
             .collect::<Vec<_>>();
         let [input] = matches.as_slice() else {
             return Err(BenchError::Config(format!(
@@ -382,20 +414,21 @@ fn source_owner_binding(
                 task.task_id
             )));
         };
-        let input_owner = input["repo_id"]
-            .as_str()
+        let input_fields = SourceFields(input);
+        let provenance = input_fields.nested("provenance");
+        let input_owner = input_fields
+            .text("repo_id")
             .ok_or_else(|| BenchError::Config("source-owner input lacks repository ID".into()))
             .and_then(|id| {
                 RepoId::new(id).map_err(|error| BenchError::Config(error.to_string()))
             })?;
         let excerpt = semantic_input.failure_excerpt();
         if &input_owner != requested_repo_id
-            || input["commit"].as_str() != Some(pack.repository_commit.as_str())
-            || input["failure_excerpt"].as_str() != Some(excerpt)
-            || input["provenance"]["failure_excerpt_sha256"].as_str()
+            || input_fields.text("commit") != Some(pack.repository_commit.as_str())
+            || input_fields.text("failure_excerpt") != Some(excerpt)
+            || provenance.text("failure_excerpt_sha256")
                 != Some(sha256_hex(excerpt.as_bytes()).as_str())
-            || input["provenance"]["kind"].as_str()
-                != Some("original_upstream_issue_failure_transcript")
+            || provenance.text("kind") != Some("original_upstream_issue_failure_transcript")
         {
             return Err(BenchError::Config(format!(
                 "source-owner input provenance differs from task {}",
@@ -404,24 +437,21 @@ fn source_owner_binding(
         }
         // External reporter frames and tests retain an unowned request. An
         // in-repository frame needs both panic syntax and frozen source proof.
-        let context = match input["provenance"]["frame_stratum"].as_str() {
+        let context = match provenance.text("frame_stratum") {
             Some("in_repo_source_stack_frame") => {
-                if plan["status"].as_str() != Some("FROZEN_GO_TRACE_HOLDOUT_REVIEWED_V1") {
+                if plan_fields.text("status") != Some("FROZEN_GO_TRACE_HOLDOUT_REVIEWED_V1") {
                     return Err(BenchError::Config(
                         "in-repository frame requires a reviewed frozen plan".into(),
                     ));
                 }
-                let module_path = input["provenance"]["module_path"].as_str().ok_or_else(|| {
+                let module_path = provenance.text("module_path").ok_or_else(|| {
                     BenchError::Config("in-repository frame lacks module path".into())
                 })?;
-                let checkout_prefix =
-                    input["provenance"]["checkout_prefix"]
-                        .as_str()
-                        .ok_or_else(|| {
-                            BenchError::Config("in-repository frame lacks checkout prefix".into())
-                        })?;
-                if case["module_path"].as_str() != Some(module_path)
-                    || case["checkout_prefix"].as_str() != Some(checkout_prefix)
+                let checkout_prefix = provenance.text("checkout_prefix").ok_or_else(|| {
+                    BenchError::Config("in-repository frame lacks checkout prefix".into())
+                })?;
+                if case_fields.text("module_path") != Some(module_path)
+                    || case_fields.text("checkout_prefix") != Some(checkout_prefix)
                 {
                     return Err(BenchError::Config(
                         "in-repository frame context differs from frozen plan".into(),
@@ -444,7 +474,7 @@ fn source_owner_binding(
                         ))
                     })?;
                 let verified = verified_module_frame(Path::new(directory), &frame, digest)?;
-                if case["workspace_frame"] != verified {
+                if case_fields.value("workspace_frame") != &verified {
                     return Err(BenchError::Config(
                         "reviewed workspace frame differs from frozen plan".into(),
                     ));
@@ -464,19 +494,17 @@ fn source_owner_binding(
             }
             Some("in_repo_module_cache_panic_frame") => {
                 let module = GoTestTraceModuleContextV1 {
-                    module_path: input["provenance"]["module_path"]
-                        .as_str()
+                    module_path: provenance
+                        .text("module_path")
                         .ok_or_else(|| BenchError::Config("module path is absent".into()))?
                         .to_owned(),
-                    module_version: input["provenance"]["module_version"]
-                        .as_str()
+                    module_version: provenance
+                        .text("module_version")
                         .ok_or_else(|| BenchError::Config("module version is absent".into()))?
                         .to_owned(),
                 };
                 module.validate_v1().map_err(BenchError::Config)?;
-                if input["provenance"]["module_tag_commit"].as_str()
-                    != Some(pack.repository_commit.as_str())
-                {
+                if provenance.text("module_tag_commit") != Some(pack.repository_commit.as_str()) {
                     return Err(BenchError::Config(format!(
                         "module tag differs from frozen source for task {}",
                         task.task_id
@@ -498,22 +526,22 @@ fn source_owner_binding(
                             task.task_id
                         ))
                     })?;
-                let frame = if plan["status"].as_str()
-                    == Some("FROZEN_GO_TRACE_HOLDOUT_REVIEWED_V1")
-                {
-                    let verified = verified_module_frame(Path::new(directory), &frame, digest)?;
-                    if case["module_frame"] != verified
-                        || case["module_path"].as_str() != Some(module.module_path.as_str())
-                        || case["module_version"].as_str() != Some(module.module_version.as_str())
-                    {
-                        return Err(BenchError::Config(
-                            "reviewed module frame differs from frozen plan".into(),
-                        ));
-                    }
-                    Some(verified)
-                } else {
-                    None
-                };
+                let frame =
+                    if plan_fields.text("status") == Some("FROZEN_GO_TRACE_HOLDOUT_REVIEWED_V1") {
+                        let verified = verified_module_frame(Path::new(directory), &frame, digest)?;
+                        if case_fields.value("module_frame") != &verified
+                            || case_fields.text("module_path") != Some(module.module_path.as_str())
+                            || case_fields.text("module_version")
+                                != Some(module.module_version.as_str())
+                        {
+                            return Err(BenchError::Config(
+                                "reviewed module frame differs from frozen plan".into(),
+                            ));
+                        }
+                        Some(verified)
+                    } else {
+                        None
+                    };
                 TaskSourceContext {
                     owner: Some(input_owner),
                     module: Some(BoundModuleContext {
@@ -563,36 +591,34 @@ fn trace_files(
         .semantic_text(semantic_input.text())
         .pinned(pin.clone())
         .top_k(lane_top_k);
-    let response = match (source_owner, source_module) {
-        (Some(owner), Some(module)) => query.go_test_trace_file_with_module_context(
-            owner.clone(),
-            module.context.clone(),
+    if source_module.is_some() && source_owner.is_none() {
+        return Err(BenchError::Config("module lacks source owner".into()));
+    }
+    let response = query
+        .go_test_trace_file_with_rank_pools(
+            source_owner.cloned(),
+            source_module.map(|module| module.context.clone()),
             semantic_input.failure_excerpt(),
             20,
-        ),
-        (Some(owner), None) => {
-            query.go_test_trace_file_with_source_context(
-                owner.clone(),
-                semantic_input.failure_excerpt(),
-                20,
-            )
-        }
-        (None, None) => query.go_test_trace_file(semantic_input.failure_excerpt(), 20),
-        (None, Some(_)) => return Err(BenchError::Config("module lacks source owner".into())),
-    }
-    .map_err(|error| BenchError::Sdk(error.to_string()))?;
+        )
+        .map_err(|error| BenchError::Sdk(error.to_string()))?;
     let query_micros = start.elapsed().as_micros();
+    let rank_pools = response.rank_pools.ok_or_else(|| {
+        BenchError::Protocol("trace file response omitted requested rank pools".into())
+    })?;
     bound_window(
         "trace lexical",
         pin,
         &response.generation,
         &response.lexical_window,
+        lane_top_k,
     )?;
     bound_window(
         "trace dense",
         pin,
         &response.generation,
         &response.dense_window,
+        lane_top_k,
     )?;
     let candidates = response
         .results
@@ -615,7 +641,7 @@ fn trace_files(
         })
         .collect::<BenchResult<Vec<_>>>()?;
     Ok(json!({
-        "profile": "go_trace_file_rrf_v1",
+        "profile": "go_trace_file_rrf_v2",
         "sdk_query_micros": query_micros,
         "frame_class": response.frame_class.as_str(),
         "failure_excerpt_sha256": sha256_hex(semantic_input.failure_excerpt().as_bytes()),
@@ -634,6 +660,7 @@ fn trace_files(
         },
         "lexical_window": response.lexical_window,
         "dense_window": response.dense_window,
+        "rank_pools": rank_pools,
         "candidates": candidates,
     }))
 }
@@ -659,7 +686,7 @@ fn paired_query(
         .execute()
         .map_err(sdk_error)?;
     let lexical_micros = start.elapsed().as_micros();
-    bound_window("lexical", pin, &lexical.generation, &lexical.window)?;
+    bound_window("lexical", pin, &lexical.generation, &lexical.window, top_k)?;
     if lexical.rank_unit != TextRankUnit::Chunk {
         return Err(BenchError::Protocol(
             "trace-profile expects chunk-ranked lexical candidates".to_string(),
@@ -675,7 +702,13 @@ fn paired_query(
         .execute()
         .map_err(sdk_error)?;
     let semantic_micros = start.elapsed().as_micros();
-    bound_window("semantic", pin, &semantic.generation, &semantic.window)?;
+    bound_window(
+        "semantic",
+        pin,
+        &semantic.generation,
+        &semantic.window,
+        top_k,
+    )?;
     let start = Instant::now();
     let hybrid = client
         .search()
@@ -687,7 +720,7 @@ fn paired_query(
         .execute()
         .map_err(sdk_error)?;
     let hybrid_micros = start.elapsed().as_micros();
-    bound_window("hybrid", pin, &hybrid.generation, &hybrid.window)?;
+    bound_window("hybrid", pin, &hybrid.generation, &hybrid.window, top_k)?;
     if let Some(binding) = source_binding {
         let owner = &binding.collection_repo_id;
         if lexical
@@ -756,6 +789,88 @@ fn paired_query(
     }))
 }
 
+fn exact_semantic_request(
+    pin: &GenerationPin,
+    plan: &QueryPlan,
+    top_k: u32,
+) -> SemanticWorkBoundedQueryRequestV1 {
+    SemanticWorkBoundedQueryRequestV1 {
+        query: SemanticQueryRequest {
+            query_text: plan.semantic_text.clone(),
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: Some(pin.clone()),
+            generation_selector: None,
+            lexical_scope: None,
+            top_k,
+        },
+        max_work_units: SEMANTIC_WORK_OPERATIONAL_CAP_V1,
+        canonical_ties: false,
+    }
+}
+
+fn exact_semantic_diagnostic(
+    client: &QuantaIndex,
+    pin: &GenerationPin,
+    plan: &QueryPlan,
+    top_k: u32,
+) -> BenchResult<Value> {
+    let request = exact_semantic_request(pin, plan, top_k);
+    let start = Instant::now();
+    let response = client
+        .semantic()
+        .query_work_bounded_v1(request)
+        .map_err(|error| BenchError::Sdk(error.to_string()))?;
+    let query_micros = start.elapsed().as_micros();
+    bound_window(
+        "bounded exact semantic",
+        pin,
+        &response.query.generation,
+        &response.query.window,
+        top_k,
+    )?;
+    let exact_lanes = response
+        .query
+        .window
+        .coverage()
+        .lanes()
+        .iter()
+        .filter(|lane| lane.lane() == "semantic.dense")
+        .collect::<Vec<_>>();
+    let [lane] = exact_lanes.as_slice() else {
+        return Err(BenchError::Protocol(
+            "bounded exact semantic lacks a unique dense lane".into(),
+        ));
+    };
+    if !lane.executed()
+        || !lane
+            .profile()
+            .is_some_and(|profile| profile.starts_with("dense.index=exact;"))
+    {
+        return Err(BenchError::Protocol(
+            "bounded exact semantic did not attest exact dense execution".into(),
+        ));
+    }
+    if response.charged_work_units == 0
+        || response.charged_work_units > SEMANTIC_WORK_OPERATIONAL_CAP_V1
+    {
+        return Err(BenchError::Protocol(
+            "bounded exact semantic returned invalid work settlement".into(),
+        ));
+    }
+    Ok(json!({
+        "route": "semantic_work_bounded_v1",
+        "index_kind": "exact_contract",
+        "dense_lane_profile": lane.profile(),
+        "semantic_text_sha256": plan.semantic_text_sha256,
+        "query_micros": query_micros,
+        "max_work_units": SEMANTIC_WORK_OPERATIONAL_CAP_V1,
+        "charged_work_units": response.charged_work_units,
+        "row_count": response.query.results.len(),
+        "window": response.query.window,
+        "candidates": response.query.results.iter().map(row).collect::<Vec<_>>(),
+    }))
+}
+
 pub(super) fn run(args: &Args) -> BenchResult<()> {
     reject_unknown(
         args,
@@ -769,8 +884,23 @@ pub(super) fn run(args: &Args) -> BenchResult<()> {
             "nl-max-tokens",
             "io-timeout-secs",
             "out",
+            "exact-semantic-out",
+            "exact-semantic-daemon-binary",
         ],
     )?;
+    let exact_out = args
+        .flags
+        .get("exact-semantic-out")
+        .map(|path| PathBuf::from(path.as_str()));
+    let daemon_binary = args
+        .flags
+        .get("exact-semantic-daemon-binary")
+        .map(|path| PathBuf::from(path.as_str()));
+    if exact_out.is_some() != daemon_binary.is_some() {
+        return Err(BenchError::Config(
+            "exact-semantic-out and exact-semantic-daemon-binary must be supplied together".into(),
+        ));
+    }
     let (pack, pack_file_sha256) =
         load_query_pack_with_file_digest(&PathBuf::from(required(args, "query-pack")?))?;
     if pack.contract_top_k != 100 {
@@ -779,6 +909,11 @@ pub(super) fn run(args: &Args) -> BenchResult<()> {
         ));
     }
     let out = PathBuf::from(required(args, "out")?);
+    if exact_out.as_ref() == Some(&out) {
+        return Err(BenchError::Config(
+            "exact semantic diagnostic output must differ from paired output".into(),
+        ));
+    }
     let state = PathBuf::from(required(args, "state-root")?);
     let repo_id = RepoId::new(required(args, "repo-id")?)
         .map_err(|error| BenchError::Config(error.to_string()))?;
@@ -787,9 +922,12 @@ pub(super) fn run(args: &Args) -> BenchResult<()> {
         .map_err(|error| BenchError::Config(error.to_string()))?;
     let generation = required(args, "generation")?
         .parse::<u64>()
-        .ok()
-        .filter(|generation| *generation > 0)
-        .ok_or_else(|| BenchError::Config("expected a positive generation".to_string()))?;
+        .map_err(|error| BenchError::Config(format!("expected a positive generation: {error}")))?;
+    if generation == 0 {
+        return Err(BenchError::Config(
+            "expected a positive generation".to_string(),
+        ));
+    }
     let pin = GenerationPin::new(repo_id, revision_id, ManifestGeneration::new(generation));
     let config = NlPlanConfig {
         max_tokens: super::optional_usize(
@@ -800,21 +938,27 @@ pub(super) fn run(args: &Args) -> BenchResult<()> {
         ..NlPlanConfig::default()
     };
     let timeout = Duration::from_secs(optional_u64(args, "io-timeout-secs", 60)?);
-    let client = QuantaIndex::connect(
+    let client = QuantaIndex::connect_legacy_query_only(
         ConnectOptions::from_state_root(&state).with_request_io_timeout(timeout),
     )
     .map_err(|error| BenchError::Sdk(error.to_string()))?;
-    let tasks = pack
+    let plans = pack
         .tasks
         .iter()
         .map(|task| {
-            let plan = task
-                .plan(QueryInputPolicy::NaturalLanguage, &config)
-                .map_err(|error| BenchError::Config(error.to_string()))?;
+            task.plan(QueryInputPolicy::NaturalLanguage, &config)
+                .map_err(|error| BenchError::Config(error.to_string()))
+        })
+        .collect::<BenchResult<Vec<_>>>()?;
+    let tasks = pack
+        .tasks
+        .iter()
+        .zip(&plans)
+        .map(|(task, plan)| {
             let mut result = paired_query(
                 &client,
                 &pin,
-                &plan,
+                plan,
                 pack.contract_top_k,
                 task.semantic_input.as_ref(),
                 source_binding
@@ -827,28 +971,104 @@ pub(super) fn run(args: &Args) -> BenchResult<()> {
                     .and_then(|context| context.module.as_ref()),
                 source_binding.as_ref(),
             )?;
-            result["task_id"] = json!(task.task_id);
+            let object = result.as_object_mut().ok_or_else(|| {
+                BenchError::Protocol("trace-profile paired result is not an object".into())
+            })?;
+            if object
+                .insert("task_id".to_string(), json!(task.task_id))
+                .is_some()
+            {
+                return Err(BenchError::Protocol(
+                    "trace-profile paired result already has task_id".into(),
+                ));
+            }
             Ok(result)
         })
         .collect::<BenchResult<Vec<_>>>()?;
-    let _digest = write_json_bound(
+    let paired_output_sha256 = write_json_bound(
         &out,
         &json!({
-            "schema_version": 2,
+            "schema_version": 4,
             "scope": "sealed-generation-sdk-quality-diagnostic",
             "generic_execution_profile_id": execution_profile_id(QueryInputPolicy::NaturalLanguage),
+            "nl_max_tokens": config.max_tokens,
             "pack_sha256": pack.pack_sha256,
             "lane_top_k": pack.contract_top_k,
             "generation": pin,
             "tasks": tasks,
         }),
     )?;
+    if let (Some(path), Some(daemon_binary)) = (exact_out, daemon_binary) {
+        let exact_tasks = pack
+            .tasks
+            .iter()
+            .zip(&plans)
+            .map(|(task, plan)| {
+                Ok(json!({
+                    "task_id": task.task_id,
+                    "exact_semantic": exact_semantic_diagnostic(
+                        &client,
+                        &pin,
+                        plan,
+                        pack.contract_top_k,
+                    )?,
+                }))
+            })
+            .collect::<BenchResult<Vec<_>>>()?;
+        let client_binary = std::env::current_exe().map_err(|error| {
+            BenchError::Config(format!("exact semantic client binary: {error}"))
+        })?;
+        let binary_sha256 = |path: &Path| -> BenchResult<String> {
+            sha256_file_hex(path).map_err(|error| {
+                BenchError::Config(format!("exact semantic binary {}: {error}", path.display()))
+            })
+        };
+        let _digest = write_json_bound(
+            &path,
+            &json!({
+                "schema_version": 1,
+                "scope": "semantic-exact-work-diagnostic-only",
+                "pack_sha256": pack.pack_sha256,
+                "pack_file_sha256": pack_file_sha256,
+                "paired_output_sha256": paired_output_sha256,
+                "generic_execution_profile_id": execution_profile_id(QueryInputPolicy::NaturalLanguage),
+                "generation": pin,
+                "lane_top_k": pack.contract_top_k,
+                "client_binary_sha256": binary_sha256(&client_binary)?,
+                "declared_daemon_binary_sha256": binary_sha256(&daemon_binary)?,
+                "tasks": exact_tasks,
+            }),
+        )?;
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_exact_reuses_frozen_semantic_query_and_generation() {
+        let plan = quanta_index_retrieval_bench::query_plan::plan_query(
+            QueryInputPolicy::NaturalLanguage,
+            "nullable input validation failure",
+            &NlPlanConfig::default(),
+        )
+        .expect("plan");
+        let pin = GenerationPin::new(
+            RepoId::new("repo").expect("repo"),
+            RevisionId::new("rev").expect("revision"),
+            ManifestGeneration::new(1),
+        );
+        let request = exact_semantic_request(&pin, &plan, 100);
+        assert_eq!(request.query.query_text, plan.semantic_text);
+        assert_eq!(request.query.generation, Some(pin));
+        assert!(request.query.generation_selector.is_none());
+        assert!(request.query.lexical_scope.is_none());
+        assert!(request.query.constraints.is_unconstrained());
+        assert_eq!(request.query.top_k, 100);
+        assert_eq!(request.max_work_units, SEMANTIC_WORK_OPERATIONAL_CAP_V1);
+    }
 
     #[test]
     fn reviewed_workspace_frame_requires_panic_pair_source_digest_and_declaration() {

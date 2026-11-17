@@ -129,6 +129,7 @@ struct RootCustody {
 struct RootCustodyEntry {
     active: usize,
     quarantine: Option<StateRootLease>,
+    recovery_memory: Option<Arc<read_recovery::RecoveryReadMemoryV1>>,
 }
 fn register_root_custody(root: &Path, limit: usize) -> Result<(), CoreError> {
     if limit == 0 {
@@ -164,6 +165,7 @@ fn register_root_custody(root: &Path, limit: usize) -> Result<(), CoreError> {
             RootCustodyEntry {
                 active: 1,
                 quarantine: None,
+                recovery_memory: None,
             },
         )
         .is_some()
@@ -294,9 +296,7 @@ impl Anchor {
         match (checked, close) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(primary), Ok(())) | (Ok(()), Err(primary)) => Err(primary),
-            (Err(primary), Err(close)) => {
-                Err(append_failure(primary, "parent retirement", &close))
-            }
+            (Err(primary), Err(close)) => Err(append_failure(primary, "parent retirement", &close)),
         }
     }
 
@@ -332,9 +332,7 @@ impl Anchor {
         match (checked, close) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(primary), Ok(())) | (Ok(()), Err(primary)) => Err(primary),
-            (Err(primary), Err(close)) => {
-                Err(append_failure(primary, "parent retirement", &close))
-            }
+            (Err(primary), Err(close)) => Err(append_failure(primary, "parent retirement", &close)),
         }
     }
 
@@ -475,6 +473,7 @@ struct Tracking {
     inodes_busy: BTreeSet<InodeKey>,
     opening_readers: BTreeMap<PathBuf, usize>,
     total_opening_readers: usize,
+    total_metadata_readers: usize,
     total_pins: usize,
     inodes: BTreeMap<InodeKey, InodeState>,
     reserved_inode_slots: usize,
@@ -487,6 +486,7 @@ fn tracking_quiescent(state: &Tracking) -> bool {
         && state.inodes_busy.is_empty()
         && state.opening_readers.is_empty()
         && state.total_opening_readers == 0
+        && state.total_metadata_readers == 0
         && state.total_pins == 0
         && state.pending.is_empty()
         && state.reserved_inode_slots == 0
@@ -497,11 +497,12 @@ fn tracking_quiescent(state: &Tracking) -> bool {
 }
 fn quiescence_error(state: &Tracking, context: &str) -> CoreError {
     CoreError::NotReady(format!(
-        "{context}: busy_paths={:?}, busy_inodes={:?}, directory_scopes={:?}, opening_readers={}, pins={}, pending_paths={:?}, reserved_inodes={}, close_unwitnessed={}, releasing_inodes={}",
+        "{context}: busy_paths={:?}, busy_inodes={:?}, directory_scopes={:?}, opening_readers={}, metadata_readers={}, pins={}, pending_paths={:?}, reserved_inodes={}, close_unwitnessed={}, releasing_inodes={}",
         state.paths_busy,
         state.inodes_busy,
         state.directory_scopes,
         state.total_opening_readers,
+        state.total_metadata_readers,
         state.total_pins,
         state.pending.keys().collect::<Vec<_>>(),
         state.reserved_inode_slots,
@@ -630,6 +631,8 @@ struct Shared {
     max_open_handles: usize,
     max_tracked_entries: usize,
     maintenance: Mutex<Option<MaintenanceReserve>>,
+    // Last: all ledger/Tracking allocation backings drop before these grants.
+    recovery_memory: Option<Arc<read_recovery::RecoveryReadMemoryV1>>,
 }
 
 struct MaintenanceReserve {
@@ -653,6 +656,7 @@ impl Drop for Shared {
                     && state.directory_scopes.is_empty()
                     && state.opening_readers.is_empty()
                     && state.total_opening_readers == 0
+                    && state.total_metadata_readers == 0
                     && state.total_pins == 0
                     && state
                         .inodes
@@ -693,6 +697,7 @@ impl Drop for Shared {
         };
         if !handoff_ready && entry.quarantine.is_none() {
             entry.quarantine = Some(self.lease.clone());
+            entry.recovery_memory = self.recovery_memory.clone();
         }
         let Some(next) = entry.active.checked_sub(1) else {
             std::process::abort()
@@ -704,6 +709,10 @@ impl Drop for Shared {
         drop(registry);
     }
 }
+#[path = "publication_file_capacity/read_only_tree.rs"]
+mod read_only_tree;
+pub(crate) use read_only_tree::ExistingTreeReadIoV1;
+
 #[derive(Clone)]
 pub struct PublicationFileCapacity {
     shared: Arc<Shared>,
@@ -846,6 +855,7 @@ impl PublicationFileCapacity {
             max_tracked_entries,
             max_process_roots,
             None,
+            None,
         )
     }
 
@@ -868,6 +878,7 @@ impl PublicationFileCapacity {
             max_tracked_entries,
             max_process_roots,
             Some((bytes, files)),
+            None,
         )
     }
 
@@ -878,6 +889,7 @@ impl PublicationFileCapacity {
         max_tracked_entries: usize,
         max_process_roots: usize,
         reserve: Option<(u64, u64)>,
+        registration: Option<read_recovery::RecoveryReadRootRegistrationV1>,
     ) -> Result<Arc<Self>, CoreError> {
         if max_open_handles == 0 || max_tracked_entries == 0 {
             return Err(contract("registry bounds must be positive"));
@@ -894,7 +906,12 @@ impl PublicationFileCapacity {
                     })
             })
             .transpose()?;
-        register_root_custody(lease.state_root_identity_v1(), max_process_roots)?;
+        let recovery_memory = if let Some(registration) = registration {
+            Some(registration.transfer(&lease)?)
+        } else {
+            register_root_custody(lease.state_root_identity_v1(), max_process_roots)?;
+            None
+        };
         Ok(Arc::new(Self {
             shared: Arc::new(Shared {
                 lease,
@@ -907,6 +924,7 @@ impl PublicationFileCapacity {
                 max_open_handles,
                 max_tracked_entries,
                 maintenance: Mutex::new(maintenance),
+                recovery_memory,
             }),
         }))
     }
@@ -1305,6 +1323,7 @@ impl PublicationFileCapacity {
             && !state.close_unwitnessed
             && state.opening_readers.is_empty()
             && state.total_opening_readers == 0
+            && state.total_metadata_readers == 0
             && state.total_pins == 0
             && state
                 .inodes
@@ -1380,46 +1399,79 @@ impl PublicationFileCapacity {
         if path.as_os_str() == self.state_root().as_os_str() {
             return Ok(());
         }
-        let relative = self.relative(path)?;
-        let canonical = if path.is_absolute() {
+        self.with_existing_list_scope_v1(path, false, |_| Ok::<(), CoreError>(()))
+    }
+    fn with_existing_list_scope_v1<T, E>(
+        &self,
+        path: &Path,
+        require_directory: bool,
+        inspect: impl FnOnce(&File) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<CoreError>,
+    {
+        self.shared.root.require_current_v1()?;
+        let relative = if path.as_os_str() == self.state_root().as_os_str() {
+            PathBuf::new()
+        } else {
+            self.relative(path)?
+        };
+        let canonical = if relative.as_os_str().is_empty() {
+            self.state_root().to_path_buf()
+        } else if path.is_absolute() {
             self.state_root().join(&relative)
         } else {
             relative.clone()
         };
         if path.as_os_str() != canonical.as_os_str() {
-            return Err(contract("list prefix has noncanonical components"));
+            return Err(contract("list prefix has noncanonical components").into());
         }
+        // Directory enumeration must not share the lease FD's cursor.
+        // Open "." relative to the actual held root, as Dir::read_from does,
+        // rather than dup'ing its open-file description.
         let mut held = File::from(
-            self.shared
-                .root
-                .as_fd()
-                .try_clone_to_owned()
-                .map_err(|error| storage_io("clone list root FD", error))?,
+            openat(
+                self.shared.root.as_fd(),
+                Path::new("."),
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::DIRECTORY,
+                Mode::empty(),
+            )
+            .map_err(|error| storage_io("open independently positioned list root", error))?,
         );
-        let result = (|| {
+        let result = (|| -> Result<T, E> {
             let mut components = relative.components().peekable();
             while let Some(component) = components.next() {
                 let Component::Normal(name) = component else {
-                    return Err(contract("list prefix has non-normal component"));
+                    return Err(contract("list prefix has non-normal component").into());
                 };
                 let stat = match statat(&held, Path::new(name), AtFlags::SYMLINK_NOFOLLOW) {
                     Ok(stat) => stat,
                     Err(rustix::io::Errno::NOENT) => {
-                        return self.shared.root.require_current_v1();
+                        self.shared.root.require_current_v1()?;
+                        if require_directory {
+                            return Err(
+                                CoreError::NotFound("existing directory is absent".into()).into()
+                            );
+                        }
+                        return inspect(&held);
                     }
-                    Err(error) => return Err(storage_io("stat list prefix component", error)),
+                    Err(error) => {
+                        return Err(storage_io("stat list prefix component", error).into());
+                    }
                 };
                 let kind = FileType::from_raw_mode(stat.st_mode);
                 let ancestor = components.peek().is_some();
-                if kind != FileType::Directory && (ancestor || kind != FileType::RegularFile) {
-                    return Err(contract(
-                        "list prefix contains a non-directory or unsafe leaf",
-                    ));
+                if kind != FileType::Directory
+                    && (require_directory || ancestor || kind != FileType::RegularFile)
+                {
+                    return Err(
+                        contract("list prefix contains a non-directory or unsafe leaf").into(),
+                    );
                 }
                 if stat.st_uid != rustix::process::getuid().as_raw() || stat.st_mode & 0o022 != 0 {
-                    return Err(contract("list prefix component has insecure owner or mode"));
+                    return Err(contract("list prefix component has insecure owner or mode").into());
                 }
-                if ancestor {
+                if ancestor || require_directory {
                     let next = File::from(
                         openat(
                             &held,
@@ -1448,22 +1500,25 @@ impl PublicationFileCapacity {
                     if let Err(error) = checked {
                         if let Err(close_error) = close_owned_file(next) {
                             self.mark_close_unwitnessed();
-                            return Err(storage_io("close rejected list directory", close_error));
+                            return Err(
+                                storage_io("close rejected list directory", close_error).into()
+                            );
                         }
-                        return Err(error);
+                        return Err(error.into());
                     }
                     let previous = std::mem::replace(&mut held, next);
                     if let Err(error) = close_owned_file(previous) {
                         self.mark_close_unwitnessed();
-                        return Err(storage_io("close previous list directory", error));
+                        return Err(storage_io("close previous list directory", error).into());
                     }
                 }
             }
-            self.shared.root.require_current_v1()
+            self.shared.root.require_current_v1()?;
+            inspect(&held)
         })();
         if let Err(error) = close_owned_file(held) {
             self.mark_close_unwitnessed();
-            return Err(storage_io("close list directory", error));
+            return Err(storage_io("close list directory", error).into());
         }
         result
     }
@@ -1606,12 +1661,7 @@ impl PublicationFileCapacity {
         let anchor = self.anchor(path)?;
         {
             let mut state = lock(&self.shared.state)?;
-            self.claim_anchor_locked(
-                &mut state,
-                &anchor.relative,
-                supplied.is_some(),
-                operation,
-            )?;
+            self.claim_anchor_locked(&mut state, &anchor.relative, supplied.is_some(), operation)?;
         }
         let allocation = supplied.map_or_else(
             || {
@@ -1947,6 +1997,7 @@ impl PublicationFileCapacity {
                 || state
                     .total_pins
                     .checked_add(state.total_opening_readers)
+                    .and_then(|handles| handles.checked_add(state.total_metadata_readers))
                     .is_none_or(|handles| handles >= self.shared.max_open_handles)
                 || (state.opening_readers.len() >= self.shared.max_tracked_entries
                     && !state.opening_readers.contains_key(&anchor.relative))
@@ -2044,6 +2095,7 @@ impl PublicationFileCapacity {
         if state
             .total_pins
             .checked_add(state.total_opening_readers)
+            .and_then(|handles| handles.checked_add(state.total_metadata_readers))
             .is_none_or(|handles| handles >= self.shared.max_open_handles)
         {
             return Err(capacity("reader-open ceiling exceeded"));
@@ -2246,13 +2298,20 @@ impl PublicationFileCapacity {
         supplied: Option<Arc<PublicationAllowance>>,
         reserved_ticket: Option<OutputTicket>,
     ) -> Result<FileMutation, CoreError> {
-        self.try_begin_create_with_bound(final_path, bound, policy, supplied, reserved_ticket, false)?
-            .ok_or_else(|| match policy {
-                CreatePolicy::NativeIfAbsent => existing_target("native create"),
-                CreatePolicy::SafeReplace | CreatePolicy::SafeIfAbsent => {
-                    contract("unexpected create-if-absent conflict in replacement admission")
-                }
-            })
+        self.try_begin_create_with_bound(
+            final_path,
+            bound,
+            policy,
+            supplied,
+            reserved_ticket,
+            false,
+        )?
+        .ok_or_else(|| match policy {
+            CreatePolicy::NativeIfAbsent => existing_target("native create"),
+            CreatePolicy::SafeReplace | CreatePolicy::SafeIfAbsent => {
+                contract("unexpected create-if-absent conflict in replacement admission")
+            }
+        })
     }
     fn try_begin_create_with_bound(
         &self,
@@ -2742,6 +2801,7 @@ impl PublicationFileCapacity {
     }
     /// Dispose only an unused native birth after its original FD retired.
     /// A populated file or resize cannot use this empty-sidecar cleanup path.
+    #[cfg(any(test, feature = "legacy-tantivy"))]
     pub(crate) fn discard_retired_empty_native_create(&self, path: &Path) -> Result<(), CoreError> {
         let relative = self.relative(path)?;
         self.discard_retired_native_pending_file(&relative, true)
@@ -2797,6 +2857,7 @@ impl PublicationFileCapacity {
                 || state
                     .total_pins
                     .checked_add(state.total_opening_readers)
+                    .and_then(|handles| handles.checked_add(state.total_metadata_readers))
                     .is_none_or(|count| count >= self.shared.max_open_handles)
                 || state.opening_readers.len() >= self.shared.max_tracked_entries
             {
@@ -4134,7 +4195,9 @@ impl FileMutation {
             .map_err(|error| storage_io("stat Sidecar target parent", error))?
             .dev();
         if staging_device != target_device {
-            return Err(contract("Sidecar staging and target parents differ by device"));
+            return Err(contract(
+                "Sidecar staging and target parents differ by device",
+            ));
         }
         Ok(())
     }
@@ -4445,8 +4508,12 @@ impl FileMutation {
                 if selected.stat()? != Some(observed) {
                     return Err(contract("rejected create parent or inode changed"));
                 }
-                unlinkat(&selected.parent, Path::new(&selected.name), AtFlags::empty())
-                    .map_err(|error| storage_io("unlink rejected staged birth", error))?;
+                unlinkat(
+                    &selected.parent,
+                    Path::new(&selected.name),
+                    AtFlags::empty(),
+                )
+                .map_err(|error| storage_io("unlink rejected staged birth", error))?;
                 selected.sync_parent()?;
                 let absent = InodeObservation::from_file(&writer)?;
                 if absent.inode != observed.inode || absent.links != 0 {
@@ -4545,9 +4612,7 @@ impl FileMutation {
         match (checked, close) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(primary), Ok(())) | (Ok(()), Err(primary)) => Err(primary),
-            (Err(primary), Err(close)) => {
-                Err(append_failure(primary, "parent retirement", &close))
-            }
+            (Err(primary), Err(close)) => Err(append_failure(primary, "parent retirement", &close)),
         }
     }
     pub fn settle_after_file_and_parent_sync(
@@ -5631,10 +5696,7 @@ impl Drop for NativeDeleteTicket {
     }
 }
 impl PathTicket {
-    pub(crate) fn require_source_identity(
-        &self,
-        owned: InodeObservation,
-    ) -> Result<(), CoreError> {
+    pub(crate) fn require_source_identity(&self, owned: InodeObservation) -> Result<(), CoreError> {
         if self.expected.inode != owned.inode || self.expected.bytes != owned.bytes {
             return Err(contract("path source differs from settled output FD"));
         }
@@ -6177,3 +6239,9 @@ mod maintenance_retirement_tests;
 #[path = "publication_directory_capacity.rs"]
 mod directory;
 pub use directory::{DirectoryDeleteTicket, DirectoryMoveRecovery, DirectoryPathTicket};
+
+#[path = "publication_file_capacity/read_recovery.rs"]
+mod read_recovery;
+pub(crate) use read_recovery::{
+    RecoveryReadCloseFaultV1, RecoveryReadMemoryV1, RecoveryReadRootRegistrationV1,
+};

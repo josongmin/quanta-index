@@ -68,6 +68,7 @@ impl RegisteredObject {
         })
     }
 
+    #[track_caller]
     pub fn copy_children(
         reference: ObjectRef,
         bytes: u64,
@@ -83,6 +84,7 @@ impl RegisteredObject {
         )
     }
 
+    #[track_caller]
     pub fn copy_from_iter(
         reference: ObjectRef,
         bytes: u64,

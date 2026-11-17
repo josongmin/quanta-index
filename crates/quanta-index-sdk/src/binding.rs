@@ -35,7 +35,8 @@ use quanta_index_contract::{
     SearchPlaneIngestIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SemanticQueryRequest,
     StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax, TextRankUnit,
-    validate_file_owner_projection_v1, validate_hybrid_results_v1,
+    sourcegraph_query_requests_rev_at_time, validate_file_owner_projection_v1,
+    validate_hybrid_results_v1,
 };
 
 use crate::SdkError;
@@ -51,6 +52,7 @@ pub enum ExpectedQueryResponseV1 {
     Semantic,
     SemanticWorkBoundedV1,
     Hybrid,
+    HybridFileV1,
     HybridSeed,
     GoTestTraceFileV1,
     History,
@@ -74,6 +76,7 @@ impl ExpectedQueryResponseV1 {
             Self::Semantic => "semantic",
             Self::SemanticWorkBoundedV1 => "semantic_work_bounded_v1",
             Self::Hybrid => "hybrid",
+            Self::HybridFileV1 => "hybrid_file_v1",
             Self::HybridSeed => "hybrid_seed",
             Self::GoTestTraceFileV1 => "go_test_trace_file_v1",
             Self::History => "history",
@@ -164,13 +167,10 @@ impl ExpectedIngestResponseV1 {
     }
 }
 
-/// Whether this syntax can carry a `rev:at.time(...)` selector.
-///
-/// `CodeSearch` treats the text as a literal and cannot authorize rebinding.
-/// Native and Sourcegraph requests are resolved by the query plane, and the
-/// final response is bound exactly to that generation.
+/// Whether the request carries a supported time-based revision filter.
+/// Native LQ represents the dotted call as a predicate.
 pub(crate) fn is_rev_at_time_query(syntax: TextQuerySyntax, query_text: &str) -> bool {
-    syntax != TextQuerySyntax::CodeSearch && query_text.contains("rev:at.time")
+    syntax == TextQuerySyntax::Sourcegraph && sourcegraph_query_requests_rev_at_time(query_text)
 }
 
 /// Read-identity selection extracted from a request's pin fields.
@@ -227,7 +227,8 @@ pub(crate) struct QueryCallBinding {
     /// timeref authority may rebind the read to an ancestor revision.
     rev_at_time: bool,
     max_work_units: Option<u64>,
-    go_trace_lane_top_k: Option<u32>,
+    canonical_ties: Option<bool>,
+    file_lane_top_k: Option<u32>,
 }
 
 impl QueryCallBinding {
@@ -247,7 +248,8 @@ impl QueryCallBinding {
                 history_order: None,
                 rev_at_time: false,
                 max_work_units: None,
-                go_trace_lane_top_k: None,
+                canonical_ties: None,
+                file_lane_top_k: None,
             },
             SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(request) => {
                 let (pin, active_domain) = identity_from(
@@ -335,6 +337,7 @@ impl QueryCallBinding {
                     false,
                 );
                 binding.max_work_units = Some(request.max_work_units);
+                binding.canonical_ties = Some(request.canonical_ties);
                 binding
             }
             SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
@@ -397,7 +400,26 @@ impl QueryCallBinding {
                     request.query.text_query.generation.clone(),
                     request.query.text_query.generation_selector.clone(),
                 ));
-                binding.go_trace_lane_top_k = Some(request.query.top_k);
+                binding.file_lane_top_k = Some(request.query.top_k);
+                binding
+            }
+            SearchPlaneQueryIpcRequest::HybridFileV1(request) => {
+                let (pin, active_domain) = identity_from(
+                    request.query.generation.clone(),
+                    request.query.generation_selector.clone(),
+                );
+                let mut binding = Self::ranked(
+                    ExpectedQueryResponseV1::HybridFileV1,
+                    pin,
+                    active_domain,
+                    request.file_top_k,
+                    false,
+                );
+                binding.secondary = Some(identity_from(
+                    request.query.text_query.generation.clone(),
+                    request.query.text_query.generation_selector.clone(),
+                ));
+                binding.file_lane_top_k = Some(request.query.top_k);
                 binding
             }
             SearchPlaneQueryIpcRequest::History(HistoryQueryRequest {
@@ -418,7 +440,8 @@ impl QueryCallBinding {
                     history_order: Some(*order),
                     rev_at_time: false,
                     max_work_units: None,
-                    go_trace_lane_top_k: None,
+                    canonical_ties: None,
+                    file_lane_top_k: None,
                 }
             }
             SearchPlaneQueryIpcRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
@@ -472,7 +495,8 @@ impl QueryCallBinding {
                 history_order: None,
                 rev_at_time: false,
                 max_work_units: None,
-                go_trace_lane_top_k: None,
+                canonical_ties: None,
+                file_lane_top_k: None,
             },
             SearchPlaneQueryIpcRequest::Explain(SearchPlaneExplainQueryRequest {
                 generation,
@@ -488,7 +512,8 @@ impl QueryCallBinding {
                 history_order: None,
                 rev_at_time: false,
                 max_work_units: None,
-                go_trace_lane_top_k: None,
+                canonical_ties: None,
+                file_lane_top_k: None,
             },
             SearchPlaneQueryIpcRequest::ClusterMembershipRead(
                 ClusterMembershipBatchReadRequestV1 { generation, .. },
@@ -503,9 +528,19 @@ impl QueryCallBinding {
                 history_order: None,
                 rev_at_time: false,
                 max_work_units: None,
-                go_trace_lane_top_k: None,
+                canonical_ties: None,
+                file_lane_top_k: None,
             },
         }
+    }
+
+    pub(crate) fn lexical_resolution(&self) -> Option<Self> {
+        if self.expected != ExpectedQueryResponseV1::Text || !self.rev_at_time {
+            return None;
+        }
+        let mut binding = self.clone();
+        binding.expected = ExpectedQueryResponseV1::ResolvedLexicalGeneration;
+        Some(binding)
     }
 
     pub(crate) fn with_resolved_lexical_generation(mut self, pin: GenerationPin) -> Self {
@@ -534,7 +569,8 @@ impl QueryCallBinding {
             history_order: None,
             rev_at_time,
             max_work_units: None,
-            go_trace_lane_top_k: None,
+            canonical_ties: None,
+            file_lane_top_k: None,
         }
     }
 }
@@ -972,6 +1008,14 @@ pub(crate) fn bind_query_response(
         }
         SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::SemanticWorkBoundedV1)?;
+            if binding.canonical_ties != Some(payload.canonical_ties) {
+                return Err(binding_error(
+                    "semantic_work_bounded_v1",
+                    ResponseBindingAxis::Order,
+                    "requested canonical tie mode",
+                    "different canonical tie mode",
+                ));
+            }
             check_pin(binding, &payload.query.generation)?;
             check_selected_active_head(
                 binding,
@@ -1045,7 +1089,7 @@ pub(crate) fn bind_query_response(
                 binding.top_k.unwrap_or(u32::MAX),
                 payload.results.len(),
             )?;
-            let lane_cap = binding.go_trace_lane_top_k.unwrap_or(u32::MAX);
+            let lane_cap = binding.file_lane_top_k.unwrap_or(u32::MAX);
             for (route, window) in [
                 (
                     "go_test_trace_file_v1 lexical lane",
@@ -1053,7 +1097,7 @@ pub(crate) fn bind_query_response(
                 ),
                 ("go_test_trace_file_v1 dense lane", &payload.dense_window),
             ] {
-                let rows = usize::try_from(window.returned()).map_err(|_| {
+                let rows = usize::try_from(window.returned()).map_err(|_overflow| {
                     binding_error(
                         route,
                         ResponseBindingAxis::Window,
@@ -1064,6 +1108,51 @@ pub(crate) fn bind_query_response(
                 check_cap(route, lane_cap, rows)?;
             }
             Ok(())
+        }
+        SearchPlaneQueryIpcResponse::HybridFileV1(payload) => {
+            check_variant(binding, ExpectedQueryResponseV1::HybridFileV1)?;
+            check_pin(binding, &payload.generation)?;
+            if Some(payload.file_top_k) != binding.top_k {
+                return Err(binding_error(
+                    "hybrid_file_v1",
+                    ResponseBindingAxis::Cardinality,
+                    "requested file cap echo",
+                    "different file cap echo",
+                ));
+            }
+            check_selected_active_head(
+                binding,
+                &payload.generation,
+                payload.selected_active_head.as_ref(),
+            )?;
+            check_cap(
+                "hybrid_file_v1",
+                binding.top_k.unwrap_or(u32::MAX),
+                payload.results.len(),
+            )?;
+            let lane_cap = binding.file_lane_top_k.unwrap_or(u32::MAX);
+            for (route, window) in [
+                ("hybrid_file_v1 lexical lane", &payload.lexical_window),
+                ("hybrid_file_v1 dense lane", &payload.dense_window),
+            ] {
+                let rows = usize::try_from(window.returned()).map_err(|_overflow| {
+                    binding_error(
+                        route,
+                        ResponseBindingAxis::Window,
+                        "lane returned count representable as usize",
+                        "lane returned count overflow",
+                    )
+                })?;
+                check_cap(route, lane_cap, rows)?;
+            }
+            payload.validate_v1().map_err(|reason| {
+                binding_error(
+                    "hybrid_file_v1",
+                    ResponseBindingAxis::RankingOrder,
+                    "valid file ranking and lane witnesses",
+                    &reason,
+                )
+            })
         }
         SearchPlaneQueryIpcResponse::History(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::History)?;
@@ -1641,7 +1730,8 @@ pub(crate) struct IngestCallBinding {
     commitment: Option<(ManifestGeneration, String)>,
     repo_map_v2: Option<RepoMapPublishBundleRequestV2>,
     /// Identity only: retaining the batch would clone all corpus source text.
-    search_corpus: Option<(quanta_index_contract::SourcePublicationBinding, bool)>,
+    // The booleans bind sealing and staged-transport cleanup separately.
+    search_corpus: Option<(quanta_index_contract::SourcePublicationBinding, bool, bool)>,
     source_upload: Option<quanta_index_contract::SourcePublicationUploadAck>,
 }
 
@@ -1775,11 +1865,12 @@ impl IngestCallBinding {
             source_upload: Self::source_upload_binding(request)?,
             search_corpus: match request {
                 SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit) => {
-                    Some((commit.publication.clone(), true))
+                    Some((commit.publication.clone(), true, true))
                 }
                 SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => Some((
                     quanta_index_contract::SourcePublicationBinding::for_batch(batch),
                     batch.seal,
+                    false,
                 )),
                 SearchPlaneIngestIpcRequest::StageSourcePublication(_)
                 | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_)
@@ -1844,7 +1935,7 @@ impl IngestCallBinding {
         if let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) = response
             && let Some(observation) = &outcome.observation
         {
-            let (requested, sealed) = self.search_corpus.as_ref().ok_or_else(|| {
+            let (requested, sealed, _) = self.search_corpus.as_ref().ok_or_else(|| {
                 SdkError::Protocol("unexpected search corpus observation".to_string())
             })?;
             observation
@@ -1934,7 +2025,7 @@ pub(crate) fn bind_ingest_response(
         ));
     }
     if let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) = response {
-        let (requested, sealed) = binding
+        let (requested, sealed, staged) = binding
             .search_corpus
             .as_ref()
             .ok_or_else(|| SdkError::Protocol("missing search corpus request binding".into()))?;
@@ -1949,6 +2040,22 @@ pub(crate) fn bind_ingest_response(
                     &format!("an inconsistent source publication receipt: {error}"),
                 )
             })?;
+        if outcome.upload_cleanup.is_some() != *staged {
+            return Err(binding_error(
+                route,
+                ResponseBindingAxis::TargetIdentity,
+                if *staged {
+                    "staged upload cleanup status"
+                } else {
+                    "no inline upload cleanup status"
+                },
+                if outcome.upload_cleanup.is_some() {
+                    "staged cleanup status"
+                } else {
+                    "no cleanup status"
+                },
+            ));
+        }
     }
     if let (Some((generation, digest)), Some(receipt)) = (&binding.commitment, receipt)
         && !auxiliary_receipt_matches_v1(*generation, digest, receipt)
@@ -2309,6 +2416,98 @@ mod source_upload_binding_tests {
         SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse, SourcePublicationUploadAck,
         SourcePublicationUploadIdentity, SourcePublicationUploadPart,
     };
+
+    #[test]
+    fn source_upload_cleanup_binds_transport_without_rejecting_post_commit_failure() {
+        use quanta_index_contract::{
+            BatchPublishReceipt, ManifestGeneration, RepoId, RevisionId,
+            SearchCorpusPublishOutcome, SearchPlaneErrorCodeV2, SourcePublicationBinding,
+            SourcePublicationEvent, SourcePublicationUploadCleanupV1,
+            SourcePublicationUploadCommit,
+        };
+        let batch = crate::SearchCorpusBatch::replace_generation(
+            RepoId::new("cleanup-repo").expect("repo"),
+            RevisionId::new("cleanup-revision").expect("revision"),
+            ManifestGeneration::new(1),
+            "cleanup-manifest",
+        )
+        .source_event(SourcePublicationEvent {
+            stream_id: "cleanup-stream".into(),
+            event_id: "cleanup-event".into(),
+            expected_base_event_id: None,
+            payload_sha256: [0; 32],
+        })
+        .to_wire_batch()
+        .expect("batch");
+        let publication = SourcePublicationBinding::for_batch(&batch);
+        let direct = IngestCallBinding::from_request(
+            &SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+        )
+        .expect("direct binding");
+        let staged = IngestCallBinding::from_request(
+            &SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(
+                SourcePublicationUploadCommit {
+                    identity: SourcePublicationUploadIdentity {
+                        body_sha256: [7; 32],
+                        body_bytes: 10,
+                    },
+                    publication: publication.clone(),
+                },
+            ),
+        )
+        .expect("staged binding");
+        let mut receipt = BatchPublishReceipt::empty_for(
+            batch.generation,
+            Some(batch.manifest_digest),
+            batch.batch_digest,
+        );
+        receipt.mark_sealed();
+        let mut outcome = SearchCorpusPublishOutcome {
+            publication,
+            receipt: receipt.recorded_at(7),
+            observation: None,
+            upload_cleanup: None,
+        };
+        assert!(
+            bind_ingest_response(
+                &direct,
+                &SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome.clone())
+            )
+            .is_ok()
+        );
+        assert!(
+            bind_ingest_response(
+                &staged,
+                &SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome.clone())
+            )
+            .is_err()
+        );
+        for cleanup in [
+            SourcePublicationUploadCleanupV1::Complete,
+            SourcePublicationUploadCleanupV1::Deferred,
+            SourcePublicationUploadCleanupV1::Failed {
+                code: SearchPlaneErrorCodeV2::Internal,
+                message: "unlink failed".into(),
+            },
+        ] {
+            outcome.upload_cleanup = Some(cleanup);
+            assert!(
+                bind_ingest_response(
+                    &staged,
+                    &SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome.clone())
+                )
+                .is_ok()
+            );
+            assert!(
+                bind_ingest_response(
+                    &direct,
+                    &SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome.clone())
+                )
+                .is_err()
+            );
+            assert_eq!(outcome.receipt.durable_sequence, 7);
+        }
+    }
 
     #[test]
     fn source_upload_ack_binds_body_identity_and_exact_accepted_offset() {

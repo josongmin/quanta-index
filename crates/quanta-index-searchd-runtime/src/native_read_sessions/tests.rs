@@ -55,6 +55,9 @@ macro_rules! check_eq {
     }};
 }
 
+#[path = "tests/read_attempt.rs"]
+mod read_attempt;
+
 fn selection(epoch: u64) -> ViewSelection {
     ViewSelection::Latest {
         workspace: WorkspaceKey {
@@ -312,7 +315,7 @@ fn cancelled_open_after_real_pin_replays_one_ticket_and_releases_it() -> TestRes
                     query_id,
                     &budget(),
                     || Ok(()),
-                    |_ticket, ()| {
+                    |_ticket, _attempt, ()| {
                         entered.send(()).map_err(|error| {
                             IndexError::BackendViolation(format!(
                                 "concurrent read observation failed: {error}"
@@ -359,7 +362,7 @@ fn cancelled_open_after_real_pin_replays_one_ticket_and_releases_it() -> TestRes
             query_ticket.session,
             &interrupted,
             || Ok(()),
-            |_ticket, ()| {
+            |_ticket, _attempt, ()| {
                 interrupted.request().cancel_handle().cancel();
                 Ok(())
             }
@@ -376,7 +379,7 @@ fn cancelled_open_after_real_pin_replays_one_ticket_and_releases_it() -> TestRes
         query_ticket.session,
         &budget(),
         || Ok(()),
-        |_ticket, ()| Err(IndexError::SnapshotUnavailable),
+        |_ticket, _attempt, ()| Err(IndexError::SnapshotUnavailable),
     );
     check_eq!(unavailable, Err(IndexError::SnapshotUnavailable));
     check_eq!(
@@ -390,13 +393,48 @@ fn cancelled_open_after_real_pin_replays_one_ticket_and_releases_it() -> TestRes
         query_ticket.session,
         &budget(),
         || Ok(()),
-        |_ticket, ()| Err(query_error.clone()),
+        |_ticket, _attempt, ()| Err(query_error.clone()),
     );
     check_eq!(outcome, Err(query_error));
     check_eq!(
         registry.status(42, query_ticket.session, &budget())?,
         renewed
     );
+    // A reader failure remains primary if final observation sees cancellation.
+    // Cancellation must not turn a live pin into Unknown or require a repin.
+    let interrupted = budget();
+    let primary = IndexError::CorruptObject("reader primary before cancellation".into());
+    let outcome: Result<(), IndexError> = registry.with_ticket(
+        42,
+        query_ticket.session,
+        &interrupted,
+        || Ok(()),
+        |_ticket, _attempt, ()| {
+            interrupted.request().cancel_handle().cancel();
+            Err(primary.clone())
+        },
+    );
+    check_eq!(outcome, Err(primary));
+    check_eq!(
+        registry.status(42, query_ticket.session, &budget())?,
+        renewed
+    );
+    let same_pin = registry.with_ticket(
+        42,
+        query_ticket.session,
+        &budget(),
+        || Ok(()),
+        |ticket, _attempt, ()| Ok(ticket.record().lease.id),
+    )?;
+    let repeated_pin = registry.with_ticket(
+        42,
+        query_ticket.session,
+        &budget(),
+        || Ok(()),
+        |ticket, _attempt, ()| Ok(ticket.record().lease.id),
+    )?;
+    check_eq!(same_pin, repeated_pin);
+    check_eq!(pin_count()?, 1);
     let entry = registry.lookup(42, query_ticket.session, &budget())?;
     {
         let mut guard = entry.inner.write().map_err(|error| {
@@ -413,7 +451,7 @@ fn cancelled_open_after_real_pin_replays_one_ticket_and_releases_it() -> TestRes
         query_ticket.session,
         &budget(),
         || Ok(()),
-        |_ticket, ()| Ok(()),
+        |_ticket, _attempt, ()| Ok(()),
     );
     check_eq!(invalid, Err(IndexError::SnapshotUnavailable));
     check_eq!(
@@ -580,7 +618,7 @@ fn release_intent_blocks_new_query_before_waiting_and_survives_cancellation() ->
         id,
         &budget(),
         || Ok(()),
-        |_ticket, ()| {
+        |_ticket, _attempt, ()| {
             Err(IndexError::BackendViolation(
                 "new query reached the held ticket".into(),
             ))

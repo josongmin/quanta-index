@@ -7,6 +7,7 @@
 //! the plan's own boost, which must show up as the weight and move the
 //! emitted score with it.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/op_fixture.rs"]

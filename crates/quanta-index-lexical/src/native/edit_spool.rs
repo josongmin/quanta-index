@@ -399,7 +399,7 @@ impl MapEditCursor for PostingCursor<'_> {
                 edit_page(
                     &self.spool.db,
                     POSTING_AFTER_SQL,
-                    &[&gram, &after.edit.key.as_slice()],
+                    &[&gram, &after.key()],
                     32,
                     root,
                     budget,
@@ -450,7 +450,7 @@ impl MapEditCursor for TopCursor<'_> {
                 edit_page(
                     &self.spool.db,
                     TOP_AFTER_SQL,
-                    &[&self.surface, &after.edit.key.as_slice()],
+                    &[&self.surface, &after.key()],
                     max_key_bytes,
                     root,
                     budget,
@@ -703,7 +703,8 @@ mod tests {
                 let row = cursor.next_edit(&mut work)?.ok_or_else(|| {
                     IndexError::BackendViolation("missing late literal edit".into())
                 })?;
-                check_eq!(row.edit.key, expected.to_be_bytes().to_vec());
+                let expected_bytes = expected.to_be_bytes();
+                check_eq!(row.key(), expected_bytes.as_slice());
             }
         }
         Ok(())
@@ -775,13 +776,18 @@ mod tests {
             let mut cursor = spool.posting_cursor(grams.as_slice());
             while let Some(item) = cursor.next_edit(&mut budget)? {
                 let ordinal =
-                    usize::try_from(item.root).map_err(|_error| IndexError::ResourceLimited)?;
+                    usize::try_from(item.root()).map_err(|_error| IndexError::ResourceLimited)?;
                 let gram = *grams
                     .as_slice()
                     .get(ordinal)
                     .ok_or_else(|| IndexError::BackendViolation("scratch test ordinal".into()))?;
-                let key = (gram, item.edit.key.clone());
-                check!(observed.insert(key, item.edit.clone()).is_none());
+                let key = (gram, item.key().to_vec());
+                let value = MapEdit {
+                    key: item.key().to_vec(),
+                    expected: item.expected()?,
+                    next: item.next()?,
+                };
+                check!(observed.insert(key, value).is_none());
             }
         }
         check_eq!(page_lengths, vec![64, 64, 2]);

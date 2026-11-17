@@ -5,16 +5,23 @@ use quanta_index_scratch_sqlite::{MapEditPage as EditPage, read_map_edit_budgete
 
 use super::text_memory::PreparedKey;
 use quanta_index_core::index::{
-    AttemptRef, Digest, IndexError, MapEdit, MapValue, MemoryLease, MemoryLifetime, ObjectRef,
-    OrdinalMapEdit, ScratchAllocation, ScratchRequest, ScratchSpacePort, WorkBudget, WorkUsage,
+    AttemptRef, Digest, IndexError, MapEdit, MapValue, MemoryCreditLimits, MemoryLease,
+    MemoryLifetime, ObjectRef, OrdinalMapEdit, ScratchAllocation, ScratchRequest, ScratchSpacePort,
+    WorkBudget, WorkUsage,
     ports::{MAX_OBJECT_INSTALL_BATCH, MapEditCursor},
 };
 use quanta_index_scratch_sqlite::ScratchConnection;
-use rusqlite::{Connection, OptionalExtension as _, params};
+#[cfg(test)]
+use rusqlite::Connection;
+use rusqlite::{OptionalExtension as _, params};
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 mod confirmed_batch;
+pub(super) use confirmed_batch::ConfirmedOccurrencePrograms;
+mod packed_runs;
 mod posting_case_pages;
+use packed_runs::{PackedRangeCursor, PostingPacketCache, PostingRow, PostingRuns};
 mod token_groups;
 pub(super) use posting_case_pages::PostingCasePages;
 
@@ -37,26 +44,6 @@ const INVENTORY_ROOT_FIRST_SQL: &str =
     "SELECT k,p,n FROM inventory WHERE root=?1 AND k>=?2 ORDER BY k LIMIT 64";
 const INVENTORY_ROOT_NEXT_SQL: &str =
     "SELECT k,p,n FROM inventory WHERE root=?1 AND k>?2 ORDER BY k LIMIT 64";
-const POSTING_ROOT_FIRST_SQL: &str =
-    "SELECT k,p,n FROM posting WHERE term=?1 AND k>=?2 ORDER BY k LIMIT 64";
-const POSTING_ROOT_NEXT_SQL: &str =
-    "SELECT k,p,n FROM posting WHERE term=?1 AND k>?2 ORDER BY k LIMIT 64";
-const POSTING_RANGE_FIRST_SQL: &str =
-    "SELECT k,p,n,term FROM posting WHERE term>=?1 AND term<=?2 ORDER BY term,k LIMIT 64";
-const POSTING_RANGE_NEXT_SQL: &str =
-    "SELECT k,p,n,term FROM posting WHERE (term,k)>(?1,?2) AND term<=?3 ORDER BY term,k LIMIT 64";
-const POSTING_SPARSE_PAGE_SQL: &str = concat!(
-    "SELECT k,p,n,term FROM posting WHERE term IN (",
-    "?1,?2,?3,?4,?5,?6,?7,?8,",
-    "?9,?10,?11,?12,?13,?14,?15,?16,",
-    "?17,?18,?19,?20,?21,?22,?23,?24,",
-    "?25,?26,?27,?28,?29,?30,?31,?32,",
-    "?33,?34,?35,?36,?37,?38,?39,?40,",
-    "?41,?42,?43,?44,?45,?46,?47,?48,",
-    "?49,?50,?51,?52,?53,?54,?55,?56,",
-    "?57,?58,?59,?60,?61,?62,?63,?64",
-    ") ORDER BY term,k LIMIT 513"
-);
 const TOP_NEXT_SQL: &str = "SELECT k,p,n FROM top WHERE surface=?1 AND k>?2 ORDER BY k LIMIT 64";
 #[cfg(test)]
 const TOKEN_TERM_PAGE_SQL: &str = "WITH RECURSIVE next(term,n) AS (
@@ -65,21 +52,13 @@ const TOKEN_TERM_PAGE_SQL: &str = "WITH RECURSIVE next(term,n) AS (
        SELECT (SELECT term FROM tokens WHERE term>next.term ORDER BY term LIMIT 1), n+1
        FROM next WHERE term IS NOT NULL AND n<64
      ) SELECT term FROM next WHERE term IS NOT NULL ORDER BY n";
-const POSTING_TERM_PAGE_SQL: &str = "WITH RECURSIVE next(term,n) AS (
-       SELECT (SELECT term FROM posting WHERE term>?1 ORDER BY term LIMIT 1), 1
-       UNION ALL
-       SELECT (SELECT term FROM posting WHERE term>next.term ORDER BY term LIMIT 1), n+1
-       FROM next WHERE term IS NOT NULL AND n<64
-     ) SELECT term FROM next WHERE term IS NOT NULL ORDER BY n";
-const POSTING_CARDINALITY_PAGE_SQL: &str =
-    "SELECT term, SUM(p IS NULL AND n IS NOT NULL), SUM(p IS NOT NULL AND n IS NULL)
-     FROM posting WHERE term>=?1 AND term<=?2 GROUP BY term ORDER BY term";
-
 pub(super) struct TextSpool {
     db: ScratchConnection,
+    postings: PostingRuns,
     allocation: Box<dyn ScratchAllocation>,
     confirmed_attempt: Cell<Option<AttemptRef>>,
     token_read_active: Cell<bool>,
+    inventory_read_active: Cell<bool>,
     inventory_packet: RefCell<PacketEvidence>,
     inventory_packet_memory: RefCell<Option<MemoryLease>>,
     inventory_packet_memory_reserved: Cell<bool>,
@@ -128,6 +107,7 @@ impl InventoryPartition {
 }
 
 /// Exact in-process witness of the current packet's successful SQL INSERTs.
+///
 /// The scratch connection is private and never handed to a concurrent writer.
 /// Exact retained SQL witness; the sorted fixed backing avoids per-row scans.
 struct PacketEvidence {
@@ -145,6 +125,18 @@ struct PacketDelta {
 }
 
 impl PacketEvidence {
+    fn allocation_bytes() -> Result<u64, IndexError> {
+        u64::try_from(std::mem::size_of::<Self>()).map_err(|_error| IndexError::ResourceLimited)
+    }
+}
+
+impl PacketDelta {
+    fn allocation_bytes() -> Result<u64, IndexError> {
+        u64::try_from(std::mem::size_of::<Self>()).map_err(|_error| IndexError::ResourceLimited)
+    }
+}
+
+impl PacketEvidence {
     fn empty() -> Self {
         Self {
             rows: 0,
@@ -153,8 +145,14 @@ impl PacketEvidence {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "private sorted array length is checked before every post-SQL update"
+    )]
     fn contains(&self, reference: ObjectRef) -> bool {
-        self.references[..self.references_len]
+        self.references
+            .get(..self.references_len)
+            .expect("packet evidence length is within fixed backing")
             .binary_search(&reference)
             .is_ok()
     }
@@ -175,17 +173,39 @@ impl PacketEvidence {
         Ok(())
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "pre-SQL check_delta and the exclusive writer prove post-SQL fixed-array bounds"
+    )]
     fn apply_delta(&mut self, delta: &PacketDelta) {
-        // check_delta and the exclusive writer made every bound infallible.
-        self.rows += delta.rows;
-        for reference in &delta.references[..delta.references_len] {
-            let slot = self.references[..self.references_len]
-                .binary_search(reference)
-                .unwrap_or_else(|slot| slot);
-            self.references
-                .copy_within(slot..self.references_len, slot + 1);
-            self.references[slot] = *reference;
-            self.references_len += 1;
+        // check_delta precedes SQL, and this exclusive writer is the only
+        // updater before the successful SQL packet reaches this method.
+        self.rows = self
+            .rows
+            .checked_add(delta.rows)
+            .expect("packet row sum was checked before SQL");
+        for reference in delta
+            .references
+            .get(..delta.references_len)
+            .expect("delta length is bounded by its fixed backing")
+        {
+            let active = self
+                .references
+                .get(..self.references_len)
+                .expect("evidence length was checked before SQL");
+            let (Ok(slot) | Err(slot)) = active.binary_search(reference);
+            let next = slot
+                .checked_add(1)
+                .expect("insertion slot is within backing");
+            self.references.copy_within(slot..self.references_len, next);
+            *self
+                .references
+                .get_mut(slot)
+                .expect("insertion slot was checked before SQL") = *reference;
+            self.references_len = self
+                .references_len
+                .checked_add(1)
+                .expect("evidence capacity was checked before SQL");
         }
     }
 
@@ -237,23 +257,32 @@ impl PacketDelta {
         if evidence.contains(reference) {
             return Ok(());
         }
-        let slot = match self.references[..self.references_len].binary_search(&reference) {
-            Ok(_) => return Ok(()),
-            Err(slot) => slot,
+        let active = self
+            .references
+            .get(..self.references_len)
+            .ok_or(IndexError::ResourceLimited)?;
+        let Err(slot) = active.binary_search(&reference) else {
+            return Ok(());
         };
         if self.references_len >= PAGE {
             return Err(IndexError::ResourceLimited);
         }
-        self.references
-            .copy_within(slot..self.references_len, slot + 1);
-        self.references[slot] = reference;
-        self.references_len += 1;
+        let next = slot.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        self.references.copy_within(slot..self.references_len, next);
+        *self
+            .references
+            .get_mut(slot)
+            .ok_or(IndexError::ResourceLimited)? = reference;
+        self.references_len = self
+            .references_len
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
         Ok(())
     }
 }
 
 /// One exclusive physical-packet receipt. A cancelled or abandoned receipt
-/// poisons the private scratch attempt; journal_mode=OFF supplies no rollback.
+/// poisons the private scratch attempt; `journal_mode=OFF` supplies no rollback.
 #[must_use]
 pub(super) struct InventoryConfirmation<'a> {
     spool: &'a TextSpool,
@@ -261,6 +290,251 @@ pub(super) struct InventoryConfirmation<'a> {
     db_changes: u64,
     record_confirmed: Option<confirmed_batch::ConfirmedOccurrenceRecord<'a>>,
     finished: bool,
+}
+
+/// One frozen inventory packet's global shape check. The private scratch
+/// connection cannot be written through an inventory API while this lives.
+#[must_use]
+pub(super) struct ReadyInventoryReadLease<'a> {
+    spool: &'a TextSpool,
+    db_changes: u64,
+}
+
+pub(super) struct InventoryEditRef<'a> {
+    pub(super) root: u32,
+    pub(super) key: &'a [u8],
+    pub(super) expected: Option<&'a [u8]>,
+    pub(super) next: Option<&'a [u8]>,
+}
+
+#[derive(Clone, Copy)]
+enum InventoryEditScope {
+    All(u32),
+    Root(u32),
+}
+
+pub(super) struct ReadyInventoryCursor<'lease, 'spool, C> {
+    lease: &'lease ReadyInventoryReadLease<'spool>,
+    cursor: C,
+}
+
+impl<C: MapEditCursor> MapEditCursor for ReadyInventoryCursor<'_, '_, C> {
+    fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
+        self.lease.check_epoch(budget)?;
+        self.cursor.next_edit(budget)
+    }
+
+    fn subtree_packing(
+        &self,
+    ) -> Result<quanta_index_core::index::ports::RootPackingPlan, IndexError> {
+        self.cursor.subtree_packing()
+    }
+}
+
+impl<'spool> ReadyInventoryReadLease<'spool> {
+    pub(super) fn check_epoch(&self, budget: &WorkBudget) -> Result<(), IndexError> {
+        // The wrapped cursor separately checks whether the packet is ready.
+        budget.checkpoint()?;
+        if self.spool.db.change_count()? != self.db_changes {
+            self.spool.invalidate_inventory();
+            return Err(IndexError::BackendViolation(
+                "inventory scratch changed during frozen read".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn cursor(
+        &self,
+        roots: usize,
+    ) -> Result<ReadyInventoryCursor<'_, 'spool, InventoryCursor<'spool>>, IndexError> {
+        let mut cursor = self.spool.inventory_cursor(roots)?;
+        cursor.ready_checked = true;
+        Ok(ReadyInventoryCursor {
+            lease: self,
+            cursor,
+        })
+    }
+
+    pub(super) fn root_cursor(
+        &self,
+        root: usize,
+    ) -> Result<ReadyInventoryCursor<'_, 'spool, RootCursor<'spool>>, IndexError> {
+        self.root_cursor_for(root, 0)
+    }
+
+    pub(super) fn root_cursor_for(
+        &self,
+        root: usize,
+        output_root: u32,
+    ) -> Result<ReadyInventoryCursor<'_, 'spool, RootCursor<'spool>>, IndexError> {
+        let mut cursor = self.spool.inventory_root_cursor(root)?;
+        cursor.ready_checked = true;
+        cursor.output_root = output_root;
+        Ok(ReadyInventoryCursor {
+            lease: self,
+            cursor,
+        })
+    }
+
+    /// Visit the same ordered SQL pages without materializing retained edits.
+    /// Only the previous key survives advancing a row or opening another page.
+    pub(super) fn visit_edits(
+        &self,
+        roots: usize,
+        previous_key: &mut [u8],
+        budget: &mut WorkBudget,
+        visit: impl FnMut(InventoryEditRef<'_>, &mut WorkBudget) -> Result<(), IndexError>,
+    ) -> Result<(), IndexError> {
+        let roots = u32::try_from(roots).map_err(|_width| IndexError::ResourceLimited)?;
+        self.visit_inventory_edits(InventoryEditScope::All(roots), previous_key, budget, visit)
+    }
+
+    pub(super) fn visit_root_edits(
+        &self,
+        slot: usize,
+        previous_key: &mut [u8],
+        budget: &mut WorkBudget,
+        visit: impl FnMut(InventoryEditRef<'_>, &mut WorkBudget) -> Result<(), IndexError>,
+    ) -> Result<(), IndexError> {
+        let root = u32::try_from(slot).map_err(|_width| IndexError::ResourceLimited)?;
+        if root >= INVENTORY_ROOT_LIMIT {
+            return Err(IndexError::InvalidInput(
+                "inventory root exceeds batch".into(),
+            ));
+        }
+        self.visit_inventory_edits(InventoryEditScope::Root(root), previous_key, budget, visit)
+    }
+
+    fn visit_inventory_edits(
+        &self,
+        scope: InventoryEditScope,
+        previous_key: &mut [u8],
+        budget: &mut WorkBudget,
+        mut visit: impl FnMut(InventoryEditRef<'_>, &mut WorkBudget) -> Result<(), IndexError>,
+    ) -> Result<(), IndexError> {
+        use quanta_index_scratch_sqlite::bounded_blob;
+        use rusqlite::types::ValueRef;
+
+        fn value_wire(value: ValueRef<'_>) -> Result<Option<&[u8]>, IndexError> {
+            match value {
+                ValueRef::Null => Ok(None),
+                value => bounded_blob(value, quanta_index_core::index::MAX_MAP_VALUE_WIRE_BYTES)
+                    .map(Some),
+            }
+        }
+
+        let key_bound =
+            usize::try_from(MAX_TERM_KEY_BYTES).map_err(|_width| IndexError::ResourceLimited)?;
+        let mut previous_root = None;
+        let mut previous_len = 0;
+        loop {
+            self.check_epoch(budget)?;
+            self.spool.require_ready_packet()?;
+            budget.charge(WorkUsage {
+                reads: 1,
+                bytes: 4096,
+                ..WorkUsage::default()
+            })?;
+            let db = self.spool.db.scoped(budget)?;
+            let prior = previous_key
+                .get(..previous_len)
+                .ok_or(IndexError::ResourceLimited)?;
+            let start = match scope {
+                InventoryEditScope::All(_) => previous_root,
+                InventoryEditScope::Root(root) => Some(root),
+            };
+            let bounds: [&dyn rusqlite::ToSql; 2] = [&start, &prior];
+            let (query, parameters): (&str, &[&dyn rusqlite::ToSql]) =
+                match (scope, previous_root.is_some()) {
+                    (InventoryEditScope::All(_), false) => (INVENTORY_FIRST_SQL, &[]),
+                    (InventoryEditScope::All(_), true) => (INVENTORY_NEXT_SQL, &bounds),
+                    (InventoryEditScope::Root(_), false) => (INVENTORY_ROOT_FIRST_SQL, &bounds),
+                    (InventoryEditScope::Root(_), true) => (INVENTORY_ROOT_NEXT_SQL, &bounds),
+                };
+            let mut statement = db.prepare_cached(query).map_err(|error| sql(&error))?;
+            let mut rows = statement.query(parameters).map_err(|error| sql(&error))?;
+            let mut count = 0;
+            loop {
+                self.check_epoch(budget)?;
+                self.spool.require_ready_packet()?;
+                let Some(row) = rows.next().map_err(|error| sql(&error))? else {
+                    break;
+                };
+                if count != 0 {
+                    budget.charge(WorkUsage {
+                        reads: 1,
+                        ..WorkUsage::default()
+                    })?;
+                }
+                if count == PAGE {
+                    return Err(IndexError::ResourceLimited);
+                }
+                let root = match scope {
+                    InventoryEditScope::Root(_) => 0,
+                    InventoryEditScope::All(roots) => {
+                        let raw: i64 = row.get(3).map_err(|error| sql(&error))?;
+                        let InventoryPartition::Ready(root) = InventoryPartition::from_sql(raw)?
+                        else {
+                            return Err(IndexError::CorruptObject(
+                                "inventory cursor encountered an unconfirmed row".into(),
+                            ));
+                        };
+                        if root >= roots {
+                            return Err(IndexError::CorruptObject(
+                                "inventory root ordinal out of bounds".into(),
+                            ));
+                        }
+                        root
+                    }
+                };
+                let key = bounded_blob(row.get_ref(0).map_err(|error| sql(&error))?, key_bound)?;
+                check_term_key(key)?;
+                let prior = previous_key
+                    .get(..previous_len)
+                    .ok_or(IndexError::ResourceLimited)?;
+                if previous_root
+                    .is_some_and(|previous| previous > root || (previous == root && prior >= key))
+                {
+                    return Err(IndexError::CorruptObject(
+                        "global entry-map edits are foreign or unordered".into(),
+                    ));
+                }
+                let expected = value_wire(row.get_ref(1).map_err(|error| sql(&error))?)?;
+                let next = value_wire(row.get_ref(2).map_err(|error| sql(&error))?)?;
+                visit(
+                    InventoryEditRef {
+                        root,
+                        key,
+                        expected,
+                        next,
+                    },
+                    budget,
+                )?;
+                budget.charge(WorkUsage {
+                    bytes: u64::try_from(key.len())
+                        .map_err(|_width| IndexError::ResourceLimited)?,
+                    ..WorkUsage::default()
+                })?;
+                previous_key
+                    .get_mut(..key.len())
+                    .ok_or(IndexError::ResourceLimited)?
+                    .copy_from_slice(key);
+                previous_len = key.len();
+                previous_root = Some(root);
+                count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+            }
+            if count < PAGE {
+                return Ok(());
+            }
+        }
+    }
+}
+
+impl Drop for ReadyInventoryReadLease<'_> {
+    fn drop(&mut self) {
+        self.spool.inventory_read_active.set(false);
+    }
 }
 
 impl InventoryConfirmation<'_> {
@@ -334,26 +608,126 @@ struct RowDemands<const WIDTH: usize> {
 }
 
 type BatchDemands = RowDemands<{ quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS }>;
-type PostingDemands = RowDemands<{ quanta_index_scratch_sqlite::MAX_WIDE_WRITE_BATCH_ROWS }>;
 
 /// The bounded page array and every copied SQL key have independent custody.
 #[derive(Debug)]
 pub(super) struct TermPage {
     keys: Vec<PreparedKey>,
+    counts: Option<TermPageCounts>,
     memory: Option<quanta_index_core::index::MemoryLease>,
     case_ranges: bool,
+}
+
+/// Private DATA provenance for one sealed scratch source. It never grants
+/// object or map publication authority and stays alive with derived pages.
+#[derive(Debug)]
+struct PostingPageSource {
+    expected_changes: Cell<u64>,
+    _memory: Option<MemoryLease>,
+}
+
+#[derive(Debug)]
+struct TermPageCounts {
+    deltas: [PostingDelta; PAGE],
+    source: Rc<PostingPageSource>,
+    digest: Option<[u8; 32]>,
+    _memory: Option<MemoryLease>,
 }
 
 impl TermPage {
     pub(super) fn new() -> Self {
         Self {
             keys: Vec::new(),
+            counts: None,
             memory: None,
             case_ranges: false,
         }
     }
 
+    #[cfg(test)]
     pub(super) fn push(&mut self, bytes: &[u8], budget: &WorkBudget) -> Result<(), IndexError> {
+        // A manually extended page must take the independent SQL path.
+        self.counts = None;
+        self.push_key(bytes, budget)
+    }
+
+    fn counted(source: Rc<PostingPageSource>, budget: &WorkBudget) -> Result<Self, IndexError> {
+        let memory = budget.reserve_memory(
+            u64::try_from(std::mem::size_of::<TermPageCounts>())
+                .map_err(|_| IndexError::ResourceLimited)?,
+            MemoryLifetime::Temporary,
+        )?;
+        Ok(Self {
+            counts: Some(TermPageCounts {
+                deltas: [PostingDelta::default(); PAGE],
+                source,
+                digest: None,
+                _memory: memory,
+            }),
+            ..Self::new()
+        })
+    }
+
+    fn push_counted(
+        &mut self,
+        bytes: &[u8],
+        delta: PostingDelta,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        if self
+            .counts
+            .as_ref()
+            .is_none_or(|counts| counts.digest.is_some())
+        {
+            return Err(IndexError::BackendViolation(
+                "term count page is not writable".into(),
+            ));
+        }
+        let slot = self.keys.len();
+        self.push_key(bytes, budget)?;
+        self.counts
+            .as_mut()
+            .ok_or(IndexError::ResourceLimited)?
+            .deltas[slot] = delta;
+        Ok(())
+    }
+
+    fn push_from(
+        &mut self,
+        page: &Self,
+        slot: usize,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        let source = page
+            .counts
+            .as_ref()
+            .ok_or_else(|| IndexError::BackendViolation("case source lacks count data".into()))?;
+        let destination = self.counts.as_ref().ok_or(IndexError::ResourceLimited)?;
+        if source.digest.is_none() || !Rc::ptr_eq(&source.source, &destination.source) {
+            return Err(IndexError::BackendViolation(
+                "case count source differs".into(),
+            ));
+        }
+        let key = page.keys.get(slot).ok_or(IndexError::ResourceLimited)?;
+        let delta = *source.deltas.get(slot).ok_or(IndexError::ResourceLimited)?;
+        self.push_counted(key.as_slice(), delta, budget)
+    }
+
+    fn sort_counted(&mut self) -> Result<(), IndexError> {
+        let counts = self.counts.as_mut().ok_or(IndexError::ResourceLimited)?;
+        // The fixed page has at most64 rows; keys and their counts move together.
+        for slot in 1..self.keys.len() {
+            let mut at = slot;
+            while at > 0 && self.keys[at - 1].as_slice() > self.keys[at].as_slice() {
+                self.keys.swap(at - 1, at);
+                counts.deltas.swap(at - 1, at);
+                at -= 1;
+            }
+        }
+        Ok(())
+    }
+
+    fn push_key(&mut self, bytes: &[u8], budget: &WorkBudget) -> Result<(), IndexError> {
         if self.keys.len() == PAGE {
             return Err(IndexError::ResourceLimited);
         }
@@ -464,7 +838,7 @@ pub(super) struct PostingScratchRow {
     pub(super) next: Option<MapValue>,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 struct PostingDelta {
     added: u64,
     removed: u64,
@@ -474,10 +848,36 @@ struct PostingDelta {
 pub(super) struct PostingCardinalities {
     deltas: [PostingDelta; PAGE],
     len: usize,
+    page_digest: [u8; 32],
+    changes: u64,
     _memory: Option<quanta_index_core::index::MemoryLease>,
 }
 
+/// Page and scratch-epoch binding for the original posting stream. Its lower
+/// bound can select the existing authoritative dense fallback.
+pub(super) struct DensePostingPrepassProof {
+    page_digest: [u8; 32],
+    changes: u64,
+    lower_bound: u64,
+}
+
 impl PostingCardinalities {
+    pub(super) fn dense_prepass_proof(&self) -> DensePostingPrepassProof {
+        DensePostingPrepassProof {
+            page_digest: self.page_digest,
+            changes: self.changes,
+            // Each physical edit contributes to at most one add and one
+            // removal. Saturation remains strictly above the small prepass cap.
+            lower_bound: self
+                .deltas
+                .iter()
+                .take(self.len)
+                .fold(0_u64, |total, delta| {
+                    total.saturating_add(delta.added.max(delta.removed))
+                }),
+        }
+    }
+
     pub(super) fn df(&self, slot: usize, prior: u64) -> Result<u64, IndexError> {
         let delta = self
             .deltas
@@ -534,6 +934,7 @@ impl<const WIDTH: usize> RowDemands<WIDTH> {
     }
 }
 
+#[cfg(test)]
 fn term_page(
     db: &Connection,
     statement_sql: &str,
@@ -570,9 +971,55 @@ fn term_page(
 }
 
 impl TextSpool {
+    /// Caller-local grants that may be born while preparing one planned
+    /// inventory packet. SQL query backing has its separate Scratch bound.
+    pub(super) fn inventory_confirmation_memory_bound(
+        &self,
+        maximum_refs: usize,
+    ) -> Result<MemoryCreditLimits, IndexError> {
+        let confirmation = confirmed_batch::confirmation_program_memory_bound(maximum_refs)?;
+        let evidence = if self.inventory_packet_memory_reserved.get() {
+            MemoryCreditLimits {
+                temporary_data_bytes: 0,
+                retained_data_bytes: 0,
+                max_live_temporary_leases: 0,
+                max_live_retained_leases: 0,
+            }
+        } else {
+            MemoryCreditLimits {
+                temporary_data_bytes: 0,
+                retained_data_bytes: PacketEvidence::allocation_bytes()?,
+                max_live_temporary_leases: 0,
+                max_live_retained_leases: 1,
+            }
+        };
+        confirmation
+            .checked_add(evidence)?
+            .checked_add(MemoryCreditLimits {
+                temporary_data_bytes: PacketDelta::allocation_bytes()?,
+                retained_data_bytes: 0,
+                max_live_temporary_leases: 1,
+                max_live_retained_leases: 0,
+            })
+    }
     pub(super) fn new(
         scratch: &dyn ScratchSpacePort,
         budget: &mut WorkBudget,
+    ) -> Result<Self, IndexError> {
+        Self::new_with_posting_order(scratch, budget, false)
+    }
+
+    pub(super) fn new_cold_postings(
+        scratch: &dyn ScratchSpacePort,
+        budget: &mut WorkBudget,
+    ) -> Result<Self, IndexError> {
+        Self::new_with_posting_order(scratch, budget, true)
+    }
+
+    fn new_with_posting_order(
+        scratch: &dyn ScratchSpacePort,
+        budget: &mut WorkBudget,
+        cold: bool,
     ) -> Result<Self, IndexError> {
         budget.checkpoint()?;
         let allocation = scratch.allocate(
@@ -607,13 +1054,19 @@ impl TextSpool {
                  PRIMARY KEY(term,pos)) WITHOUT ROWID;
              CREATE TABLE inventory(root INTEGER NOT NULL,k BLOB NOT NULL,p BLOB,n BLOB,
                  PRIMARY KEY(root,k)) WITHOUT ROWID;
-             CREATE TABLE posting(term BLOB NOT NULL,k BLOB NOT NULL,p BLOB,n BLOB,
-                 PRIMARY KEY(term,k)) WITHOUT ROWID;
+             CREATE TABLE posting_packet(
+                 phase INTEGER NOT NULL,run INTEGER NOT NULL,page INTEGER NOT NULL,
+                 first_term BLOB NOT NULL,first_owner BLOB NOT NULL,
+                 last_term BLOB NOT NULL,last_owner BLOB NOT NULL,payload BLOB NOT NULL,
+                 PRIMARY KEY(phase,run,page)) WITHOUT ROWID;
+             CREATE INDEX posting_packet_seek ON posting_packet(phase,run,last_term,last_owner);
+             CREATE TABLE posting_term_packet(
+                 seq INTEGER PRIMARY KEY,first_term BLOB NOT NULL,last_term BLOB NOT NULL,payload BLOB NOT NULL);
+             CREATE INDEX posting_term_packet_seek ON posting_term_packet(last_term);
              CREATE TABLE top(surface INTEGER NOT NULL,k BLOB NOT NULL,p BLOB,n BLOB,
                  PRIMARY KEY(surface,k)) WITHOUT ROWID;
              CREATE TABLE confirmed_occurrence(
                  ref BLOB PRIMARY KEY, validated_count INTEGER) WITHOUT ROWID;
-             CREATE INDEX top_confirmed_posting ON top(n) WHERE surface=0 AND n IS NOT NULL;
              BEGIN IMMEDIATE;",
         )
         .map_err(|error| sql(&error))?;
@@ -636,9 +1089,11 @@ impl TextSpool {
         drop(db);
         Ok(Self {
             db: owned_db,
+            postings: PostingRuns::new(cold),
             allocation,
             confirmed_attempt: Cell::new(None),
             token_read_active: Cell::new(false),
+            inventory_read_active: Cell::new(false),
             inventory_packet: RefCell::new(PacketEvidence::empty()),
             inventory_packet_memory: RefCell::new(None),
             inventory_packet_memory_reserved: Cell::new(false),
@@ -658,6 +1113,14 @@ impl TextSpool {
         }
     }
 
+    pub(super) fn invalidate_inventory(&self) {
+        self.inventory_poisoned.set(true);
+    }
+
+    pub(super) fn ensure_inventory_usable(&self) -> Result<(), IndexError> {
+        self.check_inventory_idle()
+    }
+
     fn check_inventory_idle(&self) -> Result<(), IndexError> {
         if self.inventory_poisoned.get() {
             return Err(IndexError::BackendViolation(
@@ -667,6 +1130,26 @@ impl TextSpool {
         if self.inventory_receipt.get().is_some() {
             return Err(IndexError::BackendViolation(
                 "inventory packet confirmation is pending".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_inventory_write_idle(&self) -> Result<(), IndexError> {
+        self.check_inventory_idle()?;
+        if self.inventory_read_active.get() {
+            return Err(IndexError::BackendViolation(
+                "inventory read lease blocks scratch mutation".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_posting_usable(&self) -> Result<(), IndexError> {
+        self.postings.check()?;
+        if self.inventory_poisoned.get() {
+            return Err(IndexError::BackendViolation(
+                "posting scratch attempt was poisoned".into(),
             ));
         }
         Ok(())
@@ -725,8 +1208,26 @@ impl TextSpool {
         budget.checkpoint()
     }
 
+    pub(super) fn begin_inventory_read(
+        &self,
+        budget: &mut WorkBudget,
+    ) -> Result<ReadyInventoryReadLease<'_>, IndexError> {
+        if self.inventory_read_active.get() {
+            return Err(IndexError::BackendViolation(
+                "inventory read lease already active".into(),
+            ));
+        }
+        self.require_ready_inventories(budget)?;
+        let db_changes = self.db.change_count()?;
+        self.inventory_read_active.set(true);
+        Ok(ReadyInventoryReadLease {
+            spool: self,
+            db_changes,
+        })
+    }
+
     /// Bind one complete SQL-inserted packet to the expected physical outputs.
-    /// The actual put_batch return is checked by the caller before finish.
+    /// The actual `put_batch` return is checked by the caller before finish.
     pub(super) fn admit_inventory_confirmation<'a>(
         &'a self,
         refs: &[ObjectRef],
@@ -735,8 +1236,32 @@ impl TextSpool {
         record_confirmed: bool,
         budget: &mut WorkBudget,
     ) -> Result<InventoryConfirmation<'a>, IndexError> {
+        self.admit_inventory_confirmation_with_programs(
+            refs,
+            expected_rows,
+            attempt,
+            record_confirmed,
+            None,
+            budget,
+        )
+    }
+
+    pub(super) fn admit_inventory_confirmation_with_programs<'a>(
+        &'a self,
+        refs: &[ObjectRef],
+        expected_rows: u64,
+        attempt: AttemptRef,
+        record_confirmed: bool,
+        programs: Option<ConfirmedOccurrencePrograms>,
+        budget: &mut WorkBudget,
+    ) -> Result<InventoryConfirmation<'a>, IndexError> {
         budget.checkpoint()?;
-        self.check_inventory_idle()?;
+        self.check_inventory_write_idle()?;
+        if programs.is_some() && !record_confirmed {
+            return Err(IndexError::BackendViolation(
+                "confirmation programs have no record".into(),
+            ));
+        }
         self.check_confirmed_attempt(attempt)?;
         if refs.is_empty() || refs.len() > MAX_OBJECT_INSTALL_BATCH || expected_rows == 0 {
             return Err(IndexError::InvalidInput(
@@ -758,9 +1283,20 @@ impl TextSpool {
         self.inventory_packet.borrow().check(refs, expected_rows)?;
         let db = self.db.scoped(budget)?;
         let record = if record_confirmed {
-            Some(confirmed_batch::ConfirmedOccurrenceRecord::prepare(
-                self, refs, attempt, budget,
-            )?)
+            Some(match programs {
+                Some(programs) => {
+                    confirmed_batch::ConfirmedOccurrenceRecord::prepare_with_programs(
+                        self,
+                        refs,
+                        attempt,
+                        Some(programs),
+                        budget,
+                    )?
+                }
+                None => confirmed_batch::ConfirmedOccurrenceRecord::prepare(
+                    self, refs, attempt, budget,
+                )?,
+            })
         } else {
             None
         };
@@ -1005,7 +1541,7 @@ impl TextSpool {
     }
 
     pub(super) fn reset_inventories(&self, budget: &mut WorkBudget) -> Result<(), IndexError> {
-        self.check_inventory_idle()?;
+        self.check_inventory_write_idle()?;
         if self.inventory_packet.borrow().rows != 0 {
             return Err(IndexError::BackendViolation(
                 "cannot reset an unconfirmed inventory packet".into(),
@@ -1037,19 +1573,59 @@ impl TextSpool {
         batch: &super::text::TokenBatch,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
+        self.token_rows(
+            batch.rows().len(),
+            |slot| {
+                let row = batch.rows().get(slot).ok_or(IndexError::ResourceLimited)?;
+                Ok((batch.term(row)?, row.position()))
+            },
+            budget,
+        )
+    }
+
+    /// Insert a bounded page borrowed from a validated canonical token arena.
+    /// SQL row admission and bindings are identical to `token_batch`.
+    pub(super) fn token_batch_borrowed(
+        &self,
+        rows: &[(&[u8], u32)],
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        self.token_rows(
+            rows.len(),
+            |slot| rows.get(slot).copied().ok_or(IndexError::ResourceLimited),
+            budget,
+        )
+    }
+
+    fn token_rows<'a>(
+        &self,
+        row_count: usize,
+        mut row_at: impl FnMut(usize) -> Result<(&'a [u8], u32), IndexError>,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        use std::io::Write as _;
+
         const PREFIX: &str = "INSERT INTO tokens(term,pos) VALUES ";
         const ROW_SQL: &str = "(?,?)";
+        const MAX_SQL_BYTES: usize = PREFIX.len()
+            + quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS * ROW_SQL.len()
+            + quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
+            - 1;
         self.require_token_mutation_idle()?;
-        let rows = batch.rows();
-        let demands = BatchDemands::new(rows, |row| {
-            u64::try_from(batch.term(row)?.len())
-                .map_err(|_error| IndexError::ResourceLimited)?
-                .checked_add(64)
-                .ok_or(IndexError::ResourceLimited)
-        })?;
+        let slots: [usize; quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS] =
+            std::array::from_fn(|slot| slot);
+        let demands = BatchDemands::new(
+            slots.get(..row_count).ok_or(IndexError::ResourceLimited)?,
+            |slot| {
+                u64::try_from(row_at(*slot)?.0.len())
+                    .map_err(|_error| IndexError::ResourceLimited)?
+                    .checked_add(64)
+                    .ok_or(IndexError::ResourceLimited)
+            },
+        )?;
         let demands = demands.as_slice()?;
         budget.charge(WorkUsage {
-            writes: u64::try_from(rows.len()).map_err(|_error| IndexError::ResourceLimited)?,
+            writes: u64::try_from(row_count).map_err(|_error| IndexError::ResourceLimited)?,
             bytes: demands.iter().try_fold(0u64, |sum, row| {
                 sum.checked_add(*row).ok_or(IndexError::ResourceLimited)
             })?,
@@ -1061,51 +1637,55 @@ impl TextSpool {
             demands,
             budget,
         )?;
-        let sql_bytes = rows
-            .len()
-            .checked_mul(ROW_SQL.len())
-            .and_then(|bytes| bytes.checked_add(rows.len().checked_sub(1)?))
-            .and_then(|bytes| bytes.checked_add(PREFIX.len()))
-            .ok_or(IndexError::ResourceLimited)?;
-        let _sql_memory = budget.reserve_memory(
-            u64::try_from(sql_bytes).map_err(|_error| IndexError::ResourceLimited)?,
-            quanta_index_core::index::MemoryLifetime::Temporary,
-        )?;
-        let mut query = String::new();
-        query
-            .try_reserve_exact(sql_bytes)
-            .map_err(|_error| IndexError::ResourceLimited)?;
-        query.push_str(PREFIX);
-        for slot in 0..rows.len() {
-            if slot != 0 {
-                query.push(',');
+        // This fixed ASCII template is bounded by the 64-row SQL envelope.
+        // It needs no second heap grant while a cold arena remains live.
+        let mut query = [0_u8; MAX_SQL_BYTES];
+        let remaining = (|| -> std::io::Result<usize> {
+            let mut tail = query.as_mut_slice();
+            tail.write_all(PREFIX.as_bytes())?;
+            for slot in 0..row_count {
+                if slot != 0 {
+                    tail.write_all(b",")?;
+                }
+                tail.write_all(ROW_SQL.as_bytes())?;
             }
-            query.push_str(ROW_SQL);
-        }
+            Ok(tail.len())
+        })()
+        .map_err(|_error| {
+            IndexError::BackendViolation("token SQL template exceeds bound".into())
+        })?;
+        let query_bytes = MAX_SQL_BYTES
+            .checked_sub(remaining)
+            .and_then(|length| query.get(..length))
+            .ok_or(IndexError::ResourceLimited)?;
+        let query = std::str::from_utf8(query_bytes).map_err(|_error| {
+            IndexError::BackendViolation("token SQL template is not ASCII".into())
+        })?;
         let io_scope = self.db.scoped(budget)?;
         let mut insert = io_scope
-            .prepare_cached(&query)
+            .prepare_cached(query)
             .map_err(|error| sql(&error))?;
         insert.clear_bindings();
         let result = (|| {
-            for (slot, row) in rows.iter().enumerate() {
+            for slot in 0..row_count {
                 budget.checkpoint()?;
+                let (term, position) = row_at(slot)?;
                 let first = slot
                     .checked_mul(2)
                     .and_then(|value| value.checked_add(1))
                     .ok_or(IndexError::ResourceLimited)?;
                 insert
-                    .raw_bind_parameter(first, batch.term(row)?)
+                    .raw_bind_parameter(first, term)
                     .map_err(|error| sql(&error))?;
                 insert
                     .raw_bind_parameter(
                         first.checked_add(1).ok_or(IndexError::ResourceLimited)?,
-                        row.position(),
+                        position,
                     )
                     .map_err(|error| sql(&error))?;
             }
             budget.checkpoint()?;
-            if insert.raw_execute().map_err(|error| sql(&error))? != rows.len() {
+            if insert.raw_execute().map_err(|error| sql(&error))? != row_count {
                 return Err(IndexError::BackendViolation(
                     "token insertion affected an unexpected row count".into(),
                 ));
@@ -1192,15 +1772,12 @@ impl TextSpool {
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
         budget.checkpoint()?;
-        self.check_inventory_idle()?;
+        self.check_inventory_write_idle()?;
         let has_planned = edits
             .iter()
             .any(|(partition, _)| matches!(partition, InventoryPartition::Planned(_)));
         let _delta_memory = if has_planned {
-            budget.reserve_memory(
-                std::mem::size_of::<PacketDelta>() as u64,
-                MemoryLifetime::Temporary,
-            )?
+            budget.reserve_memory(PacketDelta::allocation_bytes()?, MemoryLifetime::Temporary)?
         } else {
             None
         };
@@ -1212,28 +1789,31 @@ impl TextSpool {
                     "inventory scratch contains an unchanged edit".into(),
                 ));
             }
+            match edit.expected {
+                None | Some(MapValue::Object(_)) => {}
+                Some(MapValue::Inline(_)) => {
+                    return Err(IndexError::CorruptObject(
+                        "inventory prior is not an occurrence reference".into(),
+                    ));
+                }
+            }
             if matches!(partition, InventoryPartition::Planned(_)) {
                 check_term_key(&edit.key)?;
-                match edit.expected.as_ref() {
-                    None | Some(MapValue::Object(_)) => {}
-                    Some(MapValue::Inline(_)) => {
-                        return Err(IndexError::CorruptObject(
-                            "planned inventory prior is not an occurrence reference".into(),
-                        ));
-                    }
-                }
-                let Some(MapValue::Object(reference)) = edit.next.as_ref() else {
-                    return Err(IndexError::CorruptObject(
+                let next = edit.next.ok_or_else(|| {
+                    IndexError::CorruptObject(
                         "planned inventory lacks an occurrence reference".into(),
-                    ));
-                };
-                delta.include(&self.inventory_packet.borrow(), *reference)?;
+                    )
+                })?;
+                let reference = super::text::inventory_reference(next)?;
+                delta.include(&self.inventory_packet.borrow(), reference)?;
+            } else if let Some(next) = edit.next {
+                let _reference = super::text::inventory_reference(next)?;
             }
         }
         self.inventory_packet.borrow().check_delta(&delta)?;
         if has_planned && !self.inventory_packet_memory_reserved.get() {
             let memory = budget.reserve_memory(
-                std::mem::size_of::<PacketEvidence>() as u64,
+                PacketEvidence::allocation_bytes()?,
                 MemoryLifetime::Retained,
             )?;
             *self.inventory_packet_memory.borrow_mut() = memory;
@@ -1304,193 +1884,42 @@ impl TextSpool {
         }
         Ok(RootCursor {
             spool: self,
-            target: RootTarget::Inventory(
-                u32::try_from(root).map_err(|_error| IndexError::ResourceLimited)?,
-            ),
+            root: u32::try_from(root).map_err(|_error| IndexError::ResourceLimited)?,
+            output_root: 0,
             after: None,
             page: EditPage::default(),
             ready_checked: false,
         })
     }
 
-    pub(super) fn posting_root_cursor<'a>(&'a self, term: &'a [u8]) -> RootCursor<'a> {
-        RootCursor {
-            spool: self,
-            target: RootTarget::Posting(term),
-            after: None,
-            page: EditPage::default(),
-            ready_checked: false,
-        }
-    }
-
-    /// One funded, sparse-only prepass for a 64-term posting page. Dense and
-    /// previously populated roots retain the original per-root cursor. The
-    /// independent global posting cursor still rechecks every edit and EOF.
+    /// The original prepass entry point remains available to focused tests.
+    #[cfg(test)]
     pub(super) fn posting_root_cursors<'a>(
         &'a self,
         terms: &TermPage,
         eligible: &[bool],
         budget: &mut WorkBudget,
     ) -> Result<PostingRootCursors<'a>, IndexError> {
-        if terms.is_empty() || terms.len() > PAGE || eligible.len() != terms.len() {
-            return Err(IndexError::InvalidInput(
-                "sparse posting roots differ from selected term page".into(),
-            ));
-        }
-        let mut result = PostingRootCursors::fallback(self);
-        if eligible.iter().filter(|selected| **selected).count() < 2 {
-            return Ok(result);
-        }
-        let mut selected_count = 0usize;
-        let mut previous_term: Option<&[u8]> = None;
-        for (slot, term) in terms.iter().enumerate() {
-            check_term_key(term.as_slice())?;
-            if previous_term.is_some_and(|prior| prior >= term.as_slice()) {
-                return Err(IndexError::CorruptObject(
-                    "sparse posting term page is unordered".into(),
-                ));
-            }
-            previous_term = Some(term.as_slice());
-            if eligible.get(slot) == Some(&true) {
-                *result
-                    .offsets
-                    .get_mut(slot)
-                    .ok_or(IndexError::ResourceLimited)? = selected_count
-                    .checked_mul(8)
-                    .ok_or(IndexError::ResourceLimited)?;
-                selected_count = selected_count
-                    .checked_add(1)
-                    .ok_or(IndexError::ResourceLimited)?;
-                *result
-                    .keys
-                    .get_mut(slot)
-                    .ok_or(IndexError::ResourceLimited)? =
-                    Some(PreparedKey::copy(term.as_slice(), budget)?);
-            }
-        }
-        let capacity = selected_count
-            .checked_mul(8)
-            .ok_or(IndexError::ResourceLimited)?;
-        let row_bytes = capacity
-            .checked_mul(std::mem::size_of::<Option<OrdinalMapEdit>>())
-            .ok_or(IndexError::ResourceLimited)?;
-        let row_bytes = u64::try_from(row_bytes).map_err(|_error| IndexError::ResourceLimited)?;
-        budget.charge(WorkUsage {
-            bytes: row_bytes,
-            ..WorkUsage::default()
-        })?;
-        let row_memory = budget.reserve_memory(
-            row_bytes,
-            quanta_index_core::index::MemoryLifetime::Temporary,
-        )?;
-        let mut held = Vec::new();
-        held.try_reserve_exact(capacity)
-            .map_err(|_error| IndexError::ResourceLimited)?;
-        held.resize_with(capacity, || None);
-        let parameters: [Option<&[u8]>; PAGE] = std::array::from_fn(|slot| {
-            result
-                .keys
-                .get(slot)
-                .and_then(Option::as_ref)
-                .map(PreparedKey::as_slice)
-        });
-        budget.charge(WorkUsage {
-            reads: 1,
-            bytes: 4096,
-            ..WorkUsage::default()
-        })?;
-        let db = self.db.scoped(budget)?;
-        let mut statement = db
-            .prepare_cached(POSTING_SPARSE_PAGE_SQL)
-            .map_err(|error| sql(&error))?;
-        let mut sql_rows = statement
-            .query(rusqlite::params_from_iter(parameters))
-            .map_err(|error| sql(&error))?;
-        let mut total = 0usize;
-        let mut previous: Option<(usize, [u8; 32])> = None;
-        while let Some(row) = sql_rows.next().map_err(|error| sql(&error))? {
-            budget.checkpoint()?;
-            if total != 0 {
-                budget.charge(WorkUsage {
-                    reads: 1,
-                    ..WorkUsage::default()
-                })?;
-            }
-            if total == capacity {
-                return Ok(PostingRootCursors::fallback(self));
-            }
-            total = total.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-            let term = quanta_index_scratch_sqlite::bounded_blob(
-                row.get_ref(3).map_err(|error| sql(&error))?,
-                usize::try_from(MAX_TERM_KEY_BYTES)
-                    .map_err(|_error| IndexError::ResourceLimited)?,
-            )?;
-            let slot = terms
-                .binary_search_by(|key| key.as_slice().cmp(term))
-                .map_err(|_error| {
-                    IndexError::CorruptObject("sparse posting row has foreign term".into())
-                })?;
-            if eligible.get(slot) != Some(&true) {
-                return Err(IndexError::CorruptObject(
-                    "sparse posting query returned an unselected root".into(),
-                ));
-            }
-            let len = usize::from(
-                *result
-                    .lengths
-                    .get(slot)
-                    .ok_or(IndexError::ResourceLimited)?,
-            );
-            if len == 8 {
-                return Ok(PostingRootCursors::fallback(self));
-            }
-            let raw_key = quanta_index_scratch_sqlite::bounded_blob(
-                row.get_ref(0).map_err(|error| sql(&error))?,
-                32,
-            )?;
-            let key: [u8; 32] = raw_key.try_into().map_err(|_error| {
-                IndexError::CorruptObject("sparse posting owner key width differs".into())
-            })?;
-            if previous.as_ref().is_some_and(|(prior_slot, prior_key)| {
-                *prior_slot > slot || (*prior_slot == slot && *prior_key >= key)
-            }) {
-                return Err(IndexError::CorruptObject(
-                    "sparse posting rows are unordered".into(),
-                ));
-            }
-            previous = Some((slot, key));
-            let edit = read_edit(row, 32, 0, budget)?;
-            let index = result
-                .offsets
-                .get(slot)
-                .ok_or(IndexError::ResourceLimited)?
-                .checked_add(len)
-                .ok_or(IndexError::ResourceLimited)?;
-            *held.get_mut(index).ok_or(IndexError::ResourceLimited)? = Some(edit);
-            let length = result
-                .lengths
-                .get_mut(slot)
-                .ok_or(IndexError::ResourceLimited)?;
-            *length = length.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-        }
-        if eligible.iter().enumerate().any(|(slot, selected)| {
-            *selected && result.lengths.get(slot).is_none_or(|length| *length == 0)
-        }) {
-            return Err(IndexError::CorruptObject(
-                "sparse posting prepass omitted a selected term".into(),
-            ));
-        }
-        Ok(PostingRootCursors {
-            rows: held,
-            _row_memory: row_memory,
-            ..result
-        })
+        self.packed_root_cursors(terms, eligible, None, budget)
+    }
+
+    /// Sparse pages use one authenticated prepass; provably dense pages use
+    /// the original per-root cursor. The global cursor rechecks edits and EOF.
+    pub(super) fn posting_root_cursors_with_proof<'a>(
+        &'a self,
+        terms: &TermPage,
+        eligible: &[bool],
+        proof: &DensePostingPrepassProof,
+        budget: &mut WorkBudget,
+    ) -> Result<PostingRootCursors<'a>, IndexError> {
+        self.packed_root_cursors(terms, eligible, Some(proof), budget)
     }
 
     pub(super) fn posting_write_batch_rows(
         &self,
         budget: &WorkBudget,
     ) -> Result<usize, IndexError> {
+        self.check_posting_usable()?;
         let db = self.db.scoped(budget)?;
         quanta_index_scratch_sqlite::max_supported_wide_edit_batch_rows(&db)
     }
@@ -1501,30 +1930,7 @@ impl TextSpool {
         fields: impl for<'a> Fn(&'a T) -> (&'a [u8], quanta_index_scratch_sqlite::MapEditFields<'a>),
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
-        let fields_bytes = map_field_reservation(2, 64)?;
-        let demands = PostingDemands::new(rows, |row| {
-            let (term, edit) = fields(row);
-            u64::try_from(term.len())
-                .map_err(|_error| IndexError::ResourceLimited)?
-                .checked_add(
-                    u64::try_from(edit.key.len()).map_err(|_error| IndexError::ResourceLimited)?,
-                )
-                .and_then(|bytes| bytes.checked_add(fields_bytes))
-                .ok_or(IndexError::ResourceLimited)
-        })?;
-        let db = self.db.scoped(budget)?;
-        quanta_index_scratch_sqlite::write_map_edit_fields_batch_wide(
-            &db,
-            self.allocation.as_ref(),
-            "INSERT INTO posting(term,k,p,n) VALUES ",
-            4096,
-            demands.as_slice()?,
-            |slot| {
-                let (term, edit) = fields(rows.get(slot).ok_or(IndexError::ResourceLimited)?);
-                Ok((rusqlite::types::ValueRef::Blob(term), edit, 0))
-            },
-            budget,
-        )
+        self.postings.append(self, rows, fields, budget)
     }
 
     pub(super) fn posting_batch_rows(
@@ -1562,12 +1968,8 @@ impl TextSpool {
         after: Option<&[u8]>,
         budget: &mut WorkBudget,
     ) -> Result<TermPage, IndexError> {
-        term_page(
-            &*self.db.scoped(budget)?,
-            POSTING_TERM_PAGE_SQL,
-            after,
-            budget,
-        )
+        self.check_posting_usable()?;
+        self.packed_term_page(after, None, budget)
     }
 
     pub(super) fn posting_cardinalities(
@@ -1575,140 +1977,31 @@ impl TextSpool {
         terms: &TermPage,
         budget: &mut WorkBudget,
     ) -> Result<PostingCardinalities, IndexError> {
-        if terms.is_empty()
-            || terms.len() > PAGE
-            || terms
-                .windows(2)
-                .any(|pair| matches!(pair, [left, right] if left.as_slice() >= right.as_slice()))
-        {
-            return Err(IndexError::CorruptObject(
-                "posting term page is not ordered".into(),
-            ));
-        }
-        let memory = budget.reserve_memory(
-            u64::try_from(std::mem::size_of::<[PostingDelta; PAGE]>())
-                .map_err(|_error| IndexError::ResourceLimited)?,
-            quanta_index_core::index::MemoryLifetime::Temporary,
-        )?;
-        // The original cardinality cost is one logical read per term. Charge
-        // every read before the grouped SQL statement can touch the spool.
-        for _ in terms.iter() {
-            budget.charge(WorkUsage {
-                reads: 1,
-                ..WorkUsage::default()
-            })?;
-        }
-        let cut = terms.case_cut()?.unwrap_or(terms.len());
-        let ranges = [(0, cut), (cut, terms.len())];
-        let io_scope = self.db.scoped(budget)?;
-        let mut statement = io_scope
-            .prepare_cached(POSTING_CARDINALITY_PAGE_SQL)
-            .map_err(|error| sql(&error))?;
-        let mut deltas = [PostingDelta::default(); PAGE];
-        let mut count = 0usize;
-        for (start, end) in ranges {
-            if start == end {
-                continue;
-            }
-            let first = terms.get(start).ok_or(IndexError::ResourceLimited)?;
-            let last = terms
-                .get(end.checked_sub(1).ok_or(IndexError::ResourceLimited)?)
-                .ok_or(IndexError::ResourceLimited)?;
-            let mut rows = statement
-                .query(params![first.as_slice(), last.as_slice()])
-                .map_err(|error| sql(&error))?;
-            loop {
-                budget.checkpoint()?;
-                let Some(row) = rows.next().map_err(|error| sql(&error))? else {
-                    break;
-                };
-                if count >= end {
-                    return Err(IndexError::CorruptObject(
-                        "posting cardinality range has extra term".into(),
-                    ));
-                }
-                let expected = terms.get(count).ok_or_else(|| {
-                    IndexError::CorruptObject("posting cardinality page has extra term".into())
-                })?;
-                let rusqlite::types::ValueRef::Blob(term) =
-                    row.get_ref(0).map_err(|error| sql(&error))?
-                else {
-                    return Err(IndexError::CorruptObject(
-                        "posting cardinality key is not a blob".into(),
-                    ));
-                };
-                if term != expected.as_slice() {
-                    return Err(IndexError::CorruptObject(
-                        "posting cardinality page key mismatch".into(),
-                    ));
-                }
-                let added: i64 = row.get(1).map_err(|error| sql(&error))?;
-                let removed: i64 = row.get(2).map_err(|error| sql(&error))?;
-                let delta = deltas.get_mut(count).ok_or(IndexError::ResourceLimited)?;
-                *delta = PostingDelta {
-                    added: u64::try_from(added).map_err(|_error| {
-                        IndexError::CorruptObject("negative posting addition".into())
-                    })?,
-                    removed: u64::try_from(removed).map_err(|_error| {
-                        IndexError::CorruptObject("negative posting removal".into())
-                    })?,
-                };
-                count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-            }
-            if count != end {
-                return Err(IndexError::CorruptObject(
-                    "posting cardinality range is incomplete".into(),
-                ));
-            }
-        }
-        if count != terms.len() {
-            return Err(IndexError::CorruptObject(
-                "posting cardinality page is incomplete".into(),
-            ));
-        }
-        Ok(PostingCardinalities {
-            deltas,
-            len: count,
-            _memory: memory,
-        })
+        self.check_posting_usable()?;
+        self.packed_cardinalities(terms, budget)
     }
 
     pub(super) fn posting_cursor(&self, terms: TermPage) -> PostingCursor<'_> {
+        self.posting_cursor_with_packets(terms, None)
+    }
+
+    fn posting_cursor_with_packets<'a>(
+        &'a self,
+        terms: TermPage,
+        cache: Option<&'a PostingPacketCache>,
+    ) -> PostingCursor<'a> {
         PostingCursor {
             spool: self,
             terms,
+            cache,
             validated: false,
             case_cut: None,
             range_start: 0,
+            range_exhausted: false,
             after: None,
-            page: EditPage::default(),
+            range: None,
+            finished: false,
         }
-    }
-
-    /// Data-only reuse within this disposable prepare. top surface0 receives
-    /// next references only after the original attempt confirms their install.
-    /// This is not registration authority; final parent installation authenticates
-    /// the exact child in the Catalog again.
-    pub(super) fn has_confirmed_posting(
-        &self,
-        reference: ObjectRef,
-        budget: &mut WorkBudget,
-    ) -> Result<bool, IndexError> {
-        budget.charge(WorkUsage {
-            reads: 1,
-            bytes: 4096,
-            ..WorkUsage::default()
-        })?;
-        let db = self.db.scoped(budget)?;
-        let mut statement = db.prepare_cached(
-            "SELECT 1 FROM top INDEXED BY top_confirmed_posting WHERE surface=0 AND n=?1 LIMIT 1"
-        ).map_err(|error| sql(&error))?;
-        let found: Option<i64> = statement
-            .query_row([reference_bytes(&reference)?], |row| row.get(0))
-            .optional()
-            .map_err(|error| sql(&error))?;
-        budget.checkpoint()?;
-        Ok(found.is_some())
     }
 
     pub(super) fn top_batch(
@@ -1716,20 +2009,13 @@ impl TextSpool {
         rows: &[(u8, MapEdit)],
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
-        let index_bytes = map_field_reservation(1, 32)?;
-        let demands = BatchDemands::new(rows, |(surface, edit)| {
+        self.check_posting_usable()?;
+        self.postings.check_page_source(self)?;
+        let demands = BatchDemands::new(rows, |(_surface, edit)| {
             let key =
                 u64::try_from(edit.key.len()).map_err(|_error| IndexError::ResourceLimited)?;
-            let base = key
-                .checked_add(map_field_reservation(2, 64)?)
-                .ok_or(IndexError::ResourceLimited)?;
-            if *surface == 0 && edit.next.is_some() {
-                base.checked_add(key)
-                    .and_then(|bytes| bytes.checked_add(index_bytes))
-                    .ok_or(IndexError::ResourceLimited)
-            } else {
-                Ok(base)
-            }
+            key.checked_add(map_field_reservation(2, 64)?)
+                .ok_or(IndexError::ResourceLimited)
         })?;
         let db = self.db.scoped(budget)?;
         quanta_index_scratch_sqlite::write_map_edit_batch(
@@ -1740,22 +2026,16 @@ impl TextSpool {
             demands.as_slice()?,
             |slot| {
                 let (surface, edit) = rows.get(slot).ok_or(IndexError::ResourceLimited)?;
-                let secondary = if *surface == 0 && edit.next.is_some() {
-                    u64::try_from(edit.key.len())
-                        .map_err(|_error| IndexError::ResourceLimited)?
-                        .checked_add(index_bytes)
-                        .ok_or(IndexError::ResourceLimited)?
-                } else {
-                    0
-                };
                 Ok((
                     rusqlite::types::ValueRef::Integer(i64::from(*surface)),
                     edit,
-                    secondary,
+                    0,
                 ))
             },
             budget,
-        )
+        )?;
+        self.postings.accept_top_changes(self)?;
+        Ok(())
     }
 
     pub(super) fn top_cursor(&self) -> TopCursor<'_> {
@@ -1778,11 +2058,11 @@ pub(super) struct InventoryCursor<'a> {
 
 impl MapEditCursor for InventoryCursor<'_> {
     fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
-        if !self.ready_checked {
+        if self.ready_checked {
+            self.spool.require_ready_packet()?;
+        } else {
             self.spool.require_ready_inventories(budget)?;
             self.ready_checked = true;
-        } else {
-            self.spool.require_ready_packet()?;
         }
         loop {
             budget.checkpoint()?;
@@ -1793,11 +2073,11 @@ impl MapEditCursor for InventoryCursor<'_> {
             if self.page.complete() {
                 return Ok(None);
             }
-            let prior_root = self.after.as_ref().map(|position| position.root);
+            let prior_root = self.after.as_ref().map(|position| position.root());
             let prior_key = self
                 .after
                 .as_ref()
-                .map(|position| position.edit.key.as_slice())
+                .map(|position| position.key())
                 .unwrap_or_default();
             let bounds: [&dyn rusqlite::ToSql; 2] = [&prior_root, &prior_key];
             let (query, parameters): (&str, &[&dyn rusqlite::ToSql]) = if self.after.is_some() {
@@ -1827,34 +2107,28 @@ impl MapEditCursor for InventoryCursor<'_> {
                     root,
                     budget,
                 )?;
-                check_term_key(&edit.edit.key)?;
+                check_term_key(edit.key())?;
                 Ok(edit)
             })?;
         }
     }
 }
 
-enum RootTarget<'a> {
-    Inventory(u32),
-    Posting(&'a [u8]),
-}
-
-/// One immutable logical root, normalized to ordinal0 for compact preparation.
+/// One immutable inventory root tagged with its output map ordinal.
 pub(super) struct RootCursor<'a> {
     spool: &'a TextSpool,
-    target: RootTarget<'a>,
+    root: u32,
+    output_root: u32,
     after: Option<OrdinalMapEdit>,
     page: EditPage,
     ready_checked: bool,
 }
 impl MapEditCursor for RootCursor<'_> {
     fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
-        if matches!(self.target, RootTarget::Inventory(_)) {
-            if !self.ready_checked {
-                self.spool.require_ready_inventories(budget)?;
-            } else {
-                self.spool.require_ready_packet()?;
-            }
+        if self.ready_checked {
+            self.spool.require_ready_packet()?;
+        } else {
+            self.spool.require_ready_inventories(budget)?;
         }
         self.ready_checked = true;
         loop {
@@ -1866,45 +2140,29 @@ impl MapEditCursor for RootCursor<'_> {
             if self.page.complete() {
                 return Ok(None);
             }
+            let root = self.root;
             let db = self.spool.db.scoped(budget)?;
-            let after = self.after.as_ref().map(|row| row.edit.key.as_slice());
-            let inventory = matches!(self.target, RootTarget::Inventory(_));
-            let (query, selector, bound): (&str, &dyn rusqlite::ToSql, usize) = match &self.target {
-                RootTarget::Inventory(root) => (
-                    if after.is_some() {
-                        INVENTORY_ROOT_NEXT_SQL
-                    } else {
-                        INVENTORY_ROOT_FIRST_SQL
-                    },
-                    root,
-                    usize::try_from(MAX_TERM_KEY_BYTES)
-                        .map_err(|_error| IndexError::ResourceLimited)?,
-                ),
-                RootTarget::Posting(term) => (
-                    if after.is_some() {
-                        POSTING_ROOT_NEXT_SQL
-                    } else {
-                        POSTING_ROOT_FIRST_SQL
-                    },
-                    term,
-                    32,
-                ),
+            let after = self.after.as_ref().map(|row| row.key());
+            let query = if after.is_some() {
+                INVENTORY_ROOT_NEXT_SQL
+            } else {
+                INVENTORY_ROOT_FIRST_SQL
             };
             let mut statement = db.prepare_cached(query).map_err(|error| sql(&error))?;
             self.page = EditPage::read(
                 &mut statement,
-                &[selector, &after.unwrap_or_default()],
+                &[&root, &after.unwrap_or_default()],
                 4096,
                 budget,
                 |row, budget| {
-                    let edit = read_edit(row, bound, 0, budget)?;
-                    if inventory {
-                        check_term_key(&edit.edit.key)?;
-                    } else if edit.edit.key.len() != 32 {
-                        return Err(IndexError::CorruptObject(
-                            "posting owner key width differs".into(),
-                        ));
-                    }
+                    let edit = read_edit(
+                        row,
+                        usize::try_from(MAX_TERM_KEY_BYTES)
+                            .map_err(|_error| IndexError::ResourceLimited)?,
+                        self.output_root,
+                        budget,
+                    )?;
+                    check_term_key(edit.key())?;
                     Ok(edit)
                 },
             )?;
@@ -1914,23 +2172,34 @@ impl MapEditCursor for RootCursor<'_> {
 
 pub(super) struct PostingRootCursors<'a> {
     spool: &'a TextSpool,
+    prepared_changes: Option<u64>,
     keys: [Option<PreparedKey>; PAGE],
     lengths: [u8; PAGE],
     offsets: [usize; PAGE],
     rows: Vec<Option<OrdinalMapEdit>>,
     _row_memory: Option<quanta_index_core::index::MemoryLease>,
+    shared: Rc<RefCell<SharedRange<'a>>>,
 }
 
 impl<'a> PostingRootCursors<'a> {
-    fn fallback(spool: &'a TextSpool) -> Self {
-        Self {
+    fn fallback(spool: &'a TextSpool, budget: &WorkBudget) -> Result<Self, IndexError> {
+        let memory = budget.reserve_memory(
+            u64::try_from(
+                std::mem::size_of::<SharedRange<'a>>() + 2 * std::mem::size_of::<usize>(),
+            )
+            .map_err(|_error| IndexError::ResourceLimited)?,
+            MemoryLifetime::Temporary,
+        )?;
+        Ok(Self {
             spool,
+            prepared_changes: None,
             keys: std::array::from_fn(|_| None),
             lengths: [0; PAGE],
             offsets: [0; PAGE],
             rows: Vec::new(),
             _row_memory: None,
-        }
+            shared: Rc::new(RefCell::new(SharedRange::new(spool, memory))),
+        })
     }
 
     pub(super) fn cursor(
@@ -1938,17 +2207,70 @@ impl<'a> PostingRootCursors<'a> {
         slot: usize,
         term: &'a [u8],
     ) -> Result<PostingRootCursor<'a>, IndexError> {
+        self.spool.check_posting_usable()?;
+        if let Some(changes) = self.prepared_changes {
+            self.spool.check_posting_epoch(changes)?;
+        }
         if slot >= PAGE {
             return Err(IndexError::ResourceLimited);
         }
         let Some(key) = self.keys.get(slot).and_then(Option::as_ref) else {
-            return Ok(PostingRootCursor::Spool(
-                self.spool.posting_root_cursor(term),
-            ));
+            check_term_key(term)?;
+            let mut shared = self.shared.borrow_mut();
+            if shared.poisoned || shared.active.is_some() {
+                return Err(IndexError::BackendViolation(
+                    "shared posting root cursor is incomplete".into(),
+                ));
+            }
+            let floor = shared.retry_slot.or(shared.last_completed);
+            if let Some(floor) = floor {
+                if slot < floor {
+                    return Err(IndexError::CorruptObject(
+                        "posting root cursor moved backward".into(),
+                    ));
+                }
+                if let Some(witness_slot) = shared.witness_slot {
+                    let same_replay = slot == floor && witness_slot == floor;
+                    if same_replay {
+                        if shared.witness_term() != term {
+                            return Err(IndexError::CorruptObject(
+                                "posting root replay term differs".into(),
+                            ));
+                        }
+                    } else if slot > witness_slot && term <= shared.witness_term() {
+                        return Err(IndexError::CorruptObject(
+                            "posting root order differs".into(),
+                        ));
+                    }
+                }
+            }
+            let crossed_case = shared.witness_slot.is_some_and(|previous| slot > previous)
+                && shared.witness_term().first() != term.first();
+            if shared.last_completed == Some(slot) || shared.retry_slot == Some(slot) {
+                shared.cursor.clear();
+                shared.lookahead = None;
+            }
+            shared.retry_slot = None;
+            shared.active = Some(slot);
+            drop(shared);
+            return Ok(PostingRootCursor::Shared(SharedPostingRootCursor {
+                spool: self.spool,
+                shared: Rc::clone(&self.shared),
+                slot,
+                term,
+                seek_surface: crossed_case,
+                seen: false,
+                finished: false,
+            }));
         };
         if key.as_slice() != term {
             return Err(IndexError::CorruptObject(
                 "sparse posting cursor term differs from selected slot".into(),
+            ));
+        }
+        if self.shared.borrow().active.is_some() {
+            return Err(IndexError::BackendViolation(
+                "posting root cursor is incomplete".into(),
             ));
         }
         let len = usize::from(std::mem::take(
@@ -1980,13 +2302,220 @@ impl<'a> PostingRootCursors<'a> {
                 ));
             }
         }
-        Ok(PostingRootCursor::Prefetched { rows, next: 0, len })
+        Ok(PostingRootCursor::Prefetched {
+            spool: self.spool,
+            changes: self.prepared_changes.ok_or(IndexError::ResourceLimited)?,
+            rows,
+            next: 0,
+            len,
+        })
+    }
+}
+
+struct SharedRange<'a> {
+    spool: &'a TextSpool,
+    cursor: Vec<PackedRangeCursor<'a>>,
+    lookahead: Option<PostingRow>,
+    active: Option<usize>,
+    retry_slot: Option<usize>,
+    witness: [u8; 1024],
+    witness_len: usize,
+    witness_slot: Option<usize>,
+    last_completed: Option<usize>,
+    db_changes: Option<u64>,
+    poisoned: bool,
+    _memory: Option<MemoryLease>,
+    _cursor_memory: Option<MemoryLease>,
+}
+
+impl<'a> SharedRange<'a> {
+    fn new(spool: &'a TextSpool, memory: Option<MemoryLease>) -> Self {
+        Self {
+            spool,
+            cursor: Vec::new(),
+            lookahead: None,
+            active: None,
+            retry_slot: None,
+            witness: [0; 1024],
+            witness_len: 0,
+            witness_slot: None,
+            last_completed: None,
+            db_changes: None,
+            poisoned: false,
+            _memory: memory,
+            _cursor_memory: None,
+        }
+    }
+    fn witness_term(&self) -> &[u8] {
+        &self.witness[..self.witness_len]
+    }
+    fn bind_active_term(&mut self, term: &[u8], budget: &mut WorkBudget) -> Result<(), IndexError> {
+        let slot = self.active.ok_or(IndexError::ResourceLimited)?;
+        if self.witness_slot == Some(slot) {
+            if self.witness_term() != term {
+                return Err(IndexError::CorruptObject(
+                    "posting active root term differs".into(),
+                ));
+            }
+            return Ok(());
+        }
+        if term.len() > self.witness.len() {
+            return Err(IndexError::ResourceLimited);
+        }
+        budget.charge(WorkUsage {
+            bytes: u64::try_from(term.len()).map_err(|_error| IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        self.witness[..term.len()].copy_from_slice(term);
+        self.witness_len = term.len();
+        self.witness_slot = Some(slot);
+        Ok(())
+    }
+    fn check_epoch(&mut self, budget: &WorkBudget) -> Result<(), IndexError> {
+        self.spool.check_posting_usable()?;
+        budget.checkpoint()?;
+        let changes = self.spool.db.change_count()?;
+        match self.db_changes {
+            Some(previous) if previous != changes => {
+                self.poisoned = true;
+                Err(IndexError::BackendViolation(
+                    "posting scratch changed during shared read".into(),
+                ))
+            }
+            Some(_) => Ok(()),
+            None => {
+                self.db_changes = Some(changes);
+                Ok(())
+            }
+        }
+    }
+    fn complete(&mut self, slot: usize, term: &[u8]) -> Result<(), IndexError> {
+        if self.witness_slot != Some(slot) || self.witness_term() != term {
+            return Err(IndexError::CorruptObject(
+                "posting completed root term differs".into(),
+            ));
+        }
+        self.last_completed = Some(slot);
+        self.active = None;
+        Ok(())
+    }
+}
+
+pub(super) struct SharedPostingRootCursor<'a> {
+    spool: &'a TextSpool,
+    shared: Rc<RefCell<SharedRange<'a>>>,
+    slot: usize,
+    term: &'a [u8],
+    seek_surface: bool,
+    seen: bool,
+    finished: bool,
+}
+
+impl MapEditCursor for SharedPostingRootCursor<'_> {
+    fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
+        let result = (|| {
+            self.spool.check_posting_usable()?;
+            budget.checkpoint()?;
+            if self.finished {
+                return Ok(None);
+            }
+            let mut shared = self.shared.borrow_mut();
+            if shared.poisoned || shared.active != Some(self.slot) {
+                return Err(IndexError::BackendViolation(
+                    "posting shared root lease differs".into(),
+                ));
+            }
+            shared.check_epoch(budget)?;
+            if self.seek_surface {
+                if let Some(cursor) = shared.cursor.first_mut() {
+                    cursor.reposition(self.term, budget)?;
+                }
+                shared.lookahead = None;
+                self.seek_surface = false;
+            }
+            shared.bind_active_term(self.term, budget)?;
+            if shared.cursor.is_empty() {
+                if shared.cursor.capacity() == 0 {
+                    let backing = std::mem::size_of::<PackedRangeCursor<'_>>();
+                    let memory = budget.reserve_memory(
+                        u64::try_from(backing).map_err(|_error| IndexError::ResourceLimited)?,
+                        MemoryLifetime::Temporary,
+                    )?;
+                    shared
+                        .cursor
+                        .try_reserve_exact(1)
+                        .map_err(|_error| IndexError::ResourceLimited)?;
+                    if shared.cursor.capacity() != 1 {
+                        shared.cursor = Vec::new();
+                        return Err(IndexError::ResourceLimited);
+                    }
+                    shared._cursor_memory = memory;
+                }
+                shared
+                    .cursor
+                    .push(PackedRangeCursor::new(self.spool, self.term, budget)?);
+            }
+            loop {
+                if shared.lookahead.is_none() {
+                    shared.lookahead = shared
+                        .cursor
+                        .get_mut(0)
+                        .ok_or(IndexError::ResourceLimited)?
+                        .next(budget)?;
+                }
+                match shared.lookahead.as_ref() {
+                    Some(row) if row.term.as_slice() < self.term => {
+                        // A forward-only root factory may skip Tree slots; MapInput
+                        // separately authenticates the complete original stream.
+                        shared.lookahead = None;
+                    }
+                    Some(row) if row.term.as_slice() == self.term => {
+                        let row = shared.lookahead.take().ok_or(IndexError::ResourceLimited)?;
+                        self.seen = true;
+                        return row.ordinal(0, budget).map(Some);
+                    }
+                    Some(_) | None => {
+                        if !self.seen {
+                            return Err(IndexError::CorruptObject(
+                                "posting root is missing its edit".into(),
+                            ));
+                        }
+                        shared.complete(self.slot, self.term)?;
+                        self.finished = true;
+                        return Ok(None);
+                    }
+                }
+            }
+        })();
+        if result.is_err() {
+            self.shared.borrow_mut().poisoned = true;
+        }
+        result
+    }
+}
+
+impl Drop for SharedPostingRootCursor<'_> {
+    fn drop(&mut self) {
+        if !self.finished
+            && let Ok(mut shared) = self.shared.try_borrow_mut()
+        {
+            if !shared.poisoned {
+                // A warm-page probe may legitimately stop after one row. A
+                // subsequent same-slot request restarts with full Work charge.
+                shared.cursor.clear();
+                shared.lookahead = None;
+                shared.active = None;
+                shared.retry_slot = Some(self.slot);
+            }
+        }
     }
 }
 
 pub(super) enum PostingRootCursor<'a> {
-    Spool(RootCursor<'a>),
+    Shared(SharedPostingRootCursor<'a>),
     Prefetched {
+        spool: &'a TextSpool,
+        changes: u64,
         rows: [Option<OrdinalMapEdit>; 8],
         next: usize,
         len: usize,
@@ -1997,8 +2526,16 @@ impl MapEditCursor for PostingRootCursor<'_> {
     fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
         budget.checkpoint()?;
         match self {
-            Self::Spool(cursor) => cursor.next_edit(budget),
-            Self::Prefetched { rows, next, len } => {
+            Self::Shared(cursor) => cursor.next_edit(budget),
+            Self::Prefetched {
+                spool,
+                changes,
+                rows,
+                next,
+                len,
+            } => {
+                spool.check_posting_usable()?;
+                spool.check_posting_epoch(*changes)?;
                 if *next == *len {
                     return Ok(None);
                 }
@@ -2031,62 +2568,33 @@ pub(super) fn check_term_key(key: &[u8]) -> Result<(), IndexError> {
 pub(super) struct PostingCursor<'a> {
     spool: &'a TextSpool,
     terms: TermPage,
+    cache: Option<&'a PostingPacketCache>,
     validated: bool,
     case_cut: Option<usize>,
     range_start: usize,
+    range_exhausted: bool,
     after: Option<OrdinalMapEdit>,
-    page: EditPage,
+    range: Option<PackedRangeCursor<'a>>,
+    finished: bool,
 }
 
-fn decode_posting_range_row(
-    row: &rusqlite::Row<'_>,
-    terms: &TermPage,
-    previous: &mut Option<OrdinalMapEdit>,
-    budget: &mut WorkBudget,
-) -> Result<OrdinalMapEdit, IndexError> {
-    let bound =
-        usize::try_from(MAX_TERM_KEY_BYTES).map_err(|_error| IndexError::ResourceLimited)?;
-    let term = quanta_index_scratch_sqlite::bounded_blob(
-        row.get_ref(3).map_err(|error| sql(&error))?,
-        bound,
-    )?;
-    check_term_key(term)?;
-    let slot = terms
-        .binary_search_by(|key| key.as_slice().cmp(term))
-        .map_err(|_error| IndexError::CorruptObject("posting term outside selected page".into()))?;
-    let root = u32::try_from(slot).map_err(|_error| IndexError::ResourceLimited)?;
-    let edit = read_edit(row, 32, root, budget)?;
-    if edit.edit.key.len() != 32 {
-        return Err(IndexError::CorruptObject(
-            "posting owner key width differs".into(),
-        ));
+impl PostingCursor<'_> {
+    pub(super) fn check_cardinalities(
+        &self,
+        proof: &DensePostingPrepassProof,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        proof.check_page(self.spool, &self.terms, budget)
     }
-    if let Some(prior) = previous.as_ref() {
-        let prior_slot =
-            usize::try_from(prior.root).map_err(|_error| IndexError::ResourceLimited)?;
-        let next_slot = prior_slot
-            .checked_add(1)
-            .ok_or(IndexError::ResourceLimited)?;
-        if slot < prior_slot
-            || slot > next_slot
-            || (slot == prior_slot && edit.edit.key.as_slice() <= prior.edit.key.as_slice())
-        {
-            return Err(IndexError::CorruptObject(
-                "posting range order or selected term is invalid".into(),
-            ));
-        }
-    } else if slot != 0 {
-        return Err(IndexError::CorruptObject(
-            "posting range starts after selected term".into(),
-        ));
-    }
-    *previous = Some(edit.clone());
-    Ok(edit)
 }
 
 impl MapEditCursor for PostingCursor<'_> {
     fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
+        self.spool.check_posting_usable()?;
         budget.checkpoint()?;
+        if self.finished {
+            return Ok(None);
+        }
         if !self.validated {
             if self.terms.is_empty() || self.terms.len() > PAGE {
                 return Err(IndexError::CorruptObject(
@@ -2108,36 +2616,7 @@ impl MapEditCursor for PostingCursor<'_> {
             self.validated = true;
         }
         loop {
-            if let Some(edit) = self.page.pop()? {
-                self.after = Some(edit.clone());
-                return Ok(Some(edit));
-            }
-            if self.page.complete() {
-                let range_end = self
-                    .case_cut
-                    .filter(|_| self.range_start == 0)
-                    .unwrap_or(self.terms.len());
-                let last_slot = range_end
-                    .checked_sub(1)
-                    .ok_or(IndexError::ResourceLimited)?;
-                let observed_slot = self
-                    .after
-                    .as_ref()
-                    .map(|edit| usize::try_from(edit.root))
-                    .transpose()
-                    .map_err(|_error| IndexError::ResourceLimited)?;
-                if observed_slot != Some(last_slot) {
-                    return Err(IndexError::CorruptObject(
-                        "posting range is missing a selected term".into(),
-                    ));
-                }
-                if range_end != self.terms.len() {
-                    self.range_start = range_end;
-                    self.page = EditPage::default();
-                    continue;
-                }
-                return Ok(None);
-            }
+            budget.checkpoint()?;
             let range_end = self
                 .case_cut
                 .filter(|_| self.range_start == 0)
@@ -2154,50 +2633,104 @@ impl MapEditCursor for PostingCursor<'_> {
                         .ok_or(IndexError::ResourceLimited)?,
                 )
                 .ok_or(IndexError::ResourceLimited)?;
-            let after = self
+            if self.range.is_none() {
+                self.range = Some(PackedRangeCursor::new_with_packets(
+                    self.spool,
+                    first.as_slice(),
+                    self.cache,
+                    budget,
+                )?);
+            }
+            let edit = if self.range_exhausted {
+                None
+            } else {
+                let range_start = self.range_start;
+                let previous = self.after.as_ref();
+                let terms = &self.terms;
+                self.range
+                    .as_mut()
+                    .ok_or(IndexError::ResourceLimited)?
+                    .next_row(budget, |row, budget| {
+                        if row.term > last.as_slice() {
+                            return Ok(None);
+                        }
+                        let slot = terms
+                            .binary_search_by(|key| key.as_slice().cmp(row.term))
+                            .map_err(|_error| {
+                                IndexError::CorruptObject(
+                                    "posting term outside selected page".into(),
+                                )
+                            })?;
+                        if slot < range_start || slot >= range_end {
+                            return Err(IndexError::CorruptObject(
+                                "posting term outside selected surface".into(),
+                            ));
+                        }
+                        if let Some(before) = previous {
+                            let prior_slot = usize::try_from(before.root())
+                                .map_err(|_error| IndexError::ResourceLimited)?;
+                            if slot < prior_slot
+                                || slot
+                                    > prior_slot
+                                        .checked_add(1)
+                                        .ok_or(IndexError::ResourceLimited)?
+                                || (slot == prior_slot && row.owner.as_slice() <= before.key())
+                            {
+                                return Err(IndexError::CorruptObject(
+                                    "posting range order or selected term is invalid".into(),
+                                ));
+                            }
+                        } else if slot != 0 {
+                            return Err(IndexError::CorruptObject(
+                                "posting range starts after selected term".into(),
+                            ));
+                        }
+                        let root =
+                            u32::try_from(slot).map_err(|_error| IndexError::ResourceLimited)?;
+                        row.ordinal(root, budget).map(Some)
+                    })?
+                    .flatten()
+            };
+            if let Some(edit) = edit {
+                self.after = Some(edit.clone());
+                return Ok(Some(edit));
+            }
+            let observed = self
                 .after
                 .as_ref()
                 .map(|edit| {
-                    let slot =
-                        usize::try_from(edit.root).map_err(|_error| IndexError::ResourceLimited)?;
-                    if slot < self.range_start {
-                        return Ok::<Option<(&[u8], &[u8])>, IndexError>(None);
-                    }
-                    let term = self.terms.get(slot).ok_or(IndexError::ResourceLimited)?;
-                    Ok::<Option<(&[u8], &[u8])>, IndexError>(Some((
-                        term.as_slice(),
-                        edit.edit.key.as_slice(),
-                    )))
+                    usize::try_from(edit.root()).map_err(|_error| IndexError::ResourceLimited)
                 })
-                .transpose()?
-                .flatten();
-            let db = self.spool.db.scoped(budget)?;
-            let mut statement = db
-                .prepare_cached(if after.is_some() {
-                    POSTING_RANGE_NEXT_SQL
-                } else {
-                    POSTING_RANGE_FIRST_SQL
-                })
-                .map_err(|error| sql(&error))?;
-            let mut previous = self.after.clone();
-            let page = if let Some((resume_term, resume_key)) = after {
-                EditPage::read(
-                    &mut statement,
-                    &[&resume_term, &resume_key, &last.as_slice()],
-                    4096,
-                    budget,
-                    |row, budget| decode_posting_range_row(row, &self.terms, &mut previous, budget),
-                )?
-            } else {
-                EditPage::read(
-                    &mut statement,
-                    &[&first.as_slice(), &last.as_slice()],
-                    4096,
-                    budget,
-                    |row, budget| decode_posting_range_row(row, &self.terms, &mut previous, budget),
-                )?
-            };
-            self.page = page;
+                .transpose()?;
+            if observed
+                != Some(
+                    range_end
+                        .checked_sub(1)
+                        .ok_or(IndexError::ResourceLimited)?,
+                )
+            {
+                return Err(IndexError::CorruptObject(
+                    "posting range is missing a selected term".into(),
+                ));
+            }
+            if range_end == self.terms.len() {
+                if let Some(range) = self.range.as_mut() {
+                    range.remember_packet();
+                }
+                self.finished = true;
+                return Ok(None);
+            }
+            self.range_exhausted = true;
+            let next = self
+                .terms
+                .get(range_end)
+                .ok_or(IndexError::ResourceLimited)?;
+            self.range
+                .as_mut()
+                .ok_or(IndexError::ResourceLimited)?
+                .reposition(next.as_slice(), budget)?;
+            self.range_start = range_end;
+            self.range_exhausted = false;
         }
     }
 }
@@ -2210,12 +2743,19 @@ pub(super) struct TopCursor<'a> {
 }
 
 impl MapEditCursor for TopCursor<'_> {
-    fn pack_terminal_subtrees_for_root(&self) -> Option<u32> {
-        Some(0)
+    fn subtree_packing(
+        &self,
+    ) -> Result<quanta_index_core::index::ports::RootPackingPlan, IndexError> {
+        self.spool.check_posting_usable()?;
+        let mut packing = quanta_index_core::index::ports::RootPackingPlan::default();
+        packing.select(0, quanta_index_core::index::ports::RootPackingMode::Nested)?;
+        packing.select(1, quanta_index_core::index::ports::RootPackingMode::Nested)?;
+        Ok(packing)
     }
 
     fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
         budget.checkpoint()?;
+        self.spool.check_posting_usable()?;
         while self.surface < 2 {
             if let Some(edit) = self.page.pop()? {
                 self.after = Some(edit.clone());
@@ -2239,11 +2779,7 @@ impl MapEditCursor for TopCursor<'_> {
             let mut statement = db
                 .prepare_cached(TOP_NEXT_SQL)
                 .map_err(|error| sql(&error))?;
-            let after = self
-                .after
-                .as_ref()
-                .map(|row| row.edit.key.as_slice())
-                .unwrap_or_default();
+            let after = self.after.as_ref().map(|row| row.key()).unwrap_or_default();
             self.page = EditPage::read(
                 &mut statement,
                 &[&self.surface, &after],
@@ -2293,12 +2829,17 @@ mod tests {
     use std::time::{Duration, Instant};
 
     mod cardinality_pages;
+    mod cold_term_cap;
     mod confirmed_batch;
     mod confirmed_occurrences;
+    mod directory_descriptors;
     mod edit_pages;
+    mod inventory_read_lease;
+    mod paired_eof_epoch;
     mod planned_inventory;
     mod planned_wide;
     mod posting_cursor_ranges;
+    mod posting_packed;
     mod token_groups;
 
     fn budget() -> Result<WorkBudget, IndexError> {
@@ -2316,90 +2857,99 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_posting_seek_is_indexed_exact_local_and_obeys_original_control()
+    fn dense_posting_page_uses_authenticated_counts_without_sparse_packet_scan()
     -> Result<(), IndexError> {
         let mut work = budget()?;
         let spool = TextSpool::new(&TestScratch, &mut work)?;
-        let reference = ObjectRef(quanta_index_core::index::Digest([90; 32]));
-        check!(!spool.has_confirmed_posting(reference, &mut work)?);
-        let plan: String = spool.db.scoped(&work)?.query_row(
-            "EXPLAIN QUERY PLAN SELECT 1 FROM top INDEXED BY top_confirmed_posting WHERE surface=0 AND n=?1 LIMIT 1",
-            [reference_bytes(&reference)?], |row| row.get(3)).map_err(|error| sql(&error))?;
-        check!(
-            plan.contains("SEARCH top USING COVERING INDEX top_confirmed_posting"),
-            "{plan}"
-        );
-        spool.top_batch(
-            &[
-                (
-                    1,
+        let mut rows = Vec::new();
+        for (term, owners) in [
+            (b"\0a".as_slice(), 1_u16..3),
+            (b"\0b".as_slice(), 3_u16..23),
+            (b"\0c".as_slice(), 23_u16..24),
+        ] {
+            for owner in owners {
+                let mut key = vec![0; 30];
+                key.extend_from_slice(&owner.to_be_bytes());
+                rows.push((
+                    term.to_vec(),
                     MapEdit {
-                        key: b"owner".to_vec(),
+                        key,
                         expected: None,
-                        next: Some((reference).into()),
+                        next: Some(MapValue::Object(ObjectRef(Digest([1; 32])))),
                     },
-                ),
-                (
-                    0,
-                    MapEdit {
-                        key: b"\0deleted".to_vec(),
-                        expected: Some((reference).into()),
-                        next: None,
-                    },
-                ),
-            ],
+                ));
+            }
+        }
+        spool.posting_batch(&rows, &mut work)?;
+        let terms = spool.posting_term_page(None, &mut work)?;
+        check_eq!(terms.len(), 3);
+        let cardinalities = spool.posting_cardinalities(&terms, &mut work)?;
+        check_eq!(cardinalities.df(1, 0)?, 20);
+        let proof = cardinalities.dense_prepass_proof();
+        drop(cardinalities);
+        let before = work.usage();
+        let mut roots = spool.posting_root_cursors_with_proof(
+            &terms,
+            &[true, false, true],
+            &proof,
             &mut work,
         )?;
-        check!(!spool.has_confirmed_posting(reference, &mut work)?);
-        spool.top_batch(
-            &[(
-                0,
-                MapEdit {
-                    key: b"\0inline".to_vec(),
-                    expected: None,
-                    next: Some(quanta_index_core::index::MapValue::inline(
-                        &reference.0.0,
-                        None,
-                    )?),
-                },
-            )],
+        // The authoritative fallback does no eager packet reads.
+        check_eq!(work.usage().reads - before.reads, 0);
+        for (slot, expected) in [(0, &[1_u16, 2][..]), (2, &[23_u16][..])] {
+            let mut cursor = roots.cursor(
+                slot,
+                terms
+                    .get(slot)
+                    .ok_or(IndexError::ResourceLimited)?
+                    .as_slice(),
+            )?;
+            for owner in expected {
+                let edit = cursor
+                    .next_edit(&mut work)?
+                    .ok_or(IndexError::ResourceLimited)?;
+                let expected_owner = owner.to_be_bytes();
+                check_eq!(edit.key().get(30..), Some(expected_owner.as_slice()));
+            }
+            check!(cursor.next_edit(&mut work)?.is_none());
+        }
+        drop(roots);
+
+        let mut other_page = TermPage::new();
+        for slot in 0..2 {
+            other_page.push(
+                terms
+                    .get(slot)
+                    .ok_or(IndexError::ResourceLimited)?
+                    .as_slice(),
+                &work,
+            )?;
+        }
+        let before = work.usage();
+        drop(spool.posting_root_cursors_with_proof(
+            &other_page,
+            &[true, true],
+            &proof,
             &mut work,
-        )?;
-        check!(!spool.has_confirmed_posting(reference, &mut work)?);
-        spool.top_batch(
-            &[(
-                0,
-                MapEdit {
-                    key: b"\0term".to_vec(),
-                    expected: None,
-                    next: Some((reference).into()),
-                },
-            )],
-            &mut work,
-        )?;
-        check!(spool.has_confirmed_posting(reference, &mut work)?);
-        let other = TextSpool::new(&TestScratch, &mut work)?;
-        check!(!other.has_confirmed_posting(reference, &mut work)?);
-        work.request().cancel_handle().cancel();
-        check!(matches!(
-            spool.has_confirmed_posting(reference, &mut work),
-            Err(IndexError::Cancelled)
-        ));
-        let mut denied = WorkBudget::new(
-            WorkLimits {
-                reads: 0,
-                writes: 0,
-                bytes: 0,
-                mutations: 0,
-            },
-            Instant::now()
-                .checked_add(Duration::from_secs(10))
+        )?);
+        check!(work.usage().reads > before.reads);
+
+        let stale = DensePostingPrepassProof {
+            page_digest: proof.page_digest,
+            changes: proof
+                .changes
+                .checked_add(1)
                 .ok_or(IndexError::ResourceLimited)?,
-        );
-        check!(matches!(
-            spool.has_confirmed_posting(reference, &mut denied),
-            Err(IndexError::ResourceLimited)
-        ));
+            lower_bound: proof.lower_bound,
+        };
+        let before = work.usage();
+        drop(spool.posting_root_cursors_with_proof(
+            &terms,
+            &[true, false, true],
+            &stale,
+            &mut work,
+        )?);
+        check!(work.usage().reads > before.reads);
         Ok(())
     }
 
@@ -2441,10 +2991,10 @@ mod tests {
             let row = cursor
                 .next_edit(&mut work)?
                 .ok_or(IndexError::ResourceLimited)?;
-            check_eq!(row.root, root);
-            check_eq!(row.edit.key.as_slice(), key);
-            check_eq!(row.edit.expected, None);
-            check_eq!(row.edit.next, Some(reference.into()));
+            check_eq!(row.root(), root);
+            check_eq!(row.key(), key);
+            check_eq!(row.expected()?, None);
+            check_eq!(row.next()?, Some(reference.into()));
         }
         check!(cursor.next_edit(&mut work)?.is_none());
         let mut short = spool.inventory_cursor(1)?;
@@ -2572,7 +3122,6 @@ mod tests {
     fn malformed_edit_rows_refuse_without_advancing_each_text_cursor() -> Result<(), IndexError> {
         enum CursorKind {
             Inventory,
-            Posting,
             TermTop,
             OwnerTop,
         }
@@ -2584,14 +3133,6 @@ mod tests {
             (
                 CursorKind::Inventory,
                 "INSERT INTO inventory VALUES(0,zeroblob(1025),NULL,zeroblob(32))",
-            ),
-            (
-                CursorKind::Posting,
-                "INSERT INTO posting VALUES(x'0161',x'01',zeroblob(33),NULL)",
-            ),
-            (
-                CursorKind::Posting,
-                "INSERT INTO posting VALUES(x'0161',zeroblob(33),NULL,zeroblob(32))",
             ),
             (
                 CursorKind::TermTop,
@@ -2619,9 +3160,6 @@ mod tests {
                 .map_err(|error| sql(&error))?;
             let mut cursor: Box<dyn MapEditCursor + '_> = match kind {
                 CursorKind::Inventory => Box::new(spool.inventory_cursor(1)?),
-                CursorKind::Posting => {
-                    Box::new(spool.posting_cursor(spool.posting_term_page(None, &mut work)?))
-                }
                 CursorKind::TermTop | CursorKind::OwnerTop => Box::new(spool.top_cursor()),
             };
             for _retry in 0..2 {
@@ -2642,11 +3180,9 @@ mod tests {
         let db = Connection::open_in_memory().map_err(|error| sql(&error))?;
         db.execute_batch(
             "CREATE TABLE tokens(term BLOB NOT NULL,pos INTEGER NOT NULL,PRIMARY KEY(term,pos)) WITHOUT ROWID;
-             CREATE TABLE posting(term BLOB NOT NULL,k BLOB NOT NULL,PRIMARY KEY(term,k)) WITHOUT ROWID;
-             INSERT INTO tokens VALUES(zeroblob(1025),0);
-             INSERT INTO posting VALUES(zeroblob(1025),x'01');",
+             INSERT INTO tokens VALUES(zeroblob(1025),0);",
         ).map_err(|error| sql(&error))?;
-        for statement in [TOKEN_TERM_PAGE_SQL, POSTING_TERM_PAGE_SQL] {
+        for statement in [TOKEN_TERM_PAGE_SQL] {
             check!(matches!(
                 term_page(&db, statement, None, &mut budget()?),
                 Err(IndexError::CorruptObject(_))
@@ -2660,7 +3196,7 @@ mod tests {
         let db = Connection::open_in_memory().map_err(|error| sql(&error))?;
         db.execute_batch(
             "CREATE TABLE tokens(term BLOB NOT NULL,pos INTEGER NOT NULL,PRIMARY KEY(term,pos)) WITHOUT ROWID;
-             CREATE TABLE posting(term BLOB NOT NULL,k BLOB NOT NULL,PRIMARY KEY(term,k)) WITHOUT ROWID;",
+",
         ).map_err(|error| sql(&error))?;
         let mut expected = Vec::new();
         for index in 0u16..129 {
@@ -2679,21 +3215,9 @@ mod tests {
                         "fixture token insertion affected an unexpected row count".into(),
                     ));
                 }
-                if db
-                    .execute(
-                        "INSERT INTO posting(term,k) VALUES(?1,?2)",
-                        params![term, position.to_be_bytes()],
-                    )
-                    .map_err(|error| sql(&error))?
-                    != 1
-                {
-                    return Err(IndexError::BackendViolation(
-                        "fixture posting insertion affected an unexpected row count".into(),
-                    ));
-                }
             }
         }
-        for sql_text in [TOKEN_TERM_PAGE_SQL, POSTING_TERM_PAGE_SQL] {
+        for sql_text in [TOKEN_TERM_PAGE_SQL] {
             let mut actual = Vec::new();
             let mut after: Option<Vec<u8>> = None;
             let mut work = budget()?;

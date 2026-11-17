@@ -1,5 +1,5 @@
 //! Size-tiered coalescing reuses owner artifacts and the original COW attempt.
-//! No intermediate Lance file-set is built and no selected view is mutated.
+//! No intermediate graph artifact is built and no selected view is mutated.
 
 use quanta_index_core::index::{
     AttemptContext, IndexError, MapEdit, MapRoot, MemoryLease, MemoryLifetime, ObjectRef,
@@ -8,8 +8,8 @@ use quanta_index_core::index::{
 
 use super::super::{LoadedOwnerArtifact, load_query_owner_artifact};
 use super::{
-    AnnDirectory, EmbeddingRecipe, MAX_DELTA_OWNERS, MAX_REGIONS, ReadContext, ann_files,
-    ann_lance, corrupt, load_member, maintenance,
+    AnnDirectory, EmbeddingRecipe, MAX_DELTA_OWNERS, MAX_REGIONS, ReadContext, corrupt,
+    load_member, maintenance, native_graph, require_changed_map_root, scan_ordered_page,
 };
 
 const MAX_MERGED_REGIONS: u32 = 8;
@@ -67,10 +67,10 @@ impl RegionMembers {
 }
 
 fn row_limit(recipe: &EmbeddingRecipe) -> Result<u32, IndexError> {
-    let cells =
-        u32::try_from(ann_lance::MAX_REGION_CELLS).map_err(|_error| IndexError::ResourceLimited)?;
-    let rows =
-        u32::try_from(ann_lance::MAX_REGION_ROWS).map_err(|_error| IndexError::ResourceLimited)?;
+    let cells = u32::try_from(native_graph::MAX_REGION_CELLS)
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    let rows = u32::try_from(native_graph::MAX_REGION_ROWS)
+        .map_err(|_error| IndexError::ResourceLimited)?;
     Ok(cells
         .checked_div(recipe.dimension)
         .ok_or(IndexError::ResourceLimited)?
@@ -99,26 +99,18 @@ fn include(
     let mut source_rows = 0u32;
     let mut exact_matches = 0u32;
     loop {
-        let page = context.maps.scan(
+        let page = scan_ordered_page(
             source,
             after.as_ref().map(<[u8; 38]>::as_slice),
             MAX_DELTA_OWNERS,
-            context.budget,
+            after.is_some(),
+            &mut ReadContext {
+                objects: context.objects,
+                maps: context.maps,
+                budget: context.budget,
+            },
         )?;
-        if page.entries.len()
-            > usize::try_from(MAX_DELTA_OWNERS).map_err(|_error| IndexError::ResourceLimited)?
-            || (page.entries.is_empty() && page.has_more)
-        {
-            return Err(IndexError::BackendViolation(
-                "ANN consolidation page made no bounded progress".into(),
-            ));
-        }
-        let selected = maintenance::selected_page(
-            directory,
-            &page,
-            after.as_ref().map(<[u8; 38]>::as_slice),
-            context,
-        )?;
+        let selected = maintenance::selected_page(directory, &page, context)?;
         for (index, (key, reference)) in page.entries.iter().enumerate() {
             let reference = reference.as_object_ref()?;
             context.budget.checkpoint()?;
@@ -126,9 +118,6 @@ fn include(
                 .as_slice()
                 .try_into()
                 .map_err(|_error| corrupt("ANN consolidation member key width differs"))?;
-            if after.is_some_and(|previous| cursor <= previous) {
-                return Err(corrupt("ANN consolidation members are not ordered"));
-            }
             after = Some(cursor);
             inspected = inspected
                 .checked_add(1)
@@ -238,7 +227,7 @@ fn install_selected_members(
     }
     if (base.root.0.is_none() != (base.owners == 0))
         || base.owners
-            > u32::try_from(ann_lance::MAX_REGION_ROWS)
+            > u32::try_from(native_graph::MAX_REGION_ROWS)
                 .map_err(|_error| IndexError::ResourceLimited)?
     {
         return Err(corrupt("ANN consolidation base member count differs"));
@@ -252,29 +241,23 @@ fn install_selected_members(
     let mut selected_at = 0usize;
     while base.root.0.is_some() {
         context.budget.checkpoint()?;
-        let page = context.maps.scan(
+        let page = scan_ordered_page(
             base.root,
             after.as_ref().map(<[u8; 38]>::as_slice),
             MAX_DELTA_OWNERS,
-            context.budget,
+            after.is_some(),
+            &mut ReadContext {
+                objects: context.objects,
+                maps: context.maps,
+                budget: context.budget,
+            },
         )?;
-        if page.entries.len()
-            > usize::try_from(MAX_DELTA_OWNERS).map_err(|_error| IndexError::ResourceLimited)?
-            || (page.entries.is_empty() && page.has_more)
-        {
-            return Err(IndexError::BackendViolation(
-                "ANN consolidation base scan made no bounded progress".into(),
-            ));
-        }
         for (key, old_value) in &page.entries {
             context.budget.checkpoint()?;
             let cursor: [u8; 38] = key
                 .as_slice()
                 .try_into()
                 .map_err(|_error| corrupt("ANN consolidation base key width differs"))?;
-            if after.is_some_and(|previous| cursor <= previous) {
-                return Err(corrupt("ANN consolidation base members are not ordered"));
-            }
             after = Some(cursor);
             scanned = scanned.checked_add(1).ok_or(IndexError::ResourceLimited)?;
             if scanned > base.owners {
@@ -335,11 +318,15 @@ fn install_selected_members(
         edits.push(&key, None, Some(selected.reference), context.budget)?;
     }
     context.budget.checkpoint()?;
-    result.root = if edits.values.is_empty() {
+    let root = if edits.values.is_empty() {
         base.root
     } else {
-        context.apply(base.root, &edits.values)?
+        require_changed_map_root(base.root, context.apply(base.root, &edits.values)?)?
     };
+    if root.0.is_none() {
+        return Err(corrupt("ANN consolidation selected member root is empty"));
+    }
+    result.root = root;
     Ok(())
 }
 
@@ -491,6 +478,7 @@ fn load_candidates(
     let mut after = start;
     let mut wrapped = false;
     let mut inspected = 0u32;
+    let mut continuation = false;
     while inspected < limit {
         let page = directory.region_page(
             after,
@@ -498,6 +486,7 @@ fn load_candidates(
                 .checked_sub(inspected)
                 .ok_or(IndexError::ResourceLimited)?
                 .min(64),
+            continuation,
             &mut ReadContext {
                 objects: context.objects,
                 maps: context.maps,
@@ -543,7 +532,8 @@ fn load_candidates(
             });
             after = Some(id);
         }
-        if !page.has_more {
+        continuation = page.has_more;
+        if !continuation {
             if start.is_some() && !wrapped {
                 after = None;
                 wrapped = true;
@@ -632,12 +622,15 @@ pub(super) fn prepare(
         .map_err(|_error| IndexError::ResourceLimited)?;
     load_candidates(directory, &mut candidates, candidate_limit, context)?;
     candidates.sort_unstable_by_key(|entry| (entry.rows, entry.ordinal));
-    let mut merged = 0u32;
+    let mut _unlink_memory = None;
+    let mut unlinks = Vec::new();
+    let maximum_unlinks =
+        usize::try_from(MAX_MERGED_REGIONS).map_err(|_| IndexError::ResourceLimited)?;
     for selected in candidates {
-        if merged == MAX_MERGED_REGIONS {
+        if unlinks.len() == maximum_unlinks {
             break;
         }
-        if selected.rows > result.rows && !(at_capacity && merged == 0) {
+        if selected.rows > result.rows && !(at_capacity && unlinks.is_empty()) {
             break;
         }
         if result
@@ -647,15 +640,15 @@ pub(super) fn prepare(
         {
             break;
         }
-        let seal = ann_files::load_fileset_seal(context.objects, selected.fileset, context.budget)?;
-        if seal.seal.recipe != directory.recipe
-            || seal.seal.generation
+        let seal = native_graph::load_seal(context.objects, selected.fileset, context.budget)?;
+        if seal.recipe != directory.recipe
+            || seal.generation
                 != selected
                     .ordinal
                     .checked_add(1)
                     .ok_or(IndexError::ResourceLimited)?
-            || seal.seal.rows != selected.rows
-            || seal.seal.dimension != recipe.dimension
+            || seal.rows != selected.rows
+            || seal.dimension != recipe.dimension
             || selected.dimension
                 != usize::try_from(recipe.dimension)
                     .map_err(|_error| IndexError::ResourceLimited)?
@@ -671,9 +664,38 @@ pub(super) fn prepare(
             context,
         )?;
         base.consider(selected.members, source_counts)?;
-        maintenance::unlink(directory, selected.ordinal, selected.reference, context)?;
-        merged = merged.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        if unlinks.is_empty() {
+            let bytes = maximum_unlinks
+                .checked_mul(std::mem::size_of::<MapEdit>() + 8)
+                .ok_or(IndexError::ResourceLimited)?;
+            _unlink_memory = context.budget.reserve_memory(
+                u64::try_from(bytes).map_err(|_| IndexError::ResourceLimited)?,
+                MemoryLifetime::Temporary,
+            )?;
+            unlinks
+                .try_reserve_exact(maximum_unlinks)
+                .map_err(|_| IndexError::ResourceLimited)?;
+            if unlinks.capacity() > maximum_unlinks {
+                return Err(IndexError::ResourceLimited);
+            }
+        }
+        let mut key = Vec::new();
+        key.try_reserve_exact(8)
+            .map_err(|_| IndexError::ResourceLimited)?;
+        if key.capacity() > 8 {
+            return Err(IndexError::ResourceLimited);
+        }
+        key.extend_from_slice(&selected.ordinal.to_be_bytes());
+        unlinks.push(MapEdit {
+            key,
+            expected: Some(selected.reference.into()),
+            next: None,
+        });
     }
     install_selected_members(&mut result, base, context)?;
+    // Candidate order is by size. Apply the authenticated removals in original
+    // key order so no intermediate region map is installed.
+    unlinks.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+    maintenance::unlink_edits(directory, &unlinks, context)?;
     Ok(result)
 }

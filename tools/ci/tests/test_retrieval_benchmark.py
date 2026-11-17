@@ -2051,12 +2051,12 @@ def test_pair_record_identity_accepts_multi_route_quanta_and_rejects_mixed_captu
 
 
 def test_symbol_route_records_validate_without_schema_forks(tmp_path):
-    # RBR-05: the wire schemas keep routes as nonempty strings, so a
-    # symbol-route record validates through the same generic path — no
-    # route enum fork exists to drift.
+    # RBR-05: the wire schema remains generic; Quanta route semantics bind
+    # symbol to its explicit no-model capture identity.
     repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
     suite["routes"] = ["symbol"]
     run["route_provenance"] = {"symbol": {"capture_id": "q0"}}
+    run["captures"]["q0"]["model"] = "none:symbol"
     kept = {}
     for row in run["results"]:
         kept[row["task_id"]] = dict(row, route="symbol")
@@ -2518,7 +2518,7 @@ def test_current_same_candidates_identical_scores_regardless_of_runner(tmp_path)
     first = ev.evaluate(*record_v3(repo, suite, run, suite_path, runner_path), "lexical", "hybrid")
     run["runner"]["name"] = "other-runner"
     run["runner"]["run_id"] = "run-other"
-    run["captures"]["q0"]["model"] = "other-model"
+    run["captures"]["q1"]["model"] = "other-model"
     runner_path2 = tmp_path / "run2.json"
     suite_path.write_text(json.dumps(suite), encoding="utf-8")
     runner_path2.write_text(json.dumps(run), encoding="utf-8")
@@ -6828,6 +6828,11 @@ def _full_receipts(commit, binary_digest, binary_dir, *, sdk_build_profile=None)
             workspace_root=portable_proof.ROOT,
             build_profile=profile,
         )
+        context_version = (
+            portable_proof.FRESH_EXECUTION_CONTEXT_VERSION
+            if profile
+            else portable_proof.EXECUTION_CONTEXT_VERSION
+        )
         commands = []
         for name, argv, overrides in portable_proof._expected_commands(
             rail,
@@ -6836,6 +6841,7 @@ def _full_receipts(commit, binary_digest, binary_dir, *, sdk_build_profile=None)
             binaries,
             inherited_environment=inherited_environment,
             build_profile=profile,
+            context_version=context_version,
         ):
             commands.append(
                 {
@@ -6855,11 +6861,7 @@ def _full_receipts(commit, binary_digest, binary_dir, *, sdk_build_profile=None)
                 }
             )
         context = {
-            "schema_version": (
-                portable_proof.FRESH_EXECUTION_CONTEXT_VERSION
-                if profile
-                else portable_proof.EXECUTION_CONTEXT_VERSION
-            ),
+            "schema_version": context_version,
             **({"build_profile": profile} if profile else {}),
             "rail": rail,
             "revision": commit,
@@ -11947,8 +11949,8 @@ def _v3_capture(system: str, *, current: bool = False) -> dict:
         "generation": 7 if system == "quanta" else 0,
         "receipt_digest": _fake_sha(f"{system}-receipt"),
         "activation_digest": _fake_sha(f"{system}-activation"),
-        "model": "lex" if system == "quanta" else "potion-code-16M-v2",
-        "model_revision": "r1",
+        "model": "none:lexical" if system == "quanta" else "potion-code-16M-v2",
+        "model_revision": "not-applicable" if system == "quanta" else "r1",
     }
     base["searchd_binary"] = {"binary_digest": _fake_sha("searchd")} if system == "quanta" else None
     if current:
@@ -12111,10 +12113,13 @@ def fixture_v3(tmp_path: Path, *, answerable_only: bool = False, blinding: str =
             "isolation_method": "separate suite access; runner cannot read suite path",
             "access_block_log": "verified EACCES on suite path for runner uid",
         },
-        "captures": {"q0": _v3_capture("quanta", current=True)},
+        "captures": {
+            "q0": _v3_capture("quanta", current=True),
+            "q1": dict(_v3_capture("quanta", current=True), model="model2vec:test", model_revision="r1"),
+        },
         "route_provenance": {
             "lexical": {"capture_id": "q0"},
-            "hybrid": {"capture_id": "q0"},
+            "hybrid": {"capture_id": "q1"},
         },
         "results": results,
     }
@@ -12127,6 +12132,26 @@ def record_v3(repo, suite, run, suite_path, runner_path):
     suite_path.write_text(json.dumps(suite), encoding="utf-8")
     runner_path.write_text(json.dumps(run), encoding="utf-8")
     return ev.load_evidence(repo, suite_path, runner_path)
+
+
+def test_current_quanta_routes_bind_the_model_they_exercise(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    record_v3(repo, suite, run, suite_path, runner_path)
+    for capture_id, model, revision, error in (
+        ("q0", "model2vec:test", "r1", "no-model route"),
+        ("q1", "none:hybrid", "not-applicable", "modeled route"),
+    ):
+        changed = copy.deepcopy(run)
+        changed["captures"][capture_id].update(model=model, model_revision=revision)
+        with pytest.raises(ev.EvidenceError, match=error):
+            record_v3(repo, suite, changed, suite_path, runner_path)
+    historical = copy.deepcopy(run)
+    historical["schema_version"] = 3
+    historical["captures"] = {"q0": _v3_capture("quanta")}
+    historical["route_provenance"]["hybrid"]["capture_id"] = "q0"
+    for row in historical["results"]:
+        row.pop("query_identity", None)
+    record_v3(repo, suite, historical, suite_path, runner_path)
 
 
 def test_cross_suite_experiment_custody_rejects_file_family_query_and_digest_leakage(tmp_path):
@@ -12435,8 +12460,9 @@ def test_go_trace_semantic_input_binds_blind_pack_and_runner_identity(tmp_path):
     packed_task = next(row for row in pack["tasks"] if row["task_id"] == task["task_id"])
     assert packed_task["semantic_input"] == task["semantic_input"]
     profile = qp.execution_profile("natural_language")
-    run["captures"]["q0"]["execution_profile"] = profile
-    run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
+    for capture in run["captures"].values():
+        capture["execution_profile"] = profile
+        capture["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
     packed_tasks = {row["task_id"]: row for row in pack["tasks"]}
     for result in run["results"]:
         packed = packed_tasks[result["task_id"]]
@@ -12468,8 +12494,9 @@ def test_v5_literal_and_nl_policies_replay_through_the_python_oracle(tmp_path):
     # Re-stamp the record as a literal-policy capture: identity digests are
     # re-derived by the evaluator's independent Python planner.
     profile = qp.execution_profile("literal")
-    run["captures"]["q0"]["execution_profile"] = profile
-    run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
+    for capture in run["captures"].values():
+        capture["execution_profile"] = profile
+        capture["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
     for row in run["results"]:
         query = next(t["query"] for t in pack["tasks"] if t["task_id"] == row["task_id"])
         row["query_identity"] = qp.derive_query_identity("literal", query)
@@ -12482,8 +12509,9 @@ def test_v5_literal_and_nl_policies_replay_through_the_python_oracle(tmp_path):
         query = next(t["query"] for t in pack["tasks"] if t["task_id"] == row["task_id"])
         row["query_identity"] = qp.derive_query_identity("natural_language", query)
     profile = qp.execution_profile("natural_language")
-    run["captures"]["q0"]["execution_profile"] = profile
-    run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
+    for capture in run["captures"].values():
+        capture["execution_profile"] = profile
+        capture["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
     # The NL plan digests now agree, so this must load: the oracle accepts
     # any of the three canonical policies with self-consistent evidence.
     _suite, _pack, loaded_nl = record_v3(repo, suite, run, suite_path, runner_path)
@@ -13071,17 +13099,17 @@ def test_benchmark_prep_does_not_repeat_retrieval_contracts():
     # Prove the actual delegation and inspect its leaf command separately.
     assert prep.count("uv run --frozen --extra dev just benchmark-control-contract-local") == 1
     control_pytest = pytest_invocations(control)
-    local_pytest = pytest_invocations(local)
     assert control_pytest
-    assert len(local_pytest) == 1
+    assert local.splitlines().count(
+        "uv run --frozen --extra dev python tools/benchmark/retrieval/proof_inventory.py --run-local"
+    ) == 1
     retrieval_test = "tools/ci/tests/test_retrieval_benchmark.py"
     oracle_suite_test = "tools/ci/tests/test_source_oracle_suite.py"
     for test_path in (retrieval_test, oracle_suite_test):
         assert all(test_path not in argv for argv in pytest_invocations(prep) + control_pytest)
-        assert local_pytest[0].count(test_path) == 1
+        assert portable_proof.proof_inventory.PYTHON_SELECTORS.count(test_path) == 1
     assert "test -p quanta-index-retrieval-bench" not in prep + control
     assert "portable_proof.py run --rail contract" in proof
-    assert "-q" in local_pytest[0]
     assert "--test chunking_contract" in local
     assert "--test l5_parser_regressions" in local
     assert "--bin quanta-index-retrieval-bench" in local
@@ -13722,6 +13750,99 @@ def test_literal_file_diagnostic_profile_admits_standalone_lexical_only(tmp_path
     path.write_text(json.dumps(spec), encoding="utf-8")
     with pytest.raises(pairrun.RunError, match="cannot carry qualified claims"):
         pairrun.load_spec(path, standalone_quanta=True)
+
+
+def test_hybrid_file_spec_cap_is_standalone_and_route_bound(tmp_path):
+    schema = _load_schema("pair-spec.schema.json")
+    spec = _g0_spec()
+    spec["execution_profiles"] = {"quanta": qp.execution_profile("natural_language")}
+    spec["routes"] = ["hybrid_file"]
+    spec["file_top_k"] = 5
+    path = tmp_path / "hybrid-file-spec.json"
+
+    def load(value, *, standalone=True):
+        path.write_text(json.dumps(value), encoding="utf-8")
+        return pairrun.load_spec(path, standalone_quanta=standalone)
+
+    jsonschema.validate(spec, schema)
+    assert load(spec)["file_top_k"] == 5
+    for value in (0, 10001, "5", True):
+        invalid = copy.deepcopy(spec)
+        invalid["file_top_k"] = value
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(invalid, schema)
+        with pytest.raises(pairrun.RunError, match="file_top_k"):
+            load(invalid)
+
+    missing = copy.deepcopy(spec)
+    del missing["file_top_k"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing, schema)
+    with pytest.raises(pairrun.RunError, match="file_top_k"):
+        load(missing)
+
+    beyond_lane = copy.deepcopy(spec)
+    beyond_lane["file_top_k"] = 11
+    jsonschema.validate(beyond_lane, schema)
+    with pytest.raises(pairrun.RunError, match="file_top_k"):
+        load(beyond_lane)
+
+    wrong_route = copy.deepcopy(spec)
+    wrong_route["routes"] = ["lexical"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(wrong_route, schema)
+    with pytest.raises(pairrun.RunError, match="file_top_k"):
+        load(wrong_route)
+
+    wrong_policy = copy.deepcopy(spec)
+    wrong_policy["execution_profiles"]["quanta"] = qp.execution_profile("natural_language_file")
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(wrong_policy, schema)
+    with pytest.raises(pairrun.RunError, match="lexical-only Quanta route"):
+        load(wrong_policy)
+
+    paired = copy.deepcopy(spec)
+    paired["execution_profiles"]["semble"] = semble_adapter.execution_profile("lexical-file", None)
+    # The same public spec can be captured by the standalone Quanta command;
+    # only the command boundary knows whether paired scoring was requested.
+    jsonschema.validate(paired, schema)
+    assert load(paired)["file_top_k"] == 5
+    with pytest.raises(pairrun.RunError, match="hybrid_file paired file scoring is unsupported"):
+        load(paired, standalone=False)
+
+
+def test_hybrid_file_runner_schema_matches_bound_evidence_validator():
+    from tools.benchmark.retrieval.hybrid_file_evidence import (
+        HybridFileEvidenceError,
+        validate_result,
+    )
+    from tools.ci.tests.test_retrieval_hybrid_file_evidence import _capture, _result
+
+    full_schema = _load_schema("runner.schema.json")
+    schema = {"$defs": full_schema["$defs"], "$ref": "#/$defs/result"}
+    result = _result()
+    result["query_identity"] = {
+        "original_query_sha256": "a" * 64,
+        "effective_lexical_request_sha256": "b" * 64,
+        "semantic_text_sha256": "c" * 64,
+    }
+    result["timings"] = {"query_latency_ms": 1.0}
+    jsonschema.validate(result, schema)
+    validate_result(result, _capture(), 4)
+
+    for mutate in (
+        lambda row: row["hybrid_file_evidence"].update(file_top_k=0),
+        lambda row: row["hybrid_file_evidence"]["response"].pop("dense_window"),
+        lambda row: row["hybrid_file_evidence"]["response"]["generation"].pop("repo_id"),
+        lambda row: row.pop("hybrid_file_evidence"),
+        lambda row: row.update(route="hybrid"),
+    ):
+        invalid = copy.deepcopy(result)
+        mutate(invalid)
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(invalid, schema)
+        with pytest.raises(HybridFileEvidenceError):
+            validate_result(invalid, _capture(), 4)
 
 
 @pytest.mark.parametrize(
@@ -15301,6 +15422,8 @@ def _exact_symbol_record_fixture(tmp_path):
     profile = qp.execution_profile("exact_symbol_name")
     run["captures"]["q0"]["execution_profile"] = profile
     run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
+    run["captures"]["q0"]["model"] = "none:symbol"
+    run["captures"] = {"q0": run["captures"]["q0"]}
     run["route_provenance"] = {"symbol": {"capture_id": "q0"}}
     run["results"] = [row for row in run["results"] if row["route"] == "lexical"]
     run["span_accounting_version"] = 1

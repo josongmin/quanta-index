@@ -2,6 +2,7 @@
 //! text shard bodies remain transient. Independent source bytes bound retained
 //! text copies; an inode-set walk bounds the mapped generation files.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/publication_fixture.rs"]

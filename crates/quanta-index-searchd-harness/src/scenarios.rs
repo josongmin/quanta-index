@@ -8,6 +8,62 @@ use std::borrow::Cow;
 
 use crate::artifact::{BenchSyntax, ResultShape, RouteFamily};
 
+/// Result cap requested for every benchmark query.
+pub const TOP_K: u32 = 10;
+
+/// Source bytes shared by the Legacy DSL matrix and the Native file query oracle.
+///
+/// The helper excludes one matching Rust file in the NOT case, while the
+/// Markdown file adds an independent match in the OR case.
+pub const LEXICAL_CORPUS: &[(&str, &str)] = &[
+    (
+        "src/lib.rs",
+        "fn parity_needle_alpha() {\n    // sphinx of quartz\n    // release v1.2.3 foo_bar\n    let documentation = \"needle\";\n}\n",
+    ),
+    ("src/other.rs", "fn parity_needle_alpha() {}\n"),
+    ("docs/intro.md", "parity documentation lives here\n"),
+    (
+        "src/with_helper.rs",
+        "fn parity_needle_alpha() {\n    let helper = 1;\n}\n",
+    ),
+];
+
+/// Scenario ID and sorted, exhaustive paths for Native File queries on `LEXICAL_CORPUS`.
+pub const NATIVE_TEXT_FILE_SCENARIOS: &[(&str, &[&str])] = &[
+    (
+        "lexical.keyword.native",
+        &["src/lib.rs", "src/other.rs", "src/with_helper.rs"],
+    ),
+    (
+        "lexical.keyword.sourcegraph",
+        &["src/lib.rs", "src/other.rs", "src/with_helper.rs"],
+    ),
+    ("lexical.phrase.native", &["src/lib.rs"]),
+    ("lexical.regex.native", &["src/lib.rs"]),
+    (
+        "structural.mixed_or.native",
+        &[
+            "docs/intro.md",
+            "src/lib.rs",
+            "src/other.rs",
+            "src/with_helper.rs",
+        ],
+    ),
+    (
+        "structural.mixed_or.sourcegraph",
+        &[
+            "docs/intro.md",
+            "src/lib.rs",
+            "src/other.rs",
+            "src/with_helper.rs",
+        ],
+    ),
+    (
+        "structural.mixed_and_not.native",
+        &["src/lib.rs", "src/other.rs"],
+    ),
+];
+
 /// How a scenario's query string is produced.
 ///
 /// Most are literals. A few adversarial scenarios send queries that exceed the

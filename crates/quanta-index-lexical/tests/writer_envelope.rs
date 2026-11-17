@@ -5,6 +5,7 @@
 //! leaves its committed rows readable. Internal LRU and idle policies are
 //! verified against the private writer cache in its unit tests.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/publication_fixture.rs"]

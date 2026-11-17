@@ -55,6 +55,9 @@ pub use source_coverage::{
 pub mod channel;
 pub mod index;
 pub mod ipc;
+pub mod native_cutover_evidence_v1;
+pub mod product_root_locator_v2;
+pub mod native_cutover_source_join_v1;
 pub mod native_protocol;
 pub mod query;
 pub mod repomap;

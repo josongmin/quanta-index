@@ -372,7 +372,7 @@ fn open_fixture(
         descriptor,
         NativeSemantic::new(Arc::clone(&bridge), recipe.clone())?.with_ann(),
     )?;
-    let semantic = semantic_registry(Arc::clone(&bridge), &recipe, Arc::clone(&runtime))?;
+    let semantic = semantic_registry(Arc::clone(&bridge), &recipe)?;
     let kernel = Kernel::new(
         KernelServices::new(
             objects.clone(),
@@ -400,7 +400,6 @@ fn open_fixture(
 fn semantic_registry(
     bridge: Arc<TextEmbeddingBridge<FixedProvider>>,
     recipe: &quanta_index_semantic::native::EmbeddingRecipe,
-    runtime: Arc<tokio::runtime::Runtime>,
 ) -> TestResult<QueryAdapterRegistry<SemanticReadRequest, SearchResult>> {
     let spec = semantic_spec(recipe);
     let descriptor = AdapterDescriptor {
@@ -428,7 +427,7 @@ fn semantic_registry(
                 need,
             },
         )?
-        .with_ann(runtime),
+        .with_ann(),
     )?;
     Ok(semantic)
 }
@@ -1643,11 +1642,7 @@ fn real_ann_seal_write_enospc_preserves_selected_views_and_recovers_same_operati
     old_pin.validate()?;
     // A fresh reader reloads the immutable ANN file set using the same live
     // managed Catalog/lease while the old selected view remains pinned.
-    let warm_reader = semantic_registry(
-        Arc::clone(&fixture.bridge),
-        &fixture.recipe,
-        Arc::clone(&fixture.runtime),
-    )?;
+    let warm_reader = semantic_registry(Arc::clone(&fixture.bridge), &fixture.recipe)?;
     let (reopened_old, reopened_old_score, reopened_old_coverage) =
         semantic_hit_with(&fixture.kernel, &warm_reader, old_view, "alpha")?;
     require(
@@ -1973,11 +1968,7 @@ fn real_ann_seal_file_fsync_eio_preserves_selected_views_and_recovers_same_opera
             && final_coverage == gamma_coverage,
         "ANN FUSE same-key recovery lacks independently fixed A/B ANN gold",
     )?;
-    let warm_reader = semantic_registry(
-        Arc::clone(&fixture.bridge),
-        &fixture.recipe,
-        Arc::clone(&fixture.runtime),
-    )?;
+    let warm_reader = semantic_registry(Arc::clone(&fixture.bridge), &fixture.recipe)?;
     let (warm_old, warm_old_score, warm_old_coverage) =
         semantic_hit_with(&fixture.kernel, &warm_reader, before.old_view, "alpha")?;
     let (warm_final, warm_final_score, warm_final_coverage) =
@@ -2324,11 +2315,7 @@ fn real_ann_seal_checked_close_eio_recovers_only_after_process_exit() -> TestRes
             && coverage == gamma_coverage,
         "ANN checked-close cold replay lacks fixed A/B ANN gold",
     )?;
-    let warm_reader = semantic_registry(
-        Arc::clone(&reopened.bridge),
-        &reopened.recipe,
-        Arc::clone(&reopened.runtime),
-    )?;
+    let warm_reader = semantic_registry(Arc::clone(&reopened.bridge), &reopened.recipe)?;
     let (warm_winner, warm_score, warm_coverage) =
         semantic_hit_with(&reopened.kernel, &warm_reader, final_view, "gamma")?;
     require(

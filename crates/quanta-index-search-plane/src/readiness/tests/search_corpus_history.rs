@@ -2135,7 +2135,7 @@ fn post_delete_fsync_failure_fences_rollback_and_retry_reconciles_authoritative_
         Arc::new(crate::readiness::ScriptedIndexBytesV1),
         sync.clone(),
     )?;
-    ledger.fence_search_corpus_history_v1(&repo, &revision);
+    assert!(ledger.fence_search_corpus_history_v1(&repo, &revision));
     let first =
         store.record_sealed_search_corpus(&repo, &revision, ManifestGeneration::new(4), "digest-4");
     assert!(matches!(first, Err(CoreError::Storage(_))));

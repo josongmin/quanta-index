@@ -1,9 +1,9 @@
 //! Opt-in native incremental index control wire. No generic object CRUD.
 
 use crate::index::{
-    CatalogView, CoverageBinding, IndexInstanceId, IndexProfile, IngressRef, MapRoot, ObjectRef,
-    OperationKey, OperationReply, OperationStatus, OwnerKey, OwnerMutation, OwnerMutationSet,
-    ProducerId, ProjectionBinding, ProjectionCertificate, ProjectionId,
+    CatalogView, CoverageBinding, Digest, IndexInstanceId, IndexProfile, IngressRef, MapRoot,
+    ObjectRef, OperationKey, OperationReply, OperationStatus, OwnerKey, OwnerMutation,
+    OwnerMutationSet, ProducerId, ProjectionBinding, ProjectionCertificate, ProjectionId,
     ProjectionOwnerContribution, SourceCut, SourceInput, SourceRecord, SourceTextAdmission,
     StableOwnerId, SubmitOutcome, UpdateRequest, ViewRef, ViewSelection, WorkClaim, WorkIntent,
     WorkStatus, WorkspaceKey,
@@ -12,9 +12,13 @@ use crate::{FiniteScore, SemanticQueryRequest, TextQueryRequest};
 
 mod read_session;
 pub use read_session::{
-    NativeReadSessionId, NativeReadSessionReply, NativeReadSessionRequest,
+    MAX_NATIVE_READ_PROFILE_INSTANCES, NativeHistoryCursor, NativeHistoryPage,
+    NativeHistoryPageRef, NativeHybridFileHit, NativeHybridFileResult, NativeReadSessionId,
+    NativeReadSessionHistoryCutV1, NativeReadSessionHistoryGenerationV1, NativeReadSessionProfile, NativeReadSessionReply, NativeReadSessionRequest,
     NativeReadSessionSettlement, NativeReadSessionState, NativeReadSessionStatus,
-    NativeReadSettlementState,
+    NativeReadSettlementState, NativeSemanticFileHit, NativeTextCursor, NativeTextPage,
+    native_history_query_digest, native_text_query_digest, rank_native_hybrid_files,
+    validate_native_history_query, validate_native_hybrid_file_query,
 };
 mod graph;
 mod projection_children;
@@ -530,6 +534,12 @@ pub enum NativeIndexRequest {
         ingress: IngressRef,
         inputs: Vec<SourceInput>,
     },
+    /// Stage a bounded batch with one producer-supplied repository identity.
+    StageRepositorySources {
+        ingress: IngressRef,
+        repository: crate::RepoId,
+        inputs: Vec<SourceInput>,
+    },
     StageProfile {
         ingress: IngressRef,
         profile: IndexProfile,
@@ -576,6 +586,14 @@ pub enum NativeIndexRequest {
         instance: IndexInstanceId,
         prefix: String,
         after: Option<String>,
+        limit: u32,
+    },
+    /// Repository-aware file inventory ordered by path, then repository.
+    QueryRepositoryPaths {
+        selection: ViewSelection,
+        instance: IndexInstanceId,
+        prefix: String,
+        after: Option<NativeRepositoryPathCursor>,
         limit: u32,
     },
     /// Ranked native text search under one selected, ticket-pinned view.
@@ -640,6 +658,9 @@ pub enum NativeIndexRequest {
         query: NativeRepoMapQuery,
     },
     ReadView(ViewSelection),
+    /// Observe the selected view and actual held root identity in one daemon.
+    /// This metadata grants no EX lease, Original admission or issuer authority.
+    ObserveRootView(ViewSelection),
     /// Read the exact producer stamp; does not expose object CRUD.
     ReadProjection {
         selection: ViewSelection,
@@ -672,6 +693,8 @@ pub enum NativeIndexRequest {
         limit: u32,
     },
     Status(OperationKey),
+    /// Historical publication metadata only; does not pin a view or authorize reads.
+    PublishedViewMetadata(OperationKey),
     ReadyWork {
         workspace: WorkspaceKey,
         epoch: u64,
@@ -690,6 +713,12 @@ pub enum NativeIndexRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeIndexResponse {
+    HistoryPage(NativeHistoryPage),
+    HistoryCut(NativeReadSessionHistoryCutV1),
+    HistoryGeneration(NativeReadSessionHistoryGenerationV1),
+    HybridFileRanked(NativeHybridFileResult),
+    TextRankedPage(NativeTextPage),
+    ReadSessionProfile(NativeReadSessionProfile),
     ReadSession(NativeReadSessionReply),
     Created(ViewRef),
     InputOpened(IngressRef),
@@ -700,6 +729,7 @@ pub enum NativeIndexResponse {
     InputDiscarded(IngressRef),
     LiteralPage(NativeLiteralPage),
     PathPage(NativePathPage),
+    RepositoryPathPage(NativeRepositoryPathPage),
     TextRanked(NativeTextResult),
     OverlayTextRanked(NativeOverlayTextResult),
     SemanticRanked(NativeSemanticResult),
@@ -719,11 +749,24 @@ pub enum NativeIndexResponse {
     ProducerSourceOwners(NativeProducerSourcePage),
     ProjectionSourceDiff(NativeProjectionSourceDiff),
     Status(OperationReply<OperationStatus>),
+    PublishedViewMetadata(OperationReply<CatalogView>),
+    RootScopedView(NativeRootScopedViewV1),
     ReadyWork(Vec<WorkIntent>),
     Claimed(WorkClaim),
     Renewed(WorkClaim),
     WorkStatus(WorkStatus),
     Error(NativeIndexWireError),
+}
+
+/// Data observed under one held daemon root and selected canonical view.
+/// Device/inode/nonce are observations, not authorization or read authority.
+/// A caller must authenticate the responding process and installed provider.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeRootScopedViewV1 {
+    pub view: CatalogView,
+    pub root_nonce: Digest,
+    pub root_device: u64,
+    pub root_inode: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -791,6 +834,31 @@ pub struct NativePathPage {
     pub has_more: bool,
 }
 
+/// The exclusive continuation of one exact view and repository-aware prefix.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeRepositoryPathCursor {
+    pub view: ViewRef,
+    pub instance: IndexInstanceId,
+    pub prefix: String,
+    pub path: String,
+    /// `None` is the original unscoped source, ordered before named repositories.
+    pub repository: Option<crate::RepoId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeRepositoryPathEntry {
+    pub repository: Option<crate::RepoId>,
+    pub file: NativeFilePathEntry,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeRepositoryPathPage {
+    pub view: ViewRef,
+    pub entries: Vec<NativeRepositoryPathEntry>,
+    pub has_more: bool,
+    pub next_after: Option<NativeRepositoryPathCursor>,
+}
+
 /// The current native text member is synchronously required. This is query
 /// coverage, distinct from async publication `CoverageStatus`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -835,6 +903,40 @@ impl NativeIndexResponse {
         serializer.serialize_newtype_variant("NativeIndexResponse", 9, "Error", error)
     }
 
+    /// Borrow the canonical profile while its Kernel allocation owner lives.
+    pub fn serialize_read_session_profile_ref<S: serde::Serializer>(
+        session: NativeReadSessionId,
+        view: &CatalogView,
+        profile: &IndexProfile,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        struct BorrowedProfile<'a> {
+            session: NativeReadSessionId,
+            view: &'a CatalogView,
+            profile: &'a IndexProfile,
+        }
+        impl serde::Serialize for BorrowedProfile<'_> {
+            fn serialize<T: serde::Serializer>(&self, serializer: T) -> Result<T::Ok, T::Error> {
+                use serde::ser::SerializeStruct;
+                let mut state = serializer.serialize_struct("NativeReadSessionProfile", 3)?;
+                state.serialize_field("session", &self.session)?;
+                state.serialize_field("view", self.view)?;
+                state.serialize_field("profile", self.profile)?;
+                state.end()
+            }
+        }
+        serializer.serialize_newtype_variant(
+            "NativeIndexResponse",
+            36,
+            "ReadSessionProfile",
+            &BorrowedProfile {
+                session,
+                view,
+                profile,
+            },
+        )
+    }
+
     pub fn serialize_staged_sources_ref<S: serde::Serializer>(
         references: &[ObjectRef],
         serializer: S,
@@ -856,6 +958,18 @@ impl NativeIndexResponse {
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
         serializer.serialize_newtype_variant("NativeIndexResponse", 15, "PathPage", result)
+    }
+
+    pub fn serialize_repository_path_page_ref<S: serde::Serializer>(
+        result: &NativeRepositoryPathPage,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_newtype_variant(
+            "NativeIndexResponse",
+            42,
+            "RepositoryPathPage",
+            result,
+        )
     }
 
     /// Borrow the canonical semantic result while its allocation owner lives.
@@ -998,8 +1112,14 @@ quanta_index_contract_base::native_serde_struct!(NativeEffortDone {
     reason: NativeEffortReason,
     deep_delivered: bool
 });
-quanta_index_contract_base::native_serde_enum!(NativeIndexRequest { units {  } newtypes { Submit = 6 => UpdateRequest, Resume = 7 => OperationKey, ReadView = 8 => ViewSelection, Status = 9 => OperationKey, WorkStatus = 13 => WorkIntent, BeginInput = 14 => OperationKey, DiscardInput = 17 => IngressRef, Overlay = 31 => NativeOverlayRequest, Stub = 33 => NativeStubRequest, BindOverlaySave = 34 => NativeOverlaySaveIntent, CompleteOverlaySave = 35 => NativeOverlaySaveReceipt, SearchOverlayText = 36 => NativeOverlayTextQuery, ReadSession = 40 => NativeReadSessionRequest } records { CreateWorkspace = 0 { workspace: WorkspaceKey, epoch: u64 }, StageSource = 1 { ingress: IngressRef, path: String, bytes: Vec<u8>, text: SourceTextAdmission }, StageProfile = 2 { ingress: IngressRef, profile: IndexProfile }, StageProjectionOutput = 3 { ingress: IngressRef, bytes: Vec<u8>, children: NativeProjectionOutputChildren }, StageProjectionOwner = 4 { ingress: IngressRef, contribution: ProjectionOwnerContribution }, StageProjectionCertificate = 5 { ingress: IngressRef, certificate: ProjectionCertificate }, ReadyWork = 10 { workspace: WorkspaceKey, epoch: u64, limit: u32 }, ClaimWork = 11 { intent: WorkIntent, lease_millis: u64 }, RenewWork = 12 { claim: WorkClaim, lease_millis: u64 }, StageMutationPage = 15 { ingress: IngressRef, base: MapRoot, mutations: Vec<OwnerMutation> }, SealMutations = 16 { ingress: IngressRef, root: MapRoot, count: u64 }, SearchLiteral = 18 { selection: ViewSelection, instance: IndexInstanceId, literal: Vec<u8>, after: Option<Vec<u8>>, limit: u32 }, QueryPaths = 19 { selection: ViewSelection, instance: IndexInstanceId, prefix: String, after: Option<String>, limit: u32 }, StageSources = 20 { ingress: IngressRef, inputs: Vec<SourceInput> }, SearchText = 21 { selection: ViewSelection, instance: IndexInstanceId, query: TextQueryRequest }, SearchSemantic = 22 { selection: ViewSelection, instance: IndexInstanceId, query: SemanticQueryRequest }, QueryEffortStream = 23 { overlay: Option<NativeOverlayEffortContext>, selection: ViewSelection, text_instance: IndexInstanceId, semantic_instance: IndexInstanceId, text_query: TextQueryRequest, semantic_query: SemanticQueryRequest, preference: NativeEffortPreference }, InteractionBegin = 24 { window_millis: u64 }, InteractionActivity = 25 { publisher: NativeInteractionPublisherId, sequence: u64 }, InteractionRenew = 26 { publisher: NativeInteractionPublisherId, sequence: u64 }, InteractionEnd = 27 { publisher: NativeInteractionPublisherId, sequence: u64 }, LookupSourceOwners = 28 { selection: ViewSelection, owners: NativeSourceOwnerKeys }, ListProducerSourceOwners = 29 { selection: ViewSelection, producer: ProducerId, after: Option<StableOwnerId>, limit: u32 }, ReadProjection = 30 { selection: ViewSelection, projection: ProjectionId }, LookupProjectionOwners = 38 { selection: ViewSelection, projection: ProjectionId, owners: NativeSourceOwnerKeys }, DiffProjectionSourceOwners = 39 { selection: ViewSelection, projection: ProjectionId, producer: ProducerId, after: Option<StableOwnerId>, limit: u32 }, QueryGraph = 32 { selection: ViewSelection, instance: IndexInstanceId, query: NativeGraphQuery }, QueryRepoMap = 37 { selection: ViewSelection, instance: IndexInstanceId, query: NativeRepoMapQuery } } });
-quanta_index_contract_base::native_serde_enum!(NativeIndexResponse { units { } newtypes { Created = 0 => ViewRef, Staged = 1 => ObjectRef, Submitted = 2 => OperationReply<SubmitOutcome>, View = 3 => CatalogView, Status = 4 => OperationReply<OperationStatus>, ReadyWork = 5 => Vec<WorkIntent>, Claimed = 6 => WorkClaim, Renewed = 7 => WorkClaim, WorkStatus = 8 => WorkStatus, Error = 9 => NativeIndexWireError, InputOpened = 10 => IngressRef, MutationPageStaged = 11 => MapRoot, MutationsStaged = 12 => OwnerMutationSet, InputDiscarded = 13 => IngressRef, LiteralPage = 14 => NativeLiteralPage, PathPage = 15 => NativePathPage, StagedSources = 16 => Vec<ObjectRef>, TextRanked = 17 => NativeTextResult, SemanticRanked = 18 => NativeSemanticResult, EffortDone = 19 => NativeEffortDone, InteractionBegun = 20 => NativeInteractionPublisherId, InteractionAccepted = 21 => NativeInteractionPublisherId, SourceOwners = 22 => NativeSourceOwnerLookup, ProducerSourceOwners = 23 => NativeProducerSourcePage, Projection = 24 => NativeProjectionRead, Overlay = 25 => NativeOverlayReply, Graph = 26 => NativeGraphResult, Stub = 27 => NativeStubReply, OverlayTextRanked = 28 => NativeOverlayTextResult, OverlaySemanticRanked = 29 => NativeOverlaySemanticResult, RepoMapRanked = 30 => NativeRepoMapResult, ProjectionOwners = 31 => NativeProjectionOwnerLookup, ProjectionSourceDiff = 32 => NativeProjectionSourceDiff, ReadSession = 33 => NativeReadSessionReply } records {  } });
+quanta_index_contract_base::native_serde_struct!(NativeRootScopedViewV1 {
+    view: CatalogView,
+    root_nonce: Digest,
+    root_device: u64,
+    root_inode: u64
+});
+quanta_index_contract_base::native_serde_enum!(NativeIndexRequest { units {  } newtypes { Submit = 6 => UpdateRequest, Resume = 7 => OperationKey, ReadView = 8 => ViewSelection, Status = 9 => OperationKey, PublishedViewMetadata = 41 => OperationKey, ObserveRootView = 42 => ViewSelection, WorkStatus = 13 => WorkIntent, BeginInput = 14 => OperationKey, DiscardInput = 17 => IngressRef, Overlay = 31 => NativeOverlayRequest, Stub = 33 => NativeStubRequest, BindOverlaySave = 34 => NativeOverlaySaveIntent, CompleteOverlaySave = 35 => NativeOverlaySaveReceipt, SearchOverlayText = 36 => NativeOverlayTextQuery, ReadSession = 40 => NativeReadSessionRequest } records { CreateWorkspace = 0 { workspace: WorkspaceKey, epoch: u64 }, StageSource = 1 { ingress: IngressRef, path: String, bytes: Vec<u8>, text: SourceTextAdmission }, StageProfile = 2 { ingress: IngressRef, profile: IndexProfile }, StageProjectionOutput = 3 { ingress: IngressRef, bytes: Vec<u8>, children: NativeProjectionOutputChildren }, StageProjectionOwner = 4 { ingress: IngressRef, contribution: ProjectionOwnerContribution }, StageProjectionCertificate = 5 { ingress: IngressRef, certificate: ProjectionCertificate }, ReadyWork = 10 { workspace: WorkspaceKey, epoch: u64, limit: u32 }, ClaimWork = 11 { intent: WorkIntent, lease_millis: u64 }, RenewWork = 12 { claim: WorkClaim, lease_millis: u64 }, StageMutationPage = 15 { ingress: IngressRef, base: MapRoot, mutations: Vec<OwnerMutation> }, SealMutations = 16 { ingress: IngressRef, root: MapRoot, count: u64 }, SearchLiteral = 18 { selection: ViewSelection, instance: IndexInstanceId, literal: Vec<u8>, after: Option<Vec<u8>>, limit: u32 }, QueryPaths = 19 { selection: ViewSelection, instance: IndexInstanceId, prefix: String, after: Option<String>, limit: u32 }, QueryRepositoryPaths = 44 { selection: ViewSelection, instance: IndexInstanceId, prefix: String, after: Option<NativeRepositoryPathCursor>, limit: u32 }, StageSources = 20 { ingress: IngressRef, inputs: Vec<SourceInput> }, StageRepositorySources = 43 { ingress: IngressRef, repository: crate::RepoId, inputs: Vec<SourceInput> }, SearchText = 21 { selection: ViewSelection, instance: IndexInstanceId, query: TextQueryRequest }, SearchSemantic = 22 { selection: ViewSelection, instance: IndexInstanceId, query: SemanticQueryRequest }, QueryEffortStream = 23 { overlay: Option<NativeOverlayEffortContext>, selection: ViewSelection, text_instance: IndexInstanceId, semantic_instance: IndexInstanceId, text_query: TextQueryRequest, semantic_query: SemanticQueryRequest, preference: NativeEffortPreference }, InteractionBegin = 24 { window_millis: u64 }, InteractionActivity = 25 { publisher: NativeInteractionPublisherId, sequence: u64 }, InteractionRenew = 26 { publisher: NativeInteractionPublisherId, sequence: u64 }, InteractionEnd = 27 { publisher: NativeInteractionPublisherId, sequence: u64 }, LookupSourceOwners = 28 { selection: ViewSelection, owners: NativeSourceOwnerKeys }, ListProducerSourceOwners = 29 { selection: ViewSelection, producer: ProducerId, after: Option<StableOwnerId>, limit: u32 }, ReadProjection = 30 { selection: ViewSelection, projection: ProjectionId }, LookupProjectionOwners = 38 { selection: ViewSelection, projection: ProjectionId, owners: NativeSourceOwnerKeys }, DiffProjectionSourceOwners = 39 { selection: ViewSelection, projection: ProjectionId, producer: ProducerId, after: Option<StableOwnerId>, limit: u32 }, QueryGraph = 32 { selection: ViewSelection, instance: IndexInstanceId, query: NativeGraphQuery }, QueryRepoMap = 37 { selection: ViewSelection, instance: IndexInstanceId, query: NativeRepoMapQuery } } });
+quanta_index_contract_base::native_serde_enum!(NativeIndexResponse { units { } newtypes { Created = 0 => ViewRef, Staged = 1 => ObjectRef, Submitted = 2 => OperationReply<SubmitOutcome>, View = 3 => CatalogView, Status = 4 => OperationReply<OperationStatus>, ReadyWork = 5 => Vec<WorkIntent>, Claimed = 6 => WorkClaim, Renewed = 7 => WorkClaim, WorkStatus = 8 => WorkStatus, Error = 9 => NativeIndexWireError, InputOpened = 10 => IngressRef, MutationPageStaged = 11 => MapRoot, MutationsStaged = 12 => OwnerMutationSet, InputDiscarded = 13 => IngressRef, LiteralPage = 14 => NativeLiteralPage, PathPage = 15 => NativePathPage, RepositoryPathPage = 42 => NativeRepositoryPathPage, StagedSources = 16 => Vec<ObjectRef>, TextRanked = 17 => NativeTextResult, SemanticRanked = 18 => NativeSemanticResult, EffortDone = 19 => NativeEffortDone, InteractionBegun = 20 => NativeInteractionPublisherId, InteractionAccepted = 21 => NativeInteractionPublisherId, SourceOwners = 22 => NativeSourceOwnerLookup, ProducerSourceOwners = 23 => NativeProducerSourcePage, Projection = 24 => NativeProjectionRead, Overlay = 25 => NativeOverlayReply, Graph = 26 => NativeGraphResult, Stub = 27 => NativeStubReply, OverlayTextRanked = 28 => NativeOverlayTextResult, OverlaySemanticRanked = 29 => NativeOverlaySemanticResult, RepoMapRanked = 30 => NativeRepoMapResult, ProjectionOwners = 31 => NativeProjectionOwnerLookup, ProjectionSourceDiff = 32 => NativeProjectionSourceDiff, ReadSession = 33 => NativeReadSessionReply, HybridFileRanked = 34 => NativeHybridFileResult, TextRankedPage = 35 => NativeTextPage, ReadSessionProfile = 36 => NativeReadSessionProfile, PublishedViewMetadata = 37 => OperationReply<CatalogView>, RootScopedView = 38 => NativeRootScopedViewV1, HistoryPage = 39 => NativeHistoryPage, HistoryCut = 40 => NativeReadSessionHistoryCutV1, HistoryGeneration = 41 => NativeReadSessionHistoryGenerationV1 } records {  } });
 quanta_index_contract_base::native_serde_struct!(NativeProjectionRead { view: ViewRef, binding: Option<ProjectionBinding> });
 quanta_index_contract_base::native_serde_struct!(NativeProjectionOwnerBinding { owner: OwnerKey, contribution: Option<ObjectRef> });
 quanta_index_contract_base::native_serde_struct!(NativeProjectionOwnerLookup { view: ViewRef, projection: ProjectionId, binding: Option<ProjectionBinding>, rows: NativeProjectionOwnerRows });
@@ -1039,6 +1159,9 @@ quanta_index_contract_base::native_serde_struct!(NativeFilePathEntry {
     byte_len: u64
 });
 quanta_index_contract_base::native_serde_struct!(NativePathPage { view: ViewRef, entries: Vec<NativeFilePathEntry>, has_more: bool });
+quanta_index_contract_base::native_serde_struct!(NativeRepositoryPathCursor { view: ViewRef, instance: IndexInstanceId, prefix: String, path: String, repository: Option<crate::RepoId> });
+quanta_index_contract_base::native_serde_struct!(NativeRepositoryPathEntry { repository: Option<crate::RepoId>, file: NativeFilePathEntry });
+quanta_index_contract_base::native_serde_struct!(NativeRepositoryPathPage { view: ViewRef, entries: Vec<NativeRepositoryPathEntry>, has_more: bool, next_after: Option<NativeRepositoryPathCursor> });
 quanta_index_contract_base::native_serde_enum!(NativeTextCoverage { units { CoreRequired = 0 } newtypes { } records { } });
 quanta_index_contract_base::native_serde_struct!(NativeTextHit {
     owner: OwnerKey,
@@ -1810,6 +1933,7 @@ mod tests {
                 bytes: ObjectRef(Digest([8; 32])),
                 byte_len: 6,
                 text,
+                source_repo_id: None,
             };
             let mut input_json = serde_json::to_value(&input)?;
             check!(
@@ -1821,6 +1945,13 @@ mod tests {
             );
             check!(serde_json::from_value::<SourceInput>(input_json).is_err());
             let mut record_json = serde_json::to_value(&record)?;
+            check!(record_json.get("source_repo_id").is_none());
+            check!(serde_json::from_value::<SourceRecord>(record_json.clone())? == record);
+            let mut repository_record = record;
+            repository_record.source_repo_id = Some(crate::RepoId::new("corp-a")?);
+            let scoped_json = serde_json::to_value(&repository_record)?;
+            check!(scoped_json.get("source_repo_id").and_then(serde_json::Value::as_str) == Some("corp-a"));
+            check!(serde_json::from_value::<SourceRecord>(scoped_json)? == repository_record);
             check!(
                 record_json
                     .as_object_mut()
@@ -2125,6 +2256,7 @@ mod tests {
                     bytes,
                     byte_len: 9,
                     text: SourceTextAdmission::Excluded,
+                    source_repo_id: None,
                 },
             }],
             after: Some(vec![3; 32]),
@@ -2169,6 +2301,79 @@ mod tests {
             ciborium::de::from_reader::<NativeIndexResponse, _>(encoded_path.as_slice())?,
             canonical_path
         );
+        Ok(())
+    }
+
+    #[test]
+    fn repository_path_cursor_and_page_preserve_json_and_cbor_wire()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct BorrowedRepositoryPath<'a>(&'a NativeRepositoryPathPage);
+        impl serde::Serialize for BorrowedRepositoryPath<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                NativeIndexResponse::serialize_repository_path_page_ref(self.0, serializer)
+            }
+        }
+        let view = semantic_result().view;
+        let instance = IndexInstanceId([9; 16]);
+        let repository = crate::RepoId::new("corp-a")?;
+        let cursor = NativeRepositoryPathCursor {
+            view,
+            instance,
+            prefix: "src/".into(),
+            path: "src/a.rs".into(),
+            repository: Some(repository.clone()),
+        };
+        let request = NativeIndexRequest::QueryRepositoryPaths {
+            selection: ViewSelection::Exact(view),
+            instance,
+            prefix: "src/".into(),
+            after: Some(cursor.clone()),
+            limit: 8,
+        };
+        let response = NativeIndexResponse::RepositoryPathPage(NativeRepositoryPathPage {
+            view,
+            entries: vec![NativeRepositoryPathEntry {
+                repository: Some(repository),
+                file: NativeFilePathEntry {
+                    owner: source_lookup_owner(1),
+                    path: cursor.path.clone(),
+                    source: ObjectRef(Digest([4; 32])),
+                    bytes: ObjectRef(Digest([2; 32])),
+                    byte_len: 9,
+                },
+            }],
+            has_more: true,
+            next_after: Some(cursor),
+        });
+        let request_json = serde_json::to_vec(&request)?;
+        check_eq!(
+            serde_json::from_slice::<NativeIndexRequest>(&request_json)?,
+            request
+        );
+        let mut request_cbor = Vec::new();
+        ciborium::ser::into_writer(&request, &mut request_cbor)?;
+        check_eq!(
+            ciborium::de::from_reader::<NativeIndexRequest, _>(request_cbor.as_slice())?,
+            request
+        );
+        let json = serde_json::to_vec(&response)?;
+        check_eq!(
+            serde_json::from_slice::<NativeIndexResponse>(&json)?,
+            response
+        );
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&response, &mut cbor)?;
+        check_eq!(
+            ciborium::de::from_reader::<NativeIndexResponse, _>(cbor.as_slice())?,
+            response
+        );
+        let NativeIndexResponse::RepositoryPathPage(ref page) = response else {
+            unreachable!("constructed repository path page")
+        };
+        check_eq!(serde_json::to_vec(&BorrowedRepositoryPath(page))?, json);
+        let mut borrowed = Vec::new();
+        ciborium::ser::into_writer(&BorrowedRepositoryPath(page), &mut borrowed)?;
+        check_eq!(borrowed, cbor);
         Ok(())
     }
 
@@ -2529,3 +2734,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "native_protocol/root_scoped_view_tests.rs"]
+mod root_scoped_view_tests;

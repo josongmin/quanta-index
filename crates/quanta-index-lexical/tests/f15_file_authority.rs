@@ -2,6 +2,7 @@
 //! establish admission and provenance; a separate full build is the oracle
 //! for delta/no-op ranking, scores and pagination.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 #![expect(
     clippy::indexing_slicing,

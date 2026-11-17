@@ -29,7 +29,60 @@ pub struct TraceFileLaneWitnessV1 {
     pub candidate: LexicalCandidate,
 }
 
+/// The same first-chunk witness is used by ordinary file retrieval and the
+/// separate Go trace profile; neither may assign ranks to duplicate chunks.
+pub type FileLaneWitnessV1 = TraceFileLaneWitnessV1;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct GenericFileHitV1 {
+    pub file: SourceFileKey,
+    pub lexical: Option<FileLaneWitnessV1>,
+    pub dense: Option<FileLaneWitnessV1>,
+    pub file_rrf_score: f64,
+}
+
+/// File union of the two bounded chunk lanes, before the returned-file cut.
+/// This count does not describe exhaustion of the generation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GenericFileRankedPageV1 {
+    pub bounded_file_count: u32,
+    pub results: Vec<GenericFileHitV1>,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GenericFileRankPolicyV1;
+
+impl GenericFileRankPolicyV1 {
+    pub fn rank(
+        pin: &GenerationPin,
+        lexical: &[LexicalCandidate],
+        dense: &[LexicalCandidate],
+        file_top_k: u32,
+    ) -> Result<GenericFileRankedPageV1, CoreError> {
+        HybridOrchestratorPolicy::validate_top_k(file_top_k)?;
+        let files = rank_file_rows(pin, lexical, dense, None)?;
+        let bounded_file_count = u32::try_from(files.len()).map_err(|error| {
+            CoreError::InvalidContract(format!("bounded file union exceeds u32: {error}"))
+        })?;
+        let results = files
+            .into_iter()
+            .take(usize::try_from(file_top_k).map_or(usize::MAX, |limit| limit))
+            .map(|row| GenericFileHitV1 {
+                file: row.file,
+                lexical: row.lexical.map(BorrowedFileWitness::into_owned),
+                dense: row.dense.map(BorrowedFileWitness::into_owned),
+                file_rrf_score: row.file_rrf_score,
+            })
+            .collect();
+        Ok(GenericFileRankedPageV1 {
+            bounded_file_count,
+            results,
+        })
+    }
+}
+
 /// Query-bound source-frame hints parsed from admitted Go test failure text.
+///
 /// They are never inferred from gold labels or result paths, and do not prove
 /// that a matching token came from an actual call stack.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -92,7 +145,9 @@ impl TraceFileEvidenceV1 {
     }
 }
 
-/// One ranked file with both original lane witnesses. `file_rrf_score` is the
+/// One ranked file with both original lane witnesses.
+///
+/// `file_rrf_score` is the
 /// sum of `1 / (60 + file_rank)` for lanes that found the file. It is not the
 /// score of the representative chunk and is not a hybrid wire result.
 #[derive(Clone, Debug, PartialEq)]
@@ -107,14 +162,14 @@ pub struct TraceFileHitV1 {
 
 impl TraceFileHitV1 {
     /// The lexical chunk owns the displayed span when both lanes saw a file.
+    ///
+    /// Returns `None` when neither lane carries a witness.
     #[must_use]
-    pub fn representative(&self) -> &LexicalCandidate {
-        &self
-            .lexical
+    pub fn representative(&self) -> Option<&LexicalCandidate> {
+        self.lexical
             .as_ref()
             .or(self.dense.as_ref())
-            .expect("every ranked file has at least one lane witness")
-            .candidate
+            .map(|witness| &witness.candidate)
     }
 }
 
@@ -137,69 +192,114 @@ impl TraceFileRankPolicyV1 {
         top_k: u32,
     ) -> Result<Vec<TraceFileHitV1>, CoreError> {
         HybridOrchestratorPolicy::validate_top_k(top_k)?;
-        let lexical_files = first_file_witnesses(pin, lexical, "lexical")?;
-        let dense_files = first_file_witnesses(pin, dense, "dense")?;
-        // The RRF authority owns arithmetic and rank provenance. Here its
-        // inputs are files in first-chunk order, not chunk identities.
-        let mut lexical_order = lexical_files.values().collect::<Vec<_>>();
-        lexical_order.sort_by_key(|witness| witness.file_rank);
-        let mut dense_order = dense_files.values().collect::<Vec<_>>();
-        dense_order.sort_by_key(|witness| witness.file_rank);
-        let lexical_files_ordered = lexical_order
+        let files = rank_file_rows(pin, lexical, dense, Some(evidence))?
             .into_iter()
-            .map(|witness| candidate_file_key(&witness.candidate))
-            .collect::<Vec<_>>();
-        let dense_files_ordered = dense_order
-            .into_iter()
-            .map(|witness| candidate_file_key(&witness.candidate))
-            .collect::<Vec<_>>();
-        let fused = HybridOrchestratorPolicy::fuse_rrf_key_lanes_with_provenance(
-            &[&lexical_files_ordered, &dense_files_ordered],
-            u32::MAX,
-        );
-        let mut files = fused
-            .into_iter()
+            .take(usize::try_from(top_k).map_or(usize::MAX, |value| value))
             .map(|row| {
-                let file = row.key;
+                let file = row.file;
                 let path = &file.repo_relative_path;
                 let production_source = is_go_production_source(path.as_str());
-                // A raw relative path cannot identify a source repo by itself.
-                // Only the explicit request owner binds a frame hint to a file.
-                let source_frame = evidence.frame_class() == TraceSourceFrameClassV1::Exact
-                    && evidence.failure_source_repo_id.as_ref() == Some(&file.source_repo_id)
-                    && evidence
-                        .source_frames
-                        .iter()
-                        .any(|frame| frame.as_str() == path.as_str());
                 TraceFileHitV1 {
                     key: TraceFileKeyV1 {
                         pin: pin.clone(),
-                        file: file.clone(),
+                        file,
                     },
-                    lexical: lexical_files.get(&file).cloned(),
-                    dense: dense_files.get(&file).cloned(),
-                    file_rrf_score: row.fused_score,
+                    lexical: row.lexical.map(BorrowedFileWitness::into_owned),
+                    dense: row.dense.map(BorrowedFileWitness::into_owned),
+                    file_rrf_score: row.file_rrf_score,
                     production_source,
-                    source_frame,
+                    source_frame: row.source_frame,
                 }
             })
             .collect::<Vec<_>>();
-        files.sort_by(|left, right| {
-            right
-                .source_frame
-                .cmp(&left.source_frame)
-                .then(right.file_rrf_score.total_cmp(&left.file_rrf_score))
-                .then(right.lexical.is_some().cmp(&left.lexical.is_some()))
-                .then(left.key.file.cmp(&right.key.file))
-        });
-        let limit = usize::try_from(top_k).map_or(usize::MAX, |value| value);
-        files.truncate(limit);
         Ok(files)
     }
 }
 
+#[derive(Clone, Copy)]
+struct BorrowedFileWitness<'a> {
+    file_rank: u32,
+    chunk_rank: u32,
+    candidate: &'a LexicalCandidate,
+}
+
+impl BorrowedFileWitness<'_> {
+    fn into_owned(self) -> TraceFileLaneWitnessV1 {
+        TraceFileLaneWitnessV1 {
+            file_rank: self.file_rank,
+            chunk_rank: self.chunk_rank,
+            candidate: self.candidate.clone(),
+        }
+    }
+}
+
+struct BorrowedFileHit<'a> {
+    file: SourceFileKey,
+    lexical: Option<BorrowedFileWitness<'a>>,
+    dense: Option<BorrowedFileWitness<'a>>,
+    file_rrf_score: f64,
+    source_frame: bool,
+}
+
+#[derive(Default)]
+struct FileWitnesses<'a> {
+    lexical: Option<BorrowedFileWitness<'a>>,
+    dense: Option<BorrowedFileWitness<'a>>,
+}
+
+fn rank_file_rows<'a>(
+    pin: &GenerationPin,
+    lexical: &'a [LexicalCandidate],
+    dense: &'a [LexicalCandidate],
+    evidence: Option<&TraceFileEvidenceV1>,
+) -> Result<Vec<BorrowedFileHit<'a>>, CoreError> {
+    let mut union = BTreeMap::new();
+    append_first_file_witnesses(pin, lexical, FileLane::Lexical, &mut union)?;
+    append_first_file_witnesses(pin, dense, FileLane::Dense, &mut union)?;
+    let mut files = union
+        .into_iter()
+        .map(|(file, witnesses)| {
+            let lexical = witnesses.lexical;
+            let dense = witnesses.dense;
+            // Keep the lexical-then-dense accumulation order of the shared RRF
+            // policy. It matters for an exact f64 wire score.
+            let ranks = lexical
+                .iter()
+                .map(|witness| witness.file_rank)
+                .chain(dense.iter().map(|witness| witness.file_rank));
+            let file_rrf_score = HybridOrchestratorPolicy::rrf_score(ranks);
+            // A raw relative path cannot identify a source repo by itself.
+            // Only the explicit request owner binds a frame hint to a file.
+            let source_frame = evidence.is_some_and(|hint| {
+                hint.frame_class() == TraceSourceFrameClassV1::Exact
+                    && hint.failure_source_repo_id.as_ref() == Some(&file.source_repo_id)
+                    && hint
+                        .source_frames
+                        .iter()
+                        .any(|frame| frame.as_str() == file.repo_relative_path.as_str())
+            });
+            BorrowedFileHit {
+                file,
+                lexical,
+                dense,
+                file_rrf_score,
+                source_frame,
+            }
+        })
+        .collect::<Vec<_>>();
+    files.sort_by(|left, right| {
+        right
+            .source_frame
+            .cmp(&left.source_frame)
+            .then(right.file_rrf_score.total_cmp(&left.file_rrf_score))
+            .then(right.lexical.is_some().cmp(&left.lexical.is_some()))
+            .then(left.file.cmp(&right.file))
+    });
+    Ok(files)
+}
+
 fn is_go_production_source(path: &str) -> bool {
-    path.ends_with(".go") && !path.ends_with("_test.go")
+    path.strip_suffix(".go").is_some() && !path.ends_with("_test.go")
 }
 
 fn candidate_file_key(candidate: &LexicalCandidate) -> SourceFileKey {
@@ -209,17 +309,28 @@ fn candidate_file_key(candidate: &LexicalCandidate) -> SourceFileKey {
     }
 }
 
-fn first_file_witnesses(
+#[derive(Clone, Copy)]
+enum FileLane {
+    Lexical,
+    Dense,
+}
+
+fn append_first_file_witnesses<'a>(
     pin: &GenerationPin,
-    lane: &[LexicalCandidate],
-    lane_name: &str,
-) -> Result<BTreeMap<SourceFileKey, TraceFileLaneWitnessV1>, CoreError> {
+    lane: &'a [LexicalCandidate],
+    lane_kind: FileLane,
+    files: &mut BTreeMap<SourceFileKey, FileWitnesses<'a>>,
+) -> Result<(), CoreError> {
+    let lane_name = match lane_kind {
+        FileLane::Lexical => "lexical",
+        FileLane::Dense => "dense",
+    };
     if lane.len() > usize::try_from(SemanticPolicy::max_top_k()).map_or(usize::MAX, |n| n) {
         return Err(CoreError::InvalidContract(format!(
             "trace file rank: {lane_name} lane exceeds public result cap"
         )));
     }
-    let mut files = BTreeMap::new();
+    let mut distinct_rank = 0_u32;
     for (index, candidate) in lane.iter().enumerate() {
         if candidate.repo_id != pin.repo_id
             || candidate.revision_id != pin.revision_id
@@ -245,25 +356,28 @@ fn first_file_witnesses(
             ))
         })?;
         let file = candidate_file_key(candidate);
-        if files.contains_key(&file) {
+        let entry = files.entry(file).or_default();
+        let slot = match lane_kind {
+            FileLane::Lexical => &mut entry.lexical,
+            FileLane::Dense => &mut entry.dense,
+        };
+        if slot.is_some() {
             continue;
         }
-        let file_rank = u32::try_from(files.len().saturating_add(1)).map_err(|error| {
-            CoreError::InvalidContract(format!("trace file rank: file rank overflow: {error}"))
+        let file_rank = distinct_rank.checked_add(1).ok_or_else(|| {
+            CoreError::InvalidContract("trace file rank: file rank overflow".into())
         })?;
         let chunk_rank = u32::try_from(index.saturating_add(1)).map_err(|error| {
             CoreError::InvalidContract(format!("trace file rank: chunk rank overflow: {error}"))
         })?;
-        let _previous = files.insert(
-            file,
-            TraceFileLaneWitnessV1 {
-                file_rank,
-                chunk_rank,
-                candidate: candidate.clone(),
-            },
-        );
+        *slot = Some(BorrowedFileWitness {
+            file_rank,
+            chunk_rank,
+            candidate,
+        });
+        distinct_rank = file_rank;
     }
-    Ok(files)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -362,14 +476,85 @@ mod tests {
         assert_eq!(tree.lexical.as_ref().map(|w| w.file_rank), Some(2));
         assert_eq!(tree.lexical.as_ref().map(|w| w.chunk_rank), Some(3));
         assert_eq!(tree.dense.as_ref().map(|w| w.file_rank), Some(2));
-        assert_eq!(tree.representative().candidate_id, "src-1");
+        assert_eq!(
+            tree.representative().map(|row| row.candidate_id.as_str()),
+            Some("src-1")
+        );
         assert_eq!(
             tree.file_rrf_score,
             HybridOrchestratorPolicy::rrf_score([2, 2])
         );
         assert_eq!(hits[2].lexical, None);
-        assert_eq!(hits[2].representative().candidate_id, "dense-1");
+        assert_eq!(
+            hits[2]
+                .representative()
+                .map(|row| row.candidate_id.as_str()),
+            Some("dense-1")
+        );
         assert_eq!(hits[2].key.pin, pin());
+        let mut missing_witness = tree.clone();
+        missing_witness.lexical = None;
+        missing_witness.dense = None;
+        assert!(missing_witness.representative().is_none());
+    }
+
+    #[test]
+    fn bounded_pages_keep_file_rrf_order_and_validate_hidden_duplicates() {
+        let lexical = [
+            candidate("a-1", "src/a.go", 4.0),
+            candidate("a-2", "src/a.go", 3.0),
+            candidate("b", "src/b.go", 2.0),
+            candidate("c", "src/c.go", 1.0),
+        ];
+        let dense = [
+            candidate("d", "src/d.go", 0.9),
+            candidate("b-dense", "src/b.go", 0.8),
+            candidate("c-dense", "src/c.go", 0.7),
+        ];
+        let page = GenericFileRankPolicyV1::rank(&pin(), &lexical, &dense, 3)
+            .expect("bounded generic page");
+        assert_eq!(page.bounded_file_count, 4);
+        assert_eq!(
+            page.results
+                .iter()
+                .map(|hit| hit.file.repo_relative_path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/b.go", "src/c.go", "src/a.go"]
+        );
+        assert_eq!(page.results[0].file_rrf_score, 2.0 / 62.0);
+        assert_eq!(page.results[1].file_rrf_score, 2.0 / 63.0);
+        assert_eq!(page.results[2].file_rrf_score, 1.0 / 61.0);
+        assert_eq!(
+            page.results[2]
+                .lexical
+                .as_ref()
+                .map(|witness| witness.chunk_rank),
+            Some(1)
+        );
+
+        let evidence = TraceFileEvidenceV1::from_go_test_failure_text(
+            "src/d.go:12: panic",
+            Some(pin().repo_id),
+        );
+        let go =
+            TraceFileRankPolicyV1::rank_go_test_failure(&pin(), &lexical, &dense, &evidence, 2)
+                .expect("bounded trace page");
+        assert_eq!(
+            go.iter()
+                .map(|hit| hit.key.file.repo_relative_path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/d.go", "src/b.go"]
+        );
+        assert!(go[0].source_frame);
+
+        let mut invalid_duplicate = candidate("a-invalid", "src/a.go", 0.0);
+        invalid_duplicate.manifest_generation = ManifestGeneration::new(8);
+        let mut lexical_with_invalid_tail = lexical.to_vec();
+        lexical_with_invalid_tail.push(invalid_duplicate);
+        assert!(matches!(
+            GenericFileRankPolicyV1::rank(&pin(), &lexical_with_invalid_tail, &dense, 1),
+            Err(CoreError::InvalidContract(_))
+        ));
     }
 
     #[test]

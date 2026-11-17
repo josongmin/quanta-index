@@ -14,8 +14,7 @@ pub(crate) const LEXICAL_SCRUB_RECEIPT_FILE_NAME: &str = "search-corpus-generati
 /// Completed-pass receipt: manifest digest, completion time, and covered work.
 pub(crate) const LEXICAL_SCRUB_RECEIPT_FORMAT_VERSION: u32 = 2;
 /// File name of the quarantine receipt inside the generation directory.
-pub(crate) const LEXICAL_QUARANTINE_RECEIPT_FILE_NAME: &str =
-    "search-corpus-generation-quarantine.cbor";
+pub(crate) use crate::legacy::names::LEXICAL_QUARANTINE_RECEIPT_FILE_NAME;
 /// Quarantine receipt: reason code, mismatch detail, and time.
 pub(crate) const LEXICAL_QUARANTINE_RECEIPT_FORMAT_VERSION: u32 = 1;
 /// Fixed-order CBOR array, format version first.

@@ -10,7 +10,7 @@ use rusqlite::{OptionalExtension as _, params, params_from_iter};
 use super::{Node, decode_node};
 use crate::{
     FileObjectStore,
-    object::{AdmittedWire, PreparedObject, decode_stored_wire},
+    object::{AdmittedWire, PreparedObject, decode_staged_registration, decode_stored_wire},
 };
 
 const SCRATCH_MAX_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -72,7 +72,7 @@ impl EditCursor<'_> {
             let after = self
                 .after
                 .as_ref()
-                .map(|position| position.edit.key.as_slice());
+                .map(|position| position.key());
             let first: [&dyn rusqlite::ToSql; 1] = [&root];
             let next: [&dyn rusqlite::ToSql; 2] = [&root, &after];
             let parameters: &[&dyn rusqlite::ToSql] = if after.is_some() { &next } else { &first };
@@ -239,8 +239,8 @@ impl MapScratch {
     ) -> Result<Option<PreparedObject>, IndexError> {
         self.wire(reference, budget)?
             .map(|wire| {
-                let stored = decode_stored_wire(reference, &wire.bytes, budget)?;
-                Ok(PreparedObject::from_wire(stored.registration.clone(), wire))
+                let registration = decode_staged_registration(reference, &wire.bytes, budget)?;
+                Ok(PreparedObject::from_wire(registration, wire))
             })
             .transpose()
     }
@@ -323,7 +323,7 @@ impl MapScratch {
             .get(..edits.len())
             .ok_or(IndexError::ResourceLimited)?;
         let db = self.db.scoped(budget)?;
-        quanta_index_scratch_sqlite::write_map_edit_batch(
+        quanta_index_scratch_sqlite::write_ordinal_map_edit_batch(
             &db,
             self.allocation.as_ref(),
             "INSERT INTO edit(root,key,expected,next) VALUES ",
@@ -332,8 +332,8 @@ impl MapScratch {
             |slot| {
                 let edit = edits.get(slot).ok_or(IndexError::ResourceLimited)?;
                 Ok((
-                    rusqlite::types::ValueRef::Integer(i64::from(edit.root)),
-                    &edit.edit,
+                    rusqlite::types::ValueRef::Integer(i64::from(edit.root())),
+                    edit,
                     0,
                 ))
             },
@@ -840,11 +840,19 @@ mod tests {
                 scratch.insert_node(&object, &mut preparing)?;
                 check!(ledger.peak.load(Ordering::SeqCst) == 0);
             }
+            let bytes_before = preparing.usage().bytes;
             let result = scratch.prepared(object.registration.reference, &mut preparing);
             if cap == 1000 {
                 let prepared = result?.ok_or("missing scratch object")?;
                 check!(prepared.registration == object.registration);
                 check!(prepared.wire == object.wire);
+                // Projection keeps the original wire-read and logical decode
+                // charge, but never births the discarded StoredObject payload.
+                check!(preparing.usage().bytes - bytes_before == 20 + 4);
+                check!(
+                    ledger.peak.load(Ordering::SeqCst)
+                        == 20 + quanta_index_core::index::RegisteredObject::allocation_bytes(0)?
+                );
                 check!(
                     ledger.live.load(Ordering::SeqCst)
                         == 20 + quanta_index_core::index::RegisteredObject::allocation_bytes(0)?
@@ -887,10 +895,10 @@ mod tests {
                     expected: Some((expected).into()),
                     next: Some((next).into()),
                 },
-            ),
+            )?,
             &mut work,
         )?;
-        let bytes = OrdinalMapEdit::allocation_bytes(key.len())?;
+        let bytes = OrdinalMapEdit::allocation_bytes(key.len(), Some(expected.into()), Some(next.into()))?;
         let page_bytes = u64::try_from(
             64_usize
                 .checked_mul(std::mem::size_of::<OrdinalMapEdit>())
@@ -913,14 +921,14 @@ mod tests {
                 check!(ledger.peak.load(Ordering::SeqCst) == 0);
             } else {
                 let position = result?.ok_or("missing edit")?;
-                check!(position.root == 3);
-                check!(position.edit.key == key);
-                check!(position.edit.expected == Some(expected.into()));
-                check!(position.edit.next == Some(next.into()));
+                check!(position.root() == 3);
+                check!(position.key() == key);
+                check!(position.expected()? == Some(expected.into()));
+                check!(position.next()? == Some(next.into()));
                 let continuation = position.clone();
                 check!(std::ptr::eq(
-                    position.edit.key.as_ptr(),
-                    continuation.edit.key.as_ptr()
+                    position.key().as_ptr(),
+                    continuation.key().as_ptr()
                 ));
                 check!(ledger.live.load(Ordering::SeqCst) == combined);
                 drop(position);
@@ -982,7 +990,7 @@ mod tests {
                         expected: None,
                         next: Some(value),
                     },
-                ),
+                )?,
                 &mut setup,
             )?;
         }
@@ -994,7 +1002,7 @@ mod tests {
                     expected: None,
                     next: Some(ObjectRef(Digest([99; 32])).into()),
                 },
-            ),
+            )?,
             &mut setup,
         )?;
         // Independent small-reader contract: all129 original rows must fit
@@ -1014,8 +1022,8 @@ mod tests {
             } else {
                 index.to_be_bytes().to_vec()
             };
-            check!(edit.root == 3 && edit.edit.key == key);
-            check!(edit.edit.expected.is_none() && edit.edit.next == Some(value));
+            check!(edit.root() == 3 && edit.key() == key.as_slice());
+            check!(edit.expected()?.is_none() && edit.next()? == Some(value));
         }
         check!(cursor.next_edit(&mut work)?.is_none());
         check!(work.usage().reads == 129);
@@ -1121,8 +1129,8 @@ mod tests {
         );
         let scratch = MapScratch::open(&store, &mut work)?;
         let edit = MapEdit::objects(b"same".to_vec(), None, Some(ObjectRef(Digest([7; 32]))));
-        scratch.insert_edit(&OrdinalMapEdit::unscoped(0, edit.clone()), &mut work)?;
-        scratch.insert_edit(&OrdinalMapEdit::unscoped(1, edit), &mut work)?;
+        scratch.insert_edit(&OrdinalMapEdit::unscoped(0, edit.clone())?, &mut work)?;
+        scratch.insert_edit(&OrdinalMapEdit::unscoped(1, edit)?, &mut work)?;
         let original = super::super::scratch_edit_fingerprint(&scratch, 0, &mut work)?;
         check!(original == super::super::scratch_edit_fingerprint(&scratch, 1, &mut work)?);
         let _changed = scratch

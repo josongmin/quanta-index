@@ -1555,7 +1555,10 @@ fn same_document_identity(a: &CurrentRecord, b: &CurrentRecord) -> bool {
         && a.source == b.source
         && a.candidate_id == b.candidate_id
         && a.indexed_sha256 == b.indexed_sha256
-        && a.body == b.body
+        // A moved document can be packed under a different physical body root.
+        // Its committed logical body length and digest must remain identical.
+        && a.body.bytes == b.body.bytes
+        && a.body.sha256 == b.body.sha256
 }
 
 fn checkpoint(budget: Option<&RequestBudgetV1>, stage: &'static str) -> Result<(), CoreError> {

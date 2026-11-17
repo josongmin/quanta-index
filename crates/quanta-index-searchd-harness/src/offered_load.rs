@@ -495,17 +495,19 @@ mod tests {
         let origins = origins
             .lock()
             .map_err(|_poison| anyhow!("start-hook origin lock poisoned"))?;
-        let origin = origins.first().context("start hook did not run")?;
+        let origin = *origins.first().context("start hook did not run")?;
+        let recorded = origins.len();
+        drop(origins);
         let completion = run
             .completions
             .first()
             .context("first arrival did not complete")?;
-        ensure!(origins.len() == 1, "start hook did not run exactly once");
+        ensure!(recorded == 1, "start hook did not run exactly once");
         ensure!(run.offered == 1, "fixed schedule offered another arrival");
         ensure!(
             run.completions.len() == 1
-                && completion.task.scheduled == *origin
-                && completion.value == *origin,
+                && completion.task.scheduled == origin
+                && completion.value == origin,
             "first offered instant differs from the start hook"
         );
 

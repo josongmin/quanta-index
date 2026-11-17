@@ -101,6 +101,7 @@ class Artifact:
     model_revision: str | None
     host_identity: tuple[str, str, int, int, str]
     rows: dict[str, ScenarioRow]
+    qualification: str | None
 
 
 class ArtifactRefused(Exception):
@@ -220,6 +221,13 @@ def load_artifact(path: Path, *, role: str, content: str | None = None) -> Artif
             "re-capture it with the current rail (a schema-1 artifact carries a short "
             "git_rev and no corpus/config digest, host or resources)"
         )
+    detail = payload.get("detail")
+    require(isinstance(detail, dict), f"{role} {path} detail is not a JSON object")
+    qualification = detail.get("qualification")
+    require(
+        qualification is None or isinstance(qualification, str),
+        f"{role} {path} detail.qualification is not a string",
+    )
     provenance = payload.get("provenance")
     if not isinstance(provenance, dict):
         raise ArtifactRefused(f"{role} {path} has no provenance")
@@ -376,6 +384,7 @@ def load_artifact(path: Path, *, role: str, content: str | None = None) -> Artif
             host_values[4],
         ),
         rows=rows,
+        qualification=qualification,
     )
 
 
@@ -462,6 +471,8 @@ def gate_provenance(baseline: Artifact, current: Artifact, head: str) -> None:
 
 def require_complete_baseline_candidate(artifact: Artifact) -> None:
     """A baseline must ratchet every declared scenario, not preserve gaps."""
+    if artifact.qualification == "diagnostic":
+        raise ArtifactRefused("diagnostic DSL capture cannot be admitted as an authority baseline")
     if artifact.host_identity[0] != "linux":
         raise ArtifactRefused("baseline candidate was not captured on the canonical Linux host")
     for scenario_id, row in artifact.rows.items():

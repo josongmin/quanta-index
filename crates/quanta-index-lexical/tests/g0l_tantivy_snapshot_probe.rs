@@ -23,6 +23,7 @@
 //! The probe prints a machine-readable `G0L-EVIDENCE` line per test. Run with
 //! `-- --nocapture` to capture it into the gate ADR.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};

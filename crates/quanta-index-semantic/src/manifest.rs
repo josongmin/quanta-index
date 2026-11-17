@@ -595,9 +595,9 @@ impl SemanticManifest {
 
     pub(crate) fn encode(&self) -> Result<Vec<u8>, CoreError> {
         let bytes = codec::encode(self, "semantic manifest")?;
-        crate::control_file::ensure_bounded(
+        crate::legacy::limits::ensure_bounded(
             &bytes,
-            crate::control_file::MAX_SCOPE_MANIFEST_BYTES,
+            crate::legacy::limits::MAX_SCOPE_MANIFEST_BYTES,
             "scope manifest",
         )?;
         Ok(bytes)

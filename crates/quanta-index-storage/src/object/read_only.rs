@@ -53,6 +53,17 @@ impl FileObjectReader {
         })
     }
 
+    /// Effect-free identity using the same canonical encoding as the writer.
+    /// This neither opens storage nor requires retained child objects.
+    pub fn identify(
+        &self,
+        payload: &[u8],
+        children: &[ObjectRef],
+        budget: &mut WorkBudget,
+    ) -> Result<quanta_index_core::index::RegisteredObject, IndexError> {
+        super::write_preparation::identify(payload, children, budget)
+    }
+
     pub fn namespace_binding(&self) -> Result<ObjectNamespaceBinding, IndexError> {
         self.namespace.validate_objects(&self.objects)
     }

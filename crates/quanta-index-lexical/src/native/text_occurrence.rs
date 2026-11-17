@@ -197,14 +197,10 @@ impl OccurrenceReader {
                 value: block.position_count(term, budget)?,
                 leaf: false,
             }),
-            Err(stored) => {
-                let (layout, _parse_memory) = preflight(&stored.payload, budget)?;
-                Ok(OccurrenceCount {
-                    value: u64::try_from(layout.count)
-                        .map_err(|_error| IndexError::ResourceLimited)?,
-                    leaf: true,
-                })
-            }
+            Err(stored) => Ok(OccurrenceCount {
+                value: stored_leaf_count(&stored, reference, budget)?,
+                leaf: true,
+            }),
         }
     }
 
@@ -316,6 +312,26 @@ fn load_count(
     budget: &mut WorkBudget,
 ) -> Result<u64, IndexError> {
     let stored = checked_object(reference, objects, budget)?;
+    let (layout, _parse_memory) = preflight(&stored.payload, budget)?;
+    u64::try_from(layout.count).map_err(|_error| IndexError::ResourceLimited)
+}
+
+/// Count the complete leaf already read by the current caller. This borrows
+/// authenticated DATA and does not stand in for a later persisted readback.
+pub(super) fn stored_leaf_count(
+    stored: &StoredObject,
+    reference: ObjectRef,
+    budget: &mut WorkBudget,
+) -> Result<u64, IndexError> {
+    budget.checkpoint()?;
+    if stored.registration.reference != reference
+        || !stored.registration.children.is_empty()
+        || is_packed(&stored.payload)
+    {
+        return Err(IndexError::CorruptObject(
+            "invalid text occurrence leaf or edges".into(),
+        ));
+    }
     let (layout, _parse_memory) = preflight(&stored.payload, budget)?;
     u64::try_from(layout.count).map_err(|_error| IndexError::ResourceLimited)
 }

@@ -10,9 +10,11 @@ use quanta_index_core::index::{
 };
 
 use super::{
-    EmbeddingRecipe, NativeSemanticTraversal, RankedHit, ReadContext, SearchQuery, SearchResult,
-    SemanticReadRequest, ann_directory::AnnDirectory, finish_ranked,
-    load_source_record_from_objects, rank_member, selected_owner::SelectedOwner,
+    NativeSemanticTraversal, RankedHit, ReadContext, SearchQuery, SearchResult,
+    SelectedArtifactInput, SemanticReadRequest,
+    ann_directory::AnnDirectory,
+    finish_ranked, load_source_record_from_objects, rank_member,
+    selected_owner::{SelectedOwner, scan_ordered_page},
     validate_search_query,
 };
 
@@ -208,77 +210,94 @@ pub(super) fn selected_projected_empty(coverage: &CoverageBinding) -> bool {
         && coverage.searchable.is_none()
 }
 
-/// The selected directory is a search layout, never source authority.
-pub(super) fn selected_projected_directory(
-    coverage: &CoverageBinding,
-    recipe: &EmbeddingRecipe,
-    context: &mut ReadContext<'_>,
-) -> Result<AnnDirectory, IndexError> {
-    let reference = coverage.searchable.ok_or(IndexError::RebuildRequired)?;
-    if coverage.searchable == coverage.owners.0 {
-        return Err(IndexError::RebuildRequired);
-    }
-    let directory = AnnDirectory::load(reference, recipe.fingerprint(), context)?;
-    if directory.owners != coverage.owners {
-        return Err(IndexError::CorruptObject(
-            "projected reverse directory owners differ from selected coverage".into(),
-        ));
-    }
-    Ok(directory)
+/// A source record authenticated against the selected view and path constraint.
+pub(super) struct SelectedProjectedSource {
+    owner: OwnerKey,
+    reference: ObjectRef,
+    pub(super) file_record: Option<std::sync::Arc<super::source_file::SharedFileRecord>>,
 }
 
-/// Append at most `limit` projected members for one authenticated source owner.
-/// The last slot is the caller's cap sentinel; no whole-owner scan is used.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "selected source, directory, coverage and bounded result custody remain explicit"
-)]
+impl SelectedProjectedSource {
+    pub(super) fn from_path(
+        owner: OwnerKey,
+        path: &str,
+        source_owners: MapRoot,
+        source_files: bool,
+        context: &mut ReadContext<'_>,
+    ) -> Result<Self, IndexError> {
+        let reference = context
+            .maps
+            .lookup_object(source_owners, &owner_map_key(owner), context.budget)?
+            .ok_or_else(|| IndexError::CorruptObject("source path has no selected owner".into()))?;
+        let record = super::load_source_record_with_lifetime(
+            reference,
+            context.objects,
+            context.budget,
+            if source_files {
+                MemoryLifetime::Retained
+            } else {
+                MemoryLifetime::Temporary
+            },
+        )?;
+        if record.path != path {
+            return Err(IndexError::CorruptObject(
+                "source path reverse record differs".into(),
+            ));
+        }
+        Self::from_authenticated(owner, reference, record, source_files, context)
+    }
+
+    /// Construct from a source already checked against the path and selected cut.
+    pub(super) fn from_authenticated(
+        owner: OwnerKey,
+        reference: ObjectRef,
+        record: super::SourceRecordOwner,
+        source_files: bool,
+        context: &mut ReadContext<'_>,
+    ) -> Result<Self, IndexError> {
+        let file_record = if source_files {
+            Some(super::source_file::SharedFileRecord::retain(
+                record,
+                context.budget,
+            )?)
+        } else {
+            None
+        };
+        Ok(Self {
+            owner,
+            reference,
+            file_record,
+        })
+    }
+}
+
+/// Append projected members up to the reserved cap sentinel by reverse lookup.
 pub(super) fn select_projected_source(
-    source_owner: OwnerKey,
-    source: ObjectRef,
-    expected_path: Option<&str>,
+    source: &SelectedProjectedSource,
     coverage: &CoverageBinding,
     projection: &ProjectionBinding,
     source_owners: MapRoot,
     source_reverse: MapRoot,
-    limit: usize,
     selected: &mut SelectedLexicalScope,
+    source_files: bool,
     context: &mut ReadContext<'_>,
 ) -> Result<(), IndexError> {
-    authenticate_projected_source(source_owner, source, expected_path, source_owners, context)?;
+    let source_owner = source.owner;
+    let source = source.reference;
     let prefix = owner_map_key(source_owner);
-    if selected.limit != limit {
-        return Err(IndexError::BackendViolation(
-            "projected selection limit differs from reserved scope".into(),
-        ));
-    }
+    let limit = selected.limit;
     if selected.owners.len() >= limit {
         return Ok(());
     }
     let mut cursor: Option<[u8; 76]> = None;
     loop {
-        context.budget.checkpoint()?;
         let after: &[u8] = cursor
             .as_ref()
             .map_or(prefix.as_slice(), <[u8; 76]>::as_slice);
-        let page = context
-            .maps
-            .scan(source_reverse, Some(after), 64, context.budget)?;
-        if page.entries.len() > 64 || page.entries.is_empty() && page.has_more {
-            return Err(IndexError::BackendViolation(
-                "projected reverse map page violates bounded scan".into(),
-            ));
-        }
-        let mut previous = after;
+        let page = scan_ordered_page(source_reverse, Some(after), 64, cursor.is_some(), context)?;
         let mut last = None;
         for (key, value) in &page.entries {
             context.budget.checkpoint()?;
-            if key.as_slice() <= previous {
-                return Err(IndexError::BackendViolation(
-                    "projected reverse map page order differs".into(),
-                ));
-            }
-            previous = key.as_slice();
             if !key.starts_with(&prefix) {
                 return Ok(());
             }
@@ -315,11 +334,14 @@ pub(super) fn select_projected_source(
                     "projected reverse source stamp differs".into(),
                 ));
             }
+            last = Some(pair);
+            if source_files && owner.has_no_candidate(true) {
+                continue;
+            }
             selected.push(owner, context)?;
             if selected.owners.len() == limit {
                 return Ok(());
             }
-            last = Some(pair);
         }
         if !page.has_more {
             return Ok(());
@@ -334,7 +356,7 @@ fn authenticate_projected_source(
     expected_path: Option<&str>,
     source_owners: MapRoot,
     context: &mut ReadContext<'_>,
-) -> Result<(), IndexError> {
+) -> Result<SelectedProjectedSource, IndexError> {
     context.budget.checkpoint()?;
     let prefix = owner_map_key(source_owner);
     if context
@@ -352,7 +374,11 @@ fn authenticate_projected_source(
             "projected lexical source violates selected path constraint".into(),
         ));
     }
-    Ok(())
+    Ok(SelectedProjectedSource {
+        owner: source_owner,
+        reference: source,
+        file_record: None,
+    })
 }
 
 pub(super) fn prepare(
@@ -361,7 +387,7 @@ pub(super) fn prepare(
     coverage: &CoverageBinding,
     projection: Option<&ProjectionBinding>,
     source_owners: MapRoot,
-    recipe: &EmbeddingRecipe,
+    directory: Option<&AnnDirectory>,
     max_owners: u32,
     context: &mut ReadContext<'_>,
 ) -> Result<Option<SelectedLexicalScope>, IndexError> {
@@ -380,10 +406,9 @@ pub(super) fn prepare(
         ));
     }
     let projected_empty = projection.is_some() && selected_projected_empty(coverage);
-    let directory = projection
-        .filter(|_binding| !projected_empty)
-        .map(|_binding| selected_projected_directory(coverage, recipe, context))
-        .transpose()?;
+    if projection.is_some() && !projected_empty && directory.is_none() {
+        return Err(IndexError::RebuildRequired);
+    }
     let durable_count = eligible
         .entries
         .iter()
@@ -394,7 +419,7 @@ pub(super) fn prepare(
         .ok_or(IndexError::ResourceLimited)?;
     let selected_capacity = if projected_empty {
         0
-    } else if directory.is_some() && durable_count > 0 {
+    } else if projection.is_some() && durable_count > 0 {
         usize::try_from(durable_limit)
             .map_err(|_error| IndexError::ResourceLimited)?
             .checked_add(1)
@@ -454,28 +479,8 @@ pub(super) fn prepare(
                 "lexical durable owner is masked by captured overlay".into(),
             ));
         }
-        if let (Some(binding), Some(directory)) = (projection, directory) {
-            select_projected_source(
-                entry.owner,
-                source,
-                request
-                    .query
-                    .constraints
-                    .repo_relative_path_exact
-                    .as_ref()
-                    .map(quanta_index_contract::ExactRepoRelativePathV1::as_str),
-                coverage,
-                binding,
-                source_owners,
-                directory.source_reverse,
-                selected_capacity,
-                &mut selected,
-                context,
-            )?;
-            continue;
-        }
-        if projected_empty {
-            authenticate_projected_source(
+        if projection.is_some() {
+            let source = authenticate_projected_source(
                 entry.owner,
                 source,
                 request
@@ -487,6 +492,18 @@ pub(super) fn prepare(
                 source_owners,
                 context,
             )?;
+            if let (Some(binding), Some(directory)) = (projection, directory) {
+                select_projected_source(
+                    &source,
+                    coverage,
+                    binding,
+                    source_owners,
+                    directory.source_reverse,
+                    &mut selected,
+                    false,
+                    context,
+                )?;
+            }
             continue;
         }
         let key = owner_map_key(entry.owner);
@@ -533,7 +550,7 @@ pub(super) fn search(
         .lexical_eligibility
         .ok_or(IndexError::SnapshotUnavailable)?
         .overlay_count()?;
-    rank_selected(query, owners, overlay_count, context).map(Some)
+    rank_selected(query, owners, overlay_count, None, context).map(Some)
 }
 
 /// Exact ranking over an already authenticated finite selected-owner set.
@@ -542,6 +559,7 @@ pub(super) fn rank_selected(
     query: &SearchQuery<'_>,
     owners: &[SelectedOwner],
     overlay_count: u32,
+    file_record: Option<&std::sync::Arc<super::source_file::SharedFileRecord>>,
     context: &mut ReadContext<'_>,
 ) -> Result<SearchResult, IndexError> {
     let norm = validate_search_query(query)?;
@@ -590,9 +608,16 @@ pub(super) fn rank_selected(
             continue;
         }
         let member = selected.current_member(query, context)?;
-        rank_member(
+        let _rescored = rank_member(
             &member,
-            selected.contribution,
+            selected
+                .contribution
+                .map(|contribution| SelectedArtifactInput::Projection {
+                    contribution,
+                    file_record: file_record
+                        .cloned()
+                        .map(super::source_file::FileRecord::Shared),
+                }),
             None,
             query,
             norm,

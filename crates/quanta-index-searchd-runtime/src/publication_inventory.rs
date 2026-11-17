@@ -23,6 +23,11 @@ use quanta_index_core::{CoreError, RequestBudgetV1};
 use quanta_index_searchd::app::runtime::StateRootLease;
 use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, openat, statat};
 
+#[path = "publication_inventory/admitted.rs"]
+mod admitted;
+pub(crate) use admitted::{AdmittedBootInventoryV1, InventoryMemory};
+use admitted::{InventoryControl, ScanFile};
+
 /// Normalize native stat device numbers without losing signed-platform errors.
 pub(crate) fn checked_device_id<T: TryInto<u64>>(device: T) -> Result<u64, T::Error> {
     device.try_into()
@@ -50,10 +55,11 @@ pub struct PublicationBootInventoryLimits {
     pub max_pending_frames: u32,
 }
 
-struct Frame {
-    directory: File,
+struct Frame<G> {
+    directory: ScanFile,
     path: PathBuf,
     depth: usize,
+    _memory: G,
 }
 
 struct Observed {
@@ -137,58 +143,146 @@ pub fn seed_publication_capacity(
     allowed_socket_entries: &[PathBuf],
     budget: &RequestBudgetV1,
 ) -> Result<PublicationCapacity, CoreError> {
+    Ok(seed_with_control(
+        lease,
+        state_root,
+        limits,
+        allowed_socket_entries,
+        &mut admitted::Ordinary::new(budget),
+    )?
+    .0)
+}
+
+/// Same canonical inode census, now funded by the ORIGINAL Control budget.
+/// This does not create roots, default limits, a new execution or a Source permit.
+pub(crate) fn seed_publication_capacity_admitted_v1(
+    registration: &crate::publication_file_capacity::RecoveryReadRootRegistrationV1,
+    limits: PublicationBootInventoryLimits,
+    allowed_socket_entries: &[PathBuf],
+    max_open_handles: usize,
+    budget: &mut quanta_index_core::index::WorkBudget,
+) -> Result<
+    AdmittedBootInventoryV1,
+    quanta_index_core::index::existing_file::ExistingFileReadFailureV1,
+> {
+    let lease = registration.lease()?;
+    let state_root = lease.state_root_identity_v1();
+    let mut control = admitted::Admitted::new(budget, max_open_handles, registration)?;
+    let (capacity, observed_files, observed_entries, max_path_bytes) = seed_with_control(
+        lease,
+        state_root,
+        limits,
+        allowed_socket_entries,
+        &mut control,
+    )?;
+    Ok(AdmittedBootInventoryV1 {
+        capacity,
+        observed_files,
+        observed_entries,
+        max_path_bytes,
+        memory: control.memory,
+    })
+}
+fn seed_with_control<C: InventoryControl>(
+    lease: &StateRootLease,
+    state_root: &Path,
+    limits: PublicationBootInventoryLimits,
+    allowed_socket_entries: &[PathBuf],
+    control: &mut C,
+) -> Result<(PublicationCapacity, u64, u64, usize), C::Error> {
     if limits.max_bytes == 0
         || limits.max_files == 0
         || limits.max_pending == 0
         || limits.max_entries == 0
         || limits.max_pending_frames == 0
     {
-        return Err(CoreError::InvalidContract(
+        return Err((CoreError::InvalidContract(
             "publication boot inventory limits must be positive".into(),
-        ));
+        ))
+        .into());
     }
+    control.retain(PublicationCapacityLedger::boot_state_allocation_bytes_v1()?)?;
+    control.charge(
+        u64::try_from(state_root.components().count())
+            .map_err(|_| inventory_error("root component width"))?
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(8))
+            .ok_or_else(|| inventory_error("root admission width"))?,
+        0,
+    )?;
     lease.require_state_root_v1(state_root)?;
-    budget.checkpoint("publication boot inventory root")?;
-    // Traverse the lease's authenticated directory rather than reopening a
-    // caller's pathname alias. Keep custody through the final seal.
-    let root_custody = lease.try_clone_root_directory_v1()?;
-    let root = root_custody
-        .as_fd()
-        .try_clone_to_owned()
+    control.checkpoint("publication boot inventory root")?;
+    // Borrow the original leased FD, then admit an independently positioned scan FD.
+    let root_custody = lease.borrow_root_directory_read_v1()?;
+    let root = ScanFile::open(control, || {
+        openat(
+            root_custody.as_fd(),
+            Path::new("."),
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::DIRECTORY,
+            Mode::empty(),
+        )
         .map(File::from)
-        .map_err(|error| inventory_error(format!("clone leased root directory: {error}")))?;
-    let mut stack = vec![Frame {
+        .map_err(|error| {
+            inventory_error(format!(
+                "open independently positioned leased root: {error}"
+            ))
+        })
+    })?;
+    let root_path_memory = control.temporary(
+        u64::try_from(state_root.as_os_str().len())
+            .map_err(|_| inventory_error("root path width"))?,
+    )?;
+    let mut stack = Vec::<Frame<C::Memory>>::new();
+    admitted::vector_slot(&mut stack, control)?;
+    stack.push(Frame {
         directory: root,
         path: state_root.to_path_buf(),
         depth: 0,
-    }];
+        _memory: root_path_memory,
+    });
+    let mut max_path_bytes = state_root.as_os_str().len();
     let mut entries_seen = 0_u64;
     let mut regular = BTreeMap::<InodeKey, Observed>::new();
     let mut used_bytes = 0_u64;
     let mut used_files = 0_u64;
     while let Some(frame) = stack.pop() {
-        budget.checkpoint("publication boot inventory directory")?;
-        let mut entries = Dir::read_from(&frame.directory).map_err(|error| {
-            inventory_error(format!("enumerate {}: {error}", frame.path.display()))
-        })?;
-        while let Some(entry) = entries.read() {
-            budget.checkpoint("publication boot inventory entry")?;
-            let entry =
-                entry.map_err(|error| inventory_error(format!("read directory: {error}")))?;
-            let raw = entry.file_name().to_bytes();
+        control.checkpoint("publication boot inventory directory")?;
+        admitted::entries(&frame.directory, control, &mut |raw, control| {
             if raw == b"." || raw == b".." {
-                continue;
+                return Ok(());
             }
             entries_seen = entries_seen
                 .checked_add(1)
                 .ok_or_else(|| inventory_error("entry count overflow"))?;
             if entries_seen > limits.max_entries {
-                return Err(inventory_error("entry count exceeds configured bound"));
+                return Err((inventory_error("entry count exceeds configured bound")).into());
             }
+            let path_bytes = frame
+                .path
+                .as_os_str()
+                .len()
+                .checked_add(raw.len())
+                .and_then(|n| n.checked_add(1))
+                .ok_or_else(|| inventory_error("inventory path width overflow"))?;
+            let entry_memory = control.temporary(
+                u64::try_from(
+                    path_bytes
+                        .checked_mul(2)
+                        .and_then(|n| n.checked_add(raw.len()))
+                        .ok_or_else(|| inventory_error("inventory entry allocation overflow"))?,
+                )
+                .map_err(|_| inventory_error("inventory entry allocation width"))?,
+            )?;
             let name = OsString::from_vec(raw.to_vec());
             let path = frame.path.join(&name);
+            max_path_bytes = max_path_bytes.max(path.as_os_str().len());
+            control.charge(
+                1,
+                u64::try_from(std::mem::size_of::<rustix::fs::Stat>())
+                    .map_err(|_| inventory_error("inventory stat width"))?,
+            )?;
             let stat = statat(
-                &frame.directory,
+                frame.directory.file()?,
                 Path::new(&name),
                 AtFlags::SYMLINK_NOFOLLOW,
             )
@@ -206,31 +300,41 @@ pub fn seed_publication_capacity(
                             >= usize::try_from(limits.max_pending_frames)
                                 .map_err(|error| inventory_error(format!("frame bound: {error}")))?
                     {
-                        return Err(inventory_error(
+                        return Err((inventory_error(
                             "directory depth or pending frames exceeds bound",
-                        ));
+                        ))
+                        .into());
                     }
-                    let directory = open_child(&frame.directory, &name, true)?;
-                    compare_entry(&frame.directory, &name, &directory)?;
+                    let directory = ScanFile::open(control, || {
+                        open_child(frame.directory.file()?, &name, true)
+                    })?;
+                    control.charge(2, 0)?;
+                    compare_entry(frame.directory.file()?, &name, directory.file()?)?;
+                    admitted::vector_slot(&mut stack, control)?;
                     stack.push(Frame {
                         directory,
                         path,
                         depth,
+                        _memory: entry_memory,
                     });
                 }
                 FileType::RegularFile => {
-                    let file = open_child(&frame.directory, &name, false)?;
-                    compare_entry(&frame.directory, &name, &file)?;
-                    let metadata = file.metadata().map_err(|error| {
+                    let file = ScanFile::open(control, || {
+                        open_child(frame.directory.file()?, &name, false)
+                    })?;
+                    control.charge(3, 0)?;
+                    compare_entry(frame.directory.file()?, &name, file.file()?)?;
+                    let metadata = file.file()?.metadata().map_err(|error| {
                         inventory_error(format!("stat file {}: {error}", path.display()))
                     })?;
                     let key = inode(&metadata);
                     if let Some(aliases) = regular.get_mut(&key) {
                         if aliases.bytes != metadata.len() || aliases.links != metadata.nlink() {
-                            return Err(inventory_error(format!(
+                            return Err((inventory_error(format!(
                                 "conflicting hardlink width or count: {}",
                                 path.display()
-                            )));
+                            )))
+                            .into());
                         }
                         aliases.aliases = aliases
                             .aliases
@@ -241,14 +345,15 @@ pub fn seed_publication_capacity(
                             .checked_add(metadata.len())
                             .ok_or_else(|| inventory_capacity("boot byte capacity overflow"))?;
                         if next_bytes > limits.max_bytes {
-                            return Err(inventory_capacity("boot byte capacity exceeded"));
+                            return Err((inventory_capacity("boot byte capacity exceeded")).into());
                         }
                         let next_files = used_files
                             .checked_add(1)
                             .ok_or_else(|| inventory_capacity("boot file capacity overflow"))?;
                         if next_files > limits.max_files {
-                            return Err(inventory_capacity("boot file capacity exceeded"));
+                            return Err((inventory_capacity("boot file capacity exceeded")).into());
                         }
+                        control.scratch(quanta_index_core::publication_capacity::publication_inventory_map_node_bytes_v1::<InodeKey,Observed>()?)?;
                         let _previous = regular.insert(
                             key,
                             Observed {
@@ -276,31 +381,45 @@ pub fn seed_publication_capacity(
                 | FileType::CharacterDevice
                 | FileType::BlockDevice
                 | FileType::Unknown => {
-                    return Err(inventory_error(format!(
+                    return Err((inventory_error(format!(
                         "symlink or unsupported entry type: {}",
                         path.display()
-                    )));
+                    )))
+                    .into());
                 }
             }
-        }
+            Ok(())
+        })?;
     }
+    admitted::require_retired(control)?;
     for (key, observed) in &regular {
         if observed.links != observed.aliases {
-            return Err(inventory_error(format!(
+            return Err((inventory_error(format!(
                 "external or changing hardlink count at inode {}:{}: nlink={} root_aliases={}",
                 key.device, key.inode, observed.links, observed.aliases
-            )));
+            )))
+            .into());
         }
     }
+    control.charge(
+        u64::try_from(state_root.components().count())
+            .map_err(|_| inventory_error("root retirement component width"))?
+            .checked_mul(16)
+            .and_then(|n| n.checked_add(32))
+            .ok_or_else(|| inventory_error("root retirement admission width"))?,
+        0,
+    )?;
     lease.require_state_root_v1(state_root)?;
     root_custody.require_current_v1()?;
-    budget.checkpoint("publication boot inventory seal")?;
+    control.checkpoint("publication boot inventory seal")?;
     let mut ledger =
         PublicationCapacityLedger::new(limits.max_bytes, limits.max_files, limits.max_pending)?;
     for (key, observed) in regular {
+        control.retain(PublicationCapacityLedger::boot_inode_allocation_bytes_v1()?)?;
         let _retained = ledger.seed_inode(key, observed.bytes)?;
     }
-    ledger.seal_boot()
+    let capacity = ledger.seal_boot()?;
+    Ok((capacity, used_files, entries_seen, max_path_bytes))
 }
 
 #[cfg(test)]

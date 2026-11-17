@@ -156,6 +156,17 @@ struct State {
     totals: ObjectIoSnapshot,
     in_flight: u64,
     invalid: bool,
+    #[cfg(test)]
+    physical_fault: Option<PhysicalFault>,
+}
+
+/// Unit-test faults at the actual observed writer/file-sync boundary. They
+/// cannot be configured or compiled into a product build.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(super) enum PhysicalFault {
+    ShortWrite(u64),
+    FileSync(u64),
 }
 
 #[derive(Default)]
@@ -217,6 +228,42 @@ fn count_custody_start(totals: &mut ObjectIoSnapshot, kind: CustodyKind, objects
 }
 
 impl ObjectIoObservation {
+    #[cfg(test)]
+    pub(super) fn inject_physical_fault(&self, fault: PhysicalFault) -> Result<(), IndexError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_poison| IndexError::Storage("object IO observer poisoned".into()))?;
+        if state.in_flight != 0 {
+            return Err(IndexError::InvalidInput(
+                "fault injection requires quiescence".into(),
+            ));
+        }
+        state.physical_fault = Some(fault);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn take_physical_fault(&self, operation: Operation) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        let reached = match state.physical_fault {
+            Some(PhysicalFault::ShortWrite(call)) => {
+                matches!(operation, Operation::Write) && state.totals.write_calls == call
+            }
+            Some(PhysicalFault::FileSync(call)) => {
+                matches!(operation, Operation::Sync(SyncKind::File))
+                    && state.totals.file_sync_calls == call
+            }
+            None => false,
+        };
+        if reached {
+            state.physical_fault = None;
+        }
+        reached
+    }
+
     pub fn snapshot(&self) -> Result<ObjectIoSnapshot, IndexError> {
         let state = self
             .state
@@ -339,7 +386,21 @@ impl ObjectIoObservation {
         kind: SyncKind,
         operation: impl FnOnce() -> Result<(), IndexError>,
     ) -> Result<(), IndexError> {
-        self.call(Operation::Sync(kind), operation)
+        #[cfg(not(test))]
+        {
+            self.call(Operation::Sync(kind), operation)
+        }
+        #[cfg(test)]
+        {
+            self.call(Operation::Sync(kind), || {
+                if self.take_physical_fault(Operation::Sync(kind)) {
+                    return Err(IndexError::Storage(
+                        "injected object file fsync failure".into(),
+                    ));
+                }
+                operation()
+            })
+        }
     }
 
     pub(super) fn custody(
@@ -379,10 +440,28 @@ impl ObjectIoObservation {
         struct ObservedWriter<'a, W> {
             inner: &'a mut W,
             observer: &'a ObjectIoObservation,
+            #[cfg(test)]
+            refuse_after_short_write: bool,
         }
         impl<W: Write> Write for ObservedWriter<'_, W> {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
                 let started = self.observer.begin(Operation::Write);
+                #[cfg(test)]
+                let result = if self.refuse_after_short_write {
+                    Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "injected object short-write failure",
+                    ))
+                } else if self.observer.take_physical_fault(Operation::Write) {
+                    self.refuse_after_short_write = true;
+                    match bytes.get(..bytes.len().min(2)) {
+                        Some(prefix) => self.inner.write(prefix),
+                        None => Err(io::Error::other("short-write fixture bounds differ")),
+                    }
+                } else {
+                    self.inner.write(bytes)
+                };
+                #[cfg(not(test))]
                 let result = self.inner.write(bytes);
                 let elapsed = Instant::now().checked_duration_since(started);
                 let written = match &result {
@@ -411,6 +490,8 @@ impl ObjectIoObservation {
         ObservedWriter {
             inner: writer,
             observer: self,
+            #[cfg(test)]
+            refuse_after_short_write: false,
         }
         .write_all(bytes)
     }

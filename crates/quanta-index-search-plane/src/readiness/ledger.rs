@@ -336,10 +336,9 @@ impl Ledger {
         &mut self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
-    ) {
-        let _inserted = self
-            .search_corpus_history_fenced_pairs
-            .insert((repo_id.clone(), revision_id.clone()));
+    ) -> bool {
+        self.search_corpus_history_fenced_pairs
+            .insert((repo_id.clone(), revision_id.clone()))
     }
 
     pub(crate) fn clear_search_corpus_history_fence_v1(

@@ -33,6 +33,8 @@ pub enum IpcError {
     Decode(String),
     /// Underlying transport returned an I/O error other than short read.
     Io(std::io::Error),
+    /// The connected stream failed its admitted process binding before writes.
+    PeerBindingRefused(crate::PeerBindingRefusalV1),
     /// A blocking client read or write exceeded its configured timeout.
     Timeout {
         operation: IpcIoOperation,
@@ -96,6 +98,7 @@ impl core::fmt::Display for IpcError {
             Self::Encode(msg) => write!(f, "ipc cbor encode failed: {msg}"),
             Self::Decode(msg) => write!(f, "ipc cbor decode failed: {msg}"),
             Self::Io(err) => write!(f, "ipc transport io error: {err}"),
+            Self::PeerBindingRefused(cause) => write!(f, "ipc request not sent: {cause}"),
             Self::Timeout { operation, timeout } => {
                 write!(
                     f,
@@ -152,6 +155,7 @@ impl std::error::Error for IpcError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(err) => Some(err),
+            Self::PeerBindingRefused(cause) => Some(cause),
             Self::Truncated
             | Self::Oversized(_)
             | Self::EmptyFrame

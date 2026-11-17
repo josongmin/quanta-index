@@ -11,18 +11,29 @@ import argparse
 import hashlib
 import json
 import math
+import struct
 import sys
 from pathlib import Path
 
 from tools.benchmark import evidence as benchmark_evidence
 from tools.benchmark.evidence import parse_json, read_control
-from tools.benchmark.retrieval import evaluator, go_trace_review_receipt, query_plan, run
+from tools.benchmark.retrieval import (
+    evaluator,
+    go_trace_review_receipt,
+    query_plan,
+    result_window,
+    run,
+)
 from tools.benchmark.retrieval.evaluator import qualified_query_family_ci
 from tools.benchmark.retrieval.finite_json import is_finite_json_number
 
 
 class DecisionError(ValueError):
     """A decision input is missing, malformed or not bound to the capture."""
+
+
+_CONTEXT_METRICS = frozenset({"ndcg_at_10", "recall_at_10"})
+_FILE_METRICS = frozenset({"file_ndcg_at_10", "file_mrr_at_10", "file_recall_at_10"})
 
 
 def _object(value: object, keys: set[str], where: str) -> dict:
@@ -45,7 +56,7 @@ def _number(value: object, where: str, *, positive: bool = False) -> float:
     return float(value)
 
 
-def validate_policy(value: object) -> dict:
+def _validate_policy(value: object, allowed_metrics: frozenset[str]) -> dict:
     policy = _object(
         value,
         {
@@ -81,7 +92,7 @@ def validate_policy(value: object) -> dict:
     )
     for key, value in comparison.items():
         _name(value, f"comparison.{key}")
-    if comparison["primary_metric"] not in {"ndcg_at_10", "recall_at_10"}:
+    if comparison["primary_metric"] not in allowed_metrics:
         raise DecisionError("comparison.primary_metric is unsupported")
     _number(policy["min_useful_delta"], "min_useful_delta", positive=True)
     lower = _number(policy["min_cluster_lower_95"], "min_cluster_lower_95")
@@ -118,6 +129,10 @@ def validate_policy(value: object) -> dict:
         if type(limits[key]) is not int or limits[key] <= 0:
             raise DecisionError(f"resource_limits.{key} must be a positive integer")
     return policy
+
+
+def validate_policy(value: object) -> dict:
+    return _validate_policy(value, _CONTEXT_METRICS)
 
 
 def _absolute_path(value: object, where: str) -> Path:
@@ -172,7 +187,7 @@ def validate_repository_disjoint_policy(value: object) -> dict:
         not isinstance(policy["comparison"], dict)
         or policy["metric_scope"] != "scored_distinct_file"
         or policy["request_mode"] != run.qp.DEFAULT_FILE_SEARCH
-        or policy["comparison"].get("primary_metric") != "file_ndcg_at_10"
+        or policy["comparison"].get("primary_metric") not in _FILE_METRICS
     ):
         raise DecisionError("repository-disjoint file metric or request mode is unsupported")
     scope = _object(
@@ -249,19 +264,13 @@ def validate_repository_disjoint_policy(value: object) -> dict:
             if key not in {"track_min_delta", "metric_scope", "request_mode"}
         },
         "schema_version": 1,
-        "comparison": {
-            **policy["comparison"],
-            "primary_metric": "ndcg_at_10"
-            if file_policy
-            else policy["comparison"]["primary_metric"],
-        },
         "repository_scope": {
             "kind": "single_repository",
             "repository_commit": holdout[0]["repository_commit"],
         },
         "confidence_method": "paired_query_family_cluster_bootstrap_percentile_v1",
     }
-    validate_policy(single)
+    _validate_policy(single, _FILE_METRICS if file_policy else _CONTEXT_METRICS)
     if (
         policy["confidence_method"]
         != "paired_stratified_repository_cluster_bootstrap_percentile_v1"
@@ -335,9 +344,13 @@ def _repository_disjoint_metric_gate(
         if repository_tracks != {"objective", "reviewed"}:
             raise DecisionError("repository-disjoint objective or reviewed track is missing")
         comparison = report["rank_metrics"]["comparison"]
-        negative_count = sum(
-            task["split"] == "eval" and not task["gold"] for task in suite["tasks"]
-        )
+        negative_tasks = [
+            task
+            for task in suite["tasks"]
+            if task["split"] == "eval"
+            and not evaluator.rank_task_answerable(task, policy["comparison"]["primary_metric"])
+        ]
+        negative_count = len(negative_tasks)
         negative = comparison.get("no_answer_abstention_delta")
         query_rows = {(item["task_id"], item["route"]): item for item in report["per_query"]}
         observed_negative = math.fsum(
@@ -349,8 +362,7 @@ def _repository_disjoint_metric_gate(
                 query_rows[(task["task_id"], policy["comparison"]["baseline_route"])]["status"]
                 == "abstained"
             )
-            for task in suite["tasks"]
-            if task["split"] == "eval" and not task["gold"]
+            for task in negative_tasks
         )
         if (
             negative_count == 0
@@ -958,6 +970,90 @@ def build_decision(repo: Path, suite: Path, manifest_path: Path, policy_path: Pa
     }
 
 
+def _replay_go_trace_file_page(
+    trace: dict, repo: str, universe: set[str], lane_returned: dict[str, int],
+    frame_path: str | None, task_id: str,
+) -> list[dict]:
+    pools = _object(trace.get("rank_pools"), set(lane_returned), "Go trace rank pools")
+    first = {}
+    for lane, returned in lane_returned.items():
+        pool = pools[lane]
+        if not isinstance(pool, list) or len(pool) != returned:
+            raise DecisionError(f"Go trace {lane} rank pool count differs from its window: {task_id}")
+        witnesses = {}
+        for chunk_rank, raw in enumerate(pool, 1):
+            row = _object(raw, {"file", "candidate_id", "score_bits"}, f"Go trace {lane} pool row")
+            file = _object(row["file"], {"source_repo_id", "repo_relative_path"},
+                           f"Go trace {lane} pool file")
+            path, bits, candidate_id = file["repo_relative_path"], row["score_bits"], row["candidate_id"]
+            if (
+                file["source_repo_id"] != repo
+                or not isinstance(path, str) or path not in universe
+                or not isinstance(candidate_id, str) or not candidate_id
+                or type(bits) is not int or not 0 <= bits <= 0xFFFF_FFFF
+                or bits & 0x7F80_0000 == 0x7F80_0000
+            ):
+                raise DecisionError(f"Go trace {lane} pool row is invalid: {task_id}")
+            if path not in witnesses:
+                witnesses[path] = (len(witnesses) + 1, chunk_rank, candidate_id, bits)
+        first[lane] = witnesses
+
+    ranked = []
+    for path in first["lexical"].keys() | first["dense"].keys():
+        lexical, dense = first["lexical"].get(path), first["dense"].get(path)
+        score = sum(1.0 / (60.0 + witness[0]) for witness in (lexical, dense) if witness)
+        ranked.append((path != frame_path, -score, lexical is None, path))
+    ranked.sort()
+    expected = ranked[:20]
+    candidates = trace.get("candidates")
+    if not isinstance(candidates, list) or len(candidates) != len(expected):
+        raise DecisionError(f"Go trace file page differs from lane pool replay: {task_id}")
+
+    for candidate, (_, negative_score, _, path) in zip(candidates, expected):
+        row = _object(candidate, {"file", "source_repo_id", "path", "candidate_id",
+                                  "file_rrf_score", "production_source", "source_frame",
+                                  "lexical", "dense"}, "Go trace file candidate")
+        if row["path"] != path:
+            raise DecisionError(f"Go trace file page differs from lane pool replay: {task_id}")
+        if (row["file"] != {"repo_relative_path": path, "source_repo_id": repo}
+                or row["source_repo_id"] != repo
+                or row["production_source"] is not (path.endswith(".go") and not path.endswith("_test.go"))):
+            raise DecisionError(f"Go trace file rank provenance is invalid: {task_id}")
+        if row["source_frame"] is True and frame_path is None:
+            raise DecisionError(f"Go trace frame was promoted without exact owner: {task_id}")
+        if row["source_frame"] is not (path == frame_path):
+            raise DecisionError(f"Go trace promoted path disagrees with failure excerpt: {task_id}")
+        for lane, by_path in first.items():
+            expected_witness = by_path.get(path)
+            actual = row[lane]
+            if expected_witness is None and actual is None:
+                continue
+            if expected_witness is None or not isinstance(actual, dict):
+                raise DecisionError(f"Go trace {lane} witness rank is invalid: {task_id}")
+            file_rank, chunk_rank, candidate_id, score_bits = expected_witness
+            actual = _object(actual, {"file_rank", "chunk_rank", "candidate_id", "path",
+                                      "source_repo_id", "raw_score"}, f"Go trace {lane} witness")
+            if (type(actual["file_rank"]) is not int or actual["file_rank"] != file_rank
+                    or type(actual["chunk_rank"]) is not int or actual["chunk_rank"] != chunk_rank):
+                raise DecisionError(f"Go trace {lane} witness rank is invalid: {task_id}")
+            raw_score = actual["raw_score"]
+            if (not is_finite_json_number(raw_score) or actual["candidate_id"] != candidate_id
+                    or actual["source_repo_id"] != repo or actual["path"] != path):
+                raise DecisionError(f"Go trace {lane} witness drift: {task_id}")
+            try:
+                packed_score = struct.pack("<f", raw_score)
+            except OverflowError as exc:
+                raise DecisionError(f"Go trace {lane} witness drift: {task_id}") from exc
+            if packed_score != score_bits.to_bytes(4, "little"):
+                raise DecisionError(f"Go trace {lane} witness drift: {task_id}")
+        representative = first["lexical"].get(path) or first["dense"][path]
+        if row["candidate_id"] != representative[2]:
+            raise DecisionError(f"Go trace representative identity drift: {task_id}")
+        if not is_finite_json_number(row["file_rrf_score"]) or row["file_rrf_score"] != -negative_score:
+            raise DecisionError(f"Go trace RRF score disagrees with lane ranks: {task_id}")
+    return [{"path": path} for _, _, _, path in expected]
+
+
 def evaluate_go_trace_file_holdout(
     plan_path: Path, judgments_path: Path, out_path: Path | None = None
 ) -> dict:
@@ -1091,11 +1187,15 @@ def evaluate_go_trace_file_holdout(
             raise DecisionError(f"Go trace SDK attempt lacks paired capture: {task_id}")
         paired = bound("paired.json", execution["paired_sha256"])
         if (
-            paired.get("schema_version") != 2
+            type(paired.get("schema_version")) is not int or paired["schema_version"] != 4
             or paired.get("generic_execution_profile_id")
             != query_plan.PROFILE_IDS["natural_language"]
         ):
             raise DecisionError(f"Go trace paired query profile drift: {task_id}")
+        max_tokens = paired.get("nl_max_tokens")
+        if type(max_tokens) is not int:
+            raise DecisionError(f"Go trace paired natural-language config drift: {task_id}")
+        nl_config = {**query_plan.DEFAULT_NL_CONFIG, "max_tokens": max_tokens}
         canonical_pack = benchmark_evidence.canonical_json(pack)
         if paired.get("pack_sha256") != hashlib.sha256(canonical_pack.encode()).hexdigest():
             raise DecisionError(f"Go trace paired pack identity drift: {task_id}")
@@ -1124,15 +1224,23 @@ def evaluate_go_trace_file_holdout(
         task = tasks[0]
         semantic_input = pack_tasks[0].get("semantic_input")
         identity = task.get("query_identity")
+        raw_query = pack_tasks[0].get("query")
+        if (
+            not isinstance(raw_query, str)
+            or pack_tasks[0].get("query_sha256")
+            != hashlib.sha256(raw_query.encode()).hexdigest()
+        ):
+            raise DecisionError(f"Go trace query/pack identity drift: {task_id}")
         try:
             semantic_digest = query_plan.go_trace_semantic_digest(semantic_input)
+            expected_identity = query_plan.derive_query_identity(
+                "natural_language", raw_query, nl_config,
+                semantic_input=semantic_input,
+            )
         except query_plan.QueryPlanError as exc:
-            raise DecisionError(f"Go trace semantic input drift: {task_id}: {exc}") from exc
+            raise DecisionError(f"Go trace query/pack identity drift: {task_id}: {exc}") from exc
         if (
-            not isinstance(pack_tasks[0].get("query"), str)
-            or pack_tasks[0].get("query_sha256")
-            != hashlib.sha256(pack_tasks[0]["query"].encode()).hexdigest()
-            or not isinstance(identity, dict)
+            not isinstance(identity, dict)
             or set(identity) != {
                 "original_query_sha256",
                 "effective_lexical_request_sha256",
@@ -1141,8 +1249,7 @@ def evaluate_go_trace_file_holdout(
                 "trace_semantic_representation_policy",
                 "trace_semantic_text_sha256",
             }
-            or identity.get("original_query_sha256") != pack_tasks[0].get("query_sha256")
-            or identity.get("semantic_text_sha256") != pack_tasks[0].get("query_sha256")
+            or any(identity.get(key) != value for key, value in expected_identity.items())
             or identity.get("generic_semantic_representation_policy") != "task_query_v1"
             or identity.get("trace_semantic_representation_policy") != "go_test_excerpt_v1"
             or identity.get("trace_semantic_text_sha256") != semantic_digest
@@ -1153,7 +1260,7 @@ def evaluate_go_trace_file_holdout(
         context = trace.get("source_context") if isinstance(trace, dict) else None
         if (
             not isinstance(trace, dict)
-            or trace.get("profile") != "go_trace_file_rrf_v1"
+            or trace.get("profile") != "go_trace_file_rrf_v2"
             or not isinstance(context, dict)
             or not isinstance(context.get("mode"), str)
             or context.get("mode") not in {
@@ -1173,6 +1280,7 @@ def evaluate_go_trace_file_holdout(
             and context.get("failure_source_repo_id") != repo
         ) or (context["mode"] == "unowned" and context.get("failure_source_repo_id") is not None):
             raise DecisionError(f"Go trace failure-source owner drift: {task_id}")
+        relative_frame_path = None
         if context["mode"] == "frozen_module_panic_v1":
             if not reviewed:
                 raise DecisionError(f"Go trace module frame requires reviewed holdout: {task_id}")
@@ -1184,104 +1292,155 @@ def evaluate_go_trace_file_holdout(
                 )
             except (ValueError, OSError) as exc:
                 raise DecisionError(f"Go trace module frame invalid: {task_id}: {exc}") from exc
+            relative_frame_path = context["module_frame"]["path"]
+        else:
+            frame_paths = go_trace_review_receipt.relative_frame_paths(
+                semantic_input["failure_excerpt"]
+            )
+            frame_class = ("unresolved", "exact", "ambiguous")[min(len(frame_paths), 2)]
+            if trace.get("frame_class") != frame_class:
+                raise DecisionError(f"Go trace frame class disagrees with failure excerpt: {task_id}")
+            if frame_class == "exact" and context["mode"] == "explicit_pilot_owner_v1":
+                relative_frame_path = next(iter(frame_paths))
         comparison = pack.get("comparison_contract")
         if (
-            paired.get("lane_top_k") != 100
+            type(paired.get("lane_top_k")) is not int or paired["lane_top_k"] != 100
             or not isinstance(comparison, dict)
-            or comparison.get("top_k") != 100
+            or type(comparison.get("top_k")) is not int or comparison["top_k"] != 100
         ):
             raise DecisionError(f"Go trace SDK lane budget drift: {task_id}")
 
+        f32_max = 3.4028234663852886e38
+
         def complete_window(
             value: object, where: str, count: int | None = None, task_id: str = task_id
-        ) -> None:
+        ) -> int:
+            error = f"Go trace {where} window is incomplete: {task_id}"
+            try:
+                returned, exhausted, lane_execution = result_window.typed_window(value, where)
+            except result_window.WindowEvidenceError as exc:
+                raise DecisionError(f"{error}: {exc}") from exc
+            expected_lanes = {
+                "lexical": ("lexical",),
+                "semantic": ("semantic.dense",),
+                "hybrid": ("hybrid.lexical", "hybrid.dense"),
+                "trace lexical": ("go_test_trace.lexical",),
+                "trace dense": ("go_test_trace.dense",),
+            }[where]
             if (
-                not isinstance(value, dict)
-                or not isinstance(value.get("outcome"), dict)
-                or value["outcome"].get("kind") not in {"exact_exhausted", "lower_bound"}
+                returned > 100
+                or (count is not None and returned != count)
+                or any(lane not in lane_execution for lane in expected_lanes)
+                or (returned > 0 and not any(lane_execution[lane] for lane in expected_lanes))
+                or value.get("empty_provenance") == "logical_empty"
                 or (
-                    value["outcome"].get("kind") == "lower_bound"
-                    and value["outcome"].get("continuation") is not True
+                    not exhausted
+                    and (
+                        returned != 100
+                        or value["outcome"] != {"kind": "lower_bound", "continuation": True}
+                    )
                 )
-                or type(value.get("returned")) is not int
-                or not 0 <= value["returned"] <= 100
-                or (count is not None and value["returned"] != count)
             ):
-                raise DecisionError(f"Go trace {where} window is incomplete: {task_id}")
+                raise DecisionError(error)
+            return returned
+
+        def hybrid_rows(
+            candidates: list, window: dict, task_id: str = task_id, f32_max: float = f32_max
+        ) -> None:
+            lanes_by_name = {lane["lane"]: lane for lane in window["coverage"]["lanes"]}
+            lane_bounds = {}
+            for lane, name in (("Lexical", "hybrid.lexical"), ("Dense", "hybrid.dense")):
+                trace = lanes_by_name[name]
+                lane_bounds[lane] = trace["candidates"].get("value", 0) if trace["contributed"] else 0
+            seen_ranks = {lane: set() for lane in lane_bounds}
+            seen_ids: set[str] = set()
+            previous_order = None
+            for candidate in candidates:
+                if not isinstance(candidate, dict) or set(candidate) != {
+                    "candidate_id", "source_repo_id", "path", "score", "contributions"
+                }:
+                    raise DecisionError(f"Go trace hybrid candidate provenance is invalid: {task_id}")
+                candidate_id = candidate["candidate_id"]
+                score = candidate["score"]
+                contributions = candidate["contributions"]
+                if (
+                    not isinstance(candidate_id, str)
+                    or not candidate_id
+                    or candidate_id in seen_ids
+                    or not is_finite_json_number(score)
+                    or score <= 0
+                    or not isinstance(contributions, list)
+                    or not 1 <= len(contributions) <= 2
+                ):
+                    raise DecisionError(f"Go trace hybrid candidate provenance is invalid: {task_id}")
+                seen_ids.add(candidate_id)
+                lanes = []
+                expected_score = 0.0
+                for contribution in contributions:
+                    if (
+                        not isinstance(contribution, dict)
+                        or set(contribution) != {"lane", "rank", "raw_score"}
+                        or contribution["lane"] not in ("Lexical", "Dense")
+                        or type(contribution["rank"]) is not int
+                        or not 1 <= contribution["rank"] <= 0xFFFF_FFFF
+                        or not is_finite_json_number(contribution["raw_score"])
+                        or abs(contribution["raw_score"]) > f32_max
+                    ):
+                        raise DecisionError(f"Go trace hybrid lane provenance is invalid: {task_id}")
+                    lane, rank = contribution["lane"], contribution["rank"]
+                    if rank > lane_bounds[lane]:
+                        raise DecisionError(f"Go trace hybrid lane rank exceeds the captured lane: {task_id}")
+                    if rank in seen_ranks[lane]:
+                        raise DecisionError(f"Go trace hybrid lane rank is repeated: {task_id}")
+                    seen_ranks[lane].add(rank)
+                    lanes.append(lane)
+                    expected_score += 1.0 / (60.0 + rank)
+                if lanes not in (["Lexical"], ["Dense"], ["Lexical", "Dense"]):
+                    raise DecisionError(f"Go trace hybrid lane provenance is invalid: {task_id}")
+                if score != expected_score:
+                    raise DecisionError(f"Go trace hybrid RRF score disagrees with lane ranks: {task_id}")
+                order = (-expected_score, "Lexical" not in lanes, candidate_id)
+                if previous_order is not None and previous_order >= order:
+                    raise DecisionError(f"Go trace hybrid ranking order is invalid: {task_id}")
+                previous_order = order
 
         for route in ("lexical", "semantic", "hybrid"):
             capture = task.get(route)
             if not isinstance(capture, dict) or not isinstance(capture.get("candidates"), list):
                 raise DecisionError(f"Go trace {route} capture is missing: {task_id}")
             complete_window(capture.get("window"), route, len(capture["candidates"]))
-        complete_window(trace.get("lexical_window"), "trace lexical")
-        complete_window(trace.get("dense_window"), "trace dense")
+        trace_lane_returned = {
+            lane: complete_window(trace.get(f"{lane}_window"), f"trace {lane}")
+            for lane in ("lexical", "dense")
+        }
+        trace_page = _replay_go_trace_file_page(
+            trace, repo, universe, trace_lane_returned, relative_frame_path, task_id
+        )
         labels = [{"path": path, "grade": 1} for path in gold_paths]
-        metrics = {}
-        for route in ("lexical", "hybrid", "trace_files"):
-            capture = task.get(route)
-            candidates = capture.get("candidates") if isinstance(capture, dict) else None
-            if not isinstance(candidates, list):
-                raise DecisionError(f"Go trace {route} capture is missing: {task_id}")
-            distinct = []
-            seen = set()
+        pages = {"trace_files": trace_page}
+        for route in ("lexical", "hybrid"):
+            candidates = task[route]["candidates"]
+            if route == "hybrid":
+                hybrid_rows(candidates, task[route]["window"])
+            paths = {}
             for candidate in candidates:
                 if not isinstance(candidate, dict):
                     raise DecisionError(f"Go trace {route} candidate is malformed: {task_id}")
                 path = candidate.get("path")
-                if (
-                    not isinstance(path, str)
-                    or path not in universe
-                    or candidate.get("source_repo_id") != repo
-                ):
+                if (not isinstance(path, str) or path not in universe
+                        or candidate.get("source_repo_id") != repo):
                     raise DecisionError(
                         f"Go trace {route} candidate lacks source provenance: {task_id}"
                     )
-                if route == "trace_files":
-                    file = candidate.get("file")
-                    if (
-                        not isinstance(file, dict)
-                        or file.get("repo_relative_path") != path
-                        or file.get("source_repo_id") != repo
-                        or path in seen
-                        or not is_finite_json_number(candidate.get("file_rrf_score"))
-                        or type(candidate.get("source_frame")) is not bool
-                        or candidate.get("production_source")
-                        != (path.endswith(".go") and not path.endswith("_test.go"))
-                    ):
-                        raise DecisionError(f"Go trace file rank provenance is invalid: {task_id}")
-                    for lane in ("lexical", "dense"):
-                        witness = candidate.get(lane)
-                        if witness is not None and (
-                            not isinstance(witness, dict)
-                            or witness.get("path") != path
-                            or witness.get("source_repo_id") != repo
-                        ):
-                            raise DecisionError(f"Go trace {lane} witness drift: {task_id}")
-                    if candidate.get("lexical") is None and candidate.get("dense") is None:
-                        raise DecisionError(f"Go trace file lacks lane witness: {task_id}")
-                if path not in seen:
-                    seen.add(path)
-                    distinct.append({"path": path})
-            if route == "trace_files" and len(distinct) > 20:
-                raise DecisionError(f"Go trace file result exceeds top-20: {task_id}")
-            promoted = sum(item.get("source_frame") is True for item in candidates)
-            if (
-                route == "trace_files"
-                and promoted
-                and (
-                    promoted != 1
-                    or context["mode"] not in {
-                        "explicit_pilot_owner_v1", "frozen_module_panic_v1"
-                    }
-                    or trace.get("frame_class") != "exact"
-                )
-            ):
-                raise DecisionError(f"Go trace frame was promoted without exact owner: {task_id}")
-            metrics[route] = {
-                "Recall@20": evaluator.file_recall_at_k_judged(distinct, labels, 20),
-                "MRR@20": evaluator.file_mrr_at_k_judged(distinct, labels, 20),
+                paths.setdefault(path, {"path": path})
+            pages[route] = list(paths.values())
+        metrics = {
+            route: {
+                "Recall@20": evaluator.file_recall_at_k_judged(page, labels, 20),
+                "MRR@20": evaluator.file_mrr_at_k_judged(page, labels, 20),
             }
+            for route, page in pages.items()
+        }
         rows.append({"repo_id": repo, "task_id": task_id, "metrics": metrics})
     if observed_tasks != set(judged):
         raise DecisionError("Go trace judgments and SDK task denominator differ")
@@ -1321,6 +1480,30 @@ def evaluate_go_trace_file_holdout(
     }
 
 
+def build_native_file_decision(
+    manifest: Path,
+    policy: Path,
+    daemon: Path,
+    config: Path,
+    runner: Path,
+    *,
+    execution_evidence_root: Path | None = None,
+    execution_run_ids: list[str] | None = None,
+) -> dict:
+    """Keep Native execution evidence separate from Legacy run qualification."""
+    from tools.benchmark.retrieval.native_file_decision import build_native_file_decision as replay
+
+    options = (
+        {}
+        if execution_evidence_root is None and execution_run_ids is None
+        else {
+            "execution_evidence_root": execution_evidence_root,
+            "execution_run_ids": execution_run_ids,
+        }
+    )
+    return replay(manifest, policy, daemon, config, runner, **options)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     for key in (
@@ -1331,11 +1514,73 @@ def main(argv: list[str] | None = None) -> int:
         "out",
         "go-trace-plan",
         "go-trace-judgments",
+        "native-file-cohort",
+        "daemon-binary",
+        "daemon-config",
+        "runner-binary",
+        "native-execution-root",
+        "native-execution-runs",
     ):
         parser.add_argument(f"--{key}")
     args = parser.parse_args(argv)
     try:
-        if args.go_trace_plan or args.go_trace_judgments:
+        native = any(
+            (
+                args.native_file_cohort,
+                args.daemon_binary,
+                args.daemon_config,
+                args.runner_binary,
+                args.native_execution_root,
+                args.native_execution_runs,
+            )
+        )
+        if native:
+            if not all(
+                (
+                    args.native_file_cohort,
+                    args.policy,
+                    args.daemon_binary,
+                    args.daemon_config,
+                    args.runner_binary,
+                    args.out,
+                )
+            ) or any(
+                (
+                    args.repo,
+                    args.suite,
+                    args.run_manifest,
+                    args.go_trace_plan,
+                    args.go_trace_judgments,
+                )
+            ):
+                raise DecisionError(
+                    "Native decision requires only cohort, policy, daemon/config, runner and out"
+                )
+            output = Path(args.out)
+            if output.exists() or output.is_symlink():
+                raise DecisionError("Native decision output must be a new path")
+            if (args.native_execution_root is None) != (args.native_execution_runs is None):
+                raise DecisionError("Native execution evidence needs both root and run IDs")
+            options = {}
+            if args.native_execution_root is not None:
+                options = {
+                    "execution_evidence_root": Path(args.native_execution_root),
+                    "execution_run_ids": parse_json(
+                        read_control(Path(args.native_execution_runs)).decode("utf-8")
+                    ),
+                }
+            decision = build_native_file_decision(
+                Path(args.native_file_cohort),
+                Path(args.policy),
+                Path(args.daemon_binary),
+                Path(args.daemon_config),
+                Path(args.runner_binary),
+                **options,
+            )
+            rendered = json.dumps(decision, indent=2, sort_keys=True, allow_nan=False) + "\n"
+            with output.open("x", encoding="utf-8") as stream:
+                stream.write(rendered)
+        elif args.go_trace_plan or args.go_trace_judgments:
             if (
                 not args.go_trace_plan
                 or not args.go_trace_judgments
@@ -1356,24 +1601,30 @@ def main(argv: list[str] | None = None) -> int:
             )
     except (DecisionError, run.RunError, ValueError, OSError, KeyError, TypeError) as exc:
         scope = (
-            "Go trace evaluation"
-            if args.go_trace_plan or args.go_trace_judgments
-            else "default decision"
+            "Native quality decision"
+            if native
+            else (
+                "Go trace evaluation"
+                if args.go_trace_plan or args.go_trace_judgments
+                else "default decision"
+            )
         )
         print(f"ERROR: {scope} refused: {exc}", file=sys.stderr)
         return 2
-    if args.go_trace_plan:
+    if args.go_trace_plan and not native:
         with Path(args.out).open("x", encoding="utf-8") as output:
             output.write(json.dumps(decision, indent=2, sort_keys=True) + "\n")
-    else:
+    elif not native:
         Path(args.out).write_text(
             json.dumps(decision, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
     print(json.dumps({"status": decision["status"], "reasons": decision.get("reasons", [])}))
     return (
         0
-        if decision["status"] in {
+        if decision["status"]
+        in {
             "admit",
+            "quality_admit",
             "scored_complete_denominator_no_default_decision",
             "scored_exploratory_unqualified_no_default_decision",
         }

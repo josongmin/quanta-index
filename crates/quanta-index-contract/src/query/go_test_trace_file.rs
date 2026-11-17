@@ -71,7 +71,9 @@ impl GoTestTraceSourceFramesV1 {
         text: &str,
         module: &GoTestTraceModuleContextV1,
     ) -> Option<GoTestTraceModuleCacheFrameV1> {
-        module.validate_v1().ok()?;
+        if module.validate_v1().is_err() {
+            return None;
+        }
         let last_panic_line = text
             .lines()
             .enumerate()
@@ -84,7 +86,8 @@ impl GoTestTraceSourceFramesV1 {
         let mut opened_goroutine = false;
         let mut saw_stack_frame = false;
         let mut previous_line = None;
-        for line in text.lines().skip(last_panic_line + 1) {
+        let first_frame_line = last_panic_line.checked_add(1)?;
+        for line in text.lines().skip(first_frame_line) {
             let trimmed = line.trim_start();
             let preceding = previous_line.replace(trimmed);
             if let Some(header) = trimmed.strip_prefix("goroutine ") {
@@ -132,8 +135,11 @@ impl GoTestTraceSourceFramesV1 {
             if path.ends_with("_test.go") {
                 return None;
             }
+            let Ok(path) = ExactRepoRelativePathV1::new(path) else {
+                return None;
+            };
             return Some(GoTestTraceModuleCacheFrameV1 {
-                path: ExactRepoRelativePathV1::new(path).ok()?,
+                path,
                 line: line_number.get(),
                 symbol,
             });
@@ -214,7 +220,9 @@ fn module_stack_symbol(line: &str, module_path: &str, source_path: &str) -> Opti
     identifier(symbol).then(|| symbol.to_owned())
 }
 
-/// Caller-asserted Go module-cache identity. The benchmark binds this exact
+/// Caller-asserted Go module-cache identity.
+///
+/// The benchmark binds this exact
 /// module and version to a frozen source commit before sending the request.
 /// It remains a ranking hint, not server-side source provenance authority.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -244,8 +252,9 @@ impl GoTestTraceModuleContextV1 {
         }
         let version = self.module_version.as_str();
         if version.len() > 128
-            || !version.starts_with('v')
-            || !version[1..].bytes().any(|ch| ch.is_ascii_digit())
+            || !version
+                .strip_prefix('v')
+                .is_some_and(|body| body.bytes().any(|ch| ch.is_ascii_digit()))
             || !version
                 .bytes()
                 .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, b'.' | b'-' | b'+'))
@@ -260,6 +269,7 @@ impl GoTestTraceModuleContextV1 {
 pub const GO_TEST_TRACE_FAILURE_MAX_BYTES_V1: usize = 16 * 1024;
 
 /// Explicit Go test failure profile for investigating production faults.
+///
 /// Production `.go` files rank before `_test.go` files and docs. Parsed frames
 /// from raw `failure_excerpt` are query-bound ranking hints, not call-stack
 /// authority. `failure_source_repo_id` names the owner of a relative frame
@@ -272,6 +282,8 @@ pub struct GoTestTraceFileQueryRequestV1 {
     pub failure_source_repo_id: Option<RepoId>,
     pub failure_module_context: Option<GoTestTraceModuleContextV1>,
     pub top_k: u32,
+    /// Return the two bounded chunk pools used for file ranking.
+    pub include_rank_pools: bool,
 }
 
 const FIELDS: &[&str] = &[
@@ -280,6 +292,7 @@ const FIELDS: &[&str] = &[
     "failure_source_repo_id",
     "failure_module_context",
     "top_k",
+    "include_rank_pools",
 ];
 
 impl GoTestTraceFileQueryRequestV1 {
@@ -327,14 +340,12 @@ impl GoTestTraceFileQueryRequestV1 {
 impl Serialize for GoTestTraceFileQueryRequestV1 {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.validate_v1().map_err(serde::ser::Error::custom)?;
-        let mut state = serializer.serialize_struct(
-            "GoTestTraceFileQueryRequestV1",
-            if self.failure_module_context.is_some() {
-                5
-            } else {
-                4
-            },
-        )?;
+        let field_count = 4usize
+            .checked_add(usize::from(self.failure_module_context.is_some()))
+            .and_then(|count| count.checked_add(usize::from(self.include_rank_pools)))
+            .ok_or_else(|| serde::ser::Error::custom("Go trace request field count overflow"))?;
+        let mut state =
+            serializer.serialize_struct("GoTestTraceFileQueryRequestV1", field_count)?;
         state.serialize_field("query", &self.query)?;
         state.serialize_field("failure_excerpt", &self.failure_excerpt)?;
         state.serialize_field("failure_source_repo_id", &self.failure_source_repo_id)?;
@@ -342,6 +353,9 @@ impl Serialize for GoTestTraceFileQueryRequestV1 {
             state.serialize_field("failure_module_context", module)?;
         }
         state.serialize_field("top_k", &self.top_k)?;
+        if self.include_rank_pools {
+            state.serialize_field("include_rank_pools", &true)?;
+        }
         state.end()
     }
 }
@@ -361,6 +375,7 @@ impl<'de> Visitor<'de> for RequestVisitor {
         let mut failure_source_repo_id: Option<Option<RepoId>> = None;
         let mut failure_module_context: Option<Option<GoTestTraceModuleContextV1>> = None;
         let mut top_k = None;
+        let mut include_rank_pools = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "query" => {
@@ -393,6 +408,12 @@ impl<'de> Visitor<'de> for RequestVisitor {
                     }
                     top_k = Some(map.next_value()?);
                 }
+                "include_rank_pools" => {
+                    if include_rank_pools.is_some() {
+                        return Err(de::Error::duplicate_field("include_rank_pools"));
+                    }
+                    include_rank_pools = Some(map.next_value::<bool>()?);
+                }
                 other => return Err(de::Error::unknown_field(other, FIELDS)),
             }
         }
@@ -404,6 +425,7 @@ impl<'de> Visitor<'de> for RequestVisitor {
                 .ok_or_else(|| de::Error::missing_field("failure_source_repo_id"))?,
             failure_module_context: failure_module_context.unwrap_or(None),
             top_k: top_k.ok_or_else(|| de::Error::missing_field("top_k"))?,
+            include_rank_pools: include_rank_pools.unwrap_or(false),
         };
         request.validate_v1().map_err(de::Error::custom)?;
         Ok(request)
@@ -442,6 +464,7 @@ mod tests {
             failure_source_repo_id: None,
             failure_module_context: None,
             top_k: 20,
+            include_rank_pools: false,
         }
     }
 
@@ -450,12 +473,28 @@ mod tests {
         let valid = request();
         let encoded = serde_json::to_string(&valid).expect("request encode");
         assert!(!encoded.contains("failure_module_context"));
+        assert!(!encoded.contains("include_rank_pools"));
         assert_eq!(
             serde_json::from_str::<GoTestTraceFileQueryRequestV1>(&encoded)
                 .expect("request decode"),
             valid
         );
         assert!(encoded.contains("\"failure_source_repo_id\":null"));
+        let mut with_pools = valid.clone();
+        with_pools.include_rank_pools = true;
+        let pools_wire = serde_json::to_string(&with_pools).expect("pool request encode");
+        assert!(pools_wire.contains("\"include_rank_pools\":true"));
+        assert_eq!(
+            serde_json::from_str::<GoTestTraceFileQueryRequestV1>(&pools_wire)
+                .expect("pool request decode"),
+            with_pools
+        );
+        let duplicate_pools = pools_wire.replacen(
+            "\"include_rank_pools\":true",
+            "\"include_rank_pools\":true,\"include_rank_pools\":true",
+            1,
+        );
+        assert!(serde_json::from_str::<GoTestTraceFileQueryRequestV1>(&duplicate_pools).is_err());
         let missing_owner = encoded.replacen("\"failure_source_repo_id\":null,", "", 1);
         assert!(serde_json::from_str::<GoTestTraceFileQueryRequestV1>(&missing_owner).is_err());
         let duplicate_owner = encoded.replacen(

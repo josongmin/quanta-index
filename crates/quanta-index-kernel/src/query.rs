@@ -36,6 +36,23 @@ impl<Q, R> QueryAdapterRegistry<Q, R> {
         }
     }
 
+    /// Register another query shape for the same installed descriptors and
+    /// resource ceilings. The new reader validates the selected instance.
+    pub fn with_query_reader<Q2, R2, A: IndexQueryPort<Q2, R2> + 'static>(
+        &self,
+        mut make_reader: impl FnMut(ResourceNeed) -> Result<A, IndexError>,
+    ) -> Result<QueryAdapterRegistry<Q2, R2>, IndexError> {
+        let mut registry = QueryAdapterRegistry::new();
+        for reader in self.by_kind.values() {
+            registry.register(
+                reader.descriptor,
+                reader.reservation_ceiling,
+                make_reader(reader.reservation_ceiling)?,
+            )?;
+        }
+        Ok(registry)
+    }
+
     /// The registered ceiling bounds request-specific sizing policies. The
     /// selected request owns an exact need no larger than this ceiling.
     pub fn register<A: IndexQueryPort<Q, R> + 'static>(

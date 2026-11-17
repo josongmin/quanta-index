@@ -56,7 +56,6 @@ package ownership. Nested fuzz manifests are tooling, not root packages.
 | --- | --- |
 | [quanta-index-corpus-smoke](../../crates/quanta-index-corpus-smoke/README.md) | TOML corpus parsing, conformance runner and JUnit output for DSL fixtures; not a daemon serving path. |
 | [quanta-index-searchd-harness](../../crates/quanta-index-searchd-harness/README.md) | Fixtures and benchmark drivers used as runtime dev dependencies; not part of the production daemon graph. |
-| [quanta-index-scan-experiment](../../crates/quanta-index-scan-experiment/README.md) | Exploratory keyword scan comparison. Its output is not a qualified daemon or DSL benchmark. |
 
 For current serving behavior, see [engine status](engine-status-v1.md).
 For verification status, follow the [current epics](../plans/oct-22-finalizing/README.md)

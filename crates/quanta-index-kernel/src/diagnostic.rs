@@ -898,6 +898,232 @@ mod tests {
     }
 
     #[test]
+    fn async_build_stage_records_accepted_work_across_suspend_and_keeps_primary_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for record in [false, true] {
+            for failure in 0..4 {
+                let events = Arc::new(Events::default());
+                let clock = Arc::new(StepClock::default());
+                let context = DiagnosticContextV1::new(
+                    DiagnosticCaptureIdV1([95; 16]),
+                    clock.clone(),
+                    events.clone(),
+                );
+                let root =
+                    context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(1))?;
+                let root_id = root.span_id();
+                let request = RequestBudgetV1::for_duration(Duration::from_secs(5));
+                let request = if record {
+                    request.with_diagnostic_context(context.child_context(&root))
+                } else {
+                    request
+                };
+                let mut work = WorkBudget::with_request(
+                    WorkLimits {
+                        reads: 100,
+                        writes: 100,
+                        bytes: 100,
+                        mutations: 100,
+                    },
+                    request,
+                );
+                work.charge(WorkUsage {
+                    reads: 5,
+                    writes: 7,
+                    bytes: 11,
+                    mutations: 13,
+                })?;
+                let original = work.request().clone();
+                let clock_before = clock.0.load(Ordering::Relaxed);
+                let stage = super::WorkStage::begin(&work, DiagnosticStageV1::BuildPrepare);
+                let stage_id = stage.span().map(DiagnosticSpanGuardV1::span_id);
+                let mut inner_id = None;
+                let mut suspended = Box::pin(async {
+                    let mut phase = super::phase_budget(&mut work, stage.span());
+                    if !phase.request().same_request_as(&original)
+                        || phase.request().deadline() != original.deadline()
+                    {
+                        return Err(IndexError::BackendViolation(
+                            "async request replaced".into(),
+                        ));
+                    }
+                    phase.charge(WorkUsage {
+                        reads: 2,
+                        writes: 3,
+                        bytes: 5,
+                        mutations: 7,
+                    })?;
+                    let inner = super::WorkStage::begin(&phase, DiagnosticStageV1::SemanticPrepare);
+                    inner_id = inner.span().map(DiagnosticSpanGuardV1::span_id);
+                    let result = {
+                        let mut nested = super::phase_budget(&mut phase, inner.span());
+                        let mut yielded = false;
+                        std::future::poll_fn(|task| {
+                            if yielded {
+                                std::task::Poll::Ready(())
+                            } else {
+                                yielded = true;
+                                task.waker().wake_by_ref();
+                                std::task::Poll::Pending
+                            }
+                        })
+                        .await;
+                        nested.charge(WorkUsage {
+                            reads: 11,
+                            writes: 13,
+                            bytes: 17,
+                            mutations: 19,
+                        })?;
+                        match failure {
+                            0 => Ok(42_u8),
+                            1 => nested
+                                .charge(WorkUsage {
+                                    bytes: 100,
+                                    ..WorkUsage::default()
+                                })
+                                .map(|()| 42),
+                            2 => {
+                                nested.request().cancel_handle().cancel();
+                                nested.checkpoint().map(|()| 42)
+                            }
+                            _ => Err(IndexError::Storage("async build primary".into())),
+                        }
+                    };
+                    inner.finish(&phase, result)
+                });
+                let waker = futures::task::noop_waker();
+                let mut task = std::task::Context::from_waker(&waker);
+                if !matches!(
+                    std::future::Future::poll(suspended.as_mut(), &mut task),
+                    std::task::Poll::Pending
+                ) {
+                    return Err("async build did not suspend".into());
+                }
+                let std::task::Poll::Ready(built) =
+                    std::future::Future::poll(suspended.as_mut(), &mut task)
+                else {
+                    return Err("async build did not resume".into());
+                };
+                drop(suspended);
+                let result = stage.finish(&work, built);
+                let expected = match failure {
+                    0 => Ok(42),
+                    1 => Err(IndexError::ResourceLimited),
+                    2 => Err(IndexError::Cancelled),
+                    _ => Err(IndexError::Storage("async build primary".into())),
+                };
+                if result != expected
+                    || work.usage()
+                        != (WorkUsage {
+                            reads: 18,
+                            writes: 23,
+                            bytes: 33,
+                            mutations: 39,
+                        })
+                    || !work.request().same_request_as(&original)
+                    || work.request().deadline() != original.deadline()
+                {
+                    return Err(
+                        "async stage changed accepted work, request or primary error".into(),
+                    );
+                }
+                let after = super::begin(&work, DiagnosticStageV1::ManagedObjectConfirm);
+                let after_id = after.as_ref().map(DiagnosticSpanGuardV1::span_id);
+                super::finish(after, Ok::<(), IndexError>(()))?;
+                if !record && clock.0.load(Ordering::Relaxed) != clock_before {
+                    return Err("Off async build read diagnostic clock".into());
+                }
+                root.finish(DiagnosticTerminalV1::from_result(&result))?;
+                let rows = events.0.lock().map_err(|_error| "events poisoned")?;
+                let counters: Vec<_> = rows
+                    .iter()
+                    .filter_map(|row| match row.kind {
+                        DiagnosticEventKindV1::Counter {
+                            span_id,
+                            key,
+                            value,
+                        } => Some((Some(span_id), key, value)),
+                        _ => None,
+                    })
+                    .collect();
+                use quanta_index_core::DiagnosticCounterV1::{
+                    WorkBytes, WorkMutations, WorkReads, WorkWrites,
+                };
+                let expected_counters = if record {
+                    vec![
+                        (inner_id, WorkReads, 11),
+                        (inner_id, WorkWrites, 13),
+                        (inner_id, WorkBytes, 17),
+                        (inner_id, WorkMutations, 19),
+                        (stage_id, WorkReads, 13),
+                        (stage_id, WorkWrites, 16),
+                        (stage_id, WorkBytes, 22),
+                        (stage_id, WorkMutations, 26),
+                    ]
+                } else {
+                    vec![]
+                };
+                if counters != expected_counters {
+                    return Err(format!("async accepted delta mismatch: {counters:?}").into());
+                }
+                let parents: Vec<_> = rows
+                    .iter()
+                    .filter_map(|row| match row.kind {
+                        DiagnosticEventKindV1::SpanBegin {
+                            stage,
+                            parent_span_id,
+                            ..
+                        } => Some((stage, parent_span_id)),
+                        _ => None,
+                    })
+                    .collect();
+                let expected_parents = if record {
+                    vec![
+                        (DiagnosticStageV1::Operation, None),
+                        (DiagnosticStageV1::BuildPrepare, Some(root_id)),
+                        (DiagnosticStageV1::SemanticPrepare, stage_id),
+                        (DiagnosticStageV1::ManagedObjectConfirm, Some(root_id)),
+                    ]
+                } else {
+                    vec![(DiagnosticStageV1::Operation, None)]
+                };
+                if parents != expected_parents {
+                    return Err("async stage changed nested or restored parent".into());
+                }
+                let terminals: Vec<_> = rows
+                    .iter()
+                    .filter_map(|row| match row.kind {
+                        DiagnosticEventKindV1::SpanEnd { span_id, outcome } => {
+                            Some((Some(span_id), outcome))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let terminal = DiagnosticTerminalV1::from_result(&expected);
+                let expected_terminals = if record {
+                    vec![
+                        (inner_id, terminal),
+                        (stage_id, terminal),
+                        (after_id, DiagnosticTerminalV1::Ok),
+                        (Some(root_id), terminal),
+                    ]
+                } else {
+                    vec![(Some(root_id), terminal)]
+                };
+                if terminals != expected_terminals {
+                    return Err("async build lost success or error terminal".into());
+                }
+                if failure != 0
+                    && !format!("{work:?}").contains("failed_stage: Some(SemanticPrepare)")
+                {
+                    return Err("async stage replaced first inner failure boundary".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn off_success_keeps_diagnostics_and_original_budget_unchanged() -> Result<(), IndexError> {
         let budget = budget()?;
         let before = format!("{budget:?}");

@@ -302,7 +302,7 @@ fn run_child() -> TestResult {
 fn wait_for_control(root: &Path, child: &mut OwnedChild) -> Result<QuantaIndex, Box<dyn Error>> {
     let started = Instant::now();
     loop {
-        if let Ok(client) = QuantaIndex::connect(ConnectOptions::from_state_root(root))
+        if let Ok(client) = QuantaIndex::connect_legacy(ConnectOptions::from_state_root(root))
             && client.observability().metrics_snapshot().is_ok()
         {
             return Ok(client);

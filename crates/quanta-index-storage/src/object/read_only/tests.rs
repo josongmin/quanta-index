@@ -14,7 +14,11 @@ use std::{
 
 use quanta_index_core::{
     RequestBudgetV1,
-    index::{MemoryLeaseOwner, MemoryScope, MemoryScopePort, WorkLimits},
+    index::{
+        MapEdit, MapRoot, MapValue, MemoryLeaseOwner, MemoryScope, MemoryScopePort,
+        RegisteredObject, WorkLimits,
+        ports::{ObjectWriteSink, PersistentMapPort as _},
+    },
 };
 
 use super::*;
@@ -85,6 +89,66 @@ impl ObjectReadIoPort for Reads {
 fn reader(root: &Path, reads: Arc<Reads>) -> Result<FileObjectReader, IndexError> {
     let lock = reads.open(&root.join(".object-namespace.lease"), &mut budget(100)?)?;
     FileObjectReader::open_existing(root, lock, reads, &mut budget(100)?)
+}
+
+struct AcceptMapInstall;
+
+impl ObjectWriteSink for AcceptMapInstall {
+    fn reserve(&self, _object: &RegisteredObject) -> Result<(), IndexError> {
+        Ok(())
+    }
+
+    fn installed(&self, _object: &RegisteredObject) -> Result<(), IndexError> {
+        Ok(())
+    }
+
+    fn reserve_batch(&self, _objects: &[RegisteredObject]) -> Result<(), IndexError> {
+        Ok(())
+    }
+
+    fn installed_batch(&self, _objects: &[RegisteredObject]) -> Result<(), IndexError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn existing_only_reader_scans_immutable_map_pages_without_writer() -> TestResult {
+    let root = private_root()?;
+    let store = FileObjectStore::open(root.path())?;
+    let mut build = budget(100)?;
+    let value = store.put(b"history row", &[], &mut build)?.reference;
+    let keys = [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()];
+    let edits = keys
+        .iter()
+        .map(|key| MapEdit::objects(key.clone(), None, Some(value)))
+        .collect::<Vec<_>>();
+    let map = store
+        .apply(MapRoot(None), &edits, &AcceptMapInstall, &mut build)?
+        .root;
+    drop(store);
+
+    let reads = Arc::new(Reads::default());
+    let reader = reader(root.path(), Arc::clone(&reads))?;
+    let mut work = budget(100)?;
+    let first = reader.scan_map(map, None, 2, &mut work)?;
+    require(
+        first.entries
+            == keys[..2]
+                .iter()
+                .cloned()
+                .map(|key| (key, MapValue::Object(value)))
+                .collect::<Vec<_>>(),
+    )?;
+    require(first.has_more)?;
+    let second = reader.scan_map(map, Some(b"b"), 2, &mut work)?;
+    require(second.entries == vec![(b"c".to_vec(), MapValue::Object(value))])?;
+    require(!second.has_more && work.usage().writes == 0)?;
+    require(matches!(
+        reader.scan_map(map, None, 0, &mut work),
+        Err(IndexError::InvalidInput(_))
+    ))?;
+    require(reads.0.lock().map_err(|_error| IndexError::Conflict)?.len() > 1)?;
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug)]

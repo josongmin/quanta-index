@@ -7,7 +7,13 @@ use quanta_index_contract::index::{Digest, ObjectRef, OperationKey};
 pub enum NativeCommandModeV1 {
     Serve,
     Verify,
+    VerifyCandidate,
     Select,
+    SelectCandidate {
+        root_nonce: [u8; 32],
+        source_cut_digest: Digest,
+    },
+    ServeCandidate,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,7 +49,7 @@ impl NativeStateCommandV1 {
             bail!("native root nonce must be nonzero");
         }
         match self.mode {
-            NativeCommandModeV1::Select => {
+            NativeCommandModeV1::Select | NativeCommandModeV1::SelectCandidate { .. } => {
                 if self.identity.is_some()
                     || self.install_catalog_digest.is_some()
                     || self.select_operation.is_none()
@@ -58,15 +64,25 @@ impl NativeStateCommandV1 {
                 {
                     bail!("select-native-state --receipt must be an absolute path");
                 }
+                if let NativeCommandModeV1::SelectCandidate {
+                    root_nonce,
+                    source_cut_digest,
+                } = self.mode
+                    && (self.config_digest.is_none()
+                        || root_nonce == [0; 32]
+                        || source_cut_digest == Digest([0; 32]))
+                {
+                    bail!("select-native-candidate requires pinned config, root and SourceCut digests");
+                }
             }
-            NativeCommandModeV1::Verify => {
+            NativeCommandModeV1::Verify | NativeCommandModeV1::VerifyCandidate => {
                 if self.identity.is_none()
                     || self.config_digest.is_none()
                     || self.install_catalog_digest.is_none()
                     || self.select_operation.is_some()
                     || self.receipt_path.is_some()
                 {
-                    bail!("verify-native-state requires identity and install digests only");
+                    bail!("native verification requires identity and install digests only");
                 }
             }
             NativeCommandModeV1::Serve => {
@@ -78,6 +94,16 @@ impl NativeStateCommandV1 {
                     bail!(
                         "serve-native requires either plain config or selected identity and config digest"
                     );
+                }
+            }
+            NativeCommandModeV1::ServeCandidate => {
+                if self.identity.is_some()
+                    || self.config_digest.is_none()
+                    || self.install_catalog_digest.is_some()
+                    || self.select_operation.is_some()
+                    || self.receipt_path.is_some()
+                {
+                    bail!("serve-native-candidate requires only config and config digest");
                 }
             }
         }
@@ -109,6 +135,23 @@ impl NativeCommandInput {
             || self.receipt_path.is_some()
     }
 
+    pub(super) fn finish_candidate(self) -> Result<NativeStateCommandV1> {
+        let mut input = self;
+        let root_nonce = parse_hex32(
+            &input.root_nonce.take().ok_or_else(|| anyhow::anyhow!(
+                "select-native-candidate requires --root-nonce"
+            ))?,
+            "--root-nonce",
+        )?;
+        let source_cut_digest = parse_digest(
+            &input.source_cut_digest.take().ok_or_else(|| anyhow::anyhow!(
+                "select-native-candidate requires --source-cut-digest"
+            ))?,
+            "--source-cut-digest",
+        )?;
+        input.finish(NativeCommandModeV1::SelectCandidate { root_nonce, source_cut_digest })
+    }
+
     pub(super) fn finish(self, mode: NativeCommandModeV1) -> Result<NativeStateCommandV1> {
         let config_path = self
             .config_path
@@ -125,7 +168,7 @@ impl NativeCommandInput {
             .map(|value| parse_digest(&value, "--config-digest"))
             .transpose()?;
 
-        if mode == NativeCommandModeV1::Select {
+        if matches!(mode, NativeCommandModeV1::Select | NativeCommandModeV1::SelectCandidate { .. }) {
             if self.root_nonce.is_some()
                 || self.manifest_object.is_some()
                 || self.source_cut_digest.is_some()
@@ -160,22 +203,28 @@ impl NativeCommandInput {
         if self.receipt_path.is_some() {
             bail!("--receipt is only valid for select-native-state");
         }
-        if mode == NativeCommandModeV1::Serve && self.install_catalog_digest.is_some() {
+        if matches!(
+            mode,
+            NativeCommandModeV1::Serve | NativeCommandModeV1::ServeCandidate
+        ) && self.install_catalog_digest.is_some()
+        {
             bail!("--catalog-content-digest is only valid for verify-native-state");
         }
         let has_identity = self.root_nonce.is_some()
             || manifest_operation.is_some()
             || self.manifest_object.is_some()
             || self.source_cut_digest.is_some();
-        if mode == NativeCommandModeV1::Serve && !has_identity {
-            if config_digest.is_some() {
-                bail!("selected serve-native requires a complete identity with --config-digest");
-            }
+        if mode == NativeCommandModeV1::ServeCandidate && has_identity {
+            bail!("serve-native-candidate cannot name an installed BOOT identity");
+        }
+        if matches!(mode, NativeCommandModeV1::Serve | NativeCommandModeV1::ServeCandidate)
+            && !has_identity
+        {
             let command = NativeStateCommandV1 {
                 mode,
                 config_path,
                 identity: None,
-                config_digest: None,
+                config_digest,
                 install_catalog_digest: None,
                 select_operation: None,
                 receipt_path: None,
@@ -209,7 +258,10 @@ impl NativeCommandInput {
         )?;
         let config_digest = config_digest
             .ok_or_else(|| anyhow::anyhow!("selected native command requires --config-digest"))?;
-        let install_catalog_digest = if mode == NativeCommandModeV1::Verify {
+        let install_catalog_digest = if matches!(
+            mode,
+            NativeCommandModeV1::Verify | NativeCommandModeV1::VerifyCandidate
+        ) {
             Some(parse_digest(
                 &self.install_catalog_digest.ok_or_else(|| {
                     anyhow::anyhow!("verify-native-state requires --catalog-content-digest")
@@ -245,7 +297,7 @@ fn parse_operation(value: &str) -> Result<OperationKey> {
         .map_err(|error| anyhow::anyhow!("invalid --manifest-operation: {error}"))
 }
 
-fn parse_digest(value: &str, flag: &str) -> Result<Digest> {
+pub(super) fn parse_digest(value: &str, flag: &str) -> Result<Digest> {
     parse_hex32(value, flag).map(Digest)
 }
 

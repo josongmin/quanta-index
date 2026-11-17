@@ -612,6 +612,7 @@ mod tests {
             bytes: body.reference,
             byte_len: u64::try_from(source.len())?,
             text: SourceTextAdmission::Excluded,
+            source_repo_id: None,
         })?;
         let certified = objects.put(&payload, &[body.reference], &mut budget)?;
         let read = verified_source_body(&objects, certified.reference, &mut budget)?;

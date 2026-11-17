@@ -7,6 +7,9 @@
 
 #![forbid(unsafe_code)]
 
+mod file_profile;
+mod native_file_profile;
+mod native_file_runtime;
 mod rank_study;
 mod request_events;
 mod trace_profile;
@@ -46,18 +49,18 @@ use quanta_index_retrieval_bench::record::{
 };
 use quanta_index_retrieval_bench::schedule::QueryProtocol;
 use quanta_index_retrieval_bench::sdk::{
-    DEFAULT_IO_TIMEOUT, DEFAULT_READY_TIMEOUT, DaemonConfig, DaemonSession, QueryOutcome,
-    RouteQuery, publish_and_activate_with_timeout_observer,
-    query_route_with_policy_client_observed, query_route_with_policy_timed, resolve_searchd_binary,
-    verify_searchd_digest,
+    DEFAULT_IO_TIMEOUT, DEFAULT_READY_TIMEOUT, DaemonConfig, DaemonSession, LocalCodeDaemonBinding,
+    QueryOutcome, RouteQuery, publish_and_activate_with_timeout_observer,
+    query_route_with_policy_client_observed_file_cap, query_route_with_policy_timed_file_cap,
+    resolve_searchd_binary, verify_searchd_digest,
 };
 use quanta_index_retrieval_bench::symbols::{
     SymbolCoveragePolicy, SymbolPreflightOptions, preflight_corpus_symbols,
 };
-use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
+use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_file_hex, sha256_hex};
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 
-const KNOWN_ROUTES: [&str; 4] = ["lexical", "semantic", "hybrid", "symbol"];
+const KNOWN_ROUTES: [&str; 5] = ["lexical", "semantic", "hybrid", "hybrid_file", "symbol"];
 
 fn usage_error(mut message: String) -> BenchError {
     message.push_str(" (see --help)");
@@ -67,13 +70,20 @@ fn usage_error(mut message: String) -> BenchError {
 fn print_help() -> BenchResult<()> {
     std::io::stdout()
         .write_all(
-            b"quanta-index-retrieval-bench run|chunk|preflight|trace-profile|capabilities [flags]\n\
+            b"quanta-index-retrieval-bench run|chunk|preflight|trace-profile|file-profile|native-file-profile|capabilities [flags]\n\
          \n\
          run: manifest -> chunks -> real searchd publish/activate -> SDK queries -> v5 record\n\
          chunk: manifest -> chunks + coverage JSON (no daemon)\n\
          trace-profile: --query-pack PATH --state-root PATH --repo-id ID --generation N --out PATH\n\
            Optional pilot owner: --source-owner-plan PATH --source-owner-inputs PATH\n\
+           Optional exact diagnostic: --exact-semantic-out PATH --exact-semantic-daemon-binary PATH\n\
            Paired SDK quality replay at top_k=100 on an existing sealed generation.\n\
+         file-profile: --query-pack PATH --state-root PATH --repo-id ID --generation N --lane-top-k N --file-top-k N --out PATH\n\
+           Explicit generic file RRF plus paired lexical, semantic and chunk hybrid lanes at the same chunk depth.\n\
+         native-file-profile: --query-pack PATH --native-socket PATH --view-json JSON --open-key HEX64 --text-instance HEX32 --semantic-instance HEX32 --file-instance HEX32 --lane-top-k N --file-top-k N --out PATH\n\
+           Same-view Native SDK file pools; explicit pin release and original route deadlines.\n\
+           Optional Linux execution binding: --daemon-binary PATH --daemon-config PATH --decision-policy PATH (all three).\n\
+         \n\
          preflight: --repo PATH --manifest PATH --out PATH (all-file symbol census; no daemon)\n\
          [--symbol-coverage require-complete|allow-incomplete] (default require-complete)\n\
          [--symbol-timeout-ms N] [--max-symbols-per-file N]\n\
@@ -84,6 +94,7 @@ fn print_help() -> BenchResult<()> {
          fixed_window_*: --window-bytes N (default 4000) --overlap-bytes N (default 400)\n\
          brace_heuristic: --max-item-bytes N (default 32768)\n\
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
+         [--file-top-k N] (required only with hybrid_file; separate from chunk-lane --top-k)\n\
          [--query-protocol PATH] [--query-input-policy native|literal|literal_file|keyword_file|substring_file|code_search_file|code_search_exact_content_file|code_search_components_file|code_search_typo_file|natural_language|natural_language_file|exact_symbol_name]\n\
          [--nl-max-tokens N] (natural_language* only; 1..64, default 32; exploratory)\n\
          [--query-stage-observation enabled|disabled] (default enabled; server query stages only)\n\
@@ -95,7 +106,8 @@ fn print_help() -> BenchResult<()> {
          --searchd-bin PATH --searchd-expected-sha256 HEX\n\
          [--source-stream-id ID] [--source-event-id ID] [--source-base-event-id ID]\n\
          [--symbol-preflight-out PATH]\n\
-         --out PATH --refusal-out PATH [--metrics-out PATH] [--diagnostics-out PATH] [--embedder potion-code|potion-code-full-v2|hash-dev]\n\
+         --out PATH --refusal-out PATH [--metrics-out PATH] [--diagnostics-out PATH] [--embedder potion-code|potion-code-full-v2|local-code-jina-v2|hash-dev]\n\
+         local-code-jina-v2: --local-code-origin URL --local-code-manifest PATH --local-code-manifest-sha256 HEX\n\
          [--request-events-out PATH] (diagnostic only; 1-2 serial lexical queries)\n\
          [--publish-timeout-events-out PATH] (diagnostic only; observe ingest for up to 120s after a read timeout)\n\
          [--rank-study-out PATH --rank-study-max-files N --rank-study-max-pages N --rank-study-timeout-ms N] (optional post-measurement ordinary CodeSearch study)\n\
@@ -536,6 +548,11 @@ fn nl_plan_config(args: &Args, policy: QueryInputPolicy) -> BenchResult<NlPlanCo
 }
 
 fn validate_policy_routes(policy: QueryInputPolicy, routes: &BTreeSet<&str>) -> BenchResult<()> {
+    if routes.contains("hybrid_file") && policy != QueryInputPolicy::NaturalLanguage {
+        return Err(BenchError::Config(
+            "hybrid_file requires natural_language chunk query policy".to_string(),
+        ));
+    }
     if policy == QueryInputPolicy::ExactSymbolName && routes != &BTreeSet::from(["symbol"]) {
         return Err(BenchError::Config(
             "exact_symbol_name requires only the symbol route".to_string(),
@@ -559,6 +576,33 @@ fn validate_policy_routes(policy: QueryInputPolicy, routes: &BTreeSet<&str>) -> 
         )));
     }
     Ok(())
+}
+
+fn file_top_k_for_routes(
+    args: &Args,
+    routes: &BTreeSet<&str>,
+    lane_top_k: u32,
+) -> BenchResult<Option<u32>> {
+    match args.flags.get("file-top-k") {
+        Some(_) if routes.contains("hybrid_file") => {
+            let cap = u32::try_from(optional_u64(args, "file-top-k", 0)?).map_err(|error| {
+                usage_error(format!("flag --file-top-k exceeds u32 range: {error}"))
+            })?;
+            if cap == 0 || cap > lane_top_k {
+                return Err(usage_error(
+                    "flag --file-top-k must be 1..=--top-k".to_string(),
+                ));
+            }
+            Ok(Some(cap))
+        }
+        None if routes.contains("hybrid_file") => {
+            Err(usage_error("hybrid_file requires --file-top-k".to_string()))
+        }
+        Some(_) => Err(usage_error(
+            "--file-top-k requires hybrid_file route".to_string(),
+        )),
+        None => Ok(None),
+    }
 }
 
 fn validate_source_revision_for_policy(
@@ -821,6 +865,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "searchd-bin",
             "searchd-expected-sha256",
             "embedder",
+            "local-code-origin",
+            "local-code-manifest",
+            "local-code-manifest-sha256",
             "repo-id",
             "revision-id",
             "generation",
@@ -840,6 +887,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "rank-study-timeout-ms",
             "query-stage-observation",
             "experimental-hybrid-fetch-floor",
+            "file-top-k",
             "out",
             "io-timeout-secs",
             "ready-timeout-secs",
@@ -879,6 +927,13 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "runner routes {selected:?} differ from query-pack routes {registered:?}"
         )));
     }
+    if selected.contains("hybrid_file")
+        && pack.tasks.iter().any(|task| task.semantic_input.is_some())
+    {
+        return Err(BenchError::Config(
+            "hybrid_file requires generic task queries without Go trace semantic input".into(),
+        ));
+    }
     let top_k = u32::try_from(optional_u64(args, "top-k", 0)?)
         .map_err(|err| usage_error(format!("flag --top-k exceeds u32 range: {err}")))?;
     if top_k == 0 {
@@ -890,6 +945,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             pack.contract_top_k
         )));
     }
+    let file_top_k = file_top_k_for_routes(args, &selected, top_k)?;
     let state_root = PathBuf::from(required(args, "state-root")?);
     let external_state_root = require_external_path(&repo, &state_root, "--state-root")?;
     let out = PathBuf::from(required(args, "out")?);
@@ -1193,7 +1249,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         &symbol_preflight,
         symbol_policy,
         source_event,
-        selected.contains("semantic") || selected.contains("hybrid"),
+        selected.contains("semantic")
+            || selected.contains("hybrid")
+            || selected.contains("hybrid_file"),
     )?;
     if assembly.semantic_tokenless_chunks > 0 {
         let _diagnostic = writeln!(
@@ -1215,6 +1273,39 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         verify_searchd_digest(&searchd_bin, &required(args, "searchd-expected-sha256")?)?;
     let profile = EmbedderProfile::resolve(args.flags.get("embedder").map(String::as_str))?;
     let model_dir = args.flags.get("model-dir").map(PathBuf::from);
+    let local_origin = args.flags.get("local-code-origin");
+    let local_manifest = args.flags.get("local-code-manifest").map(PathBuf::from);
+    let local_manifest_sha256 = args.flags.get("local-code-manifest-sha256");
+    let local_code = match (
+        profile.selector,
+        local_origin,
+        local_manifest.as_deref(),
+        local_manifest_sha256,
+    ) {
+        ("local-code-jina-v2", Some(origin), Some(manifest_path), Some(manifest_sha256)) => {
+            if model_dir.is_some() {
+                return Err(BenchError::Config(
+                    "local code profile does not accept --model-dir".into(),
+                ));
+            }
+            Some(LocalCodeDaemonBinding {
+                origin,
+                manifest_path,
+                manifest_sha256,
+            })
+        }
+        ("local-code-jina-v2", _, _, _) => {
+            return Err(BenchError::Config(
+                "local code profile requires origin, manifest and SHA256".into(),
+            ));
+        }
+        (_, None, None, None) => None,
+        (_, _, _, _) => {
+            return Err(BenchError::Config(
+                "local code flags require local-code-jina-v2 profile".into(),
+            ));
+        }
+    };
     let hybrid_fetch_floor = HybridFetchFloorPolicy::parse(
         args.flags
             .get("experimental-hybrid-fetch-floor")
@@ -1255,6 +1346,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         query_stage_observation,
         hybrid_fetch_floor,
         model_dir: model_dir.as_deref(),
+        local_code,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout,
@@ -1403,9 +1495,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             top_k,
         };
         let (mut outcome, route_timing) = if request_events_out.is_some() {
-            query_route_with_policy_client_observed(&query, plan.policy)
+            query_route_with_policy_client_observed_file_cap(&query, plan.policy, file_top_k)
         } else {
-            query_route_with_policy_timed(&query, plan.policy)
+            query_route_with_policy_timed_file_cap(&query, plan.policy, file_top_k)
         };
         let result_materialize_started = Instant::now();
         let mut row = result_value(
@@ -1434,6 +1526,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         let elapsed = end.saturating_sub(start);
         match &mut outcome {
             QueryOutcome::ReturnedWindow { latency, .. }
+            | QueryOutcome::ReturnedFiles { latency, .. }
             | QueryOutcome::RejectedResponse { latency, .. }
             | QueryOutcome::SdkFailure { latency, .. } => *latency = elapsed,
         }
@@ -1524,9 +1617,18 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             let outcome =
                 completed_query(&protocol.cold_probe_task_id, route, cold_plan, "cold", 0)?;
             let latency = match &outcome {
-                QueryOutcome::ReturnedWindow { latency, .. } => *latency,
+                QueryOutcome::ReturnedWindow { latency, .. }
+                | QueryOutcome::ReturnedFiles { latency, .. }
+                    if outcome
+                        .classification()
+                        .is_ok_and(|classification| classification.status != "error") =>
+                {
+                    *latency
+                }
                 failed @ (QueryOutcome::RejectedResponse { .. }
-                | QueryOutcome::SdkFailure { .. }) => {
+                | QueryOutcome::SdkFailure { .. }
+                | QueryOutcome::ReturnedFiles { .. }
+                | QueryOutcome::ReturnedWindow { .. }) => {
                     let classification = failed.classification().map_err(|message| {
                         BenchError::Protocol(format!("invalid cold outcome: {message}"))
                     })?;
@@ -1687,6 +1789,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         plans: &task_plans,
         nl_config: &nl_plan_config,
         top_k,
+        file_top_k,
     })?;
     let native_spans = if diagnostics_out.is_some() {
         quanta_index_retrieval_bench::record::native_span_proofs(
@@ -1944,6 +2047,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     for outcome in outcomes.values() {
         let status = match outcome {
             QueryOutcome::ReturnedWindow { .. } => "returned_window",
+            QueryOutcome::ReturnedFiles { .. } => "returned_files",
             QueryOutcome::RejectedResponse { .. } => "rejected_response",
             QueryOutcome::SdkFailure { status, .. } => status,
         };
@@ -1976,15 +2080,17 @@ fn run_capture(args: &Args) -> BenchResult<()> {
 /// `runner_binary.digest` binding. A replaced binary mid-run cannot keep
 /// the old digest.
 fn runner_binary_digest() -> BenchResult<String> {
+    #[cfg(target_os = "linux")]
+    let exe = PathBuf::from("/proc/self/exe");
+    #[cfg(not(target_os = "linux"))]
     let exe = std::env::current_exe().map_err(|err| BenchError::Io {
         path: "<runner-executable>".to_string(),
         message: format!("cannot resolve the runner executable: {err}"),
     })?;
-    let bytes = std::fs::read(&exe).map_err(|err| BenchError::Io {
+    sha256_file_hex(&exe).map_err(|err| BenchError::Io {
         path: exe.display().to_string(),
         message: format!("cannot hash the runner executable: {err}"),
-    })?;
-    Ok(sha256_hex(&bytes))
+    })
 }
 
 fn batch_manifest_digest(
@@ -2056,7 +2162,7 @@ fn run_cli(argv: &[String]) -> BenchResult<()> {
     if parsed.positional.len() != 1 {
         print_help()?;
         return Err(usage_error(
-            "expected exactly one subcommand: run|chunk|preflight|trace-profile|capabilities"
+            "expected exactly one subcommand: run|chunk|preflight|trace-profile|file-profile|native-file-profile|capabilities"
                 .to_string(),
         ));
     }
@@ -2065,6 +2171,8 @@ fn run_cli(argv: &[String]) -> BenchResult<()> {
         Some("chunk") => run_chunk(&parsed),
         Some("preflight") => run_symbol_preflight(&parsed),
         Some("trace-profile") => trace_profile::run(&parsed),
+        Some("file-profile") => file_profile::run(&parsed),
+        Some("native-file-profile") => native_file_profile::run(&parsed),
         Some("capabilities") if parsed.flags.is_empty() => print_runner_capabilities(),
         Some("capabilities") => Err(usage_error("capabilities takes no flags".to_string())),
         Some(other) => {
@@ -2398,6 +2506,31 @@ mod tests {
             .flags
             .insert("nl-max-tokens".to_string(), "48".to_string());
         assert!(nl_plan_config(&args, QueryInputPolicy::Native).is_err());
+    }
+
+    #[test]
+    fn hybrid_file_requires_explicit_separate_cap_and_natural_language_plan() {
+        let routes = BTreeSet::from(["lexical", "hybrid_file"]);
+        let mut args = Args {
+            positional: vec!["run".to_string()],
+            flags: BTreeMap::new(),
+            help: false,
+        };
+        assert!(file_top_k_for_routes(&args, &routes, 10).is_err());
+        for invalid in ["0", "11", "4294967296", "x"] {
+            let _previous = args
+                .flags
+                .insert("file-top-k".to_string(), invalid.to_string());
+            assert!(file_top_k_for_routes(&args, &routes, 10).is_err());
+        }
+        let _previous = args.flags.insert("file-top-k".to_string(), "3".to_string());
+        assert_eq!(
+            file_top_k_for_routes(&args, &routes, 10).expect("file cap"),
+            Some(3)
+        );
+        assert!(file_top_k_for_routes(&args, &BTreeSet::from(["lexical"]), 10).is_err());
+        assert!(validate_policy_routes(QueryInputPolicy::NaturalLanguage, &routes).is_ok());
+        assert!(validate_policy_routes(QueryInputPolicy::NaturalLanguageFile, &routes).is_err());
     }
 
     #[test]

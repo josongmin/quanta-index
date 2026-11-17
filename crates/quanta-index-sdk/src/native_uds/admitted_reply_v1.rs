@@ -28,10 +28,10 @@ pub(super) const MAX_PUBLICATION_ERROR_MESSAGE_BYTES: usize = 4096;
 // 32 bytes. A longer token is not produced by the canonical wire encoder.
 const MAX_PUBLICATION_IDENTIFIER_BYTES: usize = 32;
 const MAX_PUBLICATION_CBOR_DEPTH: usize = 32;
-// NativeIndexErrorCode has the largest expected-variant list: 17 names, 229
-// identifier bytes. Its quotes, separators, prefix and one offending known
-// identifier fit within 512 bytes of diagnostic text. No unknown identifier
-// reaches Ciborium after the token preflight.
+// The publication variant list has 22 names and 260 identifier bytes.
+// Its quotes, separators, prefix and one offending known identifier, as well
+// as the smaller wire-error list, fit within 512 diagnostic bytes. No unknown
+// identifier reaches Ciborium after the token preflight.
 const MAX_PUBLICATION_DIAGNOSTIC_BYTES: usize = 512;
 const MAX_STUB_REPLY_BODY_BYTES: usize = 1 << 20;
 const MAX_STUB_EDITS: u64 = 64;
@@ -98,10 +98,12 @@ pub(super) fn parser_temporary_limit() -> Result<u64, NativeUdsError> {
     u64::try_from(bytes).map_err(|_error| NativeUdsError::Protocol("parser memory overflow".into()))
 }
 
+#[cfg(test)]
 pub(super) fn decode(bytes: &[u8]) -> Result<NativeIndexResponseEnvelope, NativeUdsError> {
     decode_with_mode(bytes, false)
 }
 
+#[cfg(test)]
 pub(super) fn decode_stub(bytes: &[u8]) -> Result<NativeIndexResponseEnvelope, NativeUdsError> {
     if bytes.len() > MAX_STUB_REPLY_BODY_BYTES {
         return Err(NativeUdsError::Protocol(
@@ -111,36 +113,63 @@ pub(super) fn decode_stub(bytes: &[u8]) -> Result<NativeIndexResponseEnvelope, N
     decode_with_mode(bytes, true)
 }
 
+#[cfg(test)]
 fn decode_with_mode(
     bytes: &[u8],
     allow_stub: bool,
 ) -> Result<NativeIndexResponseEnvelope, NativeUdsError> {
-    preflight_canonical_cbor(bytes, allow_stub)?;
-    let mut reader = Cursor::new(bytes);
-    let envelope: PublicationEnvelope =
-        ciborium::de::from_reader(&mut reader).map_err(|_error| {
-            NativeUdsError::Protocol("malformed or unsupported Native publication reply".into())
-        })?;
-    let consumed = usize::try_from(reader.position())
-        .map_err(|_error| NativeUdsError::Protocol("publication reply offset overflow".into()))?;
-    if consumed != bytes.len() {
-        return Err(NativeUdsError::Protocol(
-            "Native publication reply has trailing CBOR".into(),
-        ));
-    }
-    Ok(envelope.0)
+    prepare(bytes, allow_stub, false)?.decode()
 }
 
-/// Preflight canonical publication CBOR tokens without allocation.
-///
-/// Definite containers have at most one free-text field, `message`. This
-/// rejects oversized or unknown identifiers before Ciborium allocates them.
-fn preflight_canonical_cbor(bytes: &[u8], allow_stub: bool) -> Result<(), NativeUdsError> {
+/// Allocation-free preflight result; it borrows the already admitted raw owner.
+/// No alternate response representation or second CBOR decoder is introduced.
+pub(super) struct PreparedReply<'a> {
+    bytes: &'a [u8],
+    decoded_bytes: u64,
+}
+
+impl PreparedReply<'_> {
+    pub(super) fn decoded_retained_limit(&self) -> Result<u64, NativeUdsError> {
+        Ok(self.decoded_bytes)
+    }
+
+    pub(super) fn decode(self) -> Result<NativeIndexResponseEnvelope, NativeUdsError> {
+        let mut reader = Cursor::new(self.bytes);
+        let envelope: PublicationEnvelope =
+            ciborium::de::from_reader(&mut reader).map_err(|_error| {
+                NativeUdsError::Protocol("malformed or unsupported Native publication reply".into())
+            })?;
+        if usize::try_from(reader.position()).ok() != Some(self.bytes.len()) {
+            return Err(NativeUdsError::Protocol(
+                "Native publication reply has trailing CBOR".into(),
+            ));
+        }
+        Ok(envelope.0)
+    }
+}
+
+fn read_size(value: usize) -> Result<u64, NativeUdsError> {
+    u64::try_from(value)
+        .map_err(|_overflow| NativeUdsError::Protocol("retained read backing overflow".into()))
+}
+
+pub(super) fn prepare(
+    bytes: &[u8],
+    allow_stub: bool,
+    allow_read: bool,
+) -> Result<PreparedReply<'_>, NativeUdsError> {
+    if allow_stub && bytes.len() > MAX_STUB_REPLY_BODY_BYTES {
+        return Err(NativeUdsError::Protocol(
+            "Stub reply exceeds admitted body bound".into(),
+        ));
+    }
     let mut scan = CborScan {
         bytes,
         offset: 0,
         allow_stub,
+        allow_read,
         stub_replacement_bytes: 0,
+        read_decoded_bytes: read_size(std::mem::size_of::<NativeIndexResponseEnvelope>())?,
     };
     scan.item(0, None)?;
     if scan.offset != bytes.len() {
@@ -148,13 +177,32 @@ fn preflight_canonical_cbor(bytes: &[u8], allow_stub: bool) -> Result<(), Native
             "Native publication reply has trailing CBOR".into(),
         ));
     }
-    Ok(())
+    let decoded_bytes = if allow_read {
+        // Fixed fields are inline in the envelope. The scan includes every
+        // dynamic vector/string, including the canonical Error.message.
+        scan.read_decoded_bytes
+    } else if allow_stub {
+        stub_decoded_retained_limit()?
+    } else {
+        decoded_retained_limit()?
+    };
+    Ok(PreparedReply {
+        bytes,
+        decoded_bytes,
+    })
+}
+
+#[cfg(test)]
+fn preflight_canonical_cbor(bytes: &[u8], allow_stub: bool) -> Result<(), NativeUdsError> {
+    prepare(bytes, allow_stub, false).map(|_| ())
 }
 
 struct CborScan<'a> {
     bytes: &'a [u8],
     offset: usize,
     allow_stub: bool,
+    allow_read: bool,
+    read_decoded_bytes: u64,
     stub_replacement_bytes: u64,
 }
 
@@ -241,6 +289,11 @@ impl<'a> CborScan<'a> {
                 "unknown Native publication CBOR identifier".into(),
             ));
         }
+        if !self.allow_read && read_identifier(key) {
+            return Err(NativeUdsError::Protocol(
+                "retained read is outside admitted publication reply".into(),
+            ));
+        }
         if !self.allow_stub && matches!(key, "Stub" | "Prepared") {
             return Err(NativeUdsError::Protocol(
                 "Stub is outside admitted publication reply".into(),
@@ -271,6 +324,10 @@ impl<'a> CborScan<'a> {
             3 => {
                 let limit = if field == Some("message") {
                     MAX_PUBLICATION_ERROR_MESSAGE_BYTES
+                } else if self.allow_read && matches!(field, Some("repo_id" | "revision_id")) {
+                    quanta_index_contract::RepoId::MAX_UTF8_BYTES_V1
+                } else if self.allow_read && field == Some("path") {
+                    super::MAX_SOURCE_PATH_BYTES
                 } else if self.allow_stub && field == Some("language") {
                     64
                 } else {
@@ -284,13 +341,23 @@ impl<'a> CborScan<'a> {
                         "Native publication text exceeds its typed bound".into(),
                     ));
                 }
+                if self.allow_read
+                    && matches!(field, Some("message" | "path" | "repo_id" | "revision_id"))
+                {
+                    self.charge_read(value.max(8), 1)?;
+                }
                 let text = self.take(value)?;
-                if field != Some("message") && field != Some("language") {
+                if field != Some("message")
+                    && field != Some("language")
+                    && !(self.allow_read
+                        && matches!(field, Some("path" | "repo_id" | "revision_id")))
+                {
                     let identifier = std::str::from_utf8(text).map_err(|_error| {
                         NativeUdsError::Protocol("invalid CBOR identifier UTF-8".into())
                     })?;
                     if !known_identifier(identifier)
                         || (!self.allow_stub && matches!(identifier, "Stub" | "Prepared"))
+                        || (!self.allow_read && read_identifier(identifier))
                     {
                         return Err(NativeUdsError::Protocol(
                             "unknown Native publication CBOR identifier".into(),
@@ -300,6 +367,9 @@ impl<'a> CborScan<'a> {
                 Ok(())
             }
             4 => {
+                if self.allow_read {
+                    self.read_array(field, value)?;
+                }
                 if self.allow_stub && field == Some("edits") && value > MAX_STUB_EDITS {
                     return Err(NativeUdsError::Protocol(
                         "Stub edit count exceeds bound".into(),
@@ -351,6 +421,83 @@ impl<'a> CborScan<'a> {
         }
     }
 
+    fn charge_read(&mut self, count: u64, size: usize) -> Result<(), NativeUdsError> {
+        // Serde's Vec cautious size hint may grow geometrically. Include its
+        // spare capacity, and String/byte-vector minimum allocation capacity.
+        let bytes = count
+            .checked_mul(read_size(size)?)
+            .and_then(|bytes| bytes.checked_mul(2))
+            .ok_or_else(|| NativeUdsError::Protocol("retained read backing overflow".into()))?;
+        self.read_decoded_bytes = self
+            .read_decoded_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| NativeUdsError::Protocol("retained read backing overflow".into()))?;
+        Ok(())
+    }
+
+    fn read_array(&mut self, field: Option<&str>, count: u64) -> Result<(), NativeUdsError> {
+        use quanta_index_contract::{
+            index::InstanceSpec,
+            native_protocol::{
+                MAX_NATIVE_READ_PROFILE_INSTANCES, MAX_NATIVE_SEMANTIC_TOP_K,
+                MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES, MAX_NATIVE_TEXT_TOP_K, NativeSemanticFileHit,
+                NativeTextHit,
+            },
+        };
+        let (limit, size) = match field {
+            Some("instances") => (
+                read_size(MAX_NATIVE_READ_PROFILE_INSTANCES)?,
+                std::mem::size_of::<InstanceSpec>(),
+            ),
+            // Text/Page rows and fused rows share the hits field; the largest
+            // canonical row is conservative for each of those schemas.
+            Some("hits" | "lexical_pool") => (
+                u64::from(MAX_NATIVE_TEXT_TOP_K),
+                std::mem::size_of::<NativeTextHit>().max(std::mem::size_of::<
+                    quanta_index_contract::native_protocol::NativeHybridFileHit,
+                >()),
+            ),
+            Some("dense_pool") => (
+                u64::from(MAX_NATIVE_SEMANTIC_TOP_K),
+                std::mem::size_of::<NativeSemanticFileHit>(),
+            ),
+            Some("vector_id") => (read_size(MAX_NATIVE_SEMANTIC_VECTOR_ID_BYTES)?, 1),
+            // Canonical fixed-size IDs/roots are inline fields, not heaps.
+            Some(
+                "session" | "query" | "tenant" | "collection" | "worktree" | "slot" | "producer"
+                | "stable_id" | "digest" | "profile" | "owners" | "paths" | "frontiers"
+                | "projections" | "members" | "coverage" | "root" | "artifact" | "lexical_artifact"
+                | "source" | "instance" | "text_instance" | "semantic_instance" | "kind" | "group"
+                | "schema" | "policy" | "format" | "projection" | "context" | "id" | "payload"
+                | "input_digest" | "searchable" | "producer_context" | "derivation_policy"
+                | "missing" | "previous_missing" | "member" | "snapshot_digest" | "replay_start"
+                | "source_input" | "original" | "repo_commit_recency" | "file_contributor"
+                | "predecessor_context",
+            ) => (32, 0),
+            _ => {
+                return Err(NativeUdsError::Protocol(
+                    "noncanonical retained read array".into(),
+                ));
+            }
+        };
+        if count > limit {
+            return Err(NativeUdsError::Protocol(
+                "retained read array exceeds typed bound".into(),
+            ));
+        }
+        if size != 0 {
+            self.charge_read(
+                if field == Some("vector_id") {
+                    count.max(8)
+                } else {
+                    count
+                },
+                size,
+            )?;
+        }
+        Ok(())
+    }
+
     fn charge_stub_replacement(&mut self, value: u64) -> Result<(), NativeUdsError> {
         if value > 64 << 10 {
             return Err(NativeUdsError::Protocol(
@@ -370,15 +517,127 @@ impl<'a> CborScan<'a> {
     }
 }
 
+fn read_identifier(value: &str) -> bool {
+    matches!(
+        value,
+        "ReadSession"
+            | "ReadSessionProfile"
+            | "HistoryCut"
+            | "HistoryGeneration"
+            | "TextRanked"
+            | "TextRankedPage"
+            | "HybridFileRanked"
+    )
+}
+
 fn known_identifier(value: &str) -> bool {
     matches!(
         value,
-        "request_id"
+        "ReadSession"
+            | "ReadSessionProfile"
+            | "HistoryCut"
+            | "HistoryGeneration"
+            | "member"
+            | "source_input"
+            | "predecessor_context"
+            | "inputs"
+            | "original"
+            | "repo_commit_recency"
+            | "file_contributor"
+            | "cut"
+            | "generation"
+            | "repo_id"
+            | "revision_id"
+            | "durable_epoch"
+            | "snapshot_digest"
+            | "replay_start"
+            | "TextRanked"
+            | "TextRankedPage"
+            | "HybridFileRanked"
+            | "Released"
+            | "Settlement"
+            | "Active"
+            | "Closing"
+            | "SettledAtSnapshot"
+            | "Incomplete"
+            | "expires_at_ms"
+            | "state"
+            | "status"
+            | "has_remaining_target_pins"
+            | "head"
+            | "exact_floor"
+            | "instances"
+            | "instance"
+            | "kind"
+            | "group"
+            | "activation"
+            | "input_domain"
+            | "policy"
+            | "format"
+            | "CoreRequired"
+            | "AsyncCoverage"
+            | "SourceLocal"
+            | "matched"
+            | "exhaustive"
+            | "hits"
+            | "path"
+            | "score"
+            | "artifact"
+            | "remaining"
+            | "after"
+            | "query"
+            | "text_instance"
+            | "semantic_instance"
+            | "lexical_artifact"
+            | "lexical_matched"
+            | "semantic_coverage"
+            | "semantic_traversal"
+            | "semantic_exhaustive"
+            | "scanned_owners"
+            | "skipped_stale"
+            | "file_top_k"
+            | "lexical_pool"
+            | "dense_pool"
+            | "projection_owner"
+            | "vector_id"
+            | "chunk"
+            | "lexical_rank"
+            | "dense_rank"
+            | "desired"
+            | "covered"
+            | "searchable"
+            | "Complete"
+            | "Partial"
+            | "previous_missing"
+            | "missing"
+            | "context"
+            | "ExactExhausted"
+            | "ExactCapped"
+            | "Approximate"
+            | "capped"
+            | "id"
+            | "input"
+            | "producer_context"
+            | "derivation_policy"
+            | "input_digest"
+            | "span"
+            | "SourcePayload"
+            | "ProjectionPayload"
+            | "RenderedMember"
+            | "start_byte"
+            | "end_byte"
+            | "ordinal"
+            | "request_id"
             | "payload"
             | "Created"
             | "Staged"
             | "Submitted"
             | "View"
+            | "PublishedViewMetadata"
+            | "RootScopedView"
+            | "root_nonce"
+            | "root_device"
+            | "root_inode"
             | "Status"
             | "Error"
             | "InputOpened"
@@ -550,6 +809,8 @@ enum PublicationVariant {
     Staged,
     Submitted,
     View,
+    PublishedViewMetadata,
+    RootScopedView,
     Status,
     Error,
     InputOpened,
@@ -561,6 +822,13 @@ enum PublicationVariant {
     Projection,
     ProjectionOwners,
     ProjectionSourceDiff,
+    ReadSession,
+    ReadSessionProfile,
+    HistoryCut,
+    HistoryGeneration,
+    TextRanked,
+    TextRankedPage,
+    HybridFileRanked,
     Stub,
 }
 
@@ -569,6 +837,8 @@ const PUBLICATION_VARIANTS: &[&str] = &[
     "Staged",
     "Submitted",
     "View",
+    "PublishedViewMetadata",
+    "RootScopedView",
     "Status",
     "Error",
     "InputOpened",
@@ -580,6 +850,13 @@ const PUBLICATION_VARIANTS: &[&str] = &[
     "Projection",
     "ProjectionOwners",
     "ProjectionSourceDiff",
+    "ReadSession",
+    "ReadSessionProfile",
+    "HistoryCut",
+    "HistoryGeneration",
+    "TextRanked",
+    "TextRankedPage",
+    "HybridFileRanked",
     "Stub",
 ];
 
@@ -599,6 +876,8 @@ impl<'de> serde::Deserialize<'de> for PublicationVariant {
                     "Staged" => Ok(PublicationVariant::Staged),
                     "Submitted" => Ok(PublicationVariant::Submitted),
                     "View" => Ok(PublicationVariant::View),
+                    "PublishedViewMetadata" => Ok(PublicationVariant::PublishedViewMetadata),
+                    "RootScopedView" => Ok(PublicationVariant::RootScopedView),
                     "Status" => Ok(PublicationVariant::Status),
                     "Error" => Ok(PublicationVariant::Error),
                     "InputOpened" => Ok(PublicationVariant::InputOpened),
@@ -610,6 +889,13 @@ impl<'de> serde::Deserialize<'de> for PublicationVariant {
                     "Projection" => Ok(PublicationVariant::Projection),
                     "ProjectionOwners" => Ok(PublicationVariant::ProjectionOwners),
                     "ProjectionSourceDiff" => Ok(PublicationVariant::ProjectionSourceDiff),
+                    "ReadSession" => Ok(PublicationVariant::ReadSession),
+                    "ReadSessionProfile" => Ok(PublicationVariant::ReadSessionProfile),
+                    "HistoryCut" => Ok(PublicationVariant::HistoryCut),
+                    "HistoryGeneration" => Ok(PublicationVariant::HistoryGeneration),
+                    "TextRanked" => Ok(PublicationVariant::TextRanked),
+                    "TextRankedPage" => Ok(PublicationVariant::TextRankedPage),
+                    "HybridFileRanked" => Ok(PublicationVariant::HybridFileRanked),
                     "Stub" => Ok(PublicationVariant::Stub),
                     _ => Err(E::unknown_variant(value, PUBLICATION_VARIANTS)),
                 }
@@ -650,9 +936,22 @@ impl<'de> serde::Deserialize<'de> for PublicationPayload {
                     PublicationVariant::ProjectionSourceDiff => NativeIndexResponse::ProjectionSourceDiff(
                         variant.newtype_variant::<quanta_index_contract::native_protocol::NativeProjectionSourceDiff>()?,
                     ),
+                    PublicationVariant::ReadSession => NativeIndexResponse::ReadSession(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeReadSessionReply>()?),
+                    PublicationVariant::ReadSessionProfile => NativeIndexResponse::ReadSessionProfile(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeReadSessionProfile>()?),
+                    PublicationVariant::HistoryCut => NativeIndexResponse::HistoryCut(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeReadSessionHistoryCutV1>()?),
+                    PublicationVariant::HistoryGeneration => NativeIndexResponse::HistoryGeneration(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeReadSessionHistoryGenerationV1>()?),
+                    PublicationVariant::TextRanked => NativeIndexResponse::TextRanked(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeTextResult>()?),
+                    PublicationVariant::TextRankedPage => NativeIndexResponse::TextRankedPage(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeTextPage>()?),
+                    PublicationVariant::HybridFileRanked => NativeIndexResponse::HybridFileRanked(variant.newtype_variant::<quanta_index_contract::native_protocol::NativeHybridFileResult>()?),
                     PublicationVariant::Stub => {
                         NativeIndexResponse::Stub(variant.newtype_variant::<NativeStubReply>()?)
                     }
+                    PublicationVariant::PublishedViewMetadata => NativeIndexResponse::PublishedViewMetadata(
+                        variant.newtype_variant::<OperationReply<CatalogView>>()?,
+                    ),
+                    PublicationVariant::RootScopedView => NativeIndexResponse::RootScopedView(
+                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeRootScopedViewV1>()?,
+                    ),
                     PublicationVariant::View => {
                         NativeIndexResponse::View(variant.newtype_variant::<CatalogView>()?)
                     }

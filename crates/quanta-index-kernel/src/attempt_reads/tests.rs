@@ -31,9 +31,41 @@ struct Reads {
     store: FileObjectStore,
     gets: AtomicUsize,
     wrong_retained: AtomicBool,
+    prepared: Mutex<Option<PreparedObservation>>,
+}
+
+struct PreparedObservation {
+    attempt: quanta_index_core::index::AttemptRef,
+    maximum_payload: usize,
+    packet_bytes: usize,
+    request: quanta_index_core::RequestBudgetV1,
 }
 
 impl ImmutableObjectPort for Reads {
+    fn try_prepare_leaf_install_run(
+        &self,
+        attempt: quanta_index_core::index::AttemptRef,
+        maximum_payload: usize,
+        packet_bytes: usize,
+        budget: &mut WorkBudget,
+    ) -> Result<
+        Option<Box<dyn quanta_index_core::index::object_install::PreparedObjectInstallRun + '_>>,
+        IndexError,
+    > {
+        *self
+            .prepared
+            .lock()
+            .map_err(|_error| IndexError::BackendViolation("prepare probe poisoned".into()))? =
+            Some(PreparedObservation {
+                attempt,
+                maximum_payload,
+                packet_bytes,
+                request: budget.request().clone(),
+            });
+        self.store
+            .try_prepare_leaf_install_run(attempt, maximum_payload, packet_bytes, budget)
+    }
+
     fn identify(
         &self,
         payload: &[u8],
@@ -155,6 +187,7 @@ fn fixture() -> Result<(tempfile::TempDir, Reads, ObjectRef), Box<dyn std::error
             store,
             gets: AtomicUsize::new(0),
             wrong_retained: AtomicBool::new(false),
+            prepared: Mutex::new(None),
         },
         parent,
     ))
@@ -676,8 +709,15 @@ fn retained_read_checks_reference_and_cancel_before_reuse() -> TestResult {
     let memory = Arc::new(Memory::default());
     let mut work = budget();
     work.bind_memory_scope(Some(MemoryScope::new(Arc::new(Scope(Arc::clone(&memory))))));
-    let reads = AttemptObjectReads::with_bounds(&objects, 0, 0);
+    let mut reads = AttemptObjectReads::with_bounds(&objects, 0, 0);
+    require(
+        reads.read_snapshot().is_none(),
+        "Off initialized read counters",
+    )?;
+    reads.observe_source_attempt();
+    let before = reads.read_snapshot().ok_or(IndexError::ResourceLimited)?;
     let original = reads.get(reference, &mut work)?;
+    drop(reads.read_retained(&original, &mut work)?);
     let prior_gets = objects.gets.load(Ordering::SeqCst);
     objects.wrong_retained.store(true, Ordering::SeqCst);
     require(
@@ -701,6 +741,14 @@ fn retained_read_checks_reference_and_cancel_before_reuse() -> TestResult {
         reads.read_retained(&original, &mut cancelled) == Err(IndexError::Cancelled)
             && Some(objects.gets.load(Ordering::SeqCst)) == prior_gets.checked_add(1),
         "cancelled retained read reached the selected port",
+    )?;
+    let wire_bytes = original.registration.bytes;
+    require(
+        reads
+            .read_snapshot()
+            .and_then(|after| after.checked_delta(before))
+            == Some([1, 1, wire_bytes, 2, 1, wire_bytes]),
+        "read counters lost successes, counted wrong identities, or counted cancellation",
     )?;
     drop(original);
     drop(reads);
@@ -927,5 +975,73 @@ fn data_retains_original_memory_until_last_shared_value_drops() -> TestResult {
         memory.0.load(Ordering::SeqCst) == 0,
         "last shared DATA did not refund original memory",
     )?;
+    Ok(())
+}
+
+#[test]
+fn prepared_install_admission_crosses_source_and_selected_read_facades() -> TestResult {
+    use quanta_index_core::index::{
+        AttemptId, AttemptRef, CollectionId, OperationKey, ProducerId, SlotId, StreamId, TenantId,
+        WorkspaceKey, WorktreeId,
+    };
+    for selected in [false, true] {
+        let (_directory, backend, reference) = fixture()?;
+        let mut work = budget();
+        let object = backend.store.get(reference, &mut work)?;
+        let attempt = AttemptRef {
+            operation: OperationKey {
+                workspace: WorkspaceKey {
+                    tenant: TenantId([1; 16]),
+                    collection: CollectionId([2; 16]),
+                    worktree: WorktreeId([3; 16]),
+                    slot: SlotId([4; 16]),
+                },
+                epoch: 1,
+                producer: ProducerId([5; 16]),
+                stream: StreamId([6; 16]),
+                stream_epoch: 1,
+                sequence: 1,
+            },
+            attempt: AttemptId([7; 16]),
+            fence: 9,
+        };
+        let facade = if selected {
+            AttemptObjectReads::selected(&backend, &object)
+        } else {
+            AttemptObjectReads::for_source_attempt(&backend, 256)?
+        };
+        let before = work.usage();
+        // The unmanaged backend deliberately declines. Its recorded call
+        // distinguishes correct forwarding from the port's default None.
+        let prepared = facade.try_prepare_leaf_install_run(attempt, 64, 1024, &mut work)?;
+        require(
+            prepared.is_none(),
+            "unmanaged fixture unexpectedly prepared an install",
+        )?;
+        let observed = backend
+            .prepared
+            .lock()
+            .map_err(|_error| "prepare probe poisoned")?;
+        let observed = observed
+            .as_ref()
+            .ok_or("read facade swallowed prepared-install admission")?;
+        require(
+            observed.attempt == attempt
+                && observed.maximum_payload == 64
+                && observed.packet_bytes == 1024,
+            "read facade changed prepared-install scope or bounds",
+        )?;
+        require(
+            observed.request.same_request_as(work.request())
+                && observed.request.deadline() == work.request().deadline(),
+            "read facade replaced the original request budget",
+        )?;
+        require(
+            work.usage() == before
+                && work.first_denial().is_none()
+                && backend.gets.load(Ordering::SeqCst) == 0,
+            "optional forwarding charged work, denied memory, or read the cache",
+        )?;
+    }
     Ok(())
 }

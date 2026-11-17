@@ -3,6 +3,7 @@
 
 mod branches;
 mod buffer;
+mod cold_stream;
 mod completed_group;
 mod diff;
 mod node_wire;
@@ -10,9 +11,11 @@ mod object_batch;
 mod original_lookup;
 mod owner_scope;
 mod resident;
+mod retained_value;
 mod scalar_pair;
 mod scoped_reads;
 mod scratch;
+mod staged_children;
 mod value_codec;
 use branches::Branches;
 use buffer::MapBuffer;
@@ -22,20 +25,30 @@ use quanta_index_core::{
     DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1, DiagnosticTraceErrorV1,
 };
 use resident::ResidentStage;
+use retained_value::RetainedMapValue;
 use scratch::MapScratch;
 use sha2::{Digest as _, Sha256};
-use std::{cell::Cell, sync::Arc};
+use staged_children::StagedChildren;
+use std::{
+    cell::{Cell, RefCell},
+    sync::Arc,
+};
 
 use quanta_index_core::index::{
     IndexError, MapBatchRequest, MapBatchWrite, MapEdit, MapPage, MapRoot, MapValue, MapWrite,
     MemoryLease, MemoryLifetime, ObjectRef, OrdinalMapEdit, StagedMapRoots, StoredObject,
     WorkBudget, WorkUsage,
-    ports::{ImmutableObjectPort, MapEditCursor, ObjectWriteSink, PersistentMapPort},
+    ports::{
+        ImmutableObjectPort, MapEditCursor, ObjectWriteSink, PersistentMapPort, RootPackingMode,
+        RootPackingPlan,
+    },
 };
 
 use crate::{
     FileObjectStore,
-    object::{MAX_BATCH_BYTES, MAX_INSTALL_BATCH_INPUTS, MAX_PREPARED_INSTALL_GROUPS, PreparedObject},
+    object::{
+        MAX_BATCH_BYTES, MAX_INSTALL_BATCH_INPUTS, MAX_PREPARED_INSTALL_GROUPS, PreparedObject,
+    },
 };
 
 #[cfg(test)]
@@ -57,19 +70,78 @@ const MAX_EMPTY_STREAM_ROOTS: usize = MAX_INSTALL_BATCH_INPUTS;
 const MAX_NODE_CHILDREN: usize = 17 * quanta_index_core::index::MAX_MAP_INLINE_CHILDREN;
 const MAX_INSTALL_PENDING: usize = 1 + MAX_NODE_CHILDREN * (MAX_NIBBLES + 1);
 
+#[repr(C)]
+struct InstallFrame {
+    reference: ObjectRef,
+    tagged_depth: u16,
+}
+
+impl InstallFrame {
+    const EXIT: u16 = 1 << 15;
+
+    fn enter(reference: ObjectRef, depth: usize) -> Result<Self, IndexError> {
+        let tagged_depth = u16::try_from(depth).map_err(|_depth| IndexError::ResourceLimited)?;
+        if tagged_depth & Self::EXIT != 0 {
+            return Err(IndexError::ResourceLimited);
+        }
+        Ok(Self {
+            reference,
+            tagged_depth,
+        })
+    }
+
+    fn exit(mut self) -> Self {
+        self.tagged_depth |= Self::EXIT;
+        self
+    }
+
+    fn exiting(&self) -> bool {
+        self.tagged_depth & Self::EXIT != 0
+    }
+
+    fn depth(&self) -> usize {
+        usize::from(self.tagged_depth & !Self::EXIT)
+    }
+
+    fn push(
+        self,
+        pending: &mut MapBuffer<Self>,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        budget.charge(WorkUsage {
+            bytes: u64::try_from(std::mem::size_of::<Self>())
+                .map_err(|_width| IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        pending.push(self, budget)
+    }
+}
+
 /// Fingerprint the canonical edit, excluding only its root ordinal. Scratch
 /// rows are decoded through the same edit cursor before a fingerprint can
 /// authorize reuse of a previously built root.
-fn fingerprint_edit(
+fn fingerprint_position(
     digest: &mut Sha256,
-    edit: &MapEdit,
+    edit: &OrdinalMapEdit,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    let key_len = u32::try_from(edit.key.len()).map_err(|_error| IndexError::ResourceLimited)?;
-    let expected = edit.expected.map(MapValue::encoded).transpose()?;
-    let next = edit.next.map(MapValue::encoded).transpose()?;
-    let expected_wire = expected.as_ref().map(|wire| wire.as_slice()).transpose()?;
-    let next_wire = next.as_ref().map(|wire| wire.as_slice()).transpose()?;
+    fingerprint_wires(
+        digest,
+        edit.key(),
+        edit.expected_wire(),
+        edit.next_wire(),
+        budget,
+    )
+}
+
+fn fingerprint_wires(
+    digest: &mut Sha256,
+    key: &[u8],
+    expected_wire: Option<&[u8]>,
+    next_wire: Option<&[u8]>,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    let key_len = u32::try_from(key.len()).map_err(|_error| IndexError::ResourceLimited)?;
     let expected_len = u64::try_from(expected_wire.map_or(0, <[u8]>::len))
         .map_err(|_error| IndexError::ResourceLimited)?;
     let next_len = u64::try_from(next_wire.map_or(0, <[u8]>::len))
@@ -88,7 +160,7 @@ fn fingerprint_edit(
         ..WorkUsage::default()
     })?;
     digest.update(key_len.to_le_bytes());
-    digest.update(&edit.key);
+    digest.update(key);
     for wire in [expected_wire, next_wire] {
         if let Some(wire) = wire {
             digest.update([1]);
@@ -111,7 +183,7 @@ fn scratch_edit_fingerprint(
     let mut edits = scratch.edits(root);
     let mut count = 0u64;
     while let Some(position) = edits.next_edit(budget)? {
-        fingerprint_edit(&mut digest, &position.edit, budget)?;
+        fingerprint_position(&mut digest, &position, budget)?;
         count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
     }
     Ok((digest.finalize().into(), count))
@@ -122,7 +194,7 @@ fn scratch_edit_fingerprint(
 #[derive(Eq, PartialEq)]
 enum BranchValue {
     Indirect(ObjectRef),
-    Terminal(MapValue),
+    Terminal(RetainedMapValue),
     Packed(Arc<PackedBranch>),
 }
 
@@ -156,7 +228,7 @@ impl Branch {
             value: BranchValue::Indirect(reference),
         }
     }
-    fn terminal(prefix: MapBuffer<u8>, value: MapValue) -> Self {
+    fn terminal(prefix: MapBuffer<u8>, value: RetainedMapValue) -> Self {
         Self {
             prefix,
             value: BranchValue::Terminal(value),
@@ -191,7 +263,7 @@ impl Branch {
             BranchValue::Indirect(reference) => Ok(Self::indirect(*reference)),
             BranchValue::Terminal(value) => Ok(Self::terminal(
                 MapBuffer::copy(&self.prefix, MAX_INLINE_NIBBLES, budget)?,
-                *value,
+                value.clone(),
             )),
             BranchValue::Packed(packed) => Ok(Self {
                 prefix: MapBuffer::new(0),
@@ -227,7 +299,7 @@ fn copy_branch(branch: Option<&Branch>, budget: &WorkBudget) -> Result<Option<Br
 pub(crate) struct Node {
     /// Nibbles following the parent's branch nibble.
     prefix: MapBuffer<u8>,
-    value: Option<MapValue>,
+    value: Option<RetainedMapValue>,
     branches: Branches,
 }
 
@@ -241,7 +313,11 @@ impl PartialEq for Node {
 impl Eq for Node {}
 
 impl Node {
-    fn leaf(prefix: &[u8], value: MapValue, budget: &WorkBudget) -> Result<Self, IndexError> {
+    fn leaf(
+        prefix: &[u8],
+        value: RetainedMapValue,
+        budget: &WorkBudget,
+    ) -> Result<Self, IndexError> {
         Ok(Self {
             prefix: MapBuffer::copy(prefix, MAX_NIBBLES, budget)?,
             value: Some(value),
@@ -261,13 +337,15 @@ impl Node {
         }
     }
 
-    fn packable(&self) -> bool {
+    fn packable(&self, mode: RootPackingMode) -> bool {
         self.prefix.len() <= MAX_INLINE_NIBBLES
             && self.branch_count() != 0
-            && self
-                .branches
-                .iter()
-                .all(|(_, branch)| matches!(branch.value, BranchValue::Terminal(_)))
+            && self.branches.iter().all(|(_, branch)| match mode {
+                RootPackingMode::None => false,
+                RootPackingMode::Terminal => matches!(branch.value, BranchValue::Terminal(_)),
+                RootPackingMode::Nested => !matches!(branch.value, BranchValue::Indirect(_)),
+            })
+            && node_wire::packed_shape(self).is_ok()
     }
 
     fn copy(&self, budget: &mut WorkBudget) -> Result<Self, IndexError> {
@@ -291,7 +369,7 @@ impl Node {
         }
         Ok(Self {
             prefix: MapBuffer::copy(&self.prefix, MAX_NIBBLES, budget)?,
-            value: self.value,
+            value: self.value.clone(),
             branches,
         })
     }
@@ -365,9 +443,249 @@ impl ScanPageBuilder {
     }
 }
 
+/// One attempt-local DFS. A full page leaves its next value pending, so the
+/// following page does not reread the root or skip the lookahead value.
+struct ScanContinuation {
+    after_nibbles: Option<MapBuffer<u8>>,
+    path: MapBuffer<u8>,
+    stack: MapBuffer<ScanFrame>,
+    first_page: Option<ScanPageBuilder>,
+    limit: usize,
+    pending_value: bool,
+    finished: bool,
+    poisoned: bool,
+}
+
+/// The optional box and its admission exist only while a descriptor visitor
+/// may need the Original memory held by the DFS for mandatory child work.
+struct ScanSuspend {
+    scan: ScanContinuation,
+    _memory: MemoryLease,
+}
+
+impl ScanContinuation {
+    fn new(
+        root: MapRoot,
+        after: Option<&[u8]>,
+        limit: u32,
+        budget: &mut WorkBudget,
+        read_node: &mut impl FnMut(ObjectRef, &mut WorkBudget) -> Result<Node, IndexError>,
+    ) -> Result<Self, IndexError> {
+        if limit == 0 || limit > MAX_SCAN_LIMIT {
+            return Err(IndexError::InvalidInput(
+                "map scan limit is out of bounds".into(),
+            ));
+        }
+        budget.checkpoint()?;
+        let after_nibbles = if let Some(after) = after {
+            charge_key_allocation(after, budget)?;
+            Some(key_nibbles(after, budget)?)
+        } else {
+            None
+        };
+        let limit = usize::try_from(limit).map_err(|_error| IndexError::ResourceLimited)?;
+        let capacity = if root.0.is_some() { limit } else { 0 };
+        let first_page = ScanPageBuilder::new(capacity, budget)?;
+        let path = MapBuffer::new(MAX_NIBBLES);
+        let mut stack = MapBuffer::new(MAX_NIBBLES + 1);
+        if let Some(reference) = root.0 {
+            stack.push(
+                ScanFrame::new(ScanNode::Owned(read_node(reference, budget)?)),
+                budget,
+            )?;
+        }
+        Ok(Self {
+            after_nibbles,
+            path,
+            stack,
+            first_page: Some(first_page),
+            limit,
+            pending_value: false,
+            finished: false,
+            poisoned: false,
+        })
+    }
+
+    fn next_page(
+        &mut self,
+        budget: &mut WorkBudget,
+        read_node: &mut impl FnMut(ObjectRef, &mut WorkBudget) -> Result<Node, IndexError>,
+    ) -> Result<Option<MapPage>, IndexError> {
+        if self.poisoned {
+            return Err(IndexError::BackendViolation(
+                "failed map scan continuation reused".into(),
+            ));
+        }
+        if self.finished {
+            return Ok(None);
+        }
+        let result = self.next_page_inner(budget, read_node);
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+
+    fn next_page_inner(
+        &mut self,
+        budget: &mut WorkBudget,
+        read_node: &mut impl FnMut(ObjectRef, &mut WorkBudget) -> Result<Node, IndexError>,
+    ) -> Result<Option<MapPage>, IndexError> {
+        let mut page = if let Some(page) = self.first_page.take() {
+            page
+        } else {
+            budget.checkpoint()?;
+            ScanPageBuilder::new(self.limit, budget)?
+        };
+        while let Some(frame) = self.stack.last_mut() {
+            budget.checkpoint()?;
+            if self.pending_value {
+                self.pending_value = false;
+                let value = frame.node.value.as_ref().ok_or_else(|| {
+                    IndexError::BackendViolation("pending scan value is missing".into())
+                })?;
+                scan_emit_value(&self.path, value, &mut page, budget)?;
+            } else if !frame.entered {
+                let length = self
+                    .path
+                    .len()
+                    .checked_add(frame.node.prefix.len())
+                    .filter(|length| *length <= MAX_NIBBLES)
+                    .ok_or_else(|| {
+                        IndexError::CorruptObject("map path exceeds key limit".into())
+                    })?;
+                budget.charge(WorkUsage {
+                    bytes: u64::try_from(frame.node.prefix.len())
+                        .map_err(|_error| IndexError::ResourceLimited)?,
+                    ..WorkUsage::default()
+                })?;
+                self.path.extend_from_slice(&frame.node.prefix, budget)?;
+                frame.path_end = length;
+                frame.entered = true;
+                if !subtree_can_follow(&self.path, self.after_nibbles.as_deref()) {
+                    let _finished = self.stack.pop();
+                    continue;
+                }
+                if let Some(value) = frame.node.value.as_ref() {
+                    if !self.path.len().is_multiple_of(2) {
+                        return Err(IndexError::CorruptObject(
+                            "map value ends at an incomplete byte".into(),
+                        ));
+                    }
+                    if self
+                        .after_nibbles
+                        .as_ref()
+                        .is_none_or(|after| self.path.as_slice() > after.as_slice())
+                    {
+                        if page.entries.len() == self.limit {
+                            self.pending_value = true;
+                            return Ok(Some(page.finish(true)));
+                        }
+                        scan_emit_value(&self.path, value, &mut page, budget)?;
+                    }
+                }
+            }
+            self.path.truncate(frame.path_end);
+            let next = loop {
+                let edge = frame.next_edge;
+                if edge >= 16 {
+                    break None;
+                }
+                let child = frame.node.branches.get(edge)?;
+                frame.next_edge = edge.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                if let Some(child) = child {
+                    break Some((edge, child.copy(budget)?));
+                }
+            };
+            let Some((edge, reference)) = next else {
+                let _finished = self.stack.pop();
+                continue;
+            };
+            let length = self
+                .path
+                .len()
+                .checked_add(1)
+                .filter(|length| *length <= MAX_NIBBLES)
+                .ok_or_else(|| IndexError::CorruptObject("map branch exceeds key limit".into()))?;
+            budget.charge(WorkUsage {
+                bytes: u64::try_from(length).map_err(|_error| IndexError::ResourceLimited)?,
+                ..WorkUsage::default()
+            })?;
+            self.path.push(
+                u8::try_from(edge).map_err(|_error| IndexError::ResourceLimited)?,
+                budget,
+            )?;
+            if subtree_can_follow(&self.path, self.after_nibbles.as_deref()) {
+                let node = match reference {
+                    Branch {
+                        value: BranchValue::Packed(packed),
+                        ..
+                    } => ScanNode::Packed(packed),
+                    branch => ScanNode::Owned(branch.into_node(budget, &mut *read_node)?),
+                };
+                self.stack.push(ScanFrame::new(node), budget)?;
+            }
+        }
+        self.finished = true;
+        Ok(Some(page.finish(false)))
+    }
+
+    /// Carry only buffers whose capacities a fresh scan would already need
+    /// to reach the pending value. An earlier, deeper branch can leave unused
+    /// capacity in the DFS and would otherwise raise the next page's peak.
+    fn fits_fresh_path(&self) -> Result<bool, IndexError> {
+        let fresh_stack = self.stack.len().next_power_of_two().min(MAX_NIBBLES + 1);
+        if self.stack.capacity() > fresh_stack {
+            return Ok(false);
+        }
+        if self.path.capacity() == self.path.len() {
+            return Ok(true);
+        }
+        let mut prefix_end = 0_usize;
+        let mut fresh_path = 0_usize;
+        for (depth, frame) in self.stack.iter().enumerate() {
+            if depth != 0 {
+                fresh_path =
+                    MapBuffer::<u8>::capacity_for(fresh_path, prefix_end + 1, MAX_NIBBLES)?;
+            }
+            prefix_end = frame.path_end;
+            fresh_path = MapBuffer::<u8>::capacity_for(fresh_path, prefix_end, MAX_NIBBLES)?;
+        }
+        Ok(self.path.capacity() <= fresh_path)
+    }
+}
+
+fn scan_emit_value(
+    path: &[u8],
+    value: &RetainedMapValue,
+    page: &mut ScanPageBuilder,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    let key_bytes = u64::try_from(path.len() >> 1).map_err(|_error| IndexError::ResourceLimited)?;
+    budget.charge(WorkUsage {
+        bytes: key_bytes
+            .checked_add(
+                u64::try_from(std::mem::size_of::<(Vec<u8>, MapValue)>())
+                    .map_err(|_error| IndexError::ResourceLimited)?,
+            )
+            .ok_or(IndexError::ResourceLimited)?,
+        ..WorkUsage::default()
+    })?;
+    let key_memory = if key_bytes == 0 {
+        None
+    } else {
+        budget.reserve_memory(key_bytes, MemoryLifetime::Retained)?
+    };
+    let key = nibbles_to_key(path)?;
+    page.entries.push((key, value.to_public(budget)?));
+    page.leases.extend(key_memory);
+    Ok(())
+}
+
 struct StagedMap {
     scratch: MapScratch,
-    pack_terminal_subtrees: Cell<bool>,
+    packing_mode: Cell<RootPackingMode>,
+    staged_children: Option<RefCell<StagedChildren>>,
 }
 
 /// One diagnostic packet for a scratch-backed map batch. All counters are
@@ -378,6 +696,95 @@ struct MapApplyObservation {
     candidates: u64,
     reuses: u64,
     builds: u64,
+}
+
+/// Diagnostic-only next-value shape of positions yielded into scratch-backed
+/// MapApply. It is neither a persisted-node census nor a copy count.
+struct MapInputShape {
+    counts: Option<[u64; 6]>,
+}
+
+impl MapInputShape {
+    fn new(enabled: bool) -> Self {
+        Self {
+            counts: enabled.then_some([0; 6]),
+        }
+    }
+
+    fn record(&mut self, position: &OrdinalMapEdit) -> Option<DiagnosticHealthCodeV1> {
+        let prior = self.counts?;
+        let next = (|| {
+            let shape = match position.next_wire() {
+                None => [1, 0, 0, 0, 0, 0],
+                Some(wire) => {
+                    let bytes = u64::try_from(wire.len())
+                        .map_err(|_error| DiagnosticHealthCodeV1::CounterOverflow)?;
+                    match MapValue::decode(wire)
+                        .map_err(|_error| DiagnosticHealthCodeV1::CounterUnavailable)?
+                    {
+                        MapValue::Object(_) => [0, 1, 0, 0, 0, bytes],
+                        MapValue::Inline(value) => {
+                            let data = u64::try_from(
+                                value
+                                    .data()
+                                    .map_err(|_error| DiagnosticHealthCodeV1::CounterUnavailable)?
+                                    .len(),
+                            )
+                            .map_err(|_error| DiagnosticHealthCodeV1::CounterOverflow)?;
+                            let children = u64::try_from(
+                                value
+                                    .children()
+                                    .map_err(|_error| DiagnosticHealthCodeV1::CounterUnavailable)?
+                                    .len(),
+                            )
+                            .map_err(|_error| DiagnosticHealthCodeV1::CounterOverflow)?;
+                            [0, 0, 1, data, children, bytes]
+                        }
+                    }
+                }
+            };
+            let mut total = prior;
+            for (target, add) in total.iter_mut().zip(shape) {
+                *target = target
+                    .checked_add(add)
+                    .ok_or(DiagnosticHealthCodeV1::CounterOverflow)?;
+            }
+            Ok::<_, DiagnosticHealthCodeV1>(total)
+        })();
+        match next {
+            Ok(total) => {
+                self.counts = Some(total);
+                None
+            }
+            Err(health) => {
+                self.counts = None;
+                Some(health)
+            }
+        }
+    }
+}
+
+struct ShapeObservedCursor<'a> {
+    input: &'a mut dyn MapEditCursor,
+    shape: &'a mut MapInputShape,
+    diagnostic: Option<DiagnosticContextV1>,
+}
+
+impl MapEditCursor for ShapeObservedCursor<'_> {
+    fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
+        let position = self.input.next_edit(budget)?;
+        if let Some(position) = position.as_ref()
+            && let Some(health) = self.shape.record(position)
+            && let Some(diagnostic) = self.diagnostic.as_ref()
+        {
+            diagnostic.health(health);
+        }
+        Ok(position)
+    }
+
+    fn subtree_packing(&self) -> Result<RootPackingPlan, IndexError> {
+        self.input.subtree_packing()
+    }
 }
 
 impl MapApplyObservation {
@@ -421,7 +828,7 @@ impl MapApplyObservation {
             .map(|(context, span)| context.child_context(span))
     }
 
-    fn finish<T>(&mut self, result: &Result<T, IndexError>) {
+    fn finish<T>(&mut self, result: &Result<T, IndexError>, shape: MapInputShape) {
         if let (Some(context), Some(span)) = (self.context.as_ref(), self.span.as_ref()) {
             for (key, value) in [
                 (DiagnosticCounterV1::MapRootReuseCandidates, self.candidates),
@@ -429,6 +836,21 @@ impl MapApplyObservation {
                 (DiagnosticCounterV1::MapRootBuilds, self.builds),
             ] {
                 context.counter(span, key, value);
+            }
+            if let Some(counts) = shape.counts {
+                for (key, value) in [
+                    DiagnosticCounterV1::MapInputNextAbsentValues,
+                    DiagnosticCounterV1::MapInputNextObjectValues,
+                    DiagnosticCounterV1::MapInputNextInlineValues,
+                    DiagnosticCounterV1::MapInputNextInlineDataBytes,
+                    DiagnosticCounterV1::MapInputNextInlineChildRefs,
+                    DiagnosticCounterV1::MapInputNextWireBytes,
+                ]
+                .into_iter()
+                .zip(counts)
+                {
+                    context.counter(span, key, value);
+                }
             }
         }
         if let Some(span) = self.span.take() {
@@ -486,7 +908,7 @@ fn begin_map_phase(context: &DiagnosticContextV1, lane: u16) -> Option<Diagnosti
 /// already content-addressed in scratch; no intermediate root is installed.
 struct BootstrapFrame {
     full_prefix: MapBuffer<u8>,
-    value: Option<MapValue>,
+    value: Option<RetainedMapValue>,
     branches: Branches,
 }
 
@@ -514,18 +936,23 @@ enum EditExpectation {
 }
 
 impl EditExpectation {
-    fn require(self, actual: Option<MapValue>) -> Result<(), IndexError> {
-        if let Self::Exact(expected) = self
-            && expected != actual
-        {
-            return Err(IndexError::Conflict);
+    fn require(self, actual: Option<&RetainedMapValue>) -> Result<(), IndexError> {
+        if let Self::Exact(expected) = self {
+            let equal = match (expected, actual) {
+                (None, None) => true,
+                (Some(expected), Some(actual)) => actual.equals_public(expected)?,
+                _ => false,
+            };
+            if !equal {
+                return Err(IndexError::Conflict);
+            }
         }
         Ok(())
     }
 }
 
 impl BootstrapFrame {
-    fn new(full_prefix: MapBuffer<u8>, value: Option<MapValue>) -> Self {
+    fn new(full_prefix: MapBuffer<u8>, value: Option<RetainedMapValue>) -> Self {
         Self {
             full_prefix,
             value,
@@ -550,8 +977,14 @@ impl StagedMap {
     fn open(store: &FileObjectStore, budget: &mut WorkBudget) -> Result<Self, IndexError> {
         Ok(Self {
             scratch: MapScratch::open(store, budget)?,
-            pack_terminal_subtrees: Cell::new(false),
+            packing_mode: Cell::new(RootPackingMode::None),
+            staged_children: None,
         })
+    }
+
+    fn track_staged_children(&mut self, budget: &mut WorkBudget) -> Result<(), IndexError> {
+        self.staged_children = StagedChildren::try_new(budget)?.map(RefCell::new);
+        Ok(())
     }
 }
 
@@ -560,8 +993,8 @@ impl StagedMap {
 trait MapStage {
     const DEFERRED_COMPLETION: bool = false;
 
-    fn pack_terminal_subtrees(&self) -> bool {
-        false
+    fn packing_mode(&self) -> RootPackingMode {
+        RootPackingMode::None
     }
 
     fn read_node(
@@ -583,6 +1016,13 @@ trait MapStage {
         reference: ObjectRef,
         budget: &mut WorkBudget,
     ) -> Result<Option<PreparedObject>, IndexError>;
+    fn may_contain_staged_child(
+        &self,
+        _reference: ObjectRef,
+        _budget: &mut WorkBudget,
+    ) -> Result<bool, IndexError> {
+        Ok(true)
+    }
     fn mark(&self, reference: ObjectRef, budget: &mut WorkBudget)
     -> Result<Option<u8>, IndexError>;
     fn set_mark(
@@ -605,8 +1045,8 @@ trait MapStage {
 impl MapStage for StagedMap {
     const DEFERRED_COMPLETION: bool = true;
 
-    fn pack_terminal_subtrees(&self) -> bool {
-        self.pack_terminal_subtrees.get()
+    fn packing_mode(&self) -> RootPackingMode {
+        self.packing_mode.get()
     }
 
     fn read_node(
@@ -623,8 +1063,15 @@ impl MapStage for StagedMap {
         object: PreparedObject,
         budget: &mut WorkBudget,
     ) -> Result<ObjectRef, IndexError> {
+        if self.staged_children.is_some() {
+            StagedChildren::charge_insert(budget)?;
+        }
         self.scratch.insert_node(&object, budget)?;
-        Ok(object.registration.reference)
+        let reference = object.registration.reference;
+        if let Some(children) = &self.staged_children {
+            children.borrow_mut().record(reference);
+        }
+        Ok(reference)
     }
 
     fn take_prepared(
@@ -633,6 +1080,17 @@ impl MapStage for StagedMap {
         budget: &mut WorkBudget,
     ) -> Result<Option<PreparedObject>, IndexError> {
         self.scratch.prepared(reference, budget)
+    }
+
+    fn may_contain_staged_child(
+        &self,
+        reference: ObjectRef,
+        budget: &mut WorkBudget,
+    ) -> Result<bool, IndexError> {
+        if let Some(children) = &self.staged_children {
+            return children.borrow().may_contain(reference, budget);
+        }
+        Ok(true)
     }
 
     fn mark(
@@ -816,7 +1274,7 @@ impl FileObjectStore {
         budget: &mut WorkBudget,
         mut counts: Option<&mut [u64; 2]>,
     ) -> Result<(), IndexError> {
-        let mut pending = MapBuffer::<(ObjectRef, bool, usize)>::new(MAX_INSTALL_PENDING);
+        let mut pending = MapBuffer::new(MAX_INSTALL_PENDING);
         // One already-verified, owned wire per active depth. Its original
         // allocation grant stays attached until child-first installation.
         let mut active = MapBuffer::<PreparedObject>::new(MAX_NIBBLES + 1);
@@ -839,14 +1297,11 @@ impl FileObjectStore {
             .enumerate()
         {
             let Some(reference) = reference else { continue };
-            budget.charge(WorkUsage {
-                bytes: u64::try_from(std::mem::size_of::<(ObjectRef, bool, usize)>())
-                    .map_err(|_conversion_error| IndexError::ResourceLimited)?,
-                ..WorkUsage::default()
-            })?;
-            pending.push((reference, false, 0), budget)?;
-            while let Some((reference, exiting, depth)) = pending.pop() {
+            InstallFrame::enter(reference, 0)?.push(&mut pending, budget)?;
+            while let Some(frame) = pending.pop() {
                 budget.checkpoint()?;
+                let reference = frame.reference;
+                let exiting = frame.exiting();
                 if S::DEFERRED_COMPLETION
                     && !exiting
                     && completed.contains(reference, &chunk, budget)?
@@ -966,6 +1421,7 @@ impl FileObjectStore {
                     }
                     None => {}
                 }
+                let depth = frame.depth();
                 if depth > MAX_NIBBLES {
                     return Err(IndexError::CorruptObject(
                         "staged map DAG exceeds key depth".into(),
@@ -973,24 +1429,15 @@ impl FileObjectStore {
                 }
                 staged.begin_batch(budget)?;
                 staged.set_mark(reference, 1, budget)?;
-                budget.charge(WorkUsage {
-                    bytes: u64::try_from(std::mem::size_of::<(ObjectRef, bool, usize)>())
-                        .map_err(|_conversion_error| IndexError::ResourceLimited)?,
-                    ..WorkUsage::default()
-                })?;
-                pending.push((reference, true, depth), budget)?;
+                frame.exit().push(&mut pending, budget)?;
                 for child in object.registration.children.iter().rev() {
-                    // Consume each child through the full admitted wire reader
-                    // when popped. A pre-enqueue decode was discarded and then
-                    // repeated there. External values take that same absent-row
-                    // path; the pending bound includes every bounded physical child.
+                    // A missing staged prefix has no node to install. Every
+                    // external child still goes through physical validation.
+                    if !staged.may_contain_staged_child(*child, budget)? {
+                        continue;
+                    }
                     let next_depth = depth.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-                    budget.charge(WorkUsage {
-                        bytes: u64::try_from(std::mem::size_of::<(ObjectRef, bool, usize)>())
-                            .map_err(|_conversion_error| IndexError::ResourceLimited)?,
-                        ..WorkUsage::default()
-                    })?;
-                    pending.push((*child, false, next_depth), budget)?;
+                    InstallFrame::enter(*child, next_depth)?.push(&mut pending, budget)?;
                 }
                 budget.charge(WorkUsage {
                     bytes: u64::try_from(std::mem::size_of::<PreparedObject>())
@@ -1029,6 +1476,42 @@ pub(crate) fn decode_node(
     budget: &mut WorkBudget,
 ) -> Result<Node, IndexError> {
     node_wire::decode(stored, budget)
+}
+
+impl crate::FileObjectReader {
+    /// Resolve an object edge using the existing immutable-only map path.
+    pub fn lookup_map_object(
+        &self,
+        root: MapRoot,
+        key: &[u8],
+        budget: &mut WorkBudget,
+    ) -> Result<Option<ObjectRef>, IndexError> {
+        let mut result = [None];
+        original_lookup::lookup_batch_with(root, &[key], &mut result, budget, |reference, budget| {
+            decode_node(&self.get(reference, budget)?, budget)
+        })?;
+        match result {
+            [Some(MapValue::Object(reference))] => Ok(Some(reference)),
+            [None] => Ok(None),
+            [Some(MapValue::Inline(_))] => Err(IndexError::CorruptObject(
+                "map object lookup resolved to an inline value".into(),
+            )),
+        }
+    }
+
+    /// Scan an existing immutable map without constructing a writer or scratch scope.
+    /// The returned page retains its original memory reservations.
+    pub fn scan_map(
+        &self,
+        root: MapRoot,
+        after: Option<&[u8]>,
+        limit: u32,
+        budget: &mut WorkBudget,
+    ) -> Result<MapPage, IndexError> {
+        FileObjectStore::scan_with(root, after, limit, budget, |reference, budget| {
+            decode_node(&self.get(reference, budget)?, budget)
+        })
+    }
 }
 
 impl FileObjectStore {
@@ -1138,29 +1621,39 @@ impl FileObjectStore {
         budget: &mut WorkBudget,
         verify: Option<([u8; 32], u64)>,
     ) -> Result<MapRoot, IndexError> {
-        let mut frames = MapBuffer::<BootstrapFrame>::new(MAX_NIBBLES + 1);
         let mut edits = staged.scratch.edits(ordinal);
+        self.build_empty_root_from_cursor(&mut edits, staged, budget, verify)
+    }
+
+    fn build_empty_root_from_cursor(
+        &self,
+        edits: &mut dyn MapEditCursor,
+        staged: &StagedMap,
+        budget: &mut WorkBudget,
+        verify: Option<([u8; 32], u64)>,
+    ) -> Result<MapRoot, IndexError> {
+        let mut frames = MapBuffer::<BootstrapFrame>::new(MAX_NIBBLES + 1);
         let mut fingerprint = verify.map(|_| Sha256::new());
         let mut edit_count = 0u64;
         while let Some(position) = edits.next_edit(budget)? {
-            let edit = &position.edit;
             budget.checkpoint()?;
             if let Some(fingerprint) = fingerprint.as_mut() {
-                fingerprint_edit(fingerprint, edit, budget)?;
+                fingerprint_position(fingerprint, &position, budget)?;
                 edit_count = edit_count
                     .checked_add(1)
                     .ok_or(IndexError::ResourceLimited)?;
             }
             budget.charge(WorkUsage {
-                bytes: u64::try_from(edit.key.len())
+                bytes: u64::try_from(position.key().len())
                     .map_err(|_conversion_error| IndexError::ResourceLimited)?,
                 ..WorkUsage::default()
             })?;
-            let Some(value) = edit.next else {
+            let Some(value) = position.next()? else {
                 continue;
             };
-            charge_key_allocation(&edit.key, budget)?;
-            let nibbles = key_nibbles(&edit.key, budget)?;
+            let value = RetainedMapValue::from_public(value, budget)?;
+            charge_key_allocation(position.key(), budget)?;
+            let nibbles = key_nibbles(position.key(), budget)?;
             let shared = frames.last().map_or(0, |last| {
                 last.full_prefix
                     .iter()
@@ -1286,14 +1779,14 @@ impl FileObjectStore {
         }
         if node.branch_count() == 0
             && node.prefix.len() <= MAX_INLINE_NIBBLES
-            && let Some(value) = node.value
+            && let Some(value) = node.value.as_ref()
         {
             return Ok(Some(Branch::terminal(
                 MapBuffer::copy(&node.prefix, MAX_INLINE_NIBBLES, budget)?,
-                value,
+                value.clone(),
             )));
         }
-        if staged.pack_terminal_subtrees() && node.packable() {
+        if node.packable(staged.packing_mode()) {
             return Branch::packed(node, budget).map(Some);
         }
         self.write_encoded(&node, staged, budget)
@@ -1317,8 +1810,8 @@ impl FileObjectStore {
                             "map layout spilled a non-packed branch".into(),
                         ));
                     };
-                    // The codec permits only terminal children inside a packed
-                    // branch, so spill encoding cannot recurse a second time.
+                    // Every packed child has a bounded inline depth. A spill
+                    // consumes one level and is installed child-first.
                     spills[edge] = Some(self.write_encoded(&packed.node, staged, budget)?);
                 }
             }
@@ -1329,134 +1822,108 @@ impl FileObjectStore {
     }
 
     fn scan_with(
-        &self,
         root: MapRoot,
         after: Option<&[u8]>,
         limit: u32,
         budget: &mut WorkBudget,
         mut read_node: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<Node, IndexError>,
     ) -> Result<MapPage, IndexError> {
-        if limit == 0 || limit > MAX_SCAN_LIMIT {
-            return Err(IndexError::InvalidInput(
-                "map scan limit is out of bounds".into(),
-            ));
+        let mut scan = ScanContinuation::new(root, after, limit, budget, &mut read_node)?;
+        scan.next_page(budget, &mut read_node)?
+            .ok_or_else(|| IndexError::BackendViolation("new map scan has no first page".into()))
+    }
+
+    /// The caller has already consumed `last`; only strictly later rows are
+    /// scanned here after an optional DFS was discarded during child work.
+    fn visit_scalar_scan_tail_with(
+        root: MapRoot,
+        mut last: MapPage,
+        budget: &mut WorkBudget,
+        read_node: &mut impl FnMut(ObjectRef, &mut WorkBudget) -> Result<Node, IndexError>,
+        visitor: &mut dyn FnMut(MapPage, &mut WorkBudget) -> Result<(), IndexError>,
+    ) -> Result<(), IndexError> {
+        loop {
+            let key = &last
+                .entries
+                .last()
+                .ok_or_else(|| {
+                    IndexError::BackendViolation("map scan promised an empty continuation".into())
+                })?
+                .0;
+            let page = Self::scan_with(root, Some(key), 1, budget, &mut *read_node)?;
+            drop(last);
+            if !page.has_more {
+                return visitor(page, budget);
+            }
+            last = page.clone();
+            visitor(page, budget)?;
         }
-        budget.checkpoint()?;
-        let after_nibbles = if let Some(after) = after {
-            charge_key_allocation(after, budget)?;
-            Some(key_nibbles(after, budget)?)
-        } else {
-            None
-        };
-        let limit = usize::try_from(limit).map_err(|_error| IndexError::ResourceLimited)?;
-        let capacity = if root.0.is_some() { limit } else { 0 };
-        let mut page = ScanPageBuilder::new(capacity, budget)?;
-        let mut path = MapBuffer::new(MAX_NIBBLES);
-        let mut stack = MapBuffer::new(MAX_NIBBLES + 1);
-        if let Some(reference) = root.0 {
-            stack.push(
-                ScanFrame::new(ScanNode::Owned(read_node(reference, budget)?)),
-                budget,
-            )?;
-        }
-        while let Some(frame) = stack.last_mut() {
-            budget.checkpoint()?;
-            if !frame.entered {
-                let length = path
-                    .len()
-                    .checked_add(frame.node.prefix.len())
-                    .filter(|length| *length <= MAX_NIBBLES)
-                    .ok_or_else(|| {
-                        IndexError::CorruptObject("map path exceeds key limit".into())
-                    })?;
-                budget.charge(WorkUsage {
-                    bytes: u64::try_from(frame.node.prefix.len())
-                        .map_err(|_error| IndexError::ResourceLimited)?,
-                    ..WorkUsage::default()
-                })?;
-                path.extend_from_slice(&frame.node.prefix, budget)?;
-                frame.path_end = length;
-                frame.entered = true;
-                if !subtree_can_follow(&path, after_nibbles.as_deref()) {
-                    let _finished = stack.pop();
+    }
+
+    /// Visit one-row pages with a single DFS while Original grants permit it.
+    /// The first page retains the ordinary scan's allocation and read order.
+    /// The optional boxed stack is discarded before a mandatory child grant
+    /// would be refused; a miss resumes after the last delivered fence.
+    fn try_visit_scan_pages_with(
+        root: MapRoot,
+        budget: &mut WorkBudget,
+        mut read_node: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<Node, IndexError>,
+        visitor: &mut dyn FnMut(MapPage, &mut WorkBudget) -> Result<(), IndexError>,
+    ) -> Result<bool, IndexError> {
+        let mut scan = ScanContinuation::new(root, None, 1, budget, &mut read_node)?;
+        loop {
+            let page = scan.next_page(budget, &mut read_node)?.ok_or_else(|| {
+                IndexError::BackendViolation("map scan ended without an EOF page".into())
+            })?;
+            if !page.has_more {
+                drop(scan);
+                visitor(page, budget)?;
+                return Ok(true);
+            }
+            let last = page.clone();
+            let bytes = u64::try_from(std::mem::size_of::<ScanSuspend>())
+                .map_err(|_error| IndexError::ResourceLimited)?;
+            if scan.fits_fresh_path()?
+                && let Some(memory) =
+                    budget.try_reserve_memory_for_optimization(bytes, MemoryLifetime::Temporary)?
+            {
+                let suspended = Box::new(ScanSuspend {
+                    scan,
+                    _memory: memory,
+                });
+                let (result, retained) =
+                    budget.with_discardable_memory(suspended, |budget| visitor(page, budget));
+                result?;
+                if let Some(retained) = retained {
+                    let ScanSuspend {
+                        scan: resumed,
+                        _memory: memory,
+                    } = *retained;
+                    drop(memory);
+                    scan = resumed;
                     continue;
                 }
-                if let Some(value) = frame.node.value {
-                    if !path.len().is_multiple_of(2) {
-                        return Err(IndexError::CorruptObject(
-                            "map value ends at an incomplete byte".into(),
-                        ));
-                    }
-                    if after_nibbles
-                        .as_ref()
-                        .is_none_or(|after| path.as_slice() > after.as_slice())
-                    {
-                        if page.entries.len() == limit {
-                            return Ok(page.finish(true));
-                        }
-                        let key_bytes = u64::try_from(path.len() >> 1)
-                            .map_err(|_error| IndexError::ResourceLimited)?;
-                        budget.charge(WorkUsage {
-                            bytes: key_bytes
-                                .checked_add(
-                                    u64::try_from(std::mem::size_of::<(Vec<u8>, MapValue)>())
-                                        .map_err(|_error| IndexError::ResourceLimited)?,
-                                )
-                                .ok_or(IndexError::ResourceLimited)?,
-                            ..WorkUsage::default()
-                        })?;
-                        let key_memory = if key_bytes == 0 {
-                            None
-                        } else {
-                            budget.reserve_memory(key_bytes, MemoryLifetime::Retained)?
-                        };
-                        let key = nibbles_to_key(&path)?;
-                        page.entries.push((key, value));
-                        page.leases.extend(key_memory);
-                    }
-                }
+            } else {
+                drop(scan);
+                visitor(page, budget)?;
             }
-            path.truncate(frame.path_end);
-            let next = loop {
-                let edge = frame.next_edge;
-                if edge >= 16 {
-                    break None;
-                }
-                let child = frame.node.branches.get(edge)?;
-                frame.next_edge = edge.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-                if let Some(child) = child {
-                    break Some((edge, child.copy(budget)?));
-                }
-            };
-            let Some((edge, reference)) = next else {
-                let _finished = stack.pop();
-                continue;
-            };
-            let length = path
-                .len()
-                .checked_add(1)
-                .filter(|length| *length <= MAX_NIBBLES)
-                .ok_or_else(|| IndexError::CorruptObject("map branch exceeds key limit".into()))?;
-            budget.charge(WorkUsage {
-                bytes: u64::try_from(length).map_err(|_error| IndexError::ResourceLimited)?,
-                ..WorkUsage::default()
-            })?;
-            path.push(
-                u8::try_from(edge).map_err(|_error| IndexError::ResourceLimited)?,
-                budget,
-            )?;
-            if subtree_can_follow(&path, after_nibbles.as_deref()) {
-                let node = match reference {
-                    Branch {
-                        value: BranchValue::Packed(packed),
-                        ..
-                    } => ScanNode::Packed(packed),
-                    branch => ScanNode::Owned(branch.into_node(budget, &mut read_node)?),
-                };
-                stack.push(ScanFrame::new(node), budget)?;
-            }
+            Self::visit_scalar_scan_tail_with(root, last, budget, &mut read_node, visitor)?;
+            return Ok(true);
         }
-        Ok(page.finish(false))
+    }
+
+    fn lookup_key(
+        &self,
+        root: MapRoot,
+        key: &[u8],
+        budget: &mut WorkBudget,
+        read_node: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<Node, IndexError>,
+    ) -> Result<Option<MapValue>, IndexError> {
+        budget.checkpoint()?;
+        let Some(nibbles) = lookup_nibbles(root, key, budget)? else {
+            return Ok(None);
+        };
+        self.lookup_inner_with(root, &nibbles, budget, read_node)
     }
 
     fn lookup_inner(
@@ -1491,7 +1958,11 @@ impl FileObjectStore {
                 .checked_add(node.prefix.len())
                 .ok_or(IndexError::ResourceLimited)?;
             if at == nibbles.len() {
-                return Ok(node.value);
+                return node
+                    .value
+                    .as_ref()
+                    .map(|value| value.to_public(budget))
+                    .transpose();
             }
             let branch =
                 usize::from(*nibbles.get(at).ok_or_else(|| {
@@ -1531,15 +2002,16 @@ impl FileObjectStore {
         &self,
         root: MapRoot,
         nibbles: &[u8],
-        edit: &MapEdit,
+        expected: Option<MapValue>,
+        next: Option<MapValue>,
         staged: &impl MapStage,
         budget: &mut WorkBudget,
     ) -> Result<MapRoot, IndexError> {
         let child = self.update_child(
             root.0.map(Branch::indirect),
             nibbles,
-            EditExpectation::Exact(edit.expected),
-            edit.next,
+            EditExpectation::Exact(expected),
+            next,
             staged,
             budget,
         )?;
@@ -1564,6 +2036,7 @@ impl FileObjectStore {
                     expected.require(None)?;
                     let new_leaf = match next {
                         Some(value) => {
+                            let value = RetainedMapValue::from_public(value, budget)?;
                             let suffix = nibbles.get(at..).ok_or_else(|| {
                                 IndexError::CorruptObject("map traversal passed key end".into())
                             })?;
@@ -1595,6 +2068,7 @@ impl FileObjectStore {
                     let Some(value) = next else {
                         break self.write_node(node, staged, budget)?;
                     };
+                    let value = RetainedMapValue::from_public(value, budget)?;
                     let old_edge = usize::from(*node.prefix.get(shared).ok_or_else(|| {
                         IndexError::CorruptObject("missing map split edge".into())
                     })?);
@@ -1651,8 +2125,10 @@ impl FileObjectStore {
                     .checked_add(node.prefix.len())
                     .ok_or(IndexError::ResourceLimited)?;
                 if at == nibbles.len() {
-                    expected.require(node.value)?;
-                    node.value = next;
+                    expected.require(node.value.as_ref())?;
+                    node.value = next
+                        .map(|value| RetainedMapValue::from_public(value, budget))
+                        .transpose()?;
                     break self.write_node(node, staged, budget)?;
                 }
                 let edge =
@@ -1666,6 +2142,7 @@ impl FileObjectStore {
                     let Some(value) = next else {
                         break self.write_node(node, staged, budget)?;
                     };
+                    let value = RetainedMapValue::from_public(value, budget)?;
                     let suffix = nibbles.get(at..).ok_or_else(|| {
                         IndexError::CorruptObject("missing map child suffix".into())
                     })?;
@@ -1832,11 +2309,12 @@ impl FileObjectStore {
         let mut previous_nibbles: Option<MapBuffer<u8>> = None;
         let mut edits = staged.scratch.edits(ordinal);
         while let Some(position) = edits.next_edit(budget)? {
-            let edit = &position.edit;
             budget.checkpoint()?;
-            if edit.expected != edit.next {
-                charge_key_allocation(&edit.key, budget)?;
-                let nibbles = key_nibbles(&edit.key, budget)?;
+            let expected = position.expected()?;
+            let next = position.next()?;
+            if expected != next {
+                charge_key_allocation(position.key(), budget)?;
+                let nibbles = key_nibbles(position.key(), budget)?;
                 while frames.last().is_some_and(|frame| {
                     !previous_nibbles.as_ref().is_some_and(|previous| {
                         previous
@@ -1847,7 +2325,7 @@ impl FileObjectStore {
                     self.close_edit_frame(&mut frames, &mut root, staged, budget)?;
                 }
                 if frames.is_empty() {
-                    root = self.update_one(root, &nibbles, edit.next, staged, budget)?;
+                    root = self.update_one(root, &nibbles, next, staged, budget)?;
                     self.open_edit_path(
                         OpenPathStart {
                             reference: root.0.map(Branch::indirect),
@@ -1868,7 +2346,9 @@ impl FileObjectStore {
                         let frame = frames.last_mut().ok_or_else(|| {
                             IndexError::BackendViolation("open map value path lost".into())
                         })?;
-                        frame.node.value = edit.next;
+                        frame.node.value = next
+                            .map(|value| RetainedMapValue::from_public(value, budget))
+                            .transpose()?;
                         frame.dirty = true;
                     } else {
                         let edge = usize::from(*nibbles.get(end).ok_or_else(|| {
@@ -1893,7 +2373,7 @@ impl FileObjectStore {
                             child,
                             suffix,
                             EditExpectation::AlreadyChecked,
-                            edit.next,
+                            next,
                             staged,
                             budget,
                         )?;
@@ -1928,6 +2408,74 @@ impl FileObjectStore {
     }
 }
 
+impl FileObjectStore {
+    /// Empty bases admit each original edit once and build sorted radix paths
+    /// directly. The disposable node scratch remains the only staging area;
+    /// no edit SQL row or second owned edit is created for replay.
+    fn apply_empty_stream(
+        &self,
+        bases: &[MapRoot],
+        edits: &mut dyn MapEditCursor,
+        mut roots: quanta_index_core::index::MapRootBuilder,
+        packing: RootPackingPlan,
+        sink: &dyn ObjectWriteSink,
+        budget: &mut WorkBudget,
+    ) -> Result<StagedMapRoots, IndexError> {
+        let mut observation = MapApplyObservation::new(budget);
+        let mut shape = MapInputShape::new(observation.span.is_some());
+        let diagnostic = observation
+            .context
+            .as_ref()
+            .filter(|_| observation.span.is_some())
+            .cloned();
+        let result = {
+            let mut observed = ShapeObservedCursor {
+                input: edits,
+                shape: &mut shape,
+                diagnostic,
+            };
+            let mut scoped_budget = budget.scoped_diagnostic_context(observation.child_context());
+            let budget = &mut *scoped_budget;
+            (|| {
+                let mut staged = StagedMap::open(self, budget)?;
+                if (0..bases.len()).any(|index| packing.mode(index) == RootPackingMode::Nested) {
+                    staged.track_staged_children(budget)?;
+                }
+                staged.scratch.begin_batch(budget)?;
+                let mut stream = cold_stream::EmptyStream::new(&mut observed, bases.len());
+                observe_map_phase(budget, 3, |budget| {
+                    for index in 0..bases.len() {
+                        budget.checkpoint()?;
+                        let ordinal =
+                            u32::try_from(index).map_err(|_error| IndexError::ResourceLimited)?;
+                        staged.packing_mode.set(packing.mode(index));
+                        observation.builds += 1;
+                        let root = self.build_empty_root_from_cursor(
+                            &mut stream.root_cursor(ordinal),
+                            &staged,
+                            budget,
+                            None,
+                        )?;
+                        roots.push(root)?;
+                    }
+                    // No root may be returned until the source cursor has reached
+                    // EOF, including its late malformed-row and cancellation checks.
+                    stream.finish(budget)
+                })?;
+                let roots = roots.finish()?;
+                observe_map_phase(budget, 4, |budget| staged.scratch.commit_batch(budget))?;
+                observe_map_phase(budget, 5, |budget| {
+                    self.install_reachable_map_nodes(&roots, &staged, sink, budget)
+                })?;
+                budget.checkpoint()?;
+                Ok(roots)
+            })()
+        };
+        observation.finish(&result, shape);
+        result
+    }
+}
+
 impl PersistentMapPort for FileObjectStore {
     fn scoped_reads<'a>(
         &'a self,
@@ -1955,10 +2503,9 @@ impl PersistentMapPort for FileObjectStore {
         key: &[u8],
         budget: &mut WorkBudget,
     ) -> Result<Option<MapValue>, IndexError> {
-        budget.checkpoint()?;
-        charge_key_allocation(key, budget)?;
-        let nibbles = key_nibbles(key, budget)?;
-        self.lookup_inner(root, &nibbles, budget)
+        self.lookup_key(root, key, budget, |reference, budget| {
+            self.read_node(reference, budget)
+        })
     }
 
     fn lookup_batch(
@@ -1980,9 +2527,23 @@ impl PersistentMapPort for FileObjectStore {
         limit: u32,
         budget: &mut WorkBudget,
     ) -> Result<MapPage, IndexError> {
-        self.scan_with(root, after, limit, budget, |reference, budget| {
+        Self::scan_with(root, after, limit, budget, |reference, budget| {
             self.read_node(reference, budget)
         })
+    }
+
+    fn try_visit_scan_pages(
+        &self,
+        root: MapRoot,
+        budget: &mut WorkBudget,
+        visitor: &mut dyn FnMut(MapPage, &mut WorkBudget) -> Result<(), IndexError>,
+    ) -> Result<bool, IndexError> {
+        Self::try_visit_scan_pages_with(
+            root,
+            budget,
+            |reference, budget| self.read_node(reference, budget),
+            visitor,
+        )
     }
 
     fn apply(
@@ -2017,7 +2578,8 @@ impl PersistentMapPort for FileObjectStore {
                 return Ok(MapWrite { root: base });
             }
             let staged = ResidentStage::new();
-            let root = self.update_one_checked(base, &nibbles, edit, &staged, budget)?;
+            let root =
+                self.update_one_checked(base, &nibbles, edit.expected, edit.next, &staged, budget)?;
             self.install_reachable_map_nodes(&[root], &staged, sink, budget)?;
             budget.checkpoint()?;
             return Ok(MapWrite { root });
@@ -2073,27 +2635,33 @@ impl PersistentMapPort for FileObjectStore {
         {
             return Err(IndexError::ResourceLimited);
         }
-        let packed_root = edits
-            .pack_terminal_subtrees_for_root()
-            .map(usize::try_from)
-            .transpose()
-            .map_err(|_error| IndexError::ResourceLimited)?;
-        if packed_root.is_some_and(|index| index >= bases.len()) {
-            return Err(IndexError::InvalidInput(
-                "packed map root ordinal is out of bounds".into(),
-            ));
-        }
+        let packing = edits.subtree_packing()?;
+        packing.validate_for_roots(bases.len())?;
         let mut roots = StagedMapRoots::prepare(bases.len(), budget)?;
         let mut buffered = scalar_pair::Input::new(edits, bases.len() == 2, budget)?;
-        if let Some(pair) = buffered.pair() {
-            return self.apply_resident_pair(bases, pair, roots, packed_root, sink, budget);
+        if let Some(pair) = buffered.pair()? {
+            return self.apply_resident_pair(bases, pair, roots, packing, sink, budget);
+        }
+        if bases.iter().all(|base| base.0.is_none()) {
+            return self.apply_empty_stream(bases, &mut buffered, roots, packing, sink, budget);
         }
         let mut observation = MapApplyObservation::new(budget);
+        let mut shape = MapInputShape::new(observation.span.is_some());
+        let diagnostic = observation
+            .context
+            .as_ref()
+            .filter(|_| observation.span.is_some())
+            .cloned();
         let result = {
+            let mut observed = ShapeObservedCursor {
+                input: &mut buffered,
+                shape: &mut shape,
+                diagnostic,
+            };
             let mut scoped_budget = budget.scoped_diagnostic_context(observation.child_context());
             let budget = &mut *scoped_budget;
             (|| {
-                let edits: &mut dyn MapEditCursor = &mut buffered;
+                let edits: &mut dyn MapEditCursor = &mut observed;
                 let staged = StagedMap::open(self, budget)?;
                 staged.scratch.begin_batch(budget)?;
                 let mut candidate_roots = [false; MAX_EMPTY_STREAM_ROOTS];
@@ -2101,7 +2669,7 @@ impl PersistentMapPort for FileObjectStore {
                     let has_peer = bases.iter().enumerate().any(|(other, candidate)| {
                         other != index
                             && candidate == base
-                            && (packed_root == Some(index)) == (packed_root == Some(other))
+                            && packing.mode(index) == packing.mode(other)
                     });
                     *candidate_roots
                         .get_mut(index)
@@ -2124,18 +2692,18 @@ impl PersistentMapPort for FileObjectStore {
                 observe_map_phase(budget, 1, |budget| {
                     while let Some(ordinal) = edits.next_edit(budget)? {
                         budget.checkpoint()?;
-                        let root_index = usize::try_from(ordinal.root)
+                        let root_index = usize::try_from(ordinal.root())
                             .map_err(|_conversion_error| IndexError::ResourceLimited)?;
                         let base = *bases.get(root_index).ok_or_else(|| {
                             IndexError::InvalidInput(
                                 "map edit root ordinal is out of bounds".into(),
                             )
                         })?;
-                        if ordinal.edit.key.len() > MAX_KEY_BYTES
+                        if ordinal.key().len() > MAX_KEY_BYTES
                             || previous.as_ref().is_some_and(|prior| {
-                                prior.root > ordinal.root
-                                    || (prior.root == ordinal.root
-                                        && prior.edit.key.as_slice() >= ordinal.edit.key.as_slice())
+                                prior.root() > ordinal.root()
+                                    || (prior.root() == ordinal.root()
+                                        && prior.key() >= ordinal.key())
                             })
                         {
                             return Err(IndexError::InvalidInput(
@@ -2144,18 +2712,18 @@ impl PersistentMapPort for FileObjectStore {
                         }
                         budget.charge(WorkUsage {
                             mutations: 1,
-                            bytes: u64::try_from(ordinal.edit.key.len())
+                            bytes: u64::try_from(ordinal.key().len())
                                 .map_err(|_conversion_error| IndexError::ResourceLimited)?,
                             ..WorkUsage::default()
                         })?;
                         let original = if base.0.is_none() {
                             None
                         } else {
-                            charge_key_allocation(&ordinal.edit.key, budget)?;
-                            let nibbles = key_nibbles(&ordinal.edit.key, budget)?;
+                            charge_key_allocation(ordinal.key(), budget)?;
+                            let nibbles = key_nibbles(ordinal.key(), budget)?;
                             original_lookup.lookup(self, base, &nibbles, budget)?
                         };
-                        if original != ordinal.edit.expected {
+                        if original != ordinal.expected()? {
                             return Err(IndexError::Conflict);
                         }
                         if reuse_possible {
@@ -2178,7 +2746,7 @@ impl PersistentMapPort for FileObjectStore {
                                 .get(root_index)
                                 .ok_or(IndexError::ResourceLimited)?
                             {
-                                fingerprint_edit(&mut identity, &ordinal.edit, budget)?;
+                                fingerprint_position(&mut identity, &ordinal, budget)?;
                                 let count = edit_counts
                                     .get_mut(root_index)
                                     .ok_or(IndexError::ResourceLimited)?;
@@ -2250,14 +2818,14 @@ impl PersistentMapPort for FileObjectStore {
                         budget.checkpoint()?;
                         let ordinal = u32::try_from(index)
                             .map_err(|_conversion_error| IndexError::ResourceLimited)?;
-                        let pack = packed_root == Some(index);
-                        staged.pack_terminal_subtrees.set(pack);
+                        let pack = packing.mode(index);
+                        staged.packing_mode.set(pack);
                         let has_peer = *candidate_roots
                             .get(index)
                             .ok_or(IndexError::ResourceLimited)?;
                         let matches_identity = |other| {
                             bases.get(other) == Some(base)
-                                && pack == (packed_root == Some(other))
+                                && pack == packing.mode(other)
                                 && edit_counts.get(other) == edit_counts.get(index)
                                 && identities.get(other) == identities.get(index)
                         };
@@ -2356,7 +2924,7 @@ impl PersistentMapPort for FileObjectStore {
                 Ok(roots)
             })()
         };
-        observation.finish(&result);
+        observation.finish(&result, shape);
         result
     }
 }
@@ -2473,6 +3041,19 @@ fn charge_key_allocation(key: &[u8], budget: &mut WorkBudget) -> Result<(), Inde
     })
 }
 
+fn lookup_nibbles(
+    root: MapRoot,
+    key: &[u8],
+    budget: &mut WorkBudget,
+) -> Result<Option<MapBuffer<u8>>, IndexError> {
+    // Empty roots still enforce the original key bound and logical charge.
+    charge_key_allocation(key, budget)?;
+    if root.0.is_none() {
+        return Ok(None);
+    }
+    key_nibbles(key, budget).map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -2547,9 +3128,11 @@ mod tests {
 
     mod completed_group;
     mod inline_terminals;
+    mod input_shape_observation;
     mod original_lookup;
     mod packed_subtrees;
     mod resident_single;
+    mod retained_value_cas;
     mod scoped_reads;
     mod sparse_branches;
     mod structural_diff;
@@ -2566,7 +3149,7 @@ mod tests {
         };
         use std::sync::Arc;
 
-        #[derive(Default)]
+        #[derive(Debug, Default)]
         struct StepClock(AtomicU64);
         impl DiagnosticClockV1 for StepClock {
             fn now_ns(&self) -> u64 {
@@ -2574,7 +3157,7 @@ mod tests {
             }
         }
 
-        #[derive(Default)]
+        #[derive(Debug, Default)]
         struct Events(Mutex<Vec<DiagnosticEmitV1>>);
         impl DiagnosticEventSinkV1 for Events {
             fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
@@ -2890,6 +3473,39 @@ mod tests {
     }
 
     #[test]
+    fn reachable_install_admits_one_existing_root_with_34_work_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let mut setup = budget()?;
+        let reference = value(&store, b"existing-map-dependency", &mut setup)?;
+        let staged = ResidentStage::new();
+        let sink = RecordingSink::default();
+        let mut work = WorkBudget::new(
+            WorkLimits {
+                reads: 1,
+                writes: 0,
+                bytes: 34,
+                mutations: 0,
+            },
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        store.install_reachable_map_nodes(
+            &[MapRoot(Some(reference))],
+            &staged,
+            &sink,
+            &mut work,
+        )?;
+        check_eq!(work.usage().bytes, 34);
+        check_eq!(work.usage().reads, 1);
+        check_eq!(sink.1.load(Ordering::Relaxed), 0);
+        check_eq!(sink.2.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    #[test]
     fn install_reference_array_refusal_preserves_chunk_and_precedes_custody()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = TestDir::new();
@@ -2948,22 +3564,58 @@ mod tests {
     }
 
     #[test]
+    fn empty_stream_validates_rows_without_edit_sql_replay()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let sink = RecordingSink::default();
+        let mut work = budget()?;
+        let rows = (0u16..512)
+            .map(|number| {
+                OrdinalMapEdit::unscoped(
+                    0,
+                    MapEdit::objects(number.to_be_bytes().to_vec(), None, None),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut cursor = TestEditCursor(rows.into_iter());
+        let roots = store.apply_stream(&[MapRoot(None)], &mut cursor, &sink, &mut work)?;
+        check_eq!(roots.len(), 1);
+        check_eq!(*roots.first().ok_or("empty root missing")?, MapRoot(None));
+        check_eq!(work.usage().mutations, 512);
+        // A per-row edit INSERT and replay SELECT would each exceed this bound.
+        // No map nodes are produced by absent-to-absent edits.
+        check!(work.usage().reads < 64);
+        check!(work.usage().writes < 64);
+        check_eq!(sink.1.load(Ordering::Relaxed), 0);
+        check_eq!(sink.2.load(Ordering::Relaxed), 0);
+        assert_clean_scratch(&directory)?;
+        Ok(())
+    }
+
+    #[test]
     fn wide_empty_stream_preserves_ordinals_and_refuses_nonempty_base()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = TestDir::new();
         let store = FileObjectStore::open(&directory.0)?;
         let sink = RecordingSink::default();
         let mut work = budget()?;
-        let value = store.put(b"wide empty stream value", &[], &mut work)?.reference;
+        let value = store
+            .put(b"wide empty stream value", &[], &mut work)?
+            .reference;
         let mut bases = [MapRoot(None); MAX_BATCH_ROOTS + 1];
         let edits = (0..bases.len())
             .map(|ordinal| {
-                Ok(OrdinalMapEdit::unscoped(
-                    u32::try_from(ordinal)?,
-                    MapEdit::objects(vec![u8::try_from(ordinal)?], None, Some(value)),
-                ))
+                OrdinalMapEdit::unscoped(
+                    u32::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?,
+                    MapEdit::objects(
+                        vec![u8::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?],
+                        None,
+                        Some(value),
+                    ),
+                )
             })
-            .collect::<Result<Vec<_>, std::num::TryFromIntError>>()?;
+            .collect::<Result<Vec<_>, IndexError>>()?;
         let mut cursor = TestEditCursor(edits.into_iter());
         let roots = store.apply_stream(&bases, &mut cursor, &sink, &mut work)?;
         check_eq!(roots.len(), bases.len());
@@ -3113,6 +3765,36 @@ mod tests {
                 .checked_add(Duration::from_secs(30))
                 .ok_or(IndexError::ResourceLimited)?,
         ))
+    }
+
+    #[test]
+    fn empty_scalar_lookup_keeps_key_admission_without_temporary_backing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let key = b"repo0/src/file.rs";
+        let charged_bytes = 2 * u64::try_from(key.len())?;
+        let mut work = budget()?;
+        let admission = array_scope(MemoryLifetime::Temporary, None, &mut work);
+        check_eq!(store.lookup(MapRoot(None), key, &mut work)?, None);
+        check_eq!(admission.refused.load(Ordering::Relaxed), 0);
+        check_eq!(work.usage().bytes, charged_bytes);
+        check_eq!(work.usage().reads, 0);
+
+        let too_long = [0; MAX_KEY_BYTES + 1];
+        check!(matches!(
+            store.lookup(MapRoot(None), &too_long, &mut work),
+            Err(IndexError::InvalidInput(_))
+        ));
+        check_eq!(work.usage().bytes, charged_bytes);
+
+        work.request().cancel_handle().cancel();
+        check!(matches!(
+            store.lookup(MapRoot(None), key, &mut work),
+            Err(IndexError::Cancelled)
+        ));
+        check_eq!(work.usage().bytes, charged_bytes);
+        Ok(())
     }
 
     fn value(
@@ -3426,6 +4108,300 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_scan_releases_a_deep_branch_before_a_shallow_tail()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let sink = RecordingSink::default();
+        let mut setup = budget()?;
+        let child = value(&store, b"descriptor-child", &mut setup)?;
+        let descriptor = MapValue::inline(&[1, 0, 1], [child])?;
+        let keys = [vec![0; 512], vec![1], vec![2], vec![3]];
+        let edits = keys.map(|key| MapEdit {
+            key,
+            expected: None,
+            next: Some(descriptor),
+        });
+        let root = store.apply(MapRoot(None), &edits, &sink, &mut setup)?.root;
+
+        let mut scalar = budget()?;
+        let mut rows = Vec::new();
+        let mut after = None;
+        loop {
+            let page = store.scan(root, after.as_deref(), 1, &mut scalar)?;
+            after = page.entries.last().map(|(key, _)| key.clone());
+            rows.extend(page.entries.iter().cloned());
+            if !page.has_more {
+                break;
+            }
+        }
+
+        let mut visited = budget()?;
+        let grant = array_scope(MemoryLifetime::Temporary, Some(0), &mut visited);
+        let mut actual = Vec::new();
+        check!(
+            store.try_visit_scan_pages(root, &mut visited, &mut |page, _budget| {
+                actual.extend(page.entries.iter().cloned());
+                Ok(())
+            })?
+        );
+        check_eq!(actual, rows);
+        check_eq!(visited.usage(), scalar.usage());
+        check_eq!(visited.first_denial(), None);
+        check_eq!(grant.live.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn descriptor_scan_continuation_preserves_pages_work_and_refunds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use quanta_index_core::index::WorkBudgetDenial;
+
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let sink = RecordingSink::default();
+        let mut setup = budget()?;
+        let child = value(&store, b"descriptor-child", &mut setup)?;
+        let descriptor = MapValue::inline(&[1, 0, 1], [child])?;
+        let mut root = MapRoot(None);
+        let mut expected = Vec::new();
+        for ordinal in 0_u8..32 {
+            let key = vec![0, b't', ordinal];
+            root = store
+                .apply(
+                    root,
+                    &[MapEdit {
+                        key: key.clone(),
+                        expected: None,
+                        next: Some(descriptor),
+                    }],
+                    &sink,
+                    &mut setup,
+                )?
+                .root;
+            expected.push((key, descriptor));
+        }
+
+        let mut scalar = budget()?;
+        let scalar_grant = array_scope(MemoryLifetime::Temporary, Some(0), &mut scalar);
+        let mut after = None;
+        let mut scalar_rows = Vec::new();
+        let mut scalar_pages = 0_usize;
+        loop {
+            let page = store.scan(root, after.as_deref(), 1, &mut scalar)?;
+            check_eq!(page.entries.len(), 1);
+            after = page.entries.last().map(|(key, _)| key.clone());
+            scalar_rows.extend(page.entries.iter().cloned());
+            scalar_pages += 1;
+            if !page.has_more {
+                break;
+            }
+        }
+        check_eq!(scalar_rows, expected);
+        check_eq!(scalar_pages, 32);
+        check_eq!(scalar_grant.live.load(Ordering::Relaxed), 0);
+
+        let mut visited = budget()?;
+        let visit_grant = array_scope(MemoryLifetime::Temporary, Some(0), &mut visited);
+        let mut visited_rows = Vec::new();
+        let mut visited_pages = 0_usize;
+        check!(
+            store.try_visit_scan_pages(root, &mut visited, &mut |page, _budget| {
+                visited_pages += 1;
+                if page.entries.len() != 1 || page.has_more != (visited_pages < 32) {
+                    return Err(IndexError::BackendViolation(
+                        "descriptor continuation page shape differs".into(),
+                    ));
+                }
+                visited_rows.extend(page.entries.iter().cloned());
+                Ok(())
+            },)?
+        );
+        check_eq!(visited_rows, expected);
+        check_eq!(visited_pages, 32);
+        check_eq!(visited.usage().writes, 0);
+        check_eq!(visited.usage().mutations, 0);
+        check!(visited.usage().reads < scalar.usage().reads);
+        check!(visited.usage().bytes < scalar.usage().bytes);
+        check_eq!(visit_grant.live.load(Ordering::Relaxed), 0);
+
+        let mut scoped_scalar = budget()?;
+        let scoped_scalar_grant =
+            array_scope(MemoryLifetime::Temporary, Some(0), &mut scoped_scalar);
+        let scalar_maps = store
+            .scoped_reads(&scoped_scalar)?
+            .ok_or("scoped map reader absent")?;
+        let mut after = None;
+        let mut scoped_scalar_rows = Vec::new();
+        loop {
+            let page = scalar_maps.scan(root, after.as_deref(), 1, &mut scoped_scalar)?;
+            after = page.entries.last().map(|(key, _)| key.clone());
+            scoped_scalar_rows.extend(page.entries.iter().cloned());
+            if !page.has_more {
+                break;
+            }
+        }
+        drop(scalar_maps);
+        check_eq!(scoped_scalar_rows, expected);
+        check_eq!(scoped_scalar_grant.live.load(Ordering::Relaxed), 0);
+
+        let mut scoped_visited = budget()?;
+        let scoped_visited_grant =
+            array_scope(MemoryLifetime::Temporary, Some(0), &mut scoped_visited);
+        let visited_maps = store
+            .scoped_reads(&scoped_visited)?
+            .ok_or("scoped map reader absent")?;
+        let mut scoped_rows = Vec::new();
+        check!(visited_maps.try_visit_scan_pages(
+            root,
+            &mut scoped_visited,
+            &mut |page, _budget| {
+                scoped_rows.extend(page.entries.iter().cloned());
+                Ok(())
+            },
+        )?);
+        drop(visited_maps);
+        check_eq!(scoped_rows, expected);
+        check!(scoped_visited.usage().reads < scoped_scalar.usage().reads);
+        check!(scoped_visited.usage().bytes < scoped_scalar.usage().bytes);
+        check_eq!(scoped_visited_grant.live.load(Ordering::Relaxed), 0);
+
+        struct EvictionAdmission {
+            box_bytes: u64,
+            box_live: AtomicU64,
+            refused_child: AtomicU64,
+            callbacks: AtomicU64,
+            live: AtomicU64,
+        }
+        impl quanta_index_core::index::MemoryLeaseOwner for EvictionAdmission {
+            fn release(&self, bytes: u64) {
+                let _prior = self.live.fetch_sub(bytes, Ordering::Relaxed);
+                if bytes == self.box_bytes {
+                    self.box_live.store(0, Ordering::Relaxed);
+                }
+            }
+        }
+        struct EvictionScope(Arc<EvictionAdmission>);
+        impl quanta_index_core::index::MemoryScopePort for EvictionScope {
+            fn reserve(
+                &self,
+                bytes: u64,
+                lifetime: MemoryLifetime,
+            ) -> Result<MemoryLease, IndexError> {
+                if lifetime == MemoryLifetime::Temporary && bytes == 777 {
+                    if self.0.box_live.load(Ordering::Relaxed) != 0 {
+                        let _prior = self.0.refused_child.fetch_add(1, Ordering::Relaxed);
+                        return Err(IndexError::ResourceLimited);
+                    }
+                }
+                if lifetime == MemoryLifetime::Temporary && bytes == self.0.box_bytes {
+                    self.0.box_live.store(1, Ordering::Relaxed);
+                }
+                let _prior = self.0.live.fetch_add(bytes, Ordering::Relaxed);
+                Ok(MemoryLease::new(bytes, self.0.clone()))
+            }
+        }
+        let box_bytes = u64::try_from(std::mem::size_of::<ScanSuspend>())?;
+        let eviction = Arc::new(EvictionAdmission {
+            box_bytes,
+            box_live: AtomicU64::new(0),
+            refused_child: AtomicU64::new(0),
+            callbacks: AtomicU64::new(0),
+            live: AtomicU64::new(0),
+        });
+        let mut evicted_work = budget()?;
+        evicted_work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+            EvictionScope(Arc::clone(&eviction)),
+        ))));
+        let mut evicted_rows = Vec::new();
+        let mut one_page_live = 0;
+        check!(
+            store.try_visit_scan_pages(root, &mut evicted_work, &mut |page, budget| {
+                let prior = eviction.callbacks.fetch_add(1, Ordering::Relaxed);
+                if prior == 0 {
+                    let child = budget.reserve_memory(777, MemoryLifetime::Temporary)?;
+                    drop(child);
+                    one_page_live = eviction.live.load(Ordering::Relaxed);
+                } else if eviction.live.load(Ordering::Relaxed) != one_page_live {
+                    return Err(IndexError::BackendViolation(
+                        "scalar visit retained a previous descriptor page".into(),
+                    ));
+                }
+                evicted_rows.extend(page.entries.iter().cloned());
+                Ok(())
+            })?
+        );
+        check_eq!(evicted_rows, expected);
+        check_eq!(eviction.callbacks.load(Ordering::Relaxed), 32);
+        check_eq!(eviction.refused_child.load(Ordering::Relaxed), 1);
+        check_eq!(eviction.live.load(Ordering::Relaxed), 0);
+        check_eq!(evicted_work.first_denial(), None);
+        check_eq!(evicted_work.usage(), scalar.usage());
+
+        let mut first_work = budget()?;
+        let first = store.scan(root, Some(&[0, b't', 29]), 1, &mut first_work)?;
+        let mut resumed_work = budget()?;
+        let resumed_grant = array_scope(MemoryLifetime::Temporary, Some(0), &mut resumed_work);
+        let mut reader = |reference, budget: &mut WorkBudget| store.read_node(reference, budget);
+        let mut scan = ScanContinuation::new(
+            root,
+            Some(&[0, b't', 29]),
+            1,
+            &mut resumed_work,
+            &mut reader,
+        )?;
+        let page = scan
+            .next_page(&mut resumed_work, &mut reader)?
+            .ok_or("missing first resumed page")?;
+        check_eq!(page, first);
+        check_eq!(resumed_work.usage(), first_work.usage());
+        drop(page);
+        resumed_work.request().cancel_handle().cancel();
+        let before_cancel = resumed_work.usage();
+        check!(matches!(
+            scan.next_page(&mut resumed_work, &mut reader),
+            Err(IndexError::Cancelled)
+        ));
+        check_eq!(resumed_work.usage(), before_cancel);
+        check_eq!(
+            resumed_work.first_denial(),
+            Some(WorkBudgetDenial::Cancelled)
+        );
+        check!(matches!(
+            scan.next_page(&mut resumed_work, &mut reader),
+            Err(IndexError::BackendViolation(_))
+        ));
+        drop(scan);
+        check_eq!(resumed_grant.live.load(Ordering::Relaxed), 0);
+
+        let mut eof_work = budget()?;
+        let mut reader = |reference, budget: &mut WorkBudget| store.read_node(reference, budget);
+        let mut scan =
+            ScanContinuation::new(root, Some(&[0, b't', 31]), 1, &mut eof_work, &mut reader)?;
+        let empty = scan
+            .next_page(&mut eof_work, &mut reader)?
+            .ok_or("missing EOF page")?;
+        check!(empty.entries.is_empty());
+        check!(!empty.has_more);
+        let before_eof = eof_work.usage();
+        check!(scan.next_page(&mut eof_work, &mut reader)?.is_none());
+        check_eq!(eof_work.usage(), before_eof);
+
+        let mut denied = budget()?;
+        let capacity = MapPage::allocation_bytes(8)?;
+        let grant = array_scope(MemoryLifetime::Retained, Some(capacity), &mut denied);
+        check!(matches!(
+            store.scan(root, None, 8, &mut denied),
+            Err(IndexError::ResourceLimited)
+        ));
+        check_eq!(denied.usage(), WorkUsage::default());
+        check_eq!(denied.first_denial(), Some(WorkBudgetDenial::Memory));
+        check_eq!(grant.refused.load(Ordering::Relaxed), 1);
+        check_eq!(grant.live.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    #[test]
     fn scan_rejects_hash_valid_paths_beyond_the_key_limit() -> Result<(), Box<dyn std::error::Error>>
     {
         fn raw_node(prefix: &[u8], value: bool, branches: u16) -> Result<Vec<u8>, IndexError> {
@@ -3571,7 +4547,10 @@ mod tests {
             let mut preparing = budget()?;
             let left_value = value(&store, b"left", &mut preparing)?;
             let right_value = value(&store, b"right", &mut preparing)?;
-            let staged = StagedMap::open(&store, &mut preparing)?;
+            let _memory = array_scope(MemoryLifetime::Temporary, Some(0), &mut preparing);
+            let mut staged = StagedMap::open(&store, &mut preparing)?;
+            staged.track_staged_children(&mut preparing)?;
+            check!(staged.staged_children.is_some());
             let left = store.write_encoded(
                 &Node::leaf(&[0], left_value.into(), &preparing)?,
                 &staged,
@@ -3853,7 +4832,7 @@ mod tests {
                         expected: None,
                         next: Some((value).into()),
                     },
-                ));
+                )?);
                 let model = models
                     .get_mut(usize::try_from(root)?)
                     .ok_or("model root missing")?;
@@ -3878,8 +4857,10 @@ mod tests {
     }
 
     #[test]
-    fn verified_empty_root_refuses_changed_scratch_before_physical_install()
+    fn spooled_empty_root_refuses_changed_edit_scratch_before_install()
     -> Result<(), Box<dyn std::error::Error>> {
+        // Mixed-base batches still stage edits and authenticate the replayed
+        // empty-root cursor before any physical installation.
         let directory = TestDir::new();
         let store = FileObjectStore::open(&directory.0)?;
         let mut work = budget()?;
@@ -3899,7 +4880,7 @@ mod tests {
                     },
                 )
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         staged.scratch.insert_edits(&edits, &mut work)?;
         let failure = store.build_empty_root(0, &staged, &mut work, Some(([0; 32], 2)));
         check!(matches!(failure, Err(IndexError::CorruptObject(_))));
@@ -3921,7 +4902,7 @@ mod tests {
         let mut setup = budget()?;
         let first = value(&store, b"first", &mut setup)?;
         let second = value(&store, b"second", &mut setup)?;
-        let edits = |different_last: bool| {
+        let edits = |different_last: bool| -> Result<Vec<OrdinalMapEdit>, IndexError> {
             (0u32..2)
                 .flat_map(|root| {
                     (0u16..192).map(move |number| {
@@ -3940,12 +4921,12 @@ mod tests {
                         )
                     })
                 })
-                .collect::<Vec<_>>()
+                .collect::<Result<Vec<_>, _>>()
         };
         let mut reused_work = budget()?;
         let reused = store.apply_stream(
             &[MapRoot(None), MapRoot(None)],
-            &mut TestEditCursor(edits(false).into_iter()),
+            &mut TestEditCursor(edits(false)?.into_iter()),
             &sink,
             &mut reused_work,
         )?;
@@ -3968,7 +4949,7 @@ mod tests {
         let mut distinct_work = budget()?;
         let distinct = store.apply_stream(
             &[MapRoot(None), MapRoot(None)],
-            &mut TestEditCursor(edits(true).into_iter()),
+            &mut TestEditCursor(edits(true)?.into_iter()),
             &sink,
             &mut distinct_work,
         )?;
@@ -3992,6 +4973,53 @@ mod tests {
                 &mut setup
             )?,
             Some(second)
+        );
+        assert_clean_scratch(&directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn wide_empty_alias_batch_compares_complete_values_before_install()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let sink = RecordingSink::default();
+        let mut work = budget()?;
+        let first = value(&store, b"first", &mut work)?;
+        let last = value(&store, b"last", &mut work)?;
+        let before = work.usage();
+        let edits = (0u32..8)
+            .flat_map(|root| {
+                (0u16..65).map(move |number| {
+                    let next = if root == 7 && number == 64 {
+                        last
+                    } else {
+                        first
+                    };
+                    OrdinalMapEdit::unscoped(
+                        root,
+                        MapEdit::objects(number.to_be_bytes().to_vec(), None, Some(next)),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut cursor = TestEditCursor(edits.into_iter());
+        let roots = store.apply_stream(&[MapRoot(None); 8], &mut cursor, &sink, &mut work)?;
+        check_eq!(roots.len(), 8);
+        check_eq!(work.usage().mutations - before.mutations, 8 * 65);
+        let canonical = *roots.first().ok_or("first root missing")?;
+        for index in 1..7 {
+            check_eq!(*roots.get(index).ok_or("alias root missing")?, canonical);
+        }
+        let changed = *roots.get(7).ok_or("changed root missing")?;
+        check_ne!(changed, canonical);
+        check_eq!(
+            store.lookup_object(canonical, &64u16.to_be_bytes(), &mut work)?,
+            Some(first)
+        );
+        check_eq!(
+            store.lookup_object(changed, &64u16.to_be_bytes(), &mut work)?,
+            Some(last)
         );
         assert_clean_scratch(&directory)?;
         Ok(())
@@ -4115,12 +5143,14 @@ mod tests {
         let mut work = budget()?;
         let object = value(&store, b"source", &mut work)?;
         let before = physical_file_count(&directory)?;
-        let edits = (0u32..2).flat_map(|root| {
-            (0u8..65).map(move |key| {
-                OrdinalMapEdit::unscoped(root, MapEdit::objects(vec![key], None, Some(object)))
+        let edits = (0u32..2)
+            .flat_map(|root| {
+                (0u8..65).map(move |key| {
+                    OrdinalMapEdit::unscoped(root, MapEdit::objects(vec![key], None, Some(object)))
+                })
             })
-        });
-        let mut cursor = LateFailure(edits);
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut cursor = LateFailure(edits.into_iter());
         check!(matches!(
             store.apply_stream(
                 &[MapRoot(None), MapRoot(None)],
@@ -4358,7 +5388,7 @@ mod tests {
                         expected: Some((old).into()),
                         next: Some((new).into()),
                     },
-                ),
+                )?,
                 &mut work,
             )?;
         }
@@ -4502,7 +5532,7 @@ mod tests {
             for edit in &edits {
                 optimized
                     .scratch
-                    .insert_edit(&OrdinalMapEdit::unscoped(0, edit.clone()), &mut work)?;
+                    .insert_edit(&OrdinalMapEdit::unscoped(0, edit.clone())?, &mut work)?;
             }
             let actual = store.apply_sorted_existing_root(0, *base, &optimized, &mut work)?;
             let serial = StagedMap::open(&store, &mut work)?;
@@ -4579,7 +5609,7 @@ mod tests {
                     },
                 )
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
         edits.push(OrdinalMapEdit::unscoped(
             1,
             MapEdit {
@@ -4587,7 +5617,7 @@ mod tests {
                 expected: Some((new).into()),
                 next: None,
             },
-        ));
+        )?);
         let mut cursor = TestEditCursor(edits.into_iter());
         check!(matches!(
             store.apply_stream(&[base, base], &mut cursor, &sink, &mut work),
@@ -4611,7 +5641,7 @@ mod tests {
         let mut work = budget()?;
         let value = value(&store, b"streamed", &mut work)?;
         let before = physical_file_count(&directory)?;
-        let make_edits = || {
+        let make_edits = || -> Result<Vec<OrdinalMapEdit>, IndexError> {
             (0u16..192)
                 .map(|number| {
                     OrdinalMapEdit::unscoped(
@@ -4623,9 +5653,9 @@ mod tests {
                         },
                     )
                 })
-                .collect::<Vec<_>>()
+                .collect::<Result<Vec<_>, _>>()
         };
-        let mut conflict = make_edits();
+        let mut conflict = make_edits()?;
         conflict.push(OrdinalMapEdit::unscoped(
             0,
             MapEdit {
@@ -4633,13 +5663,13 @@ mod tests {
                 expected: Some((value).into()),
                 next: None,
             },
-        ));
+        )?);
         let mut conflict_cursor = TestEditCursor(conflict.into_iter());
         check!(matches!(
             store.apply_stream(&[MapRoot(None)], &mut conflict_cursor, &sink, &mut work),
             Err(IndexError::Conflict)
         ));
-        let mut duplicate = make_edits();
+        let mut duplicate = make_edits()?;
         let final_edit = duplicate.last().ok_or("missing final test edit")?.clone();
         duplicate.push(final_edit);
         let mut duplicate_cursor = TestEditCursor(duplicate.into_iter());

@@ -524,6 +524,98 @@ fn check_closed(probe: &Probe, expected_opens: u64) -> Result<(), IndexError> {
 }
 
 #[test]
+fn retained_data_preserves_real_get_fees_and_refusal_boundaries_without_io()
+-> Result<(), IndexError> {
+    use quanta_index_core::index::{WorkUsage, ports::ImmutableObjectPort};
+
+    // QIOBJ001 has a 16-byte header, 32 bytes per child and this 3-byte payload.
+    // A read charges the wire and the decoded payload/children independently.
+    for (child_count, wire_bytes, total_bytes) in [(0, 19_u64, 22_u64), (2, 83, 150)] {
+        let root = tempfile::tempdir().map_err(|error| storage_error(&error))?;
+        fs::set_permissions(root.path(), Permissions::from_mode(0o700))
+            .map_err(|error| storage_error(&error))?;
+        let store = FileObjectStore::open(root.path())?;
+        let mut preparing = budget()?;
+        let mut children = Vec::new();
+        for payload in [b"left".as_slice(), b"right".as_slice()]
+            .into_iter()
+            .take(child_count)
+        {
+            let child = store.prepare_object(payload, &[], &mut preparing)?;
+            store.install_prepared_batch_with_barrier(
+                &[&child],
+                &Sink::default(),
+                &mut preparing,
+                |_file| Ok(()),
+            )?;
+            children.push(child.registration.reference);
+        }
+        let object = store.prepare_object(b"abc", &children, &mut preparing)?;
+        store.install_prepared_batch_with_barrier(
+            &[&object],
+            &Sink::default(),
+            &mut preparing,
+            |_file| Ok(()),
+        )?;
+        check_eq!(object.registration.bytes, wire_bytes);
+        let mut fetched_budget = budget()?;
+        let fetched = store.get(object.registration.reference, &mut fetched_budget)?;
+        check_eq!(
+            fetched_budget.usage(),
+            WorkUsage {
+                reads: 1,
+                bytes: total_bytes,
+                ..WorkUsage::default()
+            }
+        );
+
+        let before_wire = wire_bytes
+            .checked_sub(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        let before_total = total_bytes
+            .checked_sub(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        for (reads, bytes) in [
+            (0, total_bytes),
+            (1, before_wire),
+            (1, wire_bytes),
+            (1, before_total),
+            (1, total_bytes),
+        ] {
+            let limits = WorkLimits {
+                reads,
+                writes: 0,
+                bytes,
+                mutations: 0,
+            };
+            let deadline = Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?;
+            let mut fresh = WorkBudget::new(limits, deadline);
+            let mut retained = WorkBudget::new(limits, deadline);
+            let actual = store.get(object.registration.reference, &mut fresh);
+            let reused = store.read_retained(&fetched, &mut retained);
+            if reads == 1 && bytes == total_bytes {
+                check_eq!(actual?, fetched);
+                check_eq!(reused?, fetched);
+            } else {
+                check!(matches!(actual, Err(IndexError::ResourceLimited)));
+                check!(matches!(reused, Err(IndexError::ResourceLimited)));
+            }
+            check_eq!(fresh.usage(), retained.usage());
+        }
+
+        // The retained path must use its authenticated DATA rather than reopen.
+        fs::remove_file(store.path_for(object.registration.reference))
+            .map_err(|error| storage_error(&error))?;
+        let mut retained = budget()?;
+        check_eq!(store.read_retained(&fetched, &mut retained)?, fetched);
+        check_eq!(retained.usage(), fetched_budget.usage());
+    }
+    Ok(())
+}
+
+#[test]
 fn existing_two_identity_batch_opens_each_admitted_owner_once() -> Result<(), IndexError> {
     let root = tempfile::tempdir().map_err(|error| storage_error(&error))?;
     fs::set_permissions(root.path(), Permissions::from_mode(0o700))

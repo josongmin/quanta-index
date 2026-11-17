@@ -528,6 +528,7 @@ fn wait_for_complete(
             )
         })?;
         last_sequence = Some(latest.identity.sequence);
+        completion.verify_latest_publication(latest.identity)?;
         phase = "await published sequence";
         if latest.identity.sequence >= source_view.sequence
             && completed_sequence.is_none_or(|sequence| latest.identity.sequence >= sequence)
@@ -778,6 +779,7 @@ fn completed_ann_diagnostics_bound_reads_and_propagate_output_failure() -> TestR
 struct QualitySweep {
     matches: usize,
     pages: Vec<Vec<String>>,
+    source_owners: quanta_index_contract::index::MapRoot,
 }
 
 struct QualitySelection<'a> {
@@ -815,6 +817,27 @@ fn check_quality_hit(
         format!("ANN score mismatch for {id}: {score} != {gold_score}"),
     )?;
     Ok(id)
+}
+
+fn check_quality_result_order<'a>(
+    hits: impl IntoIterator<Item = (f64, OwnerKey, &'a [u8])>,
+) -> TestResult {
+    let mut previous: Option<(f64, OwnerKey, &[u8])> = None;
+    for current in hits {
+        if let Some((previous_score, previous_owner, previous_vector_id)) = previous {
+            require(
+                current
+                    .0
+                    .total_cmp(&previous_score)
+                    .then_with(|| previous_owner.cmp(&current.1))
+                    .then_with(|| previous_vector_id.cmp(current.2))
+                    .is_le(),
+                "ANN result order violates descending score and ascending owner/vector ID",
+            )?;
+        }
+        previous = Some(current);
+    }
+    Ok(())
 }
 
 fn check_query_result(
@@ -863,6 +886,12 @@ fn check_query_result(
         &selection.config.k,
         "ANN top-k page length",
     )?;
+    check_quality_result_order(
+        result
+            .hits
+            .iter()
+            .map(|hit| (hit.score.get(), hit.owner, hit.vector_id.as_slice())),
+    )?;
     require(
         result.scanned_owners <= u32::try_from(QUALITY_MAX_OWNERS)?,
         "ANN scanned beyond fixed candidate bound",
@@ -897,6 +926,115 @@ fn check_query_result(
         page.push(id);
     }
     Ok((matches, page))
+}
+
+#[test]
+fn quality_result_oracle_rejects_wrong_score_and_owner_order() -> TestResult {
+    use quanta_index_contract::{
+        FiniteScore,
+        index::{CoverageBinding, InputBinding, MapRoot},
+        native_protocol::NativeSemanticHit,
+    };
+
+    let config = AnnRailConfig {
+        rows: 3,
+        width: 2,
+        queries: 1,
+        k: 3,
+        recall_floor: 1.0,
+    };
+    let direction = query_direction(0, &config)?;
+    // The first two rows tie. The third points in the opposite direction.
+    let rows = vec![
+        ("row-0".to_owned(), direction.clone()),
+        ("row-1".to_owned(), direction.clone()),
+        (
+            "row-2".to_owned(),
+            direction.iter().map(|value| -*value).collect(),
+        ),
+    ];
+    let view = ViewRef {
+        workspace: workspace(),
+        epoch: 1,
+        sequence: 2,
+        digest: Digest([1; 32]),
+    };
+    let source_owners = MapRoot(Some(ObjectRef(Digest([2; 32]))));
+    let instance = IndexInstanceId([3; 16]);
+    let desired = InputBinding {
+        root: source_owners,
+        schema: SchemaId([4; 16]),
+        policy: Digest([5; 32]),
+        context: Digest([6; 32]),
+    };
+    let mut result = NativeSemanticResult {
+        view,
+        instance,
+        coverage: CoverageBinding {
+            instance,
+            desired,
+            covered: Some(desired),
+            searchable: Some(ObjectRef(Digest([7; 32]))),
+            status: CoverageStatus::Complete,
+            owners: MapRoot(Some(ObjectRef(Digest([8; 32])))),
+        },
+        traversal: NativeSemanticTraversal::Approximate { capped: false },
+        exhaustive: false,
+        scanned_owners: 3,
+        skipped_stale: 0,
+        hits: vec![
+            NativeSemanticHit {
+                owner: quality_owner(0, &config)?,
+                vector_id: b"whole-file".to_vec(),
+                score: FiniteScore::new(1.0)?,
+                chunk: None,
+            },
+            NativeSemanticHit {
+                owner: quality_owner(1, &config)?,
+                vector_id: b"whole-file".to_vec(),
+                score: FiniteScore::new(1.0)?,
+                chunk: None,
+            },
+            NativeSemanticHit {
+                owner: quality_owner(2, &config)?,
+                vector_id: b"whole-file".to_vec(),
+                score: FiniteScore::new(-1.0)?,
+                chunk: None,
+            },
+        ],
+    };
+    let selection = QualitySelection {
+        view,
+        source_owners,
+        instance,
+        config: &config,
+        rows: &rows,
+    };
+    require_equal(
+        &check_query_result(&result, &selection, 0)?,
+        &(3, vec!["row-0".into(), "row-1".into(), "row-2".into()]),
+        "valid ordered ANN page",
+    )?;
+    for (left, right) in [(0, 2), (0, 1)] {
+        result.hits.swap(left, right);
+        let refusal = check_query_result(&result, &selection, 0)
+            .err()
+            .ok_or("the ANN oracle accepted an out-of-order page")?;
+        require(
+            refusal.to_string().contains("ANN result order"),
+            format!("unexpected ANN page refusal: {refusal}"),
+        )?;
+        result.hits.swap(left, right);
+    }
+    result.hits[2].score = FiniteScore::new(-0.5)?;
+    let refusal = check_query_result(&result, &selection, 0)
+        .err()
+        .ok_or("the ANN oracle accepted an incorrect original-vector score")?;
+    require(
+        refusal.to_string().contains("ANN score mismatch"),
+        format!("unexpected ANN score refusal: {refusal}"),
+    )?;
+    Ok(())
 }
 
 fn quality_sweep(
@@ -962,7 +1100,11 @@ fn quality_sweep(
         Instant::now() < deadline,
         "ANN quality watchdog expired after final query",
     )?;
-    Ok(QualitySweep { matches, pages })
+    Ok(QualitySweep {
+        matches,
+        pages,
+        source_owners: selection.source_owners,
+    })
 }
 
 fn check_provider_inputs(
@@ -1008,6 +1150,27 @@ fn check_provider_inputs(
         &usize::try_from(config.queries)?,
         "ANN provider query delivery",
     )
+}
+
+fn check_restart_provider_inputs(inputs: &[String], query: &str) -> TestResult {
+    for input in inputs {
+        require_equal(&input.as_str(), &query, "ANN restart provider input")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn restart_provider_oracle_rejects_reembedded_corpus() -> TestResult {
+    check_restart_provider_inputs(&[], "query-0")?;
+    check_restart_provider_inputs(&["query-0".into(), "query-0".into()], "query-0")?;
+    for unexpected in ["row-0", "query-1"] {
+        require(
+            check_restart_provider_inputs(&["query-0".into(), unexpected.into()], "query-0")
+                .is_err(),
+            format!("ANN restart oracle accepted unexpected provider input {unexpected}"),
+        )?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -1313,7 +1476,7 @@ fn product_native_ann_quality_4096x64_reopens_at_fixed_recall() -> TestResult {
         reopen_trace.as_deref(),
     )
     .map_err(|error| format!("ANN reopen daemon startup failed: {error:#}"))?;
-    let restored = NativeUdsClient::new(socket);
+    let restored = NativeUdsClient::new(socket.clone());
     let phase = Cell::new("reopened selected source inventory");
     let replay = (|| -> TestResult<usize> {
         verify_selected_sources(&restored, selected, &sources, deadline)?;
@@ -1394,6 +1557,18 @@ fn product_native_ann_quality_4096x64_reopens_at_fixed_recall() -> TestResult {
         })?;
         phase.set("incremental selected source inventory");
         verify_selected_sources(&restored, changed_view, &delta.sources, changed_deadline)?;
+        phase.set("original selected view after incremental publication");
+        for (path, id, seed) in [("src/0000.rs", "row-0", 0), ("src/0122.rs", "row-122", 122)] {
+            check_exact_path_query(
+                &restored,
+                selected,
+                semantic.instance,
+                &config,
+                path,
+                Some((quality_owner(seed, &config)?, selected_vector(&rows, id)?)),
+                changed_deadline,
+            )?;
+        }
         phase.set("incremental selected ANN quality sweep");
         let changed_sweep = quality_sweep(
             &restored,
@@ -1540,6 +1715,37 @@ fn product_native_ann_quality_4096x64_reopens_at_fixed_recall() -> TestResult {
             &NativeOverlayReply::Closed(session),
             "ANN overlay session close",
         )?;
+        phase.set("durable ANN query after overlay close");
+        let durable_view = restored.read_view(
+            ViewSelection::Exact(changed_view),
+            &budget().capped_at(changed_deadline),
+        )?;
+        let durable_result = restored.search_semantic(
+            ViewSelection::Exact(changed_view),
+            semantic.instance,
+            quality_query(0, &config)?,
+            &budget().capped_at(changed_deadline),
+        )?;
+        let (_matches, durable_page) = check_query_result(
+            &durable_result,
+            &QualitySelection {
+                view: changed_view,
+                source_owners: durable_view.source.owners,
+                instance: semantic.instance,
+                config: &config,
+                rows: &delta.rows,
+            },
+            0,
+        )?;
+        require_equal(
+            &durable_page,
+            changed_sweep
+                .pages
+                .first()
+                .ok_or("ANN durable pre-overlay page absent")?,
+            "ANN durable page changed after overlay close",
+        )?;
+        phase.set("durable exact-path queries after overlay close");
         check_exact_path_query(
             &restored,
             changed_view,
@@ -1567,12 +1773,111 @@ fn product_native_ann_quality_4096x64_reopens_at_fixed_recall() -> TestResult {
         require(
             Instant::now() < changed_deadline,
             "ANN selected-change watchdog expired after durable post-overlay queries",
-        )
+        )?;
+        Ok((changed_view, delta, durable_result))
     });
-    if let Err(error) = changed {
-        report_provider_from_stub("selected changes failure", &stub, after_reopen_input_count);
-        return Err(quality_failure(phase.get(), error.as_ref(), reopened));
-    }
+    let (changed_view, delta, durable_result) = match changed {
+        Ok(result) => result,
+        Err(error) => {
+            report_provider_from_stub("selected changes failure", &stub, after_reopen_input_count);
+            return Err(quality_failure(phase.get(), error.as_ref(), reopened));
+        }
+    };
     quality_stop("reopened daemon shutdown", reopened)?;
+    let before_changed_restart = stub.observed_inputs()?.len();
+
+    let changed_trace = trace_directory
+        .as_ref()
+        .map(|directory| directory.join("ann-changed-reopen.qtrace"));
+    let daemon = with_original_quality_deadline(deadline, |_| {
+        Daemon::start_with_api_key_and_trace(
+            &config_path,
+            &socket,
+            Some("test-key"),
+            changed_trace.as_deref(),
+        )
+        .map_err(|error| {
+            format!(
+                "ANN changed-view daemon restart: {}",
+                quality_error_chain(error.as_ref())
+            )
+            .into()
+        })
+    })?;
+    let restarted = NativeUdsClient::new(socket);
+    phase.set("changed-view restart selected ANN result");
+    let changed_replay = with_original_quality_deadline(deadline, |restart_deadline| {
+        let replayed = restarted.search_semantic(
+            ViewSelection::Exact(changed_view),
+            semantic.instance,
+            quality_query(0, &config)?,
+            &budget().capped_at(restart_deadline),
+        )?;
+        require_equal(
+            &replayed,
+            &durable_result,
+            "ANN changed-view result after second restart",
+        )?;
+
+        phase.set("original-view restart selected ANN result");
+        let original_result = restarted.search_semantic(
+            ViewSelection::Exact(selected),
+            semantic.instance,
+            quality_query(0, &config)?,
+            &budget().capped_at(restart_deadline),
+        )?;
+        let (_, original_page) = check_query_result(
+            &original_result,
+            &QualitySelection {
+                view: selected,
+                source_owners: first.source_owners,
+                instance: semantic.instance,
+                config: &config,
+                rows: &rows,
+            },
+            0,
+        )?;
+        require_equal(
+            &original_page,
+            first
+                .pages
+                .first()
+                .ok_or("ANN original query page missing")?,
+            "ANN original-view page after second restart",
+        )?;
+
+        phase.set("original and changed exact paths after second restart");
+        for (view, vectors, row_122_present) in
+            [(selected, &rows, true), (changed_view, &delta.rows, false)]
+        {
+            for (path, id, seed) in [("src/0000.rs", "row-0", 0), ("src/0122.rs", "row-122", 122)] {
+                let expected = if seed == 122 && !row_122_present {
+                    None
+                } else {
+                    Some((quality_owner(seed, &config)?, selected_vector(vectors, id)?))
+                };
+                check_exact_path_query(
+                    &restarted,
+                    view,
+                    semantic.instance,
+                    &config,
+                    path,
+                    expected,
+                    restart_deadline,
+                )?;
+            }
+        }
+        Ok(())
+    });
+    if let Err(error) = changed_replay {
+        return Err(quality_failure(phase.get(), error.as_ref(), daemon));
+    }
+    quality_stop("changed-view daemon shutdown", daemon)?;
+    let after_changed_restart = stub.observed_inputs()?;
+    let restart_inputs = after_changed_restart
+        .get(before_changed_restart..)
+        .ok_or("ANN provider input history regressed after second restart")?;
+    report_provider_inputs("changed-view restart", restart_inputs);
+    check_restart_provider_inputs(restart_inputs, &quality_query(0, &config)?.query_text)?;
     stub.finish()
 }

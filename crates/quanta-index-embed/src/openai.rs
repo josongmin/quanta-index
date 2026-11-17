@@ -1,4 +1,6 @@
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -13,12 +15,201 @@ use serde::{
     Serialize,
     de::{DeserializeSeed, Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor},
 };
+use sha2::{Digest, Sha256};
 
 use crate::pool::ProviderAttemptPool;
 use crate::telemetry;
 
 const EMBEDDINGS_PATH: &str = "/v1/embeddings";
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
+pub const LOCAL_CODE_WIRE_MODEL: &str = "jinaai/jina-embeddings-v2-base-code";
+pub const LOCAL_CODE_MODEL_ID: &str = "local-code:jinaai/jina-embeddings-v2-base-code";
+pub const LOCAL_CODE_MODEL_REVISION: &str =
+    "3823197859a9b2255838266fc304871534520f658fae49d5ab2d3f7def54a6e2";
+pub const LOCAL_CODE_DIMENSION: usize = 768;
+const LOCAL_CODE_HEALTH_MAX_BYTES: u64 = 64 * 1024;
+
+fn validate_local_code_origin(origin: &str) -> Result<(), CoreError> {
+    let parsed = reqwest::Url::parse(origin)
+        .map_err(|error| invalid(&format!("local code origin: {error}")))?;
+    if parsed.scheme() != "http"
+        || parsed.host_str() != Some("127.0.0.1")
+        || parsed.port().is_none()
+        || parsed.path() != "/"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || origin != format!("http://127.0.0.1:{}", parsed.port().unwrap_or_default())
+    {
+        return Err(invalid(
+            "local code origin must be an explicit 127.0.0.1 HTTP origin",
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalCodeBindingV1 {
+    origin: String,
+    manifest_path: PathBuf,
+    manifest_sha256: String,
+}
+
+impl LocalCodeBindingV1 {
+    /// Validate config syntax without reading the manifest or contacting the service.
+    pub fn validate_config_metadata(
+        origin: &str,
+        manifest_path: &Path,
+        manifest_sha256: &str,
+    ) -> Result<(), CoreError> {
+        validate_local_code_origin(origin)?;
+        if !manifest_path.is_absolute() {
+            return Err(invalid(
+                "local code manifest must be an absolute regular file",
+            ));
+        }
+        if manifest_sha256.len() != 64
+            || !manifest_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(invalid("local code manifest SHA256 must be lowercase hex"));
+        }
+        Ok(())
+    }
+
+    pub fn new(
+        origin: String,
+        manifest_path: PathBuf,
+        manifest_sha256: String,
+    ) -> Result<Self, CoreError> {
+        Self::validate_config_metadata(&origin, &manifest_path, &manifest_sha256)?;
+        let metadata = std::fs::symlink_metadata(&manifest_path)
+            .map_err(|error| invalid(&format!("local code manifest metadata: {error}")))?;
+        if !metadata.file_type().is_file() {
+            return Err(invalid(
+                "local code manifest must be an absolute regular file",
+            ));
+        }
+        let binding = Self {
+            origin,
+            manifest_path,
+            manifest_sha256,
+        };
+        let _manifest = binding.read_verified_manifest()?;
+        Ok(binding)
+    }
+
+    pub fn origin(&self) -> &str {
+        &self.origin
+    }
+    pub fn manifest_path(&self) -> &Path {
+        &self.manifest_path
+    }
+    pub fn manifest_sha256(&self) -> &str {
+        &self.manifest_sha256
+    }
+    pub fn endpoint(&self) -> String {
+        format!("{}{EMBEDDINGS_PATH}", self.origin)
+    }
+
+    fn read_verified_manifest(&self) -> Result<serde_json::Value, CoreError> {
+        let file = std::fs::File::open(&self.manifest_path)
+            .map_err(|error| invalid(&format!("local code manifest open: {error}")))?;
+        let mut bytes = Vec::new();
+        let _read = file
+            .take(LOCAL_CODE_HEALTH_MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| invalid(&format!("local code manifest read: {error}")))?;
+        if bytes.len() as u64 > LOCAL_CODE_HEALTH_MAX_BYTES
+            || format!("{:x}", Sha256::digest(&bytes)) != self.manifest_sha256
+        {
+            return Err(invalid("local code manifest size or SHA256 differs"));
+        }
+        let manifest: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|error| invalid(&format!("local code manifest JSON: {error}")))?;
+        let fields = [
+            "model",
+            "revision",
+            "code_revision",
+            "dimensions",
+            "context_tokens",
+            "pooling",
+            "normalization",
+            "sha256",
+        ];
+        let mut identity = BTreeMap::new();
+        for field in fields {
+            let value = manifest
+                .get(field)
+                .ok_or_else(|| invalid("local code manifest identity field absent"))?;
+            let _previous = identity.insert(field, value);
+        }
+        let canonical = serde_json::to_vec(&identity)
+            .map_err(|error| invalid(&format!("local code identity encode: {error}")))?;
+        if format!("{:x}", Sha256::digest(&canonical)) != LOCAL_CODE_MODEL_REVISION
+            || manifest["model"] != LOCAL_CODE_WIRE_MODEL
+            || manifest["dimensions"] != LOCAL_CODE_DIMENSION
+            || manifest["context_tokens"] != 8192
+            || manifest["pooling"] != "attention_mask_mean"
+            || manifest["normalization"] != "l2"
+        {
+            return Err(invalid("local code model artifact identity differs"));
+        }
+        Ok(manifest)
+    }
+
+    pub fn verify_health(&self, timeout: Duration) -> Result<(), CoreError> {
+        let manifest = self.read_verified_manifest()?;
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(timeout)
+            .build()
+            .map_err(|error| invalid(&format!("local code health client: {error}")))?;
+        let response = client
+            .get(format!("{}/healthz", self.origin))
+            .send()
+            .map_err(|error| invalid(&format!("local code health request: {error}")))?;
+        if !response.status().is_success() {
+            return Err(invalid("local code health refused"));
+        }
+        let mut bytes = Vec::new();
+        let _read = response
+            .take(LOCAL_CODE_HEALTH_MAX_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| invalid(&format!("local code health read: {error}")))?;
+        if bytes.len() as u64 > LOCAL_CODE_HEALTH_MAX_BYTES {
+            return Err(invalid("local code health exceeds bound"));
+        }
+        let health: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|error| invalid(&format!("local code health JSON: {error}")))?;
+        for field in [
+            "model",
+            "revision",
+            "code_revision",
+            "dimensions",
+            "context_tokens",
+            "pooling",
+            "normalization",
+            "sha256",
+            "runtime_versions",
+        ] {
+            if health.get(field) != manifest.get(field) {
+                return Err(invalid("local code health differs from manifest"));
+            }
+        }
+        if health["manifest_sha256"] != self.manifest_sha256
+            || health["artifact_sha256"] != manifest["sha256"]["model/model.safetensors"]
+            || health["max_input_tokens"] != 8192
+            || health["dtype"] != "float32"
+        {
+            return Err(invalid("local code health artifact or recipe differs"));
+        }
+        Ok(())
+    }
+}
 /// Default max inputs per `/v1/embeddings` request. Public so daemon env knobs
 /// can default to the same value without a second source of truth.
 pub const DEFAULT_MAX_BATCH: usize = 256;
@@ -189,6 +380,7 @@ pub struct OpenAiProviderConfig {
     /// Decoded response-body ceiling. Native product composition supplies
     /// this explicitly; standalone injected transports may leave it unset.
     pub max_response_bytes: Option<u64>,
+    local_code: bool,
 }
 
 impl OpenAiProviderConfig {
@@ -208,7 +400,72 @@ impl OpenAiProviderConfig {
             timeout: DEFAULT_TIMEOUT,
             concurrency: DEFAULT_CONCURRENCY,
             max_response_bytes: None,
+            local_code: false,
         }
+    }
+
+    /// Reuse the bounded embeddings wire without claiming an OpenAI model or
+    /// manufacturing an API key. Only the pinned local code service is admitted.
+    #[must_use]
+    pub fn new_local_code(binding: &LocalCodeBindingV1) -> Self {
+        let mut config = Self::new(
+            String::new(),
+            LOCAL_CODE_WIRE_MODEL.to_string(),
+            LOCAL_CODE_MODEL_REVISION.to_string(),
+            LOCAL_CODE_DIMENSION,
+        );
+        config.base_url = binding.origin().to_string();
+        config.max_batch = 64;
+        config.concurrency = 1;
+        config.local_code = true;
+        config
+    }
+
+    /// Validate and expose pinned model metadata without credentials or IO.
+    /// Raw output is not normalized; an L2 wrapper remains composition-owned.
+    /// This is not admission for a live provider's auth, transport or tuning.
+    pub fn model_metadata(
+        &self,
+    ) -> Result<(String, &str, usize, EmbeddingNormalization), CoreError> {
+        if self.local_code
+            && (self.model != LOCAL_CODE_WIRE_MODEL
+                || self.model_revision != LOCAL_CODE_MODEL_REVISION
+                || self.dimension != LOCAL_CODE_DIMENSION)
+        {
+            return Err(invalid(
+                "local code provider configuration differs from pinned identity",
+            ));
+        }
+        if self.model.trim().is_empty() {
+            return Err(invalid("openai: model is empty"));
+        }
+        if self.model_revision.trim().is_empty()
+            || !self
+                .model_revision
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic())
+        {
+            return Err(invalid(
+                "openai: model revision must be a non-empty printable ASCII token (QI-BB-028)",
+            ));
+        }
+        if self.dimension == 0 || self.dimension > MAX_EMBEDDING_DIMENSION {
+            return Err(invalid(&format!(
+                "openai: dimension {} is outside 1..={MAX_EMBEDDING_DIMENSION}",
+                self.dimension
+            )));
+        }
+        let model_id = if self.local_code {
+            LOCAL_CODE_MODEL_ID.to_string()
+        } else {
+            format!("openai:{}", self.model)
+        };
+        Ok((
+            model_id,
+            &self.model_revision,
+            self.dimension,
+            EmbeddingNormalization::None,
+        ))
     }
 
     /// Override the API base URL (used by tests to target a stub server).
@@ -374,31 +631,23 @@ impl OpenAiEmbeddingProvider {
         config: OpenAiProviderConfig,
         transport: Box<dyn EmbeddingTransport>,
     ) -> Result<Self, CoreError> {
-        if config.api_key.trim().is_empty() {
+        if !config.local_code && config.api_key.trim().is_empty() {
             return Err(typed(
                 LexicalErrorCode::SemProviderAuth,
                 "openai: API key is empty",
             ));
         }
-        if config.model.trim().is_empty() {
-            return Err(invalid("openai: model is empty"));
-        }
-        if config.model_revision.trim().is_empty()
-            || !config
-                .model_revision
-                .bytes()
-                .all(|byte| byte.is_ascii_graphic())
+        if config.local_code
+            && (!config.api_key.is_empty()
+                || config.max_batch > 64
+                || config.concurrency != 1
+                || validate_local_code_origin(&config.base_url).is_err())
         {
             return Err(invalid(
-                "openai: model revision must be a non-empty printable ASCII token (QI-BB-028)",
+                "local code provider configuration differs from pinned identity",
             ));
         }
-        if config.dimension == 0 || config.dimension > MAX_EMBEDDING_DIMENSION {
-            return Err(invalid(&format!(
-                "openai: dimension {} is outside 1..={MAX_EMBEDDING_DIMENSION}",
-                config.dimension
-            )));
-        }
+        let (model_id, _revision, _dimension, _normalization) = config.model_metadata()?;
         if config.max_batch == 0 {
             return Err(invalid("openai: max_batch must be at least 1"));
         }
@@ -424,7 +673,6 @@ impl OpenAiEmbeddingProvider {
                 "openai: max response bytes must fit a nonzero platform buffer",
             ));
         }
-        let model_id = format!("openai:{}", config.model);
         // Concurrency was validated above, so the pool cap cannot fail;
         // the composition root swaps in the supervised pool anyway.
         let attempts = ProviderAttemptPool::new(config.concurrency)
@@ -477,7 +725,11 @@ impl OpenAiEmbeddingProvider {
     /// Build a provider over the real in-process blocking reqwest transport,
     /// honoring the config's timeout / batch / retry tuning.
     pub fn with_reqwest(config: OpenAiProviderConfig) -> Result<Self, CoreError> {
-        let transport = ReqwestBlockingTransport::new(config.timeout)?;
+        let transport = if config.local_code {
+            ReqwestBlockingTransport::new_local(config.timeout)?
+        } else {
+            ReqwestBlockingTransport::new(config.timeout)?
+        };
         Self::new(config, Box::new(transport))
     }
 
@@ -1011,6 +1263,19 @@ impl ReqwestBlockingTransport {
         })
     }
 
+    fn new_local(timeout: Duration) -> Result<Self, CoreError> {
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| invalid(&format!("local code HTTP client: {error}")))?;
+        Ok(Self {
+            client,
+            configured_timeout: timeout,
+        })
+    }
+
     fn post_owned(
         &self,
         url: &str,
@@ -1019,10 +1284,11 @@ impl ReqwestBlockingTransport {
         timeout: Duration,
         max_response_bytes: Option<u64>,
     ) -> Result<HttpResponse, CoreError> {
-        let response = self
-            .client
-            .post(url)
-            .bearer_auth(api_key)
+        let mut request = self.client.post(url);
+        if !api_key.is_empty() {
+            request = request.bearer_auth(api_key);
+        }
+        let response = request
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body)
             .timeout(timeout)
@@ -1597,6 +1863,190 @@ mod tests {
     ) -> OpenAiEmbeddingProvider {
         OpenAiEmbeddingProvider::new(config, Box::new(transport))
             .expect("provider builds with a non-empty key/model/dim")
+    }
+
+    fn local_code_fixture() -> (tempfile::TempDir, LocalCodeBindingV1) {
+        let directory = tempfile::tempdir().expect("local manifest dir");
+        let path = directory.path().join("manifest.json");
+        let manifest = serde_json::json!({
+            "model": LOCAL_CODE_WIRE_MODEL,
+            "revision": "516f4baf13dec4ddddda8631e019b5737c8bc250",
+            "code_revision": "3baf9e3ac750e76e8edd3019170176884695fb94",
+            "dimensions": LOCAL_CODE_DIMENSION,
+            "context_tokens": 8192,
+            "pooling": "attention_mask_mean",
+            "normalization": "l2",
+            "runtime_versions": {},
+            "sha256": {
+                "code/configuration_bert.py": "d018de11bcb62cedf436c8876459e5cd119d1faf72bc107338576a6d1b8eeea5",
+                "code/modeling_bert.py": "8f96ef0576401f6b996f9b72ad34e13190139eec1195767516485876434bb612",
+                "model/config.json": "e426aa684c7f9a95c5f020aa855faf93a24f065f5fad0c9e17b124670cabdea6",
+                "model/model.safetensors": "8b53bfd4ae2cd586004a6ca4a16551b630a2a1b1d655ff1ee9be1286a1781c5b",
+                "model/special_tokens_map.json": "06e405a36dfe4b9604f484f6a1e619af1a7f7d09e34a8555eb0b77b66318067f",
+                "model/tokenizer.json": "b01c78a902aa4facb2f47f95449f48e2f7bbfea5d2472ee2f6ce92323c6f86e5",
+                "model/tokenizer_config.json": "f477aeb15ff9f78d3c1ddf2361d2b0b8b20cf55220f839f29a37f3a18efddd89"
+            }
+        });
+        let bytes = serde_json::to_vec(&manifest).expect("manifest JSON");
+        std::fs::write(&path, &bytes).expect("write manifest");
+        let sha = format!("{:x}", Sha256::digest(&bytes));
+        let binding = LocalCodeBindingV1::new("http://127.0.0.1:12345".into(), path, sha)
+            .expect("pinned local model binding");
+        (directory, binding)
+    }
+
+    #[test]
+    fn local_code_config_metadata_is_pure_and_live_binding_requires_manifest() {
+        let directory = tempfile::tempdir().expect("local config dir");
+        let absent = directory.path().join("absent-manifest.json");
+        let pinned_hash = "0".repeat(64);
+        let origin = "http://127.0.0.1:12345";
+        LocalCodeBindingV1::validate_config_metadata(origin, &absent, &pinned_hash)
+            .expect("syntactically valid metadata must not read the missing manifest");
+        assert!(
+            LocalCodeBindingV1::new(origin.into(), absent.clone(), pinned_hash.clone()).is_err()
+        );
+        for (bad_origin, bad_path, bad_hash, expected) in [
+            (
+                "http://localhost:12345",
+                absent.as_path(),
+                pinned_hash.as_str(),
+                "local code origin must be an explicit 127.0.0.1 HTTP origin",
+            ),
+            (
+                origin,
+                Path::new("relative-manifest.json"),
+                pinned_hash.as_str(),
+                "local code manifest must be an absolute regular file",
+            ),
+            (
+                origin,
+                absent.as_path(),
+                "ABC",
+                "local code manifest SHA256 must be lowercase hex",
+            ),
+        ] {
+            let error =
+                LocalCodeBindingV1::validate_config_metadata(bad_origin, bad_path, bad_hash)
+                    .expect_err("invalid config syntax must refuse before IO");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn local_code_binding_pins_content_and_rejects_non_loopback_or_drift() {
+        let (_directory, binding) = local_code_fixture();
+        assert_eq!(binding.endpoint(), "http://127.0.0.1:12345/v1/embeddings");
+        assert_eq!(LOCAL_CODE_MODEL_REVISION.len(), 64);
+        for origin in [
+            "http://localhost:12345",
+            "https://127.0.0.1:12345",
+            "http://127.0.0.1:12345.evil.test",
+            "http://127.0.0.1:12345/other",
+        ] {
+            assert!(
+                LocalCodeBindingV1::new(
+                    origin.into(),
+                    binding.manifest_path().to_path_buf(),
+                    binding.manifest_sha256().to_string(),
+                )
+                .is_err(),
+                "{origin}"
+            );
+        }
+        assert!(
+            LocalCodeBindingV1::new(
+                binding.origin().into(),
+                binding.manifest_path().to_path_buf(),
+                "0".repeat(64),
+            )
+            .is_err()
+        );
+        std::fs::write(binding.manifest_path(), b"{}").expect("tamper manifest");
+        assert!(binding.verify_health(Duration::from_millis(100)).is_err());
+    }
+
+    #[test]
+    fn local_code_provider_has_distinct_identity_without_api_key() {
+        let (_directory, binding) = local_code_fixture();
+        let config = OpenAiProviderConfig::new_local_code(&binding);
+        let provider = OpenAiEmbeddingProvider::new(
+            config.clone(),
+            Box::new(ScriptedTransport::new(Vec::new())),
+        )
+        .expect("pinned local provider");
+        assert_eq!(provider.model_id(), LOCAL_CODE_MODEL_ID);
+        assert_eq!(provider.model_revision(), LOCAL_CODE_MODEL_REVISION);
+        assert!(
+            OpenAiEmbeddingProvider::new(
+                config.with_base_url("http://127.0.0.1:12345.evil.test".into()),
+                Box::new(ScriptedTransport::new(Vec::new())),
+            )
+            .is_err()
+        );
+        assert!(
+            OpenAiEmbeddingProvider::new(
+                OpenAiProviderConfig::new(
+                    String::new(),
+                    "text-embedding-3-small".into(),
+                    "rev".into(),
+                    1536
+                ),
+                Box::new(ScriptedTransport::new(Vec::new())),
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn local_code_health_requires_exact_manifest_and_model_recipe() {
+        fn one_health(body: Vec<u8>) -> (u16, std::thread::JoinHandle<()>) {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback server");
+            let port = listener.local_addr().expect("local address").port();
+            let worker = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("health connection");
+                let mut request = [0_u8; 1024];
+                let _read = stream.read(&mut request).expect("health request");
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(header.as_bytes()).expect("header");
+                stream.write_all(&body).expect("health body");
+            });
+            (port, worker)
+        }
+        let (_directory, fixture) = local_code_fixture();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(fixture.manifest_path()).expect("manifest"))
+                .expect("manifest JSON");
+        let mut health = manifest.clone();
+        health["artifact_sha256"] = manifest["sha256"]["model/model.safetensors"].clone();
+        health["manifest_sha256"] = serde_json::json!(fixture.manifest_sha256());
+        health["max_input_tokens"] = serde_json::json!(8192);
+        health["dtype"] = serde_json::json!("float32");
+        let (port, worker) = one_health(serde_json::to_vec(&health).expect("health JSON"));
+        let binding = LocalCodeBindingV1::new(
+            format!("http://127.0.0.1:{port}"),
+            fixture.manifest_path().to_path_buf(),
+            fixture.manifest_sha256().to_string(),
+        )
+        .expect("local binding");
+        binding
+            .verify_health(Duration::from_secs(2))
+            .expect("matching health");
+        worker.join().expect("health server");
+
+        health["sha256"]["model/model.safetensors"] = serde_json::json!("0".repeat(64));
+        let (port, worker) = one_health(serde_json::to_vec(&health).expect("drifted health"));
+        let binding = LocalCodeBindingV1::new(
+            format!("http://127.0.0.1:{port}"),
+            fixture.manifest_path().to_path_buf(),
+            fixture.manifest_sha256().to_string(),
+        )
+        .expect("local binding");
+        assert!(binding.verify_health(Duration::from_secs(2)).is_err());
+        worker.join().expect("health server");
     }
 
     #[test]
@@ -2607,6 +3057,122 @@ mod tests {
         assert_eq!(tuned.max_estimated_tokens_per_request, 9);
         assert_eq!(tuned.max_retries, 7);
         assert_eq!(tuned.timeout, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn model_metadata_needs_no_credentials_transport_or_runtime_tuning() {
+        let config =
+            OpenAiProviderConfig::new(String::new(), " model-name ".into(), "revision-1".into(), 8)
+                .with_base_url("not-a-live-endpoint".into())
+                .with_max_batch(0)
+                .with_concurrency(0)
+                .with_timeout(Duration::ZERO);
+        assert_eq!(
+            config.model_metadata().expect("pure declared metadata"),
+            (
+                "openai: model-name ".to_string(),
+                "revision-1",
+                8,
+                EmbeddingNormalization::None,
+            )
+        );
+        assert!(matches!(
+            OpenAiEmbeddingProvider::new(
+                config,
+                Box::new(ScriptedTransport::new(Vec::new())),
+            ),
+            Err(CoreError::Typed { code, .. })
+                if code == LexicalErrorCode::SemProviderAuth.into()
+        ));
+    }
+
+    #[test]
+    fn model_metadata_and_live_constructor_share_descriptor_rejections() {
+        let mut invalid_configs = Vec::new();
+        for model in ["", " \t"] {
+            let mut config = cfg(8);
+            config.model = model.into();
+            invalid_configs.push(config);
+        }
+        for revision in ["", "two tokens", "rα", "rev\n", "rev\u{7f}"] {
+            let mut config = cfg(8);
+            config.model_revision = revision.into();
+            invalid_configs.push(config);
+        }
+        invalid_configs.extend([cfg(0), cfg(MAX_EMBEDDING_DIMENSION + 1)]);
+        for config in invalid_configs {
+            let expected = config.model_metadata().expect_err("invalid metadata");
+            let actual =
+                OpenAiEmbeddingProvider::new(config, Box::new(ScriptedTransport::new(Vec::new())));
+            assert!(matches!(expected, CoreError::InvalidContract(_)));
+            let Err(actual) = actual else {
+                panic!("live constructor admitted invalid metadata");
+            };
+            assert_eq!(actual.to_string(), expected.to_string());
+        }
+    }
+
+    #[test]
+    fn model_metadata_preserves_live_identity_and_raw_normalization_without_calls() {
+        let config = cfg(MAX_EMBEDDING_DIMENSION);
+        let (model_id, revision, dimension, normalization) =
+            config.model_metadata().expect("valid metadata");
+        assert_eq!(model_id, "openai:text-embedding-3-small");
+        assert_eq!(revision, "2024-01");
+        assert_eq!(dimension, MAX_EMBEDDING_DIMENSION);
+        assert_eq!(normalization, EmbeddingNormalization::None);
+        let transport = ScriptedTransport::new(Vec::new());
+        let calls = Arc::clone(&transport.calls);
+        let provider = OpenAiEmbeddingProvider::new(config.clone(), Box::new(transport))
+            .expect("live provider");
+        assert_eq!(provider.model_id(), model_id);
+        assert_eq!(provider.model_revision(), revision);
+        assert_eq!(provider.dimension(), dimension);
+        assert_eq!(provider.normalization(), normalization);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn local_code_metadata_keeps_pinned_identity_and_live_operational_admission() {
+        let (_directory, binding) = local_code_fixture();
+        let config = OpenAiProviderConfig::new_local_code(&binding);
+        assert_eq!(
+            config.model_metadata().expect("pinned local metadata"),
+            (
+                LOCAL_CODE_MODEL_ID.to_string(),
+                LOCAL_CODE_MODEL_REVISION,
+                LOCAL_CODE_DIMENSION,
+                EmbeddingNormalization::None,
+            )
+        );
+        let mut changed_model = config.clone();
+        changed_model.model = "other-model".into();
+        let mut changed_revision = config.clone();
+        changed_revision.model_revision = "other-revision".into();
+        let mut changed_dimension = config.clone();
+        changed_dimension.dimension = LOCAL_CODE_DIMENSION + 1;
+        for changed in [changed_model, changed_revision, changed_dimension] {
+            assert!(matches!(
+                changed.model_metadata(),
+                Err(CoreError::InvalidContract(message))
+                    if message == "local code provider configuration differs from pinned identity"
+            ));
+            assert!(OpenAiEmbeddingProvider::new(
+                changed,
+                Box::new(ScriptedTransport::new(Vec::new())),
+            ).is_err());
+        }
+        let mut invalid_runtime = config;
+        invalid_runtime.api_key = "unexpected-local-auth".into();
+        invalid_runtime.base_url = "not-an-origin".into();
+        assert!(invalid_runtime.model_metadata().is_ok());
+        assert!(
+            OpenAiEmbeddingProvider::new(
+                invalid_runtime,
+                Box::new(ScriptedTransport::new(Vec::new())),
+            )
+            .is_err()
+        );
     }
 
     /// A zero batch, token budget or concurrency, or a concurrency or

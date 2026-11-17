@@ -691,6 +691,7 @@ fn verify_publish_dispatch_lexical_roundtrip(socket: &Path) -> TestResult {
                 | SearchPlaneQueryIpcResponse::Semantic(_)
                 | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
+                | SearchPlaneQueryIpcResponse::HybridFileV1(_)
                 | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
                 | SearchPlaneQueryIpcResponse::History(_)
                 | SearchPlaneQueryIpcResponse::Structural(_)

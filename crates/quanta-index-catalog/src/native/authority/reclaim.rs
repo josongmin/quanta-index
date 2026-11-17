@@ -303,6 +303,14 @@ fn read_row_with_access(
             (target_len, stored)
         }
     };
+    Ok(Some(decode_stored_row(object, target_len, stored)?))
+}
+
+fn decode_stored_row(
+    object: ObjectRef,
+    target_len: Option<i64>,
+    stored: StoredLifecycleRow,
+) -> Result<Row, IndexError> {
     let (generation, kind, phase, children, drained, target, checksum) = stored;
     if target
         .as_ref()
@@ -350,7 +358,7 @@ fn read_row_with_access(
             "reclaim object row digest or phase mismatch".into(),
         ));
     }
-    Ok(Some(row))
+    Ok(row)
 }
 
 fn mutable_live_row(connection: &Connection, object: ObjectRef) -> Result<Option<Row>, IndexError> {
@@ -451,13 +459,45 @@ pub(super) fn enqueue(connection: &Connection, object: ObjectRef) -> Result<bool
     enqueue_row(connection, &row)
 }
 
+/// Queue a released object only when no durable reference remains.
+///
+/// Called after a custody deletion in the same writer transaction. A positive
+/// durable reference makes a new `LIVE` candidate redundant: retirement would
+/// authenticate that reference and dequeue it again. The last-reference
+/// removal retains its existing enqueue path.
+pub(super) fn enqueue_unreferenced(
+    connection: &Connection,
+    object: ObjectRef,
+    budget: &mut WorkBudget,
+) -> Result<bool, IndexError> {
+    let Some(row) = mutable_live_row(connection, object)? else {
+        return Ok(false);
+    };
+    enqueue_row_if(connection, &row, || {
+        Ok(row.phase != LIVE || !reference_exists(connection, object, budget)?)
+    })
+}
+
 fn enqueue_row(connection: &Connection, row: &Row) -> Result<bool, IndexError> {
+    enqueue_row_if(connection, row, || Ok(true))
+}
+
+fn enqueue_row_if(
+    connection: &Connection,
+    row: &Row,
+    eligible: impl FnOnce() -> Result<bool, IndexError>,
+) -> Result<bool, IndexError> {
     if row.phase == DELETED {
         return Err(IndexError::Storage(
             "deleted object still has custody".into(),
         ));
     }
     if queued(connection, row.object)? {
+        return Ok(false);
+    }
+    // Validate lifecycle and any existing queue before the optional proof.
+    // An existing candidate is neither removed nor hidden by a live reference.
+    if !eligible()? {
         return Ok(false);
     }
     let key = object_key(row.object);
@@ -601,6 +641,65 @@ pub(super) fn adopt_confirming_input(
     adopt_with_queue(connection, object, true)
 }
 
+/// Namespace authority for one fixed-schema managed preflight transaction.
+/// The caller holds the Catalog connection lock and does not run DDL or REPLACE
+/// while this proof is live. A row write, including a trigger write, changes the
+/// connection watermark and forces the next child to authenticate again.
+pub(super) struct ManagedBoundNamespace<'tx, 'conn> {
+    transaction: &'tx Transaction<'conn>,
+    changes: u64,
+    bound: bool,
+}
+
+impl<'tx, 'conn> ManagedBoundNamespace<'tx, 'conn> {
+    pub(super) fn new(transaction: &'tx Transaction<'conn>) -> Result<Self, IndexError> {
+        if transaction.is_autocommit() {
+            return Err(IndexError::BackendViolation(
+                "managed namespace proof requires a transaction".into(),
+            ));
+        }
+        require_bound(transaction)?;
+        Ok(Self {
+            transaction,
+            changes: transaction.total_changes(),
+            bound: true,
+        })
+    }
+
+    pub(super) fn require_transaction(
+        &self,
+        transaction: &Transaction<'_>,
+    ) -> Result<(), IndexError> {
+        if !std::ptr::eq(self.transaction, transaction) {
+            return Err(IndexError::BackendViolation(
+                "managed namespace proof belongs to another transaction".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The caller has already paid for metadata and edge validation. Charge
+    /// the last child read only when this adoption really rechecks the binding.
+    pub(super) fn adopt_charged(
+        &mut self,
+        object: ObjectRef,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        if self.transaction.total_changes() != self.changes {
+            budget.charge(WorkUsage {
+                reads: 1,
+                ..WorkUsage::default()
+            })?;
+            self.bound = is_bound(self.transaction)?;
+            self.changes = self.transaction.total_changes();
+        }
+        if self.bound {
+            adopt_bound_row(self.transaction, object, false)?;
+        }
+        Ok(())
+    }
+}
+
 fn adopt_with_queue(
     connection: &Connection,
     object: ObjectRef,
@@ -609,6 +708,14 @@ fn adopt_with_queue(
     if !is_bound(connection)? {
         return Ok(());
     }
+    adopt_bound_row(connection, object, retain_queue)
+}
+
+fn adopt_bound_row(
+    connection: &Connection,
+    object: ObjectRef,
+    retain_queue: bool,
+) -> Result<(), IndexError> {
     let mut row = mutable_live_row(connection, object)?
         .ok_or_else(|| IndexError::Storage("managed root lacks object lifecycle".into()))?;
     match row.phase {
@@ -685,6 +792,7 @@ pub(super) fn confirm_protected(
 }
 
 /// Reuse the lifecycle owner's shape/digest validation for observation.
+#[cfg(test)]
 pub(super) fn checked_live_object(
     connection: &Connection,
     object: ObjectRef,
@@ -698,6 +806,45 @@ pub(super) fn checked_live_object(
     let row = read_row(connection, object)?
         .ok_or_else(|| IndexError::Storage("observed lifecycle row disappeared".into()))?;
     Ok(row.phase == LIVE)
+}
+
+/// Validate a LIVE row already present in a bounded GC scan page.
+///
+/// The caller charges the page and object key before this function charges the same two
+/// lifecycle reads and 32 bytes as `checked_live_object`.
+pub(super) fn checked_live_scan_row(
+    record: &rusqlite::Row<'_>,
+    object: ObjectRef,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    budget.charge(WorkUsage {
+        reads: 2,
+        bytes: 32,
+        ..WorkUsage::default()
+    })?;
+    let target_len: Option<i64> = record.get(6).map_err(|error| sql(&error))?;
+    let checksum: Option<Vec<u8>> = record.get(7).map_err(|error| sql(&error))?;
+    if target_len.is_some_and(|len| !(1..=MAX_TARGET_BYTES).contains(&len)) {
+        return Err(IndexError::Storage(
+            "reclaim object row shape mismatch".into(),
+        ));
+    }
+    let checksum =
+        checksum.ok_or_else(|| IndexError::Storage("reclaim object row shape mismatch".into()))?;
+    let stored: StoredLifecycleRow = (
+        record.get(2).map_err(|error| sql(&error))?,
+        record.get(3).map_err(|error| sql(&error))?,
+        record.get(1).map_err(|error| sql(&error))?,
+        record.get(4).map_err(|error| sql(&error))?,
+        record.get(5).map_err(|error| sql(&error))?,
+        None,
+        checksum,
+    );
+    let row = decode_stored_row(object, target_len, stored)?;
+    if row.phase != LIVE {
+        return Err(IndexError::Storage("observed lifecycle row changed".into()));
+    }
+    Ok(())
 }
 
 pub(super) fn reference_exists(
@@ -955,22 +1102,7 @@ pub(super) fn retire(
 }
 
 pub(super) fn is_bound(connection: &Connection) -> Result<bool, IndexError> {
-    let count: i64 = cached_query_row(
-        connection,
-        "SELECT COUNT(*) FROM native_gc_namespace_v1",
-        [],
-        |row| row.get(0),
-    )
-    .map_err(|error| sql(&error))?;
-    if !(0..=1).contains(&count) {
-        return Err(IndexError::Storage(
-            "managed namespace binding count invalid".into(),
-        ));
-    }
-    if count == 1 {
-        let _binding = bound_namespace(connection)?;
-    }
-    Ok(count == 1)
+    namespace_binding(connection).map(|binding| binding.is_some())
 }
 
 pub(super) fn require_bound(connection: &Connection) -> Result<(), IndexError> {
@@ -987,46 +1119,61 @@ pub(super) fn require_unbound(connection: &Connection) -> Result<(), IndexError>
     }
 }
 
-type StoredNamespaceRow = (i64, Vec<u8>, Vec<u8>);
-
 pub(super) fn bound_namespace(
     connection: &Connection,
 ) -> Result<ObjectNamespaceBinding, IndexError> {
-    // The CASE arms keep oversized bodies out of Rust while one statement
-    // authenticates the shape and the exact bytes from the same row snapshot.
-    let row: Option<Result<StoredNamespaceRow, IndexError>> = cached_query_row(
-        connection,
-        "SELECT length(payload),length(row_digest),
+    namespace_binding(connection)?
+        .ok_or_else(|| IndexError::BackendViolation("managed namespace is unbound".into()))
+}
+
+fn namespace_binding(connection: &Connection) -> Result<Option<ObjectNamespaceBinding>, IndexError> {
+    // At most two rows are needed to detect catalog damage. Borrow the
+    // bounded payload and checksum from the same snapshot as the row count.
+    let mut statement = connection
+        .prepare_cached("SELECT length(payload),length(row_digest),
                 CASE WHEN length(payload) BETWEEN 1 AND 256 AND length(row_digest)=32 THEN payload END,
-                CASE WHEN length(payload) BETWEEN 1 AND 256 AND length(row_digest)=32 THEN row_digest END
-         FROM native_gc_namespace_v1 WHERE singleton=1",
-        [],
-        |record| {
-            let size: i64 = record.get(0)?;
-            let checksum_len: i64 = record.get(1)?;
-            if !(1..=256).contains(&size) || checksum_len != 32 {
-                return Ok(Err(IndexError::Storage(
-                    "managed namespace binding shape mismatch".into(),
-                )));
-            }
-            Ok(Ok((size, record.get(2)?, record.get(3)?)))
-        },
-    )
-    .optional()
-    .map_err(|error| sql(&error))?;
-    let Some(row) = row else {
-        return Err(IndexError::BackendViolation(
-            "managed namespace is unbound".into(),
+                CASE WHEN length(payload) BETWEEN 1 AND 256 AND length(row_digest)=32 THEN row_digest END,
+                singleton FROM native_gc_namespace_v1 LIMIT 2")
+        .map_err(|error| sql(&error))?;
+    let mut rows = statement.query([]).map_err(|error| sql(&error))?;
+    let Some(record) = rows.next().map_err(|error| sql(&error))? else {
+        return Ok(None);
+    };
+    let binding = decode_namespace_binding(record);
+    if rows.next().map_err(|error| sql(&error))?.is_some() {
+        return Err(IndexError::Storage(
+            "managed namespace binding count invalid".into(),
+        ));
+    }
+    binding.map(Some)
+}
+
+fn decode_namespace_binding(record: &rusqlite::Row<'_>) -> Result<ObjectNamespaceBinding, IndexError> {
+    use rusqlite::types::ValueRef;
+
+    let singleton: i64 = record.get(4).map_err(|error| sql(&error))?;
+    let size: i64 = record.get(0).map_err(|error| sql(&error))?;
+    let checksum_len: i64 = record.get(1).map_err(|error| sql(&error))?;
+    if singleton != 1 || !(1..=256).contains(&size) || checksum_len != 32 {
+        return Err(IndexError::Storage(
+            "managed namespace binding shape mismatch".into(),
+        ));
+    }
+    let (ValueRef::Blob(payload), ValueRef::Blob(checksum)) = (
+        record.get_ref(2).map_err(|error| sql(&error))?,
+        record.get_ref(3).map_err(|error| sql(&error))?,
+    ) else {
+        return Err(IndexError::Storage(
+            "managed namespace binding shape mismatch".into(),
         ));
     };
-    let (size, payload, checksum) = row?;
     if payload.len() != usize::try_from(size).map_err(|_error| IndexError::ResourceLimited)? {
         return Err(IndexError::Storage(
             "managed namespace binding changed".into(),
         ));
     }
-    check_digest(b"qidx.native.gc.namespace.v1", &payload, &checksum)?;
-    let values: (u64, u64, u64, u64, u64, u64) = decode(&payload)?;
+    check_digest(b"qidx.native.gc.namespace.v1", payload, checksum)?;
+    let values: (u64, u64, u64, u64, u64, u64) = decode(payload)?;
     Ok(ObjectNamespaceBinding {
         root_device: values.0,
         root_inode: values.1,

@@ -59,6 +59,12 @@ description = "Quiet self-hosted Linux bench host (lease + capture-time load sam
 required_for = ["dsl-warm", "dsl-cold"]
 status = "blocked-outside-repo"
 
+[external_inputs.native-file-execution-plan]
+owner = "F3"
+description = "Frozen composite source, blind query pack, qrels, policy and binaries plus a live Native socket/view and three index instances."
+required_for = ["native-file-sdk-capture"]
+status = "blocked-outside-repo"
+
 # --------------------------------------------------------------------------
 # Producers. Allowlisted invocation owners only; no arbitrary shell fragments.
 # --------------------------------------------------------------------------
@@ -178,11 +184,11 @@ recipe = "retrieval-contract-proof"
 requires_out = true
 outputs = []
 
-[producers.scan-vs-index]
+[producers.native-file-sdk-capture]
 kind = "python-module"
-module = "tools/benchmark/run_scan_vs_index.py"
+module = "tools/benchmark/native_file_capture.py"
 argv = []
-outputs = ["artifacts/experiments/scan-vs-index/*.json"]
+outputs = []
 
 # --------------------------------------------------------------------------
 # Validators. Structural/shape/refusal owners; never metric scorers.
@@ -201,6 +207,11 @@ argv = ["validate"]
 kind = "python-module"
 module = "tools/benchmark/retrieval/portable_proof.py"
 argv = ["verify", "--receipt"]
+
+[validators.native-file-sdk-capture]
+kind = "python-module"
+module = "tools/benchmark/native_file_capture.py"
+argv = ["validate"]
 
 [validators.retrieval-pair]
 kind = "python-module"
@@ -521,6 +532,22 @@ baseline = "none"
 native_schema = "retrieval-execution-context:v2"
 authority = "registry"
 
+[families.native-file-sdk-capture]
+title = "Controlled Native file SDK capture"
+purpose = "retrieval"
+payload = "proof"
+result_unit = "count"
+producer = "native-file-sdk-capture"
+validator = "native-file-sdk-capture"
+scorer = "none"
+closure = "retrieval"
+host_policy = "any"
+gate_tier = "contract"
+sample_floor = 0
+baseline = "none"
+native_schema = "native-file-sdk-capture:v1"
+authority = "registry"
+
 [families.retrieval-contract]
 title = "Quanta retrieval contract proof (context-bound receipts)"
 purpose = "retrieval"
@@ -590,7 +617,7 @@ title = "Recorded scan-vs-index scaling experiment"
 purpose = "recorded-experiment"
 payload = "recorded_experiment"
 result_unit = "ms"
-producer = "scan-vs-index"
+producer = "none"
 validator = "evidence-protocol"
 scorer = "none"
 closure = "benchmark-control-plane"
@@ -648,6 +675,10 @@ families = ["micro-lq-norm-pipeline", "micro-searchd-runtime-dsl-query-matrix"]
 [profiles.retrieval-contract]
 description = "Retrieval SDK and contract proof rails"
 families = ["retrieval-sdk", "retrieval-contract"]
+
+[profiles.native-file-capture]
+description = "Owned Native SDK capture execution and raw custody; no product or relevance admission"
+families = ["native-file-sdk-capture"]
 
 [profiles.retrieval-diagnostic]
 description = "Retrieval paired capture diagnostics; requires external corpus"

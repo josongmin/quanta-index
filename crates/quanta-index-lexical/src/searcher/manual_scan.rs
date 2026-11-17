@@ -35,6 +35,55 @@ use tantivy::query::{AllQuery, BooleanQuery, EnableScoring, Occur, Query, TermQu
 use tantivy::schema::{IndexRecordOption, TantivyDocument};
 use tantivy::{DocAddress, Term};
 
+/// Match dedicated stored name authority on the unindexed Symbol route.
+pub(crate) fn exact_symbol_name_matches(
+    fields: &crate::SchemaFields,
+    doc: &tantivy::schema::TantivyDocument,
+    name: &str,
+    args: &[LqPredicateArg],
+    options: &quanta_index_contract::LqOptions,
+) -> Result<Option<bool>, quanta_index_core::CoreError> {
+    use quanta_index_core::{CoreError, LexicalPredicateV1};
+    use tantivy::schema::Value as _;
+    let Some(predicate) = LexicalPredicateV1::from_canonical_name(name) else {
+        return Ok(None);
+    };
+    let Some(wanted) = predicate.exact_symbol_name_argument(args)? else {
+        return Ok(None);
+    };
+    let field = match predicate {
+        LexicalPredicateV1::SymbolLocalNameExact => fields.symbol_local_name,
+        LexicalPredicateV1::SymbolQualifiedNameExact => fields.symbol_qualified_name,
+        LexicalPredicateV1::FileContains
+        | LexicalPredicateV1::FileHasContent
+        | LexicalPredicateV1::RepoHasFile
+        | LexicalPredicateV1::RepoHasContent
+        | LexicalPredicateV1::RepoHasCommitAfter
+        | LexicalPredicateV1::RepoHasMeta
+        | LexicalPredicateV1::RepoHasTopic
+        | LexicalPredicateV1::RepoHasDescription
+        | LexicalPredicateV1::FileHasOwner
+        | LexicalPredicateV1::FileHasContributor
+        | LexicalPredicateV1::SymbolHasName => return Ok(None),
+    };
+    let malformed = || {
+        CoreError::Storage(format!(
+            "lexical: missing, duplicate or noncanonical stored authority for {name}"
+        ))
+    };
+    let mut values = doc.get_all(field);
+    let value = values.next().ok_or_else(malformed)?;
+    let actual = value.as_str().ok_or_else(malformed)?;
+    if values.next().is_some() || crate::normalize::nfc(actual).as_ref() != actual {
+        return Err(malformed());
+    }
+    let wanted = crate::normalize::nfc(wanted);
+    Ok(Some(
+        crate::normalize::apply_case(actual, options.case_mode())
+            == crate::normalize::apply_case(&wanted, options.case_mode()),
+    ))
+}
+
 /// Identity rows keep the exact sealed document address through grouping and
 /// ranking. Rendering never re-resolves an ID that another source may reuse.
 pub(crate) struct ManualRankedCandidate<T> {
@@ -763,7 +812,7 @@ impl TantivySearcher {
                         )
                     }) =>
             {
-                crate::symbol::exact_symbol_name_matches(
+                exact_symbol_name_matches(
                     &self.fields,
                     view.doc,
                     name,
@@ -1504,5 +1553,58 @@ mod stored_authority_tests {
         let mut doc = TantivyDocument::new();
         doc.add_text(kind, "unknown");
         assert!(stored_doc_kind(&doc, kind).is_err());
+    }
+}
+
+#[cfg(test)]
+mod l3_exact_manual_tests {
+    #![expect(clippy::panic_in_result_fn, reason = "assertions are test failure reporting")]
+    use super::*;
+    use tantivy::{TantivyDocument, doc};
+
+    #[test]
+    fn l3_manual_exact_names_require_one_canonical_stored_value()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fields = crate::SchemaFields::build();
+        let args = [LqPredicateArg::Keyword("CAFE\u{301}".into())];
+        let options = LqOptions::defaults();
+        let valid =
+            doc!(fields.symbol_local_name => "Café", fields.symbol_qualified_name => "One::Café");
+        assert_eq!(
+            exact_symbol_name_matches(&fields, &valid, "symbol.local_name.exact", &args, &options)?,
+            Some(true)
+        );
+        assert_eq!(
+            exact_symbol_name_matches(
+                &fields,
+                &valid,
+                "symbol.qualified_name.exact",
+                &args,
+                &options
+            )?,
+            Some(false)
+        );
+        assert_eq!(
+            exact_symbol_name_matches(&fields, &valid, "symbol.has.name", &args, &options)?,
+            None
+        );
+        for malformed in [
+            TantivyDocument::default(),
+            doc!(fields.symbol_local_name => "Café", fields.symbol_local_name => "Other"),
+            doc!(fields.symbol_local_name => 7_u64),
+            doc!(fields.symbol_local_name => "Cafe\u{301}"),
+        ] {
+            assert!(matches!(
+                exact_symbol_name_matches(
+                    &fields,
+                    &malformed,
+                    "symbol.local_name.exact",
+                    &args,
+                    &options
+                ),
+                Err(quanta_index_core::CoreError::Storage(_))
+            ));
+        }
+        Ok(())
     }
 }

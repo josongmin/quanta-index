@@ -143,6 +143,152 @@ where
     canonical_batch_digest_body(body, progress)
 }
 
+/// Advance a retained producer History position with the exact original body
+/// and ACK. The durable sequence comes from the ACK, not the History ordinal.
+/// Scope and receipt authenticity remain the caller's responsibility.
+pub fn history_replay_advance_with_progress_v1<E>(
+    before: quanta_index_contract::index::Digest,
+    ordinal: u64,
+    batch: &quanta_index_contract::HistoryIngestBatch,
+    ack: &quanta_index_contract::BatchPublishReceipt,
+    progress: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<quanta_index_contract::index::Digest, CanonicalBatchDigestProgressError<E>> {
+    let body = history_record_cbor_digest(batch, progress)?;
+    let receipt = history_record_cbor_digest(ack, progress)?;
+    let mut writer = HashWriter {
+        hasher: Sha256::new(),
+        progress,
+        interrupted: None,
+    };
+    let ordinal = ordinal.to_le_bytes();
+    let sequence = ack.durable_sequence.to_le_bytes();
+    let parts: [&[u8]; 6] = [
+        b"qidx.history.producer.replay.advance.v1\0",
+        &before.0,
+        &ordinal,
+        &sequence,
+        &body,
+        &receipt,
+    ];
+    for part in parts {
+        writer
+            .hash_header(part)
+            .map_err(CanonicalBatchDigestProgressError::Progress)?;
+    }
+    Ok(quanta_index_contract::index::Digest(
+        writer.hasher.finalize().into(),
+    ))
+}
+
+/// Start an inventory at its first retained original. This scopes the replay
+/// chain; only physical Catalog and producer custody can prove completeness.
+/// Scope fields are writer state root, workspace root, contract, repo and revision.
+pub fn history_replay_genesis_with_progress_v1<E>(
+    scope: [&str; 5],
+    batch: &quanta_index_contract::HistoryIngestBatch,
+    ack: &quanta_index_contract::BatchPublishReceipt,
+    progress: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<quanta_index_contract::index::Digest, CanonicalBatchDigestProgressError<E>> {
+    let body = history_record_cbor_digest(batch, progress)?;
+    let receipt = history_record_cbor_digest(ack, progress)?;
+    let mut writer = HashWriter {
+        hasher: Sha256::new(),
+        progress,
+        interrupted: None,
+    };
+    let map = CanonicalBatchDigestProgressError::Progress;
+    writer
+        .hash_header(b"qidx.history.producer.replay.genesis.v1\0")
+        .map_err(map)?;
+    hash_history_scope(&mut writer, scope)?;
+    writer
+        .hash_header(&batch.generation.get().to_le_bytes())
+        .map_err(map)?;
+    writer
+        .hash_header(&ack.durable_sequence.to_le_bytes())
+        .map_err(map)?;
+    writer.hash_header(&body).map_err(map)?;
+    writer.hash_header(&receipt).map_err(map)?;
+    Ok(quanta_index_contract::index::Digest(
+        writer.hasher.finalize().into(),
+    ))
+}
+
+/// Establish a fresh producer replay position for a fully observed Legacy
+/// snapshot. The caller must hold producer and Catalog custody and supply the
+/// actual terminal ACK. This commitment conveys no write authority.
+/// Scope is writer root, workspace root, contract key, and Legacy state root.
+pub fn history_snapshot_checkpoint_replay_with_progress_v1<E>(
+    scope: [&str; 4],
+    generation: &quanta_index_contract::index::AuxiliaryGenerationKeyV1,
+    epoch: quanta_index_contract::AuxEpochV1,
+    snapshot: quanta_index_contract::index::Digest,
+    ack: &quanta_index_contract::BatchPublishReceipt,
+    progress: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<quanta_index_contract::index::Digest, CanonicalBatchDigestProgressError<E>> {
+    let ack_digest = history_record_cbor_digest(ack, progress)?;
+    let mut writer = HashWriter {
+        hasher: Sha256::new(),
+        progress,
+        interrupted: None,
+    };
+    let map = CanonicalBatchDigestProgressError::Progress;
+    writer
+        .hash_header(b"qidx.history.producer.snapshot.checkpoint.v1\0")
+        .map_err(map)?;
+    hash_history_scope(&mut writer, scope)?;
+    hash_history_scope(
+        &mut writer,
+        [generation.repo_id.as_str(), generation.revision_id.as_str()],
+    )?;
+    for part in [
+        &generation.generation.get().to_le_bytes()[..],
+        &epoch.get().to_le_bytes(),
+        &snapshot.0,
+        &ack_digest,
+    ] {
+        writer.hash_header(part).map_err(map)?;
+    }
+    Ok(quanta_index_contract::index::Digest(writer.hasher.finalize().into()))
+}
+
+fn hash_history_scope<'a, E>(
+    writer: &mut HashWriter<'_, E, impl FnMut(usize) -> Result<(), E>>,
+    scope: impl IntoIterator<Item = &'a str>,
+) -> Result<(), CanonicalBatchDigestProgressError<E>> {
+    for value in scope {
+        let length = u64::try_from(value.len()).map_err(|_| {
+            CanonicalBatchDigestProgressError::Encode(IpcError::Encode(
+                "History replay scope length overflow".into(),
+            ))
+        })?;
+        writer.hash_header(&length.to_le_bytes())
+            .map_err(CanonicalBatchDigestProgressError::Progress)?;
+        writer.hash_header(value.as_bytes())
+            .map_err(CanonicalBatchDigestProgressError::Progress)?;
+    }
+    Ok(())
+}
+
+fn history_record_cbor_digest<E>(
+    value: &impl Serialize,
+    progress: &mut impl FnMut(usize) -> Result<(), E>,
+) -> Result<[u8; 32], CanonicalBatchDigestProgressError<E>> {
+    let mut writer = HashWriter {
+        hasher: Sha256::new(),
+        progress,
+        interrupted: None,
+    };
+    let encoded = ciborium::into_writer(value, &mut writer);
+    if let Some(cause) = writer.interrupted.take() {
+        return Err(CanonicalBatchDigestProgressError::Progress(cause));
+    }
+    encoded.map_err(|error| {
+        CanonicalBatchDigestProgressError::Encode(IpcError::Encode(error.to_string()))
+    })?;
+    Ok(writer.hasher.finalize().into())
+}
+
 /// The canonical digest of `body`'s route and content, as raw bytes.
 ///
 /// Fails only when the body cannot be encoded, which the caller treats as

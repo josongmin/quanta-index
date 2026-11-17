@@ -6,13 +6,14 @@ Decided: 2026-05-27
 
 Consolidated: 2026-09-27
 
-Implementation note (2026-10-08): optional source preparation is integrated in
-local main `433a9363`, using the existing `SearchCorpusBatch` primitive. The
-breaking `publish_outcome`, `activate_published`, and `SdkError::AfterPublish`
-contract remains on `codex/sdk-preparation-final`; paired Semantica Runtime
-acceptance is pending. Main retains `ActivationAfterPublish`; CLI and benchmark
-consumers now handle it (`c75668c7`). See
-[OCT-04-003](OCT-04-003-source-preparation-sdk.md#remaining-coupled-integration).
+Source/scope update (2026-11-12): the namespace and separate activation lifecycle
+below describe the Legacy generation client. Current Index source contains
+optional preparation, `publish_outcome`, `activate_published` and
+`SdkError::AfterPublish`; the older isolated-branch description is historical.
+[OCT-04-003](OCT-04-003-source-preparation-sdk.md) retains the Index integration
+record and separate consumer/release acceptance. Explicit Native selected views
+follow [NOV-12-001](NOV-12-001-native-query-and-semantic-engine.md). Source
+presence does not qualify paired Semantica, installed or default migration.
 
 Source programs: May-24 lexical/indexing closeout and May-25 SDK/ingest IPC
 cutover
@@ -66,11 +67,11 @@ returned receipt and response correspond to the request it sent.
 Publish, seal, activation and query visibility are separate service operations
 and claims. Activation uses an explicit compare-and-swap lifecycle.
 
-Main `433a9363` exposes `SearchCorpusNamespace::publish` and
+Current source exposes `SearchCorpusNamespace::publish` and
 `publish_and_activate`; verified post-publication failures retain original
-evidence in `ActivationAfterPublish`. These calls are not atomic.
+evidence in `SdkError::AfterPublish`. These calls are not atomic.
 
-**Isolated breaking candidate:**
+**Implemented evidence and activation surface:**
 `SearchCorpusNamespace::publish_outcome(&batch)` returns the validated
 `SearchCorpusPublishOutcome` with the original
 `SourcePublicationBinding` and committed `BatchPublishReceipt`. This matters for

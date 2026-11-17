@@ -36,16 +36,28 @@ impl<T> MapBuffer<T> {
             .len()
             .checked_add(additional)
             .ok_or(IndexError::ResourceLimited)?;
-        if needed > self.maximum {
+        Self::capacity_for(self.capacity(), needed, self.maximum)
+    }
+
+    pub(super) fn capacity(&self) -> usize {
+        self.values.capacity()
+    }
+
+    /// Requested geometric capacity for the next prefix of a buffer.
+    pub(super) fn capacity_for(
+        current: usize,
+        needed: usize,
+        maximum: usize,
+    ) -> Result<usize, IndexError> {
+        if needed > maximum {
             return Err(IndexError::ResourceLimited);
         }
-        if needed <= self.values.capacity() {
-            return Ok(self.values.capacity());
+        if needed <= current {
+            return Ok(current);
         }
-        self.values
-            .capacity()
+        current
             .checked_mul(2)
-            .map(|capacity| capacity.max(needed).min(self.maximum))
+            .map(|capacity| capacity.max(needed).min(maximum))
             .ok_or(IndexError::ResourceLimited)
     }
 

@@ -156,7 +156,8 @@ fn publish_and_activate(
 ) -> Result<SearchCorpusActiveHeadV1, Box<dyn Error>> {
     let (_receipt, activation) = client
         .search_corpus()
-        .publish_and_activate(&batch(generation)?, expected_active)?;
+        .publish_and_activate(&batch(generation)?, expected_active)
+        .map_err(|error| format!("seed generation {generation} publish and activate: {error}"))?;
     Ok(activation.active)
 }
 
@@ -292,7 +293,7 @@ fn publish_through_a_crash(
     let _configured = command.env(CRASH_POINT_ENV, point);
     let mut child = command.spawn()?;
     wait_for_sockets(state_root, &mut child)?;
-    let crashing = QuantaIndex::connect(ConnectOptions::from_state_root(state_root))?;
+    let crashing = QuantaIndex::connect_legacy(ConnectOptions::from_state_root(state_root))?;
     if let Ok(receipt) = crashing.search_corpus().publish(&batch(generation)?) {
         terminate_child(&mut child)?;
         return Err(format!(
@@ -578,7 +579,10 @@ fn a_gc_crash(case: &GcCase) -> TestResult {
     let client = restarted.connect()?;
     retained_whole_and_retired_unknown(&state_root, &client)?;
 
-    let _retried = client.search_corpus().publish(&batch(4)?)?;
+    let _retried = client
+        .search_corpus()
+        .publish(&batch(4)?)
+        .map_err(|error| format!("generation 4 publish after restart: {error}"))?;
     for track_root in TRACK_ROOTS {
         if generation_dir(&state_root, track_root, RETIRED).exists() {
             return Err(format!(

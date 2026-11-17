@@ -8,6 +8,12 @@ This table is the compact implementation contract for S21-01 through S21-13. The
 full semantics. Completed recovery/custody extensions are owned by
 [SEP-27-005](SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
 
+Scope clarification (2026-11-12): concrete generation/RepoMap DTO, layout and
+activation rows describe the Legacy family. Explicit Native identities and
+selected-view publication follow the [Native RFC](../rfc/oct-10-native-incremental-vnext.md)
+and [NOV-12-001](NOV-12-001-native-query-and-semantic-engine.md). Shared custody,
+typed-error and proof requirements retain their original force for each family.
+
 | ID | Frozen value | Owner | Blocking consumers |
 |---|---|---|---|
 | D-ID-01 | UTF-8 already-NFC, case-sensitive, 1..=512 bytes, controls rejected | contract-base IDs | S21-01 |

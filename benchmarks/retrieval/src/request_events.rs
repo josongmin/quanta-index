@@ -36,7 +36,7 @@ pub(crate) struct PublishTimeoutCapture {
 
 impl PublishTimeoutCapture {
     pub(crate) fn begin(state_root: &Path) -> BenchResult<Self> {
-        let client = QuantaIndex::connect(
+        let client = QuantaIndex::connect_legacy(
             ConnectOptions::from_state_root(state_root)
                 .with_request_io_timeout(Duration::from_secs(1)),
         )
@@ -166,7 +166,22 @@ fn active_ingest_since(
             | ProcessRequestEventStageV1::Panicked => {
                 let _removed = active.remove(&key);
             }
-            _ => {}
+            ProcessRequestEventStageV1::Validated
+            | ProcessRequestEventStageV1::ShuttingDown
+            | ProcessRequestEventStageV1::QueueAdmitted
+            | ProcessRequestEventStageV1::QueueRefusedGlobal
+            | ProcessRequestEventStageV1::QueueRefusedRepository
+            | ProcessRequestEventStageV1::DispatchStarted
+            | ProcessRequestEventStageV1::BackendReturned
+            | ProcessRequestEventStageV1::BackendOutcome
+            | ProcessRequestEventStageV1::ProviderStarted
+            | ProcessRequestEventStageV1::ProviderReturned
+            | ProcessRequestEventStageV1::IngestWindowStarted
+            | ProcessRequestEventStageV1::IngestWindowReturned
+            | ProcessRequestEventStageV1::PeerWatchFailed
+            | ProcessRequestEventStageV1::ResponseEncodeFailed
+            | ProcessRequestEventStageV1::ResponseWriteFailed
+            | ProcessRequestEventStageV1::ResponseWritten => {}
         }
     }
     Ok(active)

@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write as _;
 use std::os::unix::{
     fs::{OpenOptionsExt as _, PermissionsExt as _},
     net::UnixStream,
@@ -15,18 +16,21 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result};
 use quanta_index_contract::index::{
     CatalogView, CollectionId, Digest, GroupActivation, IndexInstanceId, IndexKind, IndexProfile,
-    InputDomain, InstanceSpec, OperationKey, OwnerKey, OwnerMutation, ProducerId,
-    PublicationGroupId, SchemaId, SlotId, SourceEvent, SourceInput, SourceTextAdmission,
-    SourceTransition, StableOwnerId, StorageFormatId, StreamId, TenantId, UpdateKind,
-    UpdateRequest, ViewRef, ViewSelection, WorkspaceKey, WorktreeId,
+    InputDomain, InstanceSpec, ObjectRef, OperationKey, OwnerKey, OwnerMutation, ProducerId,
+    PublicationGroupId, SchemaId, SlotId, SourceEvent, SourceTextAdmission, SourceTransition,
+    StableOwnerId, StorageFormatId, StreamId, TenantId, UpdateKind, UpdateRequest, ViewRef,
+    ViewSelection, WorkspaceKey, WorktreeId,
 };
 use quanta_index_contract::native_protocol::{
     NativeIndexRequest, NativeIndexResponse, NativeReadSessionStatus,
 };
 use quanta_index_contract::{QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax};
 use quanta_index_core::RequestBudgetV1;
+use quanta_index_ipc::{KernelPeerCredentials, PeerCredentialsSource as _};
 use quanta_index_lexical::native::TextRecipe;
-use quanta_index_sdk::native_uds::{MAX_NATIVE_STAGE_SOURCES_INPUTS, NativeUdsClient};
+use quanta_index_sdk::native_uds::{
+    BorrowedSourceInput, MAX_NATIVE_STAGE_SOURCES_INPUTS, NativeUdsClient,
+};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
@@ -55,19 +59,49 @@ mod child_trace;
 mod corpus;
 #[path = "native_index/daemon_diagnostic.rs"]
 mod daemon_diagnostic;
+#[path = "native_index/dsl_artifact.rs"]
+mod dsl_artifact;
+#[path = "native_index/dsl_history.rs"]
+mod dsl_history;
+#[path = "native_index/dsl_text.rs"]
+mod dsl_text;
 #[path = "native_index/mixed_load.rs"]
 mod mixed_load;
 #[path = "native_index/retained_read.rs"]
 mod retained_read;
-pub use corpus::{NativeCorpusInput, measure_native_corpus};
-
-use super::{
-    BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
-    LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily,
-    ScaleSourceBinding, ScaleTier, config_digest, directory_bytes, file_query_token,
-    generate_scoped_corpus, params_for, scoped_corpus_digest, stage_or_preserve,
-    tier_manifest_json,
+pub use corpus::{
+    NativeCorpusInput, NativeSemanticCorpusInput, measure_native_corpus,
+    measure_native_corpus_with_semantic,
 };
+pub use dsl_artifact::assemble_native_dsl_artifact;
+pub use dsl_history::{
+    measure_cold_native_dsl_history, measure_native_dsl_history,
+    measure_reopened_native_dsl_history,
+};
+pub use dsl_text::{NativeDslTiming, measure_native_dsl_text};
+
+/// The supported Native DSL scenarios from the canonical benchmark registry.
+pub fn native_dsl_scenario_roster() -> Value {
+    let text = crate::scenarios::NATIVE_TEXT_FILE_SCENARIOS
+        .iter()
+        .map(|(id, _)| *id)
+        .collect::<Vec<_>>();
+    let history = crate::scenarios::SCENARIOS
+        .iter()
+        .filter(|scenario| scenario.fixture == crate::scenarios::FixtureKind::HistoryLedger)
+        .map(|scenario| scenario.id)
+        .collect::<Vec<_>>();
+    json!({"text": text, "history": history})
+}
+
+use crate::artifact::{
+    BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
+    LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest,
+    directory_bytes,
+};
+use crate::scale_failure::stage_or_preserve;
+use crate::scale_provenance::{ScaleSourceBinding, scoped_corpus_digest, tier_manifest_json};
+use crate::source_fixture::{ScaleTier, file_query_token, generate_scoped_corpus, params_for};
 
 const DIMENSION: &str = "scale-index-native";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
@@ -82,6 +116,39 @@ pub struct NativePhase {
     pub root_bytes_after: Option<u64>,
     pub observer_ms: f64,
     pub completed: bool,
+}
+
+struct StagePageProgress {
+    started: Instant,
+    observer_time: Duration,
+}
+
+impl StagePageProgress {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            observer_time: Duration::ZERO,
+        }
+    }
+
+    fn elapsed_ms(&self) -> u128 {
+        self.started
+            .elapsed()
+            .saturating_sub(self.observer_time)
+            .as_millis()
+    }
+
+    fn write(&mut self, marker: std::fmt::Arguments<'_>) {
+        let started = Instant::now();
+        let _ignored = writeln!(std::io::stderr().lock(), "{marker}");
+        self.observer_time = self.observer_time.saturating_add(started.elapsed());
+    }
+
+    fn account(&self, phase: &mut NativePhase) {
+        let observer_ms = (self.observer_time.as_secs_f64() * 1_000.0).min(phase.wall_ms);
+        phase.wall_ms -= observer_ms;
+        phase.observer_ms += observer_ms;
+    }
 }
 
 #[derive(Debug)]
@@ -278,7 +345,17 @@ impl<'a> NativeDaemon<'a> {
             .checked_add(START_TIMEOUT)
             .context("native startup deadline overflow")?;
         loop {
-            if UnixStream::connect(socket).is_ok() {
+            if let Ok(stream) = UnixStream::connect(socket) {
+                let peer = KernelPeerCredentials
+                    .peer_credentials(&stream)
+                    .context("read native daemon readiness peer credentials")?;
+                if let Some(pid) = peer.pid {
+                    anyhow::ensure!(
+                        pid == daemon.child.id(),
+                        "native daemon readiness socket belongs to PID {pid}, expected child {}",
+                        daemon.child.id(),
+                    );
+                }
                 binary
                     .verify()
                     .context("native executable changed during startup")?;
@@ -360,17 +437,28 @@ fn operation(sequence: u64) -> OperationKey {
 }
 
 fn owner(index: usize) -> Result<OwnerKey> {
-    Ok(OwnerKey {
+    let ordinal = index
+        .checked_add(1)
+        .context("native owner ordinal overflow")?;
+    Ok(owner_at_ordinal(u128::try_from(ordinal)?))
+}
+
+fn owner_at_ordinal(ordinal: u128) -> OwnerKey {
+    OwnerKey {
         producer: operation(1).producer,
-        stable_id: StableOwnerId(
-            u128::try_from(
-                index
-                    .checked_add(1)
-                    .context("native owner ordinal overflow")?,
-            )?
-            .to_be_bytes(),
-        ),
-    })
+        stable_id: StableOwnerId(ordinal.to_be_bytes()),
+    }
+}
+
+fn cold_source_mutations(refs: &[ObjectRef]) -> Result<impl Iterator<Item = OwnerMutation> + '_> {
+    let count = u64::try_from(refs.len())?;
+    Ok((1..=count)
+        .zip(refs)
+        .map(|(ordinal, reference)| OwnerMutation {
+            owner: owner_at_ordinal(u128::from(ordinal)),
+            expected: None,
+            next: Some(*reference),
+        }))
 }
 
 fn text_spec() -> InstanceSpec {
@@ -384,6 +472,48 @@ fn text_spec() -> InstanceSpec {
         policy: TextRecipe::new(Digest([31; 32])).output_policy(),
         format: StorageFormatId([75; 16]),
     }
+}
+
+fn create_workspace(client: &NativeUdsClient) -> Result<ViewRef> {
+    let response = client.request(
+        NativeIndexRequest::CreateWorkspace {
+            workspace: workspace(),
+            epoch: 1,
+        },
+        &budget(),
+    )?;
+    let NativeIndexResponse::Created(view) = response else {
+        anyhow::bail!("native workspace creation reply: {response:?}");
+    };
+    Ok(view)
+}
+
+fn configure_text_index(
+    client: &NativeUdsClient,
+    genesis: ViewRef,
+    publication: &mut PublicationAudit,
+) -> Result<ViewRef> {
+    let ingress = client.begin_input(operation(1), &budget())?;
+    let profile = client.stage_profile(
+        ingress,
+        IndexProfile {
+            instances: vec![text_spec()],
+        },
+        &budget(),
+    )?;
+    publication::publish(
+        client,
+        UpdateRequest {
+            operation: operation(1),
+            expected_view: genesis,
+            kind: UpdateKind::Reconfigure { profile },
+        },
+        PublicationLabel {
+            phase: "profile_configure",
+            cycle: None,
+        },
+        publication,
+    )
 }
 
 fn budget() -> RequestBudgetV1 {
@@ -989,84 +1119,84 @@ fn measure_native_inner(
     let client = NativeUdsClient::new(socket.clone());
     let run = (|| -> Result<(NativeIndexMeasurement, ViewRef)> {
         let genesis = timed("workspace_create", &root, &mut phases, trace, || {
-            let response = client.request(
-                NativeIndexRequest::CreateWorkspace {
-                    workspace: workspace(),
-                    epoch: 1,
-                },
-                &budget(),
-            )?;
-            let NativeIndexResponse::Created(view) = response else {
-                anyhow::bail!("native workspace creation reply: {response:?}");
-            };
-            Ok(view)
+            create_workspace(&client)
         })?;
         let configured_view = timed("profile_configure", &root, &mut phases, trace, || {
-            let ingress = client.begin_input(operation(1), &budget())?;
-            let profile = client.stage_profile(
-                ingress,
-                IndexProfile {
-                    instances: vec![text_spec()],
-                },
-                &budget(),
-            )?;
-            publication::publish(
-                &client,
-                UpdateRequest {
-                    operation: operation(1),
-                    expected_view: genesis,
-                    kind: UpdateKind::Reconfigure { profile },
-                },
-                PublicationLabel {
-                    phase: "profile_configure",
-                    cycle: None,
-                },
-                &mut publication,
-            )
+            configure_text_index(&client, genesis, &mut publication)
         })?;
         let ingress = timed("full_begin_input", &root, &mut phases, trace, || {
             Ok(client.begin_input(operation(2), &budget())?)
         })?;
+        let mut stage_progress = None;
         let refs = timed("full_stage_sources", &root, &mut phases, trace, || {
             let mut refs = Vec::with_capacity(corpus.len());
-            for page in corpus.chunks(MAX_NATIVE_STAGE_SOURCES_INPUTS) {
-                let staged = client.stage_sources(
-                    ingress,
-                    page.iter()
-                        .map(|file| SourceInput {
-                            path: format!("{}/{}", file.source_repo_id, file.repo_relative_path),
-                            bytes: file.content.as_bytes().to_vec(),
-                            text: SourceTextAdmission::Utf8 {
-                                policy: Digest([31; 32]),
-                            },
-                        })
-                        .collect(),
-                    &budget(),
-                )?;
+            stage_progress = trace.enabled().then(StagePageProgress::new);
+            let total_pages = stage_progress
+                .as_ref()
+                .map(|_| corpus.len().div_ceil(MAX_NATIVE_STAGE_SOURCES_INPUTS));
+            for (page_index, page) in corpus.chunks(MAX_NATIVE_STAGE_SOURCES_INPUTS).enumerate() {
+                let begin_ms = stage_progress.as_ref().map(StagePageProgress::elapsed_ms);
+                if let (Some(total_pages), Some(begin_ms), Some(progress)) =
+                    (total_pages, begin_ms, stage_progress.as_mut())
+                {
+                    progress.write(format_args!(
+                        "{{\"event\":\"native_stage_sources_page\",\"state\":\"begin\",\"page\":{},\"total_pages\":{},\"sources\":{},\"stage_elapsed_ms\":{}}}",
+                        page_index + 1,
+                        total_pages,
+                        page.len(),
+                        begin_ms,
+                    ));
+                }
+                // Keep the owned path strings alive for this bounded page while
+                // the existing SDK transport borrows corpus bytes through ACK.
+                let paths = page
+                    .iter()
+                    .map(|file| format!("{}/{}", file.source_repo_id, file.repo_relative_path))
+                    .collect::<Vec<_>>();
+                let inputs = page
+                    .iter()
+                    .zip(&paths)
+                    .map(|(file, path)| BorrowedSourceInput {
+                        path,
+                        bytes: file.content.as_bytes(),
+                        text: SourceTextAdmission::Utf8 {
+                            policy: Digest([31; 32]),
+                        },
+                    })
+                    .collect::<Vec<_>>();
+                let staged = client.stage_sources_borrowed(ingress, &inputs, &budget())?;
                 if staged.len() != page.len() {
                     anyhow::bail!("native source ACK omitted refs");
                 }
                 refs.extend(staged);
+                if let (Some(total_pages), Some(begin_ms), Some(progress)) =
+                    (total_pages, begin_ms, stage_progress.as_mut())
+                {
+                    let ack_ms = progress.elapsed_ms();
+                    progress.write(format_args!(
+                        "{{\"event\":\"native_stage_sources_page\",\"state\":\"ack\",\"page\":{},\"total_pages\":{},\"accepted_total\":{},\"stage_elapsed_ms\":{},\"page_elapsed_ms\":{}}}",
+                        page_index + 1,
+                        total_pages,
+                        refs.len(),
+                        ack_ms,
+                        ack_ms.saturating_sub(begin_ms),
+                    ));
+                }
             }
             Ok(refs)
-        })?;
+        });
+        if let (Some(progress), Some(phase)) =
+            (stage_progress, phases.get_mut("full_stage_sources"))
+        {
+            progress.account(phase);
+        }
+        let refs = refs?;
         let full_view = timed("full_event_ack", &root, &mut phases, trace, || {
-            let mutations = refs
-                .iter()
-                .enumerate()
-                .map(|(index, reference)| {
-                    Ok(OwnerMutation {
-                        owner: owner(index)?,
-                        expected: None,
-                        next: Some(*reference),
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
             advance_staged(
                 &client,
                 ingress,
                 configured_view,
-                mutations,
+                cold_source_mutations(&refs)?,
                 1,
                 PublicationLabel {
                     phase: "full_event_ack",
@@ -1639,9 +1769,9 @@ fn write_index_native_artifacts_inner(
         "backend":"index-native-configured-daemon-uds",
         "scope":"index-only-source-event-to-ACK-to-searchability",
         "trace_phase_scope":if measurement.child_trace_verified {
-            "harness work body only; excludes boundary census observer_ms; operation terminal includes observation and cleanup errors; child capture independently verifies lifecycle, IPC, build, publish and quiescent install sync"
+            "harness phase spans include inline Record staging markers; phase wall_ms excludes their measured write time and boundary census; observer_ms accounts for both; child capture independently verifies lifecycle, IPC, build, publish and quiescent install sync"
         } else {
-            "harness work body only; excludes boundary census observer_ms; operation terminal includes observation and cleanup errors; no canonical child capture verified"
+            "harness phase wall_ms excludes measured Record staging marker writes and boundary census; observer_ms accounts for both; no canonical child capture verified"
         },
         "tier":measurement.tier.as_str(), "seed":measurement.seed,
         "daemon_sha256":measurement.daemon_sha256,
@@ -1742,6 +1872,93 @@ fn write_index_native_artifacts_inner(
 #[cfg(test)]
 mod product_tests {
     use super::*;
+
+    #[test]
+    fn native_dsl_roster_uses_supported_text_and_history_scenarios() {
+        let roster = native_dsl_scenario_roster();
+        let text = roster["text"].as_array().expect("text scenario array");
+        let history = roster["history"]
+            .as_array()
+            .expect("History scenario array");
+        assert_eq!(text.len(), 7);
+        assert_eq!(history.len(), 7);
+        for id in text.iter().chain(history) {
+            let scenario = crate::scenarios::scenario_by_id(id.as_str().expect("scenario id"))
+                .expect("registered Native scenario");
+            if history.contains(id) {
+                assert_eq!(
+                    scenario.fixture,
+                    crate::scenarios::FixtureKind::HistoryLedger
+                );
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn daemon_start_refuses_a_socket_owned_by_another_process() -> Result<()> {
+        let temp = TempDir::new()?;
+        let socket = temp.path().join("foreign.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
+        let executable = NativeExecutable::capture(&fs::canonicalize("/bin/true")?)?;
+        let failure = NativeDaemon::start(
+            &executable,
+            &temp.path().join("unused.json"),
+            &socket,
+            None,
+            0,
+            &temp.path().join("daemon.stderr"),
+        )
+        .err()
+        .context("startup accepted a socket owned by the test process")?;
+        anyhow::ensure!(
+            failure
+                .to_string()
+                .contains("native daemon readiness socket belongs to PID"),
+            "unexpected startup refusal: {failure:#}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn stage_marker_time_is_charged_to_observation() -> Result<()> {
+        let progress = StagePageProgress {
+            started: Instant::now(),
+            observer_time: Duration::from_millis(25),
+        };
+        let mut phase = NativePhase {
+            wall_ms: 90.0,
+            observer_ms: 7.0,
+            root_bytes_before: None,
+            root_bytes_after: None,
+            completed: false,
+        };
+        progress.account(&mut phase);
+        anyhow::ensure!((phase.wall_ms - 65.0).abs() < 0.000_001);
+        anyhow::ensure!((phase.observer_ms - 32.0).abs() < 0.000_001);
+        anyhow::ensure!(!phase.completed, "accounting changed the failure outcome");
+        Ok(())
+    }
+
+    #[test]
+    fn cold_mutations_preserve_owner_identity_across_sdk_pages() -> Result<()> {
+        let refs = (0_u8..=128)
+            .map(|index| ObjectRef(Digest([index; 32])))
+            .collect::<Vec<_>>();
+        let mut mutations = cold_source_mutations(&refs)?;
+        for ordinal in 1_u8..=129 {
+            let mutation = mutations.next().context("cold mutation omitted")?;
+            let mut stable_id = [0; 16];
+            stable_id[15] = ordinal;
+            anyhow::ensure!(mutation.owner.producer == ProducerId([5; 16]));
+            anyhow::ensure!(mutation.owner.stable_id == StableOwnerId(stable_id));
+            anyhow::ensure!(mutation.expected.is_none());
+            anyhow::ensure!(mutation.next == Some(ObjectRef(Digest([ordinal - 1; 32]))));
+        }
+        anyhow::ensure!(mutations.next().is_none());
+        anyhow::ensure!(cold_source_mutations(&[])?.next().is_none());
+        Ok(())
+    }
 
     fn trace_rows(path: &Path) -> Result<Vec<Value>> {
         let rows: Vec<Value> = fs::read_to_string(path)?
@@ -1891,7 +2108,7 @@ mod product_tests {
             mem_bytes: 6_442_450_944,
             hostname_hash: "fixed-test-host".into(),
         };
-        super::super::write_refusal_artifact_with_context(
+        crate::scale_refusal::write_refusal_artifact_with_context(
             &binding,
             directory.path(),
             &head,
@@ -2017,7 +2234,7 @@ mod product_tests {
         // preserve existing capture context rather than replace the writer error.
         let error = measurement.with_failure_capture_paths(error);
         let binding = native_source_binding_for_failure(ScaleTier::Small, 42)?;
-        super::super::write_refusal_artifact_with_context(
+        crate::scale_refusal::write_refusal_artifact_with_context(
             &binding,
             directory.path(),
             &head,

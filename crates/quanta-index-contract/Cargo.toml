@@ -15,10 +15,12 @@ path = "src/lib.rs"
 quanta-native-identity-v1 = ["quanta-index-contract-base/quanta-native-identity-v1"]
 
 [dependencies]
+blake3 = { workspace = true }
 ciborium = { workspace = true }
 imbl = { workspace = true }
 memchr = { workspace = true }
 quanta-index-contract-base = { version = "0.1.0", path = "../quanta-index-contract-base" }
+quanta-index-lq-bridge = { version = "0.1.0", path = "../quanta-index-lq-bridge" }
 quanta-index-lq-norm = { version = "0.1.0", path = "../quanta-index-lq-norm" }
 serde = { workspace = true }
 sha2 = { workspace = true }

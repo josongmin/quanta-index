@@ -11,6 +11,7 @@ use quanta_index_core::index::{
 };
 
 use super::super::load_contribution_from_objects;
+use super::require_changed_map_root;
 
 const DIFF_PAGE: u32 = 64;
 const OWNER_KEY_BYTES: usize = 38;
@@ -257,8 +258,10 @@ pub(super) fn refresh(
             &mut page,
             context.budget,
         )?;
-        if page.rows.is_empty() && more {
-            return Err(corrupt("semantic reverse diff made no progress"));
+        if page.rows.is_empty()
+            && (more || cursor.is_some() || before.0.is_none() != after.0.is_none())
+        {
+            return Err(corrupt("semantic reverse diff lost changed owners"));
         }
         if page
             .rows
@@ -303,7 +306,11 @@ pub(super) fn refresh(
         }
         edits.seal()?;
         if !edits.edits.is_empty() {
-            root = context.apply(root, &edits.edits)?;
+            let next = require_changed_map_root(root, context.apply(root, &edits.edits)?)?;
+            if next.0.is_none() && edits.edits.iter().any(|edit| edit.next.is_some()) {
+                return Err(corrupt("semantic reverse edit returned an empty root"));
+            }
+            root = next;
         }
         cursor = page.rows.last().map(|row| row.key).or(cursor);
         if !more {

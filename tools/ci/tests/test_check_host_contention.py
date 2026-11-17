@@ -41,13 +41,54 @@ def idle_host() -> dict[str, object]:
     return {"os": "darwin", "cpu_count": 16, "load_average": [1.0, 1.0, 1.0]}
 
 
+def test_main_samples_executables_instead_of_launcher_arguments(
+    monkeypatch, tmp_path: Path
+) -> None:
+    self_pid = MODULE.os.getpid()
+    commands = []
+
+    def observe(command, **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            f"{self_pid} 1 /usr/bin/python3\n71339 1 /usr/bin/python3\n",
+            "",
+        )
+
+    monkeypatch.setattr(MODULE.subprocess, "run", observe)
+    monkeypatch.setattr(MODULE, "host_snapshot", idle_host)
+    target = tmp_path / "preflight.json"
+
+    assert MODULE.main(["--receipt", str(target)]) == 0
+    assert commands == [["ps", "-axo", "pid=,ppid=,comm="]]
+    assert json.loads(target.read_text())["foreign_rust_processes"] == []
+
+
+@pytest.mark.parametrize(
+    ("executable", "expected"),
+    [
+        ("cargo", True),
+        ("cargo-nextest", True),
+        ("/build tools/cargo", True),
+        ("/build/cargo cache/rustc", True),
+        ("/build/cargo cache/python3.12", False),
+        ("/build/rustc cache/python3.12", False),
+        ("/build/tools/cargo notes", False),
+        ("/build/tools/not-rustc", False),
+    ],
+)
+def test_rust_detection_uses_the_complete_executable_basename(executable, expected) -> None:
+    assert MODULE.is_rust_executable(executable) is expected
+
+
 def test_foreign_rust_process_is_reported() -> None:
     processes = MODULE.parse_processes(
         """
-        10 1 /bin/zsh just rust-timings-daemon
-        11 10 python3 tools/ci/timing/check_host_contention.py
-        20 1 /Users/example/.rustup/toolchains/stable/bin/cargo test --workspace
-        21 20 /Users/example/.rustup/toolchains/stable/bin/rustc --crate-name demo
+        10 1 /bin/zsh
+        11 10 python3
+        20 1 /Users/example/.rustup/toolchains/stable/bin/cargo
+        21 20 /Users/example/.rustup/toolchains/stable/bin/rustc
         """
     )
 
@@ -59,11 +100,11 @@ def test_foreign_rust_process_is_reported() -> None:
 def test_foreign_cargo_subcommands_are_reported() -> None:
     processes = MODULE.parse_processes(
         """
-        10 1 /bin/zsh just rust-timings-daemon
-        11 10 python3 tools/ci/timing/check_host_contention.py
-        20 1 /Users/example/.cargo/bin/cargo-mutants --package quanta-index-core
-        21 1 cargo-fuzz run ipc_request_decode
-        22 1 /usr/bin/python3 cargo-mutants-report.py
+        10 1 /bin/zsh
+        11 10 python3
+        20 1 /Users/example/.cargo/bin/cargo-mutants
+        21 1 cargo-fuzz
+        22 1 /usr/bin/python3
         """
     )
 
@@ -75,8 +116,8 @@ def test_foreign_cargo_subcommands_are_reported() -> None:
 def test_ancestor_cargo_is_not_reported_as_foreign() -> None:
     processes = MODULE.parse_processes(
         """
-        10 1 /Users/example/.rustup/toolchains/stable/bin/cargo run
-        11 10 python3 tools/ci/timing/check_host_contention.py
+        10 1 /Users/example/.rustup/toolchains/stable/bin/cargo
+        11 10 python3
         """
     )
 
@@ -86,9 +127,9 @@ def test_ancestor_cargo_is_not_reported_as_foreign() -> None:
 def test_non_rust_processes_are_ignored() -> None:
     processes = MODULE.parse_processes(
         """
-        10 1 /bin/zsh just rust-timings-daemon
-        11 10 python3 tools/ci/timing/check_host_contention.py
-        30 1 /usr/bin/python3 worker.py
+        10 1 /bin/zsh
+        11 10 python3
+        30 1 /usr/bin/python3
         """
     )
 
@@ -118,7 +159,7 @@ def test_process_snapshot_missing_self_fails_closed(monkeypatch, tmp_path: Path,
 
 
 def test_preflight_receipt_marks_override_as_non_clean() -> None:
-    foreign = [MODULE.Process(pid=20, ppid=1, command="/bin/cargo test")]
+    foreign = [MODULE.Process(pid=20, ppid=1, command="/bin/cargo")]
     receipt = MODULE.preflight_receipt(
         run_id="bench-local-1",
         processes=foreign,
@@ -199,7 +240,7 @@ def test_main_blocks_overloaded_host_with_consistent_receipt(
         MODULE.subprocess,
         "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(
-            args[0], 0, f"{self_pid} 1 python3 check_host_contention.py\n", ""
+            args[0], 0, f"{self_pid} 1 python3\n", ""
         ),
     )
     host = idle_host()

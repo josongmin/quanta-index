@@ -17,6 +17,38 @@ use crate::native_work_diagnostic::{
     self, DiscardFailureStage, ReadFailureRoute, ReadFailureStage,
 };
 
+pub(crate) fn request_authorized(
+    plane: IpcPlane,
+    principal: Option<quanta_index_ipc::PeerCredentials>,
+    owner_uid: u32,
+    request: &NativeIndexRequest,
+) -> bool {
+    let Some(peer) = principal else {
+        return false;
+    };
+    match request {
+        NativeIndexRequest::ReadSession(_)
+        | NativeIndexRequest::ReadView(_)
+        | NativeIndexRequest::ObserveRootView(_)
+        | NativeIndexRequest::PublishedViewMetadata(_)
+        | NativeIndexRequest::ReadProjection { .. }
+        | NativeIndexRequest::LookupSourceOwners { .. }
+        | NativeIndexRequest::ListProducerSourceOwners { .. }
+        | NativeIndexRequest::LookupProjectionOwners { .. }
+        | NativeIndexRequest::DiffProjectionSourceOwners { .. }
+        | NativeIndexRequest::SearchLiteral { .. }
+        | NativeIndexRequest::QueryPaths { .. }
+        | NativeIndexRequest::SearchText { .. }
+        | NativeIndexRequest::SearchSemantic { .. }
+        | NativeIndexRequest::QueryGraph { .. }
+        | NativeIndexRequest::QueryRepoMap { .. }
+        | NativeIndexRequest::QueryEffortStream { .. } => {
+            matches!(plane, IpcPlane::Query | IpcPlane::Control)
+        }
+        _ => plane == IpcPlane::Control && (peer.uid == owner_uid || peer.uid == 0),
+    }
+}
+
 impl NativeDispatcher {
     fn canonical_response(
         &self,
@@ -69,12 +101,17 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
     ) -> NativeReply {
         // Payload fields never grant operator authority. The credential came
         // from the kernel at accept, and in-process calls have no principal.
-        if !matches!(context.principal, Some(peer) if peer.uid == context.owner_uid || peer.uid == 0)
-            || context.plane != IpcPlane::Control
-        {
+        if !request_authorized(
+            context.plane,
+            context.principal,
+            context.owner_uid,
+            &request,
+        ) {
             return NativeReply::Error(NativeIndexWireError {
                 code: NativeIndexErrorCode::Denied,
-                message: "native index control requires a kernel-authenticated operator".into(),
+                message:
+                    "native operation is not authorized for this authenticated principal and plane"
+                        .into(),
             });
         }
         let result = match request {
@@ -211,6 +248,19 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                         .map(NativeReply::Path)
                 })
             }
+            NativeIndexRequest::QueryRepositoryPaths {
+                selection,
+                instance,
+                prefix,
+                after,
+                limit,
+            } => {
+                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                work.checkpoint().and_then(|()| {
+                    self.query_repository_paths(selection, instance, prefix, after, limit, &mut work)
+                        .map(NativeReply::RepositoryPath)
+                })
+            }
             NativeIndexRequest::SearchOverlayText(request) => {
                 crate::native_overlay_query::query(self, context, &request, budget)
                     .map(NativeReply::OverlayText)
@@ -255,6 +305,7 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
             | NativeIndexRequest::BeginInput(_)
             | NativeIndexRequest::StageSource { .. }
             | NativeIndexRequest::StageSources { .. }
+            | NativeIndexRequest::StageRepositorySources { .. }
             | NativeIndexRequest::StageProfile { .. }
             | NativeIndexRequest::StageProjectionOutput { .. }
             | NativeIndexRequest::StageProjectionOwner { .. }
@@ -263,6 +314,8 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
             | NativeIndexRequest::SealMutations { .. }
             | NativeIndexRequest::DiscardInput(_)
             | NativeIndexRequest::ReadView(_)
+            | NativeIndexRequest::ObserveRootView(_)
+            | NativeIndexRequest::PublishedViewMetadata(_)
             | NativeIndexRequest::ReadProjection { .. }
             | NativeIndexRequest::Status(_)
             | NativeIndexRequest::ReadyWork { .. }
@@ -270,7 +323,10 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
             | NativeIndexRequest::RenewWork { .. }
             | NativeIndexRequest::WorkStatus(_)) => {
                 let is_discard = matches!(&other, NativeIndexRequest::DiscardInput(_));
-                let is_read_view = matches!(&other, NativeIndexRequest::ReadView(_));
+                let is_read_view = matches!(
+                    &other,
+                    NativeIndexRequest::ReadView(_) | NativeIndexRequest::ObserveRootView(_)
+                );
                 let mut work = WorkBudget::with_request(self.limits, budget.clone());
                 let mut read_view_stage = ReadFailureStage::Checkpoint;
                 let result = (|| {
@@ -339,5 +395,79 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
         emit: &mut dyn FnMut(NativeReply) -> Result<(), IpcError>,
     ) -> StreamDispatch<NativeReply> {
         crate::native_effort_transport::dispatch_stream(self, context, request, budget, emit)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quanta_index_contract::native_protocol::{NativeReadSessionId, NativeReadSessionRequest};
+    use quanta_index_ipc::PeerCredentials;
+
+    fn published_metadata_request() -> NativeIndexRequest {
+        use quanta_index_contract::index::{
+            CollectionId, OperationKey, ProducerId, SlotId, StreamId, TenantId, WorkspaceKey,
+            WorktreeId,
+        };
+        NativeIndexRequest::PublishedViewMetadata(OperationKey {
+            workspace: WorkspaceKey {
+                tenant: TenantId([1; 16]),
+                collection: CollectionId([2; 16]),
+                worktree: WorktreeId([3; 16]),
+                slot: SlotId([4; 16]),
+            },
+            epoch: 1,
+            producer: ProducerId([5; 16]),
+            stream: StreamId([6; 16]),
+            stream_epoch: 1,
+            sequence: 7,
+        })
+    }
+
+    #[test]
+    fn admitted_observer_can_read_session_on_the_same_control_socket() {
+        let request = NativeIndexRequest::ReadSession(NativeReadSessionRequest::Status(
+            NativeReadSessionId([7; 32]),
+        ));
+        let peer = Some(PeerCredentials {
+            uid: 1001,
+            gid: 100,
+            pid: None,
+        });
+        for request in [request, published_metadata_request()] {
+            assert!(request_authorized(IpcPlane::Control, peer, 1000, &request));
+            assert!(!request_authorized(IpcPlane::Ingest, peer, 1000, &request));
+            assert!(!request_authorized(IpcPlane::Query, None, 1000, &request));
+        }
+    }
+
+    #[test]
+    fn admitted_observer_can_query_without_receiving_operator_authority() {
+        let request = NativeIndexRequest::ReadSession(NativeReadSessionRequest::Status(
+            NativeReadSessionId([7; 32]),
+        ));
+        let peer = Some(PeerCredentials {
+            uid: 1001,
+            gid: 100,
+            pid: None,
+        });
+        for request in [request, published_metadata_request()] {
+            assert!(request_authorized(IpcPlane::Query, peer, 1000, &request));
+        }
+        let write = NativeIndexRequest::InteractionBegin { window_millis: 1 };
+        assert!(!request_authorized(IpcPlane::Query, peer, 1000, &write));
+        assert!(!request_authorized(IpcPlane::Control, peer, 1000, &write));
+        let operator = Some(PeerCredentials {
+            uid: 1000,
+            gid: 100,
+            pid: None,
+        });
+        assert!(!request_authorized(IpcPlane::Query, operator, 1000, &write));
+        assert!(request_authorized(
+            IpcPlane::Control,
+            operator,
+            1000,
+            &write
+        ));
     }
 }

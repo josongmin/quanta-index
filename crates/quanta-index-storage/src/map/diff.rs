@@ -106,11 +106,20 @@ impl Position {
         Ok(())
     }
 
-    fn value(&self) -> Result<Option<MapValue>, IndexError> {
+    fn value(&self, budget: &mut WorkBudget) -> Result<Option<MapValue>, IndexError> {
         match self {
-            Self::Node(owner, offset) => Ok((*offset == owner.node().prefix.len())
-                .then_some(owner.node().value)
-                .flatten()),
+            Self::Node(owner, offset) => {
+                if *offset == owner.node().prefix.len() {
+                    owner
+                        .node()
+                        .value
+                        .as_ref()
+                        .map(|value| value.to_public(budget))
+                        .transpose()
+                } else {
+                    Ok(None)
+                }
+            }
             Self::Terminal(owner, edge, offset) => {
                 let branch = owner
                     .node()
@@ -119,7 +128,7 @@ impl Position {
                     .ok_or_else(invalid_position)?;
                 if *offset == branch.prefix.len() {
                     match &branch.value {
-                        BranchValue::Terminal(value) => Ok(Some(*value)),
+                        BranchValue::Terminal(value) => value.to_public(budget).map(Some),
                         BranchValue::Indirect(_) | BranchValue::Packed(_) => {
                             Err(invalid_position())
                         }
@@ -148,14 +157,12 @@ impl Position {
                         Self::Stored(*reference)
                     }
                     BranchValue::Terminal(_) => Self::Terminal(owner.clone_owner(), edge, 0),
-                    BranchValue::Packed(packed)
-                        if !owner.is_packed() && branch.prefix.is_empty() =>
-                    {
+                    BranchValue::Packed(packed) if branch.prefix.is_empty() => {
                         Self::Node(NodeOwner::Packed(Arc::clone(packed)), 0)
                     }
                     BranchValue::Indirect(_) | BranchValue::Packed(_) => {
                         return Err(IndexError::CorruptObject(
-                            "packed map branch has nested child or external prefix".into(),
+                            "packed map branch has external child or prefix".into(),
                         ));
                     }
                 };
@@ -315,13 +322,13 @@ pub(super) fn visit_with(
             let expected = frame
                 .before
                 .as_ref()
-                .map(Position::value)
+                .map(|position| position.value(budget))
                 .transpose()?
                 .flatten();
             let next = frame
                 .after
                 .as_ref()
-                .map(Position::value)
+                .map(|position| position.value(budget))
                 .transpose()?
                 .flatten();
             if (expected.is_some() || next.is_some()) && !path.len().is_multiple_of(2) {

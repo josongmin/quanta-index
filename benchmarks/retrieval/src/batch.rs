@@ -248,7 +248,14 @@ pub fn assemble_batch(
                             chunk.chunk_id
                         )));
                     }
-                    report.semantic_tokenless_chunks += 1;
+                    report.semantic_tokenless_chunks = report
+                        .semantic_tokenless_chunks
+                        .checked_add(1)
+                        .ok_or_else(|| {
+                            BenchError::Protocol(
+                                "semantic tokenless chunk count overflow".to_string(),
+                            )
+                        })?;
                     continue;
                 }
                 let scope = semantic_scope(chunk, &identity.repo_id)?;

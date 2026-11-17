@@ -68,8 +68,8 @@ fn managed_attempt(
 }
 
 fn release_terminal(catalog: &SqliteCatalog, key: OperationKey) -> TestResult {
-    // The fixture has at most a request and one result. A bounded page must
-    // release both, with no hidden cleanup after the terminal row disappears.
+    // The fixtures have one request and at most two result registrations.
+    // Eight rows cover their custody without hidden post-terminal cleanup.
     let page = catalog.release_terminal_custody(key, 8, &mut admission_budget())?;
     check!(!page.has_more);
     Ok(())
@@ -502,5 +502,208 @@ fn shared_ingress_owner_blocks_retirement_until_last_release() -> TestResult {
             .retire_candidate(candidate, &mut admission_budget())?
             .is_some()
     );
+    Ok(())
+}
+
+struct TerminalReferenceFixture {
+    catalog: SqliteCatalog,
+    root: tempfile::TempDir,
+    ingress: IngressRef,
+    operation: OperationKey,
+    shared: RegisteredObject,
+}
+
+fn terminal_reference_fixture() -> Result<TerminalReferenceFixture, Box<dyn Error>> {
+    let (root, catalog, ingress) = managed_adoption_fixture()?;
+    let shared = object(242, vec![]);
+    catalog.reserve_managed(
+        ObjectInstallScope::Ingress(ingress),
+        std::slice::from_ref(&shared),
+        &mut admission_budget(),
+    )?;
+    catalog.confirm_managed(
+        ObjectInstallScope::Ingress(ingress),
+        std::slice::from_ref(&shared),
+        &mut admission_budget(),
+    )?;
+    let operation = operation(22500, 242);
+    let attempt = managed_attempt(&catalog, operation)?;
+    check_eq!(queue_count(&catalog, shared.reference)?, 0);
+    check_eq!(
+        catalog.refuse(attempt, Refusal::Conflict)?,
+        OperationStatus::Refused(Refusal::Conflict)
+    );
+    check_eq!(queue_count(&catalog, shared.reference)?, 0);
+    Ok(TerminalReferenceFixture {
+        catalog,
+        root,
+        ingress,
+        operation: operation.key,
+        shared,
+    })
+}
+
+#[test]
+fn terminal_release_skips_referenced_live_object_and_last_release_still_enqueues() -> TestResult {
+    let TerminalReferenceFixture {
+        root,
+        mut catalog,
+        ingress,
+        operation,
+        shared,
+    } = terminal_reference_fixture()?;
+    release_terminal(&catalog, operation)?;
+    check_eq!(
+        object_count(&catalog, "native_ingress_object_v1", shared.reference)?,
+        1
+    );
+    check_eq!(queue_count(&catalog, shared.reference)?, 0);
+    drop(catalog);
+    catalog = open(root.path())?;
+    check_eq!(queue_count(&catalog, shared.reference)?, 0);
+    catalog.discard_inputs(ingress, &mut admission_budget())?;
+    check_eq!(queue_count(&catalog, shared.reference)?, 1);
+    check!(
+        catalog
+            .retire_candidate(
+                candidate(&catalog, shared.reference, ReclaimKind::Registered)?,
+                &mut admission_budget(),
+            )?
+            .is_some()
+    );
+    Ok(())
+}
+
+#[test]
+fn terminal_release_preserves_existing_candidate_and_actual_retirement_checks_references()
+-> TestResult {
+    let fixture = terminal_reference_fixture()?;
+    ensure_queued_candidate(&fixture.catalog, fixture.shared.reference)?;
+    release_terminal(&fixture.catalog, fixture.operation)?;
+    check_eq!(queue_count(&fixture.catalog, fixture.shared.reference)?, 1);
+    let candidate = candidate(
+        &fixture.catalog,
+        fixture.shared.reference,
+        ReclaimKind::Registered,
+    )?;
+    check!(
+        fixture
+            .catalog
+            .retire_candidate(candidate, &mut admission_budget())?
+            .is_none()
+    );
+    check_eq!(queue_count(&fixture.catalog, fixture.shared.reference)?, 0);
+    fixture
+        .catalog
+        .discard_inputs(fixture.ingress, &mut admission_budget())?;
+    check_eq!(queue_count(&fixture.catalog, fixture.shared.reference)?, 1);
+    check!(
+        fixture
+            .catalog
+            .retire_candidate(candidate, &mut admission_budget())?
+            .is_some()
+    );
+    Ok(())
+}
+
+#[test]
+fn terminal_release_authenticates_corrupt_existing_queue_before_reference_shortcut() -> TestResult {
+    let fixture = terminal_reference_fixture()?;
+    ensure_queued_candidate(&fixture.catalog, fixture.shared.reference)?;
+    {
+        let guard = fixture.catalog.lock()?;
+        check_eq!(
+            guard.execute(
+                "UPDATE native_gc_queue_v1 SET row_digest=zeroblob(32) WHERE object=?1",
+                params![object_key(fixture.shared.reference)],
+            )?,
+            1
+        );
+    }
+    check!(matches!(
+        fixture
+            .catalog
+            .release_terminal_custody(fixture.operation, 8, &mut admission_budget()),
+        Err(IndexError::Storage(_))
+    ));
+    check_eq!(
+        object_count(
+            &fixture.catalog,
+            "native_operation_object_v1",
+            fixture.shared.reference
+        )?,
+        1
+    );
+    check_eq!(queue_count(&fixture.catalog, fixture.shared.reference)?, 1);
+    Ok(())
+}
+
+#[test]
+fn terminal_release_reference_query_error_rolls_back_custody_deletion() -> TestResult {
+    let fixture = terminal_reference_fixture()?;
+    {
+        let guard = fixture.catalog.lock()?;
+        guard.execute_batch("DROP TABLE native_view_root_v1")?;
+    }
+    check!(matches!(
+        fixture
+            .catalog
+            .release_terminal_custody(fixture.operation, 8, &mut admission_budget()),
+        Err(IndexError::Storage(_))
+    ));
+    check_eq!(
+        object_count(
+            &fixture.catalog,
+            "native_operation_object_v1",
+            fixture.shared.reference
+        )?,
+        1
+    );
+    check_eq!(queue_count(&fixture.catalog, fixture.shared.reference)?, 0);
+    Ok(())
+}
+
+#[test]
+fn terminal_release_keeps_child_out_of_queue_while_registered_parent_edge_owns_it() -> TestResult {
+    let (_root, catalog, _ingress) = managed_adoption_fixture()?;
+    let operation = operation(22501, 248);
+    let attempt = managed_attempt(&catalog, operation)?;
+    let child = object(246, vec![]);
+    let parent = object(247, vec![child.reference]);
+    let batch = [child.clone(), parent.clone()];
+    catalog.reserve_managed(
+        ObjectInstallScope::Attempt(attempt),
+        &batch,
+        &mut admission_budget(),
+    )?;
+    catalog.confirm_managed(
+        ObjectInstallScope::Attempt(attempt),
+        &batch,
+        &mut admission_budget(),
+    )?;
+    check_eq!(
+        catalog.refuse(attempt, Refusal::Conflict)?,
+        OperationStatus::Refused(Refusal::Conflict)
+    );
+    release_terminal(&catalog, operation.key)?;
+    for table in [
+        "native_operation_object_v1",
+        "native_attempt_object_v1",
+        "native_object_intent_v1",
+    ] {
+        check_eq!(object_count(&catalog, table, child.reference)?, 0);
+    }
+    {
+        let guard = catalog.lock()?;
+        let edges: i64 = guard.query_row(
+            "SELECT COUNT(*) FROM native_object_edge_v1 WHERE parent=?1 AND child=?2",
+            params![object_key(parent.reference), object_key(child.reference)],
+            |row| row.get(0),
+        )?;
+        drop(guard);
+        check_eq!(edges, 1);
+    }
+    check_eq!(queue_count(&catalog, child.reference)?, 0);
+    check_eq!(queue_count(&catalog, parent.reference)?, 1);
     Ok(())
 }

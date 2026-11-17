@@ -128,6 +128,60 @@ fn logical_identity(
 }
 
 impl RepoMapGenerationStore {
+    /// Authenticate the active Catalog candidate without starting a mutable
+    /// RepoMap store. The caller retains the actual Legacy state-root lease.
+    pub fn verify_existing_active_candidate_v1(
+        root: &Path,
+        candidate: &quanta_index_catalog::RepoMapCandidateRowV1,
+        owner: u32,
+        maximum_bytes: u64,
+        io: &dyn quanta_index_core::index::ObjectReadIoPort,
+        budget: &mut quanta_index_core::index::WorkBudget,
+    ) -> Result<
+        crate::VerifiedActiveRepoMapFilesV1,
+        quanta_index_core::index::existing_file::ExistingFileReadFailureV1,
+    > {
+        use quanta_index_catalog::RepoMapCandidateStateV1;
+        if candidate.state != RepoMapCandidateStateV1::Activated {
+            return Err(quanta_index_core::index::IndexError::DigestConflict.into());
+        }
+        RepoMapObjectStore::verify_existing_active_candidate_v1(
+            root,
+            candidate,
+            None,
+            owner,
+            maximum_bytes,
+            io,
+            budget,
+        )
+    }
+
+    /// Bind the producer's two terminal receipts to the active Catalog row
+    /// and immutable object under the caller's already-held offline root.
+    pub fn verify_existing_active_publication_v1(
+        root: &Path,
+        quiescence: &quanta_index_catalog::LegacyCatalogQuiescenceV1,
+        receipts: (&RepoMapTerminalReceiptV2, &RepoMapTerminalReceiptV2),
+        owner: u32,
+        maximum_bytes: u64,
+        io: &dyn quanta_index_core::index::ObjectReadIoPort,
+        budget: &mut quanta_index_core::index::WorkBudget,
+    ) -> Result<
+        crate::VerifiedActiveRepoMapFilesV1,
+        quanta_index_core::index::existing_file::ExistingFileReadFailureV1,
+    > {
+        let candidate = quiescence.require_active_repomap_ack_v1(receipts.0, receipts.1, budget)?;
+        RepoMapObjectStore::verify_existing_active_candidate_v1(
+            root,
+            candidate,
+            Some(receipts),
+            owner,
+            maximum_bytes,
+            io,
+            budget,
+        )
+    }
+
     /// Open the store under `root` with the shared durable catalog.
     ///
     /// Reconciles the catalog's candidate/activation/invalidation rows

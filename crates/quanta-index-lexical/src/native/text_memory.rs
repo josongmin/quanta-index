@@ -43,6 +43,9 @@ impl<T> PreparedRows<T> {
         let mut rows = Vec::new();
         rows.try_reserve_exact(capacity)
             .map_err(|_error| IndexError::ResourceLimited)?;
+        if rows.capacity() > capacity {
+            return Err(IndexError::ResourceLimited);
+        }
         rows.append(&mut self.rows);
         self.rows = rows;
         self.memory = memory;
@@ -153,15 +156,47 @@ impl PreparedKey {
             u64::try_from(bytes.len()).map_err(|_error| IndexError::ResourceLimited)?,
             MemoryLifetime::Temporary,
         )?;
+        Self::copy_with_memory(bytes, memory, budget)?.ok_or(IndexError::ResourceLimited)
+    }
+
+    /// Adopt an exact optional grant as the owned key's actual allocation.
+    pub(super) fn copy_with_memory(
+        bytes: &[u8],
+        memory: Option<MemoryLease>,
+        budget: &WorkBudget,
+    ) -> Result<Option<Self>, IndexError> {
+        budget.checkpoint()?;
+        if bytes.is_empty() {
+            return Err(IndexError::CorruptObject(
+                "empty native preparation key".into(),
+            ));
+        }
+        let expected = u64::try_from(bytes.len()).map_err(|_error| IndexError::ResourceLimited)?;
+        if memory
+            .as_ref()
+            .is_some_and(|grant| grant.bytes() != expected)
+        {
+            return Err(IndexError::BackendViolation(
+                "native preparation key grant differs from its output".into(),
+            ));
+        }
         let mut owned = Vec::new();
-        owned
-            .try_reserve_exact(bytes.len())
-            .map_err(|_error| IndexError::ResourceLimited)?;
+        if owned.try_reserve_exact(bytes.len()).is_err() {
+            return Ok(None);
+        }
+        let capacity =
+            u64::try_from(owned.capacity()).map_err(|_error| IndexError::ResourceLimited)?;
+        if memory
+            .as_ref()
+            .is_some_and(|grant| grant.bytes() < capacity)
+        {
+            return Ok(None);
+        }
         owned.extend_from_slice(bytes);
-        Ok(Self {
+        Ok(Some(Self {
             bytes: owned,
             memory,
-        })
+        }))
     }
 
     pub(super) fn as_slice(&self) -> &[u8] {
@@ -256,10 +291,10 @@ impl Write for JsonWriter<'_> {
     }
 }
 
-pub(super) fn encode<T: Serialize>(
+pub(super) fn measured_encoded_len<T: Serialize>(
     value: &T,
     budget: &WorkBudget,
-) -> Result<PreparedPayload, IndexError> {
+) -> Result<usize, IndexError> {
     let mut count = JsonWriter {
         output: None,
         written: 0,
@@ -270,7 +305,14 @@ pub(super) fn encode<T: Serialize>(
     if let Err(error) = serde_json::to_writer(&mut count, value) {
         return Err(count.serialization_error(&error));
     }
-    let length = count.written;
+    Ok(count.written)
+}
+
+pub(super) fn encode<T: Serialize>(
+    value: &T,
+    budget: &WorkBudget,
+) -> Result<PreparedPayload, IndexError> {
+    let length = measured_encoded_len(value, budget)?;
     let memory = budget.reserve_memory(
         u64::try_from(length).map_err(|_error| IndexError::ResourceLimited)?,
         MemoryLifetime::Temporary,

@@ -1,69 +1,42 @@
 # E02 — 단일 게시·복구·custody·예산
 
 <a id="code-residuals-20261105"></a>
-## 코드 잔여 재점검 — 2026-11-07 KST
+## 구현 계약과 실행 판정
 
-**현재 판단: 아래 수리 항목은 SOURCE_APPLIED / owning·SDK 수용 미완료.** 기존 C02/P60/C03와 reconcile한 exact hunk만 수정했으며 Source/IFDS/DFG·이미지 codec 본문은 보존했다. 기존 batch 구문16/16·whitespace·회귀 integrity3종·영향 경계25/25와 추가 Wire6/6·Trace5/5는 VERIFIED다(정책 집합은 중복되므로 합산하지 않음). 추가 FULL source cfg2곳과 SolverPrep handoff2곳의 정적 범위는 아래에 분리한다. 고정dec33의 Native Trace dependency compile 통과·Checkout DFG4진단은 해당 과거 cohort 결과다. 현재 owning source admission과 Linux 설치 SQL image/SHA의 적격 입력이 남는다. 이 범위는 전체 E01–E08의 코드 마감 수가 아니다.
-
-| 수리 항목·현재 상태 | 현재 근거·영향 | 수정 경계·완료 조건 |
-| --- | --- | --- |
-| Java conditional-constructor helper re-export — SOURCE_APPLIED | Analysis [original_producer_v3.rs](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime-analysis/src/queries/intraprocedural/dfg_query/original_producer_v3.rs:182)의 기존 re-export에 `visit_conditional_constructor_reaching_v1`을 추가했다. 실제 정의는 `original_core_reaching_v3/native_mixed_reaching_v142_v183.rs:478`이며 기존 상위 facade·PTA caller가 이를 소비한다. 40cd의 E0432 세 진단은 이 동일 원인으로 묶는다. | 별도 helper 구현·IR·새 facade는 없다. 실제 owning feature 구성의 import/컴파일 수용은 재실행 결과로 판정한다. |
-| Java mixed-span reader 모듈 경로 — SOURCE_APPLIED | [java_mixed_span_preparation_v142.rs](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime-analysis/src/queries/intraprocedural/dfg_query/original_producer_v3/java_mixed_span_preparation_v142.rs:362)의 `super::super::original_result_read_v3`를 실제 형제 모듈 경로 `super::original_result_read_v3`로 고쳤다. 40cd의 관련 E0433·E0282는 같은 검증 closure에서 발생했으며 후자의 독립 잔여 여부는 수리 후 컴파일로 판별한다. | 기존 `W2-C02-PTA-ABI-20261105`와 reconcile한1줄 hunk다. 파일 전체를 재배정하지 않으며 owning 수용은 아직 없다. |
-| 공개 phase→SDK 진단 위임 회귀 — SOURCE_APPLIED | [native_phase_cause_visit_v16.rs](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-sdk-runtime-executor/src/client/tests/native_phase_cause_visit_v16.rs:10)는 기존 genuine Java FULL→Watch fixture와 실제 이전 Original session을 사용한다. canonical validator가 `OriginalExecutionSessionMismatch`를 발급하며 공개 pending-diagnostics의 두 번 대여에서 원본 typed cause·같은 주소와 원 analysis epoch·Native 미게시를 검사한다. Runtime unit5개만으로는 public tail 위임 삭제를 검출하지 못했던 공백을 대상으로 한다. | 기존 observer의 one-shot fault slot→실제 SDK v94 request→Runtime phase→TAINT tail로 연결했다. 새 Source/가짜 phase·forced Err는 없다. Linux cfg와 SDK class435088에 mount하고 suite/Stage L consumer로 등록했다. 마지막 refund/독립 process 및 실제 본문은 별도 수용이며 이 새 회귀의 작성으로 완료 처리하지 않는다. |
-| 후속 owning strict import — SOURCE_APPLIED | 고정77f0는 `quanta-runtime-orchestration-wire/src/query_outcome_v1/unit_read_v4.rs:7`의 미사용 `FallibleTypedOutputCopyV3` import를 `-D unused-imports`로 거절했다. 현재 그 import1건을 제거했다. | lint/feature/예산을 바꾸지 않았다. 추가 구문1/1·Wire 영향 경계6/6은 VERIFIED이며 body는 동일 Runtime 요청 결과를 기다린다. |
-| 후속 Native Trace resident 컴파일2구간 — SOURCE_APPLIED | 고정9886의 실제 컴파일에서 `native_resident_v3.rs`의 nested const가 outer `Self`를 참조하는 E0401이11개, `Result<(), ()>` 메서드가 Option에 `?`를 쓰는 E0277이2개 발생했다. 현재 tag 배열은 정확한 enum명으로 바꾸고 census를 `as_ref().ok_or(())?`로 빌린다. | tag0–10/variant 순서를 유지한다. terminal·root 부재·새 census 한도·기존 census 부재·비어 있지 않거나 overflow인 기존 physical rows·다른 limit는 모두 거절하며 실패 때 census를 바꾸지 않는다. root-image/decode의 별도3원인은 기존 D가 수리했고 이 채팅은 그 파일을 수정하지 않았다. Trace 구문1/1·경계5/5는 VERIFIED이며 실행은 아래 동일 Runtime 요청으로 판정한다. |
-| 후속 Checkout 타입/대여2구간 — SOURCE_APPLIED | `work_v4/checkout_v1.rs`에서 positional actual reader의 u32 인수에 usize가 들어가고, `checkout_call_chain_link_v1.rs`의 검사 배열이 mutable 참조를 이동해 이후 재사용하지 못했다. 실제 scoped owning 컴파일에서 각각 E0308/E0382를 관측했다. | 기존 C02 claim과 reconcile한 exact hunk다. loop index는 usize로 보존하고 호출 위치에만 checked u32를 전달한다. 검사 배열은 `&*` 공유 재대여로 바꿔 뒤의 mutable 사용과 입력 검증을 유지한다. clone·cast unwrap·예산/프로필 변경은 없다. 구문2/2·영향 경계6/6 VERIFIED, 수리 후 owning 본문은 아직 NOT_RUN이다. |
-| SolverPrep 환급 참조·모듈 경로2곳 — SOURCE_APPLIED | [success_handoff_v16.rs](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime-analysis/src/queries/taint/query/run_stages/solver_prep_stage_impl/run_pipeline/native_solver_prep_v11/success_handoff_v16.rs:4)의 잘못된 상대 경로를 기존 `run_stages::solver_inputs::PostSolverPreparationCrossV1` import로 교체했다. 실제 Source session getter가 이미 `Option<&Handle>`이므로 환급 callee에 붙인 추가 `&`를 제거했다. attempt21의 E0433/E0308에 대응한다. | type 선언·사용과 동일한 test-support cfg를 유지한다. 새 handle·clone·authority·budget은 없다. 실제 getter/callee/type 정의 대조, 비변경 rustfmt parse·whitespace는 VERIFIED다. C03/Consumer claim과 reconcile했고 D의 다음 SDK cut에 전달했다. 새 compile/body는 NOT_RUN이며 다른 owner의 Mutex bank 수리는 중복하지 않았다. |
-
-**attempt22 coordination 접합 — SOURCE_APPLIED:** Runtime lib(test)의27진단을8원인으로 묶었다. re-export cfg는 Product V4 모듈 선언과 맞추고, Python finite protocol은 parent 내부 가시성만 허용한다. rebind는 공유 재대여, 빈 일반 계획의 기존 세 회귀는 canonical Default를 사용하며 assertion·test 수는 유지한다. IFDS는 callback 오류형과 기존 typed Native refusal 변환·read 대여를 명시하고, 네 funding 검사 closure는 canonical custody 참조형으로 고정했다. 새 profile·authority·Clone·fallback·원 예산 변경은 없다. Main의5파일을 수리하고 동시에 반영된3파일은 재작성하지 않았다. 별도 failure-bank16줄을 제외한8파일 exact-hunk patch를 D 준비본에 적용 가능함을 확인해 인계했다. 실제 compiler/body는 다음 owning 결과로 판정한다. [실행·source 근거](VALIDATION.md#e02-peer-ownership-refresh-20261106).
-
-**FULL source cfg 수리 — SOURCE_APPLIED:** `OriginalFullSourceV3`의 Python cache arm이 variant 선언과 달리 `taint-solver` 없이 나타나고, Java read arm은 variant/callee가 허용하는 solver-off를 불필요하게 막았다. `full_source_v111.rs`의 두 cfg만 수정했다. 기존 Rust cfg predicate owner로 실제 HEAD/수정본의 양방향 함의를 비교해 불일치2→0과 수정 전 반례를 확인했다. AST 파싱·diff는 VERIFIED, NoSolver/Runtime body는 NOT_RUN이다. producer·Source 권한·캐시 본문·예산·wire는 유지한다. Java/Python Source가 모두 없는 solver 조합은 제품 계약을 확정하지 못했으므로 새 fallback을 만들거나 전체 feature matrix 지원을 주장하지 않는다.
-
-**검증 입력 closure 잔여:** scoped overlay는 기존 canonical casectl API를 사용하며 새 Snapshot 구현이 아니다. 선택한 부모 파일이 새 untracked child `work_v4/value_call_sequence_v1.rs`를 mount하는데 첫 고정 입력은 이 파일을 빠뜨렸다. 이는 캡처 구성 오류이며 생산 코드 결손으로 세지 않는다. 실제 child를 추가하고 snapshot의 재귀 rustfmt 파싱을 Rust 실행 전 검사로 준비했다. 다음 캡처는 그 child가 비교 중 바뀐 것을 검출해 Rust 전에 거절됐다. C02의 안정된 module closure를 받아 같은 원 요청을 재개하며, 해당 거절을 성공으로 바꾸거나 모듈/feature를 제외하지 않는다. 최신 전달·실행 상태는 [현재 담당 원장](VALIDATION.md#e02-peer-ownership-refresh-20261106)만 따른다. Runtime5·SDK1은 D가 기존 pair 뒤 큐에 인수한 기록을 확인했다. Runtime5는 D의 교정a744 공통 floor에 Product V4를 유지한 후계 class `5b587ae0aadb`, 요청 `14914c56322ed9cb8f06d837892b5c28`로 정합화됐다. 이전551/ca89739e는 superseded NOT_RUN이며 새 요청은 기존 D batch 뒤 대기한다. SDK1 원 요청은 유지하며 실제 본문 실행은 NOT_RUN이다. D의 기존 Runtime/capsule pair는 이6개와 별개이며, attempt19는 test-helper feature gate/import 관련 컴파일 오류489건으로 FAILED(exit101/body0) 종료됐다. 적격 Linux image/daemon 뒤에도 원래 CP3의 동일 operation/target 복구 수용은 남는다.
-
-**회귀의 실제 caller 연결:** 기존 composition의 `post_local_v11`은 observer를 전달했지만 새 SDK `phase_stage_v94/execute_v94.rs`는 전달하지 않았다. 현재는 실제 target attribution authority가 공유하는 기존 controls에서 one-shot observer를 가져와 같은 Runtime request에 붙인다. Native tail scope도 그 observer를 전달한다. 주입된 값은 실제 prior session이며 새 execution/Source authority를 발급하지 않는다. canonical validator의 거절·입력 보유·공개 진단과 게시 코드는 그대로다. test support feature를 끄면 이 fault 경로와 typed Error 재공개는 제외된다.
-
-**검증 등록:** Runtime5의 현재 class는 D가 교정a744 공통 floor + Product V4로 등록한 `5b587ae0aadb`다. 이전 `e9c356aa3d2a`·`551be31564aa`는 실행 성공 없이 대체됐다. required suite `native-incremental-runtime-phase-cause-visit-owner` 하나에 정확한5함수 witness로 등록했다. 기존 Stage L에서 SDK 회귀 바로 앞에 소비하며 `--resolve-only`는 expected_tests=5로 통과했다. 초기 정렬 스키마 거절은 witness를 정렬해 고쳤고, 이후 동시 생성 중이던 `taint_flow/native_authority_v4.rs` 부재로 거절된 검사도 실제 child 생성 뒤 같은 명령으로 통과했다. 이는 등록·선택 검증이며 Rust 본문 수용은 NOT_RUN이다. 기존 SDK class177eaa는 observer feature를 켜지 않으므로 그 class를 재사용해0-body 수용을 선언하지 않는다. 정확한5-feature class `quanta-sdk-runtime-executor.no-default.435088202943`, suite `native-incremental-sdk-phase-cause-visit-owner`, 실제 SDK lib-test 요청 `34dc4964065b6fad2c7c1265da214fef`를 등록/해석했다. 기존177eaa는 바꾸지 않았다. 새 SDK 본문은 Linux·설치 SQL image/SHA256 입력이 요구된다. Linux 환경은 확인했지만 기존 SQL producer가 old Source의 DFG delimiter 컴파일 오류와 exact custody mismatch로 종료됐고 검증된 image는 없다. 값을 추정하거나 실패한 binary를 적격 이미지로 승격하지 않는다. 전체 parity gate의 다른 P07 selector12건 실패도 별도 기존 owner의 잔여다.
-
-**Runtime lib(test) floor 계약:** 공통 floor의 단일 writer는 D다. Root의 profile/suite writer claim2개는 release됐고 D가 현재 suite·후속 request·기존 추가요청 큐를 `5b587ae0aadb` / `14914c56322ed9cb8f06d837892b5c28`로 갱신했다. exact5 witness·Product V4·threads0·원 예산과 SDK1은 유지한다. Root는 별도 profile을 반복 작성하지 않는다. class resolve·선택 성공은 compile/body PASS가 아니다.
-
-**검증 도구의 실제 계약 수리:** `suite_registry_v1.py`의 consumer scanner가 실제 runner가 지원하는 `--snapshot-source`를 unknown 옵션으로 거절했다. 해당 canonical flag 하나를 반영하고 suite 이름 앞/뒤 양성 회귀와 기존 `--lane` 음성·literal consumer 결속 검사를 유지했다. 수리 전3개 실패, 수리 후 self-test65개 통과다. 현재 실제 소비자에서 이 옵션 거절116→0, 이 채팅 Runtime/SDK suite의 소비자 finding0을 확인했다. 다른 required suite180개 미연결은 별도 잔여이며 이를 gate에 일괄 연결하거나 baseline을 늘리지 않았다. 전체 registry 수리 후 재실행·Rust/SDK 수용과 구분한다.
-
-**완료 구현의 재발급 제외:** 기존 transaction/tail/disposition 진단 수리, L1 predecessor→DELTA selector→collector, L2 ImportGraph carry·CallGraph caller, L3 RepoMap pair→installer→terminal/cold recovery, Native Watch, Memo/reuse/GC/lifecycle 및 configured macOS owned Voyage의 생산 연결은 현재 source에 있다. raw panic visitor의 `native_outer_panics_v3`와 `native_component_outer_panics_v3`도 서로 다른 bank이므로 중복 방문 수리를 배정하지 않는다. 정적 연결 사실은 Runtime/SDK/독립 process·비용 수용을 대체하지 않는다.
-
-**실행과 코드 수의 분리:** 고정45e2는 DFG delimiter7건으로 FAILED했고 그 파일은 현재 수리됐다. 후속40cd는 Analysis 컴파일 오류12건으로 FAILED(exit101/body0)다. 현재에는 CurrentMemberRead/rebind export·CFG crate 경로·collection iterator·payload borrow 관련 수리가 반영돼 있으므로12건을12개 새 코드 작업으로 세지 않는다. 현 코드의 추가 compiler 진단 유무는 재실행 전 미확정이다. [정확 실행 범위](VALIDATION.md#e02-l1-d-closeout-20261031).
+현재 코드 잔여·담당은 [에픽 E02](README.md#e02), source별 실행은
+[기존 단일 D 큐](VALIDATION.md#e02-l1-d-closeout-20261031)와
+[peer 인수 기록](VALIDATION.md#e02-peer-ownership-refresh-20261106)이 소유한다.
+11월5–7일의 compiler 진단·claim·attempt·accepted/prepared 수는
+[원문 복구](../../ARCHIVE-INDEX.md#2026-11-13-recent-component-closeout-and-routing)로 접었다.
+완료된 import/cfg/대여 수리·mount를 새 코드 결손으로 재발급하지 않는다.
 
 ### 이전 감사와 반영된 수리
 
-이 채팅에서 배정한 E02 코드의 생산자→호출자→소비자 감사다. 관측 중 Semantica HEAD가4245dc3c에서a9379a98로 이동했으며, mutable source의 정적 판정이다. 아래 결손은 후속 구현에서 수리했다. 새 작업 큐를 만들거나 Rust/SDK/제품 실행 대기를 코드 결손 수에 합산하지 않는다.
+공개 phase는 기존 transaction·TAINT target/attach/publication bank의 원 typed cause를 빌린다.
+원 우선순위와 동일 backing·Source/grant 수명을 유지하며 새 bank/DTO·문자열 오류를 만들지 않는다.
+이 source 연결은 Runtime unit5 또는 공개 SDK1 본문의 실행을 뜻하지 않는다.
+원 Runtime `retained_taint_schedule_v16::cause_visit_tests_v16`5와 SDK
+`genuine_native_phase_transaction_failure_cause_is_borrowable_v16`1의 owning·설치·최종 환급 수용은
+위 단일 큐의 원 selector·feature·budget·실제 terminal로 판정한다. Unit5는 공개 위임1을 대신하지 않는다.
 
-**후속 구현 — 2026-11-06 KST / SOURCE_APPLIED, Rust 수용 미완료.** 기존 owner의 보관 방식과 Source·grant·실행·게시 코드를 유지하며 진단용 대여 경계만 확장했다. `RetainedPublicationTransactionV16::visit_causes_v16`은 Arc 원인의 기존 우선순위를 유지하고 보관한 transaction 거절을 방문한다. `TaintScheduleBirthV16::visit_causes_v16`은 target/attach/publication 오류를 그대로 빌리며, 공개 phase visitor가 이를 위임한다. phase disposition으로 이동하는 Native target/cohort/CallGraph/GraphRead/adapter의 Runtime 원인 선택도 기존 접근자에 연결했다. canonical attach/publication enum2개는 정적 Display와 borrowed `Error::source`를 구현했고, 새 wrapper·DTO·Source issuer나 오류 String을 만들지 않았다.
-
-회귀는 기존 transaction bank의 empty·같은 typed error 반복 대여·nested Runtime 보존과 attach/publication의 nested Runtime 대여5개다. 실제 공개 Product phase→SDK 호출 전체를 실행한 증거는 아니며, 해당 공개 위임의 genuine SDK 회귀 코드는 현재 `native_phase_cause_visit_v16.rs`와 class435 required exact1에 있다. 그 본문·설치 입력 수용은 NOT_RUN이며 회귀 코드 부재로 재발급하지 않는다. 정식 Runtime lib-test 요청 `d20ad251471c7642fab76b7c8686897e`, class `quanta-runtime.no-default.e9c356aa3d2a`, selector `coordination::product_v4_complete_reusable_execution_v1::retained_taint_schedule_v16::cause_visit_tests_v16`가 해석된다. 초기 D parent 미등록과 mutable capture 거절 후, 실제 등록된 기존 worktree-heavy lane의 canonical snapshot-artifact 경로에서 고정45e2·40cd를 실행했다. 두 실행은 위 의존성 컴파일에서 실패했으며 authored5개 본문은 NOT_RUN이다. 새 lane/token·별도 실행 큐를 만들지 않았으며, 해석 성공·정적 통과를 body 성공으로 승격하지 않는다.
-
-| 확인된 코드 수정 | 원인·실제 소비자 | 최소 변경·기존 담당 |
-| --- | --- | --- |
-| P60 transaction 실패 원인의 공개 visitor 연결 — SOURCE_APPLIED | Runtime `may_alias_transaction_input_v3.rs`의 typed transaction 거절은 기존 bank에 보관되며, 현재 `retained_phase_birth_v16.rs`가 tail visitor를 위임한다. 실제 SDK `status_v94.rs`도 이 공개 visitor를 소비한다. 이전의 원인 조회 누락은 수리됐으며 payload 소실이나 성공 오판으로 확장해 주장하지 않는다. | 기존 owner의 구현을 재사용한다. 공개 phase→SDK 통합 회귀 코드는 SOURCE_APPLIED이며 남은 owning/SDK 수용만 위 현재 표에 남기며 새 오류 bank/DTO/문자열 복제·별도 구현 담당을 만들지 않는다. |
-
-이번 감사에서 새 코드 작업으로 재발급하지 않는 범위:
-
-- **Cold binding 가시성:** 실제 E0624의 대상 `try_stage_native_binding_cold_root_v3`는 기존 D가 `pub(in super::super)`로 수리해 현재 dirty source에 반영했다. 추가 구현이 아니라 동일 owner의 수리 후 검증 대상이다. 앞선 `u32`/`usize` checked conversion도 이미 있다.
-- **L1/L2/L3·Watch 생산 연결:** 실제 predecessor 재인증·DELTA selector→collector, ImportGraph retained 생성자와 CallGraph dispatch, RepoMap pair→installer/terminal 및 Native Watch Product lender 경로가 있다. 과거의 caller0/생성자 부재/Ordinary Watch만 존재한다는 항목으로 같은 코드를 다시 만들지 않는다. Graph full-root dispatch의 비용은 별도 조사 후보이며 현재 확정 성능 결함으로 세지 않는다.
-- **Native Memo/GC/lifecycle·configured provider:** 이번 읽기 전용 감사 범위에서 추가 미구현을 확정하지 못했다. macOS configured Voyage는 owned Host 경로를 사용한다. borrowed API의 `TransportAdmissionUnavailable`, 의도된 feature/backend gate와 실행 영수증 부재만으로 미구현을 선언하지 않는다. 실제 실행 수용 및 추가 OS/쿼리 지원 여부는 해당 원 계약과 별도로 판단한다.
-
-TAINT target/attach/publication의 같은 보관 오류와 도달 가능한 Native disposition의 누락은 위 후속 코드에 함께 연결했다. 선언만 있고 생산자가 없는 NativeBuilder/NativeJoin variant를 새 구현 항목으로 만들지 않았다. 완료·담당·수용의 SSOT는 [README E02](README.md#e02), 실행 결과는 [기존 D checkpoint](VALIDATION.md#e02-l1-d-closeout-20261031)를 유지한다.
+FULL source cfg·NoSolver와 Java/Python Source 조합은 실제 owning feature closure를 검증한다.
+Java/Python Source가 모두 없는 미정의 조합에 fallback을 추가하거나 전체 matrix 지원을 주장하지 않는다.
+`--snapshot-source` scanner 지원 수리는 다른 required suite 연결·Rust/SDK 수용을 닫지 않는다.
+캡처 누락·mutable drift·정적 통과·본문0은 생산 코드 부재나 테스트 통과가 아니다.
 
 <a id="e02-b-current-source-20261030"></a>
-## B Trace/Evidence·predecessor 현재 source — 2026-11-03
+## B Trace/Evidence·predecessor 경계
 
-[최신 source·검증·담당별 잔여](VALIDATION.md#e02-b-trace-reuse-final-audit-20261030)를 현재 B 판정으로 사용한다. 준비10파일과 실제 prior producer→family→QE caller, Native/SDK Java transport는 같은 Semantica checkout에 반영됐다. Trace/Evidence→closed memo→admitted Store·공통 ticket/역보상 경로도 source에 있다. 아래 W66–W70 설명은 유지할 계약/역사이며 이를 caller 부재·Store 전체 미연결로 해석하지 않는다. query capability 기본false와 현재 owning/body/제품 수용 미완료는 유지한다.
+실제 predecessor→DELTA selector/collector, L2 ImportGraph/CallGraph, L3 RepoMap/terminal/cold,
+Watch·Memo/GC/lifecycle·configured macOS owned provider의 연결을 기존 owner에서 재사용한다.
+과거 caller0·생성자 부재를 현재 미구현으로 재발급하지 않는다. borrowed transport의 의도된 typed refusal과
+실제 configured HTTP·설치 Java provider의 수용을 구분한다.
+현재 B 판정은 [기존 checkpoint](VALIDATION.md#e02-b-trace-reuse-final-audit-20261030),
+L1 source/검증은 [L1 최종 감사](VALIDATION.md#e02-l1-final-audit-20261030)를 따른다.
+accepted/resolved/prepared는 실행이 아니며 source가 다른 QE 통과 수를 현재 proof로 합산하지 않는다.
 
-Root는 committed retained semantic/terminal lender→기존 successor chain과 durable memo capsule/restore·Java V7 hydration source를 연결했다. 이전 census-only/direct-finish/parent custody 전체 부재는 과거 상태다. 실제 cross-generation/Runtime/SDK/cold 수용은 미완료다. 이후 QE11은 Source94ca에서374/374(scalar4 포함) 실제 통과했으나 current QE test파일이 달라 현재 Source 전체 proof로 승격하지 않는다. 현재 단일 큐는 D이며 accepted45/historicalGREEN7과 새prepared54미접수 상태를 분리한다. L3 current-M/fault/cancel/unwind와Chunk 수리·cold suite/consumer는source-present다. 실제 current gate/Linux/SDK 수용은 위 checkpoint를 따른다. 실제 설치 Java provider와 configured HTTP/Voyage는 구분한다.
-
-
-상태는 [SSOT E02](README.md#e02). 원 요구 R01/R02/R05–R12와 종전 W2-01/02/03/04/07, W2-05의 C/D를 소유한다. 기존 canonical IR·Store/claim/decoder/ACK·writer/generation/vector/root·D exterior bank를 재사용한다.
-
-Current L1 source/verification routing: [the existing L1 final audit](VALIDATION.md#e02-l1-final-audit-20261030).
+원 R01/R02/R05–R12와 W2-01/02/03/04/07·W2-05 C/D, canonical IR·Store/claim/decoder/ACK와
+writer/generation/vector/root·exterior DATA bank의 소유 경계는 유지한다.
 
 <a id="l3-source-only-closeout-20261030"></a>
 ## L3 실제 소스 합류와 잔여 검증 — 2026-11-01
@@ -161,18 +134,18 @@ flowchart LR
 기존 Linux5 cut은 그대로 재사용하되, 새 DELTA member/authority 경로를 실행했다는 proof로 치환하지 않는다. 실제 committed-source successor DELTA의 member/issuer/V9/terminal 진입과 동일 attempt 복구를 별도 scenario로 기존 owner target에 추가한다. 설치 입력 누락은 해당 process gate만 막으며 위 네 코드 절단을 막지 않는다.
 
 <a id="chat-delta-execution-plan"></a>
-### 이 채팅의 코드 마감 순서와 종료 판정
+<a id="이-채팅의-코드-마감-순서와-종료-판정"></a>
+### DELTA 코드 합류와 검증 인계
 
-아래는 네 절단을 실행하는 순서이며 새 티켓·진행률·담당 원장이 아니다. 현재 상태는 README E02, 수정권은 [exact hunk 경계](OWNERSHIP.md#delta-integration-hunks), 소스 관찰과 실행 결과는 VALIDATION에만 기록한다. 다른 채팅에 메시지·질문·추가 배정을 하지 않는다. 기존 producer의 구현을 읽고 소비하며 같은 함수를 새 담당에게 재배정하지 않는다.
-
-| 순서 | 이 채팅이 끝낼 코드와 입력/반환 계약 | 재사용하는 기존 owner / 구현 경계 | 종료 조건 |
-| --- | --- | --- | --- |
-| 1. 실제 operation 입력 인증·보유 | 실제 host/attempt/epoch·change-event pending binding·History Git revision·Source closure/target과 completed Chunk query의 verified carrier/context·Graph sideoutput을 사전 대조하고 원 owner에 보유한다. paid sealed ingress의 실제 생성·결속은 순서2의 상태 이동 뒤 순서3에서 수행한다 | 기존 host의 `issue_change_event_publication_v2`·pending binding과 `SourceBoundAggregatePublicationIngressV2`; Source census·query/context bank는 기존 E01 owner의 반환을 소비 | repo/snapshot/target/plan/attempt/epoch가 모두 일치. 범위가 다른 host·predecessor witness·결손 sideoutput은 member I/O 전에 거절. 일반 clone constructor를 Native after-Source 경로에 그대로 추가하지 않음 |
-| 2. authority/state 단일 이동 | member 준비 진입 전에 initial authority와 기존 drain/metadata·Source/query/outcomes를 동일 preparation custody로 한 번 이동한다. 이미 제거한 bare take를 복구하지 않는다. `InitialAuthorityPrepared`가 보존한 metadata·authority를 함께 소비하며 retained-pending을 깨뜨리지 않는다. member/issuer 성공 뒤에는 발급된 dispatch custody만 순서4에 넘기며 initial authority를 다시 take/prepare하지 않는다 | `entry_handoff_v130.rs`, `replay_metadata_handoff_v159.rs`, `native_manifest_handoff_v165.rs`, 기존 owner pipeline과 retained failure bank | 재소비 거절, 이동 뒤 허위 Pending/성공 없음. issuer/persist 실패도 payload/원 typed cause·abort/reconcile 책임을 보유하고 불확정 insert는 동일 identity로 조정. initial serial/borrow는 await·V9 전에 종료 |
-| 3. DELTA member·target V5·최종 검사 | 준비된 authority의 structured view와 E01의 실제 successor 반환으로 SearchPlane·RepoMap·ImportGraph를 결합하고 History도 실제 Git revision으로 기존 owner에서 준비한다. 공통 member suffix/issuer로 target V5를 발급한 뒤 Source/Output를 닫고 baseline·target·seal·manifest 최종 검사를 실행한다 | `PreparedAggregateOwnerPipelineInputV1`, 기존 History/SearchPlane/RepoMap prepare·export authority·ImportGraph admission; 새 publisher/serializer/전역 registry 없음 | 실제 Required payload·독립 producer authority·same-request binding과 이전 ACK의 exact V9 재확인이 모두 충족. unchanged 승계·최종 closure는 독립 gold와 일치. 실패 시 미게시 payload/원 cause와 abort 책임 보존. predecessor authority 재사용·dirty-only FULL·FULL query 재수집 없음 |
-| 4. 실제 V9·terminal·exact restart | issued dispatch를 기존 coordinator의 begin/reconcile/claim/dispatch/CAS에 연결한다. admitted ACK와 Native backing을 실제 committed-source consumer·checkpoint cleanup까지 운반한다. restored entry는 같은 operation/attempt/target의 durable phase로 재진입한다 | `stage_native_handoff_for_entry_v130`, 기존 `begin_v9_transfer_v2`/`reconcile_v9_transfer_v2`, coordinator Native transfer/closeout, `RuntimeOwnedTerminalPublicationPendingV1`과 `core_invalidator.rs`의 Native consumer hunk | 진짜 terminal evidence 이후에만 continuation/checkpoint 진행. 재stage·새 key·새 target·중복 visibility/CAS 없음. unbound Dispatching은 Pending, bound dispatch/ACK 유실은 exact replay, 마지막 DATA drop 뒤 원 funding 환급 |
-
-이미 연결된 DELTA attach 전 입력 gate, Native History 준비/보존, FULL에서 사용하는 공통 member suffix, typed writer/uncertainty bank는 재사용한다. 최신 결합 코드의 컴파일·동작은 아직 수용되지 않았다. 아래 A–F는 위 네 절단의 구체 실행 묶음이며 별도 티켓·상태 원장이 아니다. 현재 판정은 README E02, 실제 수리·검증과 잔여 호출 경로는 [최신 checkpoint](VALIDATION.md#e02-wave-structural-audit-20261026)에 둔다. 이전 source의 감사는 그 당시 관찰로 보존한다.
+입력/첫 I/O·member·authority 이동·V9/terminal은 앞선 네 절단이 계약을 소유하며,
+실행 순서는 [기존 합류 순서](WAVES.md#e02-shared-join-order)를 따른다. 같은 네 단계를
+새 채팅의 작업 표로 다시 배정하지 않는다. `InitialAuthorityPrepared`의 authority/metadata
+단일 이동과 기존 `prepare_delta_initial_authority_v165`·pending/V9 경로를 재사용한다.
+실제 complete 입력·Source/Output finisher·prior exact V9·typed partial/원 cause·
+마지막 환급, write/RPC0·재시작/중복 CAS 방지의 원 oracle는 그대로다.
+현재 source/owning/설치 판정은 [E02 원장](README.md#e02)과
+[source별 checkpoint](VALIDATION.md#e02-wave-structural-audit-20261026)를 따른다.
+아래 세 접합과 A–F는 그 계약의 구체 경계이며 별도 티켓·상태 원장이 아니다.
 
 <a id="delta-final-execution-packages"></a>
 
@@ -186,7 +159,7 @@ flowchart LR
 
 **live 공급 계약:** SDK map 삽입·Native evidence/structural·retained port caller는 재사용한다. 아래는 고정 계약이며 현재 연결/미연결 판정은 README E02·최신 VALIDATION을 따른다. canonical portable FULL 선택과 HIR/ItemIndex Args helper가 있어도 loader가 ordinary Args를 계속 사용하면 Original query는 거절된다. 실제 authenticated RuntimeCtx/session·같은 Original/file/target을 공급하여 helper→query→whole ExecutionResult를 연결하고, Clone 원 owner의 공통 선택 전환·bind typed cause 관측도 마감한다. FileText의 기존 selected Args/selection birth와 whole query bank는 유지한다. RepoMap은 기존 canonical state를 여러 nonnested checked loan에 이어 쓰되 per-loan Current/target 인증과 최종 finisher 후 hash authority를 실제 Graph/RepoMap caller에 연결한다. helper/state-only 구현은 B2 공급 완료가 아니다.
 
-[W1 공급·SDK 소비→W2.0–W2.2 실행 배치](WAVES.md#e02-residual-wave-plan)와 [private hunk 경계](OWNERSHIP.md#e02-supplier-hunks)를 따른다. whole query failure는 기존 Runtime Send-only retained bank에 query 전에 사전 수용하고, Origin/Source finisher와 body/physical 원인을 exterior DATA에 함께 유지한다. 단순 finite RuntimeError 매핑만으로 whole OriginalNativeContextAdmission custody를 보존했다고 판정하지 않는다.
+[W1 공급·SDK 소비→W2.0–W2.2 실행 배치](WAVES.md#e02-residual-wave-plan)와 [공용 수정·인수 규칙](OWNERSHIP.md#exclusive-boundaries)를 따른다. whole query failure는 기존 Runtime Send-only retained bank에 query 전에 사전 수용하고, Origin/Source finisher와 body/physical 원인을 exterior DATA에 함께 유지한다. 단순 finite RuntimeError 매핑만으로 whole OriginalNativeContextAdmission custody를 보존했다고 판정하지 않는다.
 
 기존 FULL·History·Store·encoder·ACK를 다시 구현하지 않는다. 위 코드 접합의 영향 검증과 기존 회귀 대기 목록, 설치 제품 복구 수용은 아래 CP1–3에서 각각 판정한다.
 
@@ -238,7 +211,7 @@ flowchart LR
 
 검증 계약은 아래 [단일 CP1–3 표](#e02-checkpoint-acceptance)만 유지한다. 코드 마감은 실제 순서1–4와 CP1, 동작 수용은 CP2·CP3로 각각 판정한다. E02 완료를 전체 E01–E08·성능·CI/release 완료로 승격하지 않는다.
 
-전체 committed FULL의 본문을 복사/해시하는 Source census 비용은 [E01 source owner](OWNERSHIP.md#native-query-closeout-writes)가 소유한다. 이 채팅에서 두 번째 census/증분 엔진을 만들지 않는다. Root는 넘겨받은 입력으로 작은 delta의 work/bytes·원16MiB·최종 환급을 검증하고, full plan과 delta emission plan의 구분을 유지한다.
+전체 committed FULL의 본문을 복사/해시하는 Source census 비용은 [E01 source 계약](E01-producer-generation.md)가 소유한다. 이 채팅에서 두 번째 census/증분 엔진을 만들지 않는다. Root는 넘겨받은 입력으로 작은 delta의 work/bytes·원16MiB·최종 환급을 검증하고, full plan과 delta emission plan의 구분을 유지한다.
 
 exact request는 writer가 받은 completed request다. 공개 FULL producer가 completed request를 만들기 전 수행하는 draft 정규화 자체를 결함으로 취급하지 않는다. FULL은 이 completed request→prepared receipt→issued artifact→V9 frozen request의 exact equality와 digest를 유지한다. delta에서는 writer 입력 뒤 reconciliation/manifest 정규화 전에 원 paid request를 보존한다.
 
@@ -256,7 +229,7 @@ SDK semantic 소비는 기존 raw plan→admitted policy/model→Native views→
 <a id="c2-native-persisted-contract"></a>
 ## C2 — Native unchanged output 재사용 계약
 
-실행 순서와 writer는 [W1.0→W1.1](WAVES.md#e02-supplier-subwaves)·[OWNERSHIP](OWNERSHIP.md#e02-current-wave-hunks-20261026)만 따른다. 아래는 기존 Query/ArtifactStore/ItemIndex carrier의 계약이며 새 wire IR·독립 cache·Source issuer가 아니다.
+원 공급 순서는 [W1.0→W1.1](WAVES.md#e02-supplier-subwaves), 현재 writer는 [에픽 원장](README.md#e02)과 [공용 수정 규칙](OWNERSHIP.md#exclusive-boundaries)에 따라 실제 hunk·담당을 확인한다. 아래는 기존 Query/ArtifactStore/ItemIndex carrier의 계약이며 새 wire IR·독립 cache·Source issuer가 아니다.
 
 1. **생산·저장:** 실제 checked ItemIndex를 기존 canonical schema3 encoder/memo envelope로 저장한다. Original output·wire·bytes·retention은 같은 operation의 paid owner에 결속한다. 논리 permit만 추가한 ordinary allocation이나 decoder 지원 없는 write 활성화는 금지한다.
 2. **관측·준비:** exact `MemoObservedRowV1`와 scope/dependency/recipe/currentness를 보유한다. row를 bare entry로 deep clone하지 않는다. 실제 Source 안에서 기존 canonical key와 exact-size buffer를 선과금해 prepared read를 만든다. 부분 key/buffer/guard·모든 원 typed cause를 exterior DATA에 둔다.
@@ -284,7 +257,7 @@ Native commit은 root pointer/generation/count뿐 아니라 prepared table ID·r
 <a id="production-join-contracts"></a>
 ## 생산 경로 접합 계약
 
-아래 일곱 변경 단위는 기존 E02의 구현 경계를 구체화한 것이며 새 티켓·진척률·상태 원장이 아니다. 현재 판정은 [README E02](README.md#e02), 수정권은 [OWNERSHIP](OWNERSHIP.md#e02-owner-exclusion-20261029), source별 실행 결과는 README가 연결한 [검증 원장](VALIDATION.md)을 따른다. [2026-10-28 소스 감사](VALIDATION.md#e02-current-source-residual-audit-20261028)는 당시 source의 기록이며 현재 미구현 목록으로 재사용하지 않는다. 숫자는 작업 분해이며 동일 LoE나 완료율 분모가 아니다.
+아래 일곱 변경 단위는 기존 E02의 구현 경계를 구체화한 것이며 새 티켓·진척률·상태 원장이 아니다. 현재 판정은 [README E02](README.md#e02), 수정권은 [공용 수정 규칙](OWNERSHIP.md#exclusive-boundaries), source별 실행 결과는 README가 연결한 [검증 원장](VALIDATION.md)을 따른다. [2026-10-28 소스 감사](VALIDATION.md#e02-current-source-residual-audit-20261028)는 당시 source의 기록이며 현재 미구현 목록으로 재사용하지 않는다. 숫자는 작업 분해이며 동일 LoE나 완료율 분모가 아니다.
 
 | 변경 단위 | 기존 코드와 결합할 생산 경계 | 완료 계약 |
 | --- | --- | --- |
@@ -298,6 +271,10 @@ Native commit은 root pointer/generation/count뿐 아니라 prepared table ID·r
 
 <a id="configured-native-provider-status-20261030-c"></a>
 ### Configured Native provider 소스 경계 — 2026-11-05
+
+현재 SDK/Runtime/공개 Published 입력과 owning 실행은 [NC-F P07 패킷](../nov-12-native-cutover/tickets/NC-F-integration.md#p07-final-actions-20261115)이 소유한다.
+완료된 codec/owned Host 연결은 재사용하고, 옛 P07·Oct-28 안내는 별도 작업 큐에서 퇴역했다.
+run40·C3의 source별 원 증거와 정확한 원문은 [복구 색인](../../ARCHIVE-INDEX.md#2026-11-15-p07-provider-packet-retirement)을 따른다.
 
 현재 configured SDK는 [native_configured_voyage_host_v3.rs](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-sdk-runtime-executor/src/client/native_configured_voyage_host_v3.rs:120)의 `run_native_voyage_host_v3`를 통해 실제 ingress를 설치하며, adapter의 [embed_batch_owned_native_v3](/Users/songmin/Documents/code-new/semantica-codegraph-v2/packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/voyage_adapter/mod.rs:617)는 nonempty 입력을 owned transport에 제출한다. 이 경로는 macOS cfg다. 별도 borrowed `embed_batch_into_native_v3`의 `TransportAdmissionUnavailable`를 configured 생산 경로 전체의 미구현으로 해석하지 않는다. 이 판정은 소스 연결 확인이며 HTTP/TLS/SDK/환급 수용 성공이나 다른 OS 지원 완료가 아니다.
 
@@ -320,7 +297,7 @@ Snapshot Store/provider와 genuine SDK Java/ItemIndex receipt·bank fixture sour
 
 실패 시 후보 DTO·decoder partial·canonical/header backing은 exterior DATA에 보존한다. 재진입은 새 backing을 발급하거나 첫 원인을 덮지 않으며, DATA와 validation의 drop 및 마지막 closed alias 해제 순서에 따라 원래 비용이 환급돼야 한다. 기존 private4MiB·work·취소/거절 조건을 유지한다. 실제 수용은 정상 행·변조·JSON end·write0·재사용 거절·DATA 보존·마지막 환급과 기존 양성의 owning 실행으로 판정한다.
 
-이 절은 구현/수용 계약이다. 현재 실행 판정·잔여는 [P01 현재 원장](VALIDATION.md#e02-deduplicated-current-work-20261030-root), 담당 경계는 [기존 배정](OWNERSHIP.md#e02-owner-exclusion-20261029), 에픽 색인은 [README E02](README.md#e02)가 소유한다. 공용 gate나 다른 담당의 provider/DELTA 구현을 P01 회귀로 대신 수용하지 않는다.
+이 절은 구현/수용 계약이다. 현재 실행 판정·잔여는 [P01 현재 원장](VALIDATION.md#e02-deduplicated-current-work-20261030-root), 담당 경계는 [공용 수정 규칙](OWNERSHIP.md#exclusive-boundaries), 에픽 색인은 [README E02](README.md#e02)가 소유한다. 공용 gate나 다른 담당의 provider/DELTA 구현을 P01 회귀로 대신 수용하지 않는다.
 
 ### 최종 실행 묶음 — 기존 일곱 계약의 합류
 

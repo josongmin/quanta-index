@@ -14,7 +14,7 @@ activation and lexical/semantic/hybrid serving over Unix sockets.
 - [Other benchmark profiles](tools/benchmark/README.md): corpus releases, Criterion, DSL gates and recording imports.
 - [State operations](docs/operator/state-cutover-runbook.md): verify, backup, restore and rebuild.
 - [Embedding provider](docs/potion-code-embedder.md): local model preparation.
-- [Crate ownership index](docs/ssot/crate-ownership.md): all 25 workspace crates and their source entry points.
+- [Crate ownership index](docs/ssot/crate-ownership.md): workspace crates and source entry points, matched to `Cargo.toml`.
 
 Build and start the daemon against an external current-format state root:
 
@@ -23,8 +23,17 @@ Build and start the daemon against an external current-format state root:
 ./scripts/cargow --lane daemon-lane run -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked -- serve --state-root /absolute/state-root
 ```
 
-Publish typed producer input through the SDK before querying an active generation.
-Legacy generations require a rebuild; see the state operations guide.
+The command above starts the Legacy generation service. Publish typed producer
+input through the SDK before querying an active generation. Unsupported stored
+formats require a rebuild; see the state operations guide.
+
+The explicit Native product uses `serve-native`, its admitted configuration and
+selected-view SDK/CLI contracts. `just rust-profile release-native-daemon` builds
+this daemon without linking Tantivy. Start that binary with
+`serve-native --config /absolute/native-config.json`. The
+[Native cutover plan](docs/plans/nov-12-native-cutover/README.md) tracks default
+routing and installed verification. See the
+[Native ADR](docs/adr/NOV-12-001-native-query-and-semantic-engine.md) for the query contract.
 
 [Documentation index](docs/README.md) routes current source maps, Accepted ADRs,
 remaining code/inputs/qualification and historical recovery. Publication requires
@@ -132,6 +141,8 @@ qualification split:
 ## Active work
 
 - [Index closeout](docs/plans/oct-22-finalizing/README.md): E01–E08 owners, remaining code and acceptance.
+- [Native cutover](docs/plans/nov-12-native-cutover/README.md): current Native caller, quality, product and dependency-removal work.
+- [C0/P09 execution](docs/plans/nov-12-bugbash-c0-p09/tickets/B05-final-verification.md): existing owner for current installed inputs and terminal verification.
 - [Execution order](docs/plans/oct-22-finalizing/README.md#execution-order): dependencies and owner handoffs.
 - [Validation and external inputs](docs/plans/oct-22-finalizing/VALIDATION.md): owner/daemon checks, quality, performance and release boundaries.
 

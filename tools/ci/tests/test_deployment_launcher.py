@@ -7,10 +7,12 @@ import json
 import os
 import select
 import signal
+import socket
 import stat
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -128,6 +130,31 @@ case "$1" in
 esac
 exit 25
 """
+
+NATIVE_CANDIDATE_SEARCHD = b"""#!/bin/sh
+set -eu
+if [ "$1" = select-native-candidate ]; then
+    [ "$#" -eq 13 ]
+    [ "$2" = --config ] && [ "$4" = --config-digest ]
+    [ "$6" = --root-nonce ] && [ "$8" = --manifest-operation ]
+    [ "${10}" = --source-cut-digest ] && [ "${12}" = --receipt ]
+    [ ! -e "${13}" ]
+    umask 077
+    cp "$QUANTA_INDEX_CACHE_ROOT/fixed-receipt.json" "${13}"
+    printf 'select-candidate\n' >> "$QUANTA_INDEX_CACHE_ROOT/events"
+    exit 0
+fi
+if [ "$1" = verify-native-candidate ]; then
+    [ "$#" -eq 15 ]
+    [ "$2" = --config ] && [ "$4" = --root-nonce ]
+    [ "$6" = --manifest-operation ] && [ "$8" = --manifest-object ]
+    [ "${10}" = --source-cut-digest ] && [ "${12}" = --catalog-content-digest ]
+    [ "${14}" = --config-digest ]
+    printf 'verify-candidate\n' >> "$QUANTA_INDEX_CACHE_ROOT/events"
+    [ ! -e "$QUANTA_INDEX_CACHE_ROOT/refuse-candidate-verify" ] || exit 61
+    exit 0
+fi
+""" + NATIVE_SEARCHD.split(b"set -eu\n", 1)[1]
 
 
 def native_config(path: Path, root: Path) -> None:
@@ -362,6 +389,698 @@ def test_native_selection_binds_config_root_digest_and_process_route(tmp_path: P
     ]
 
 
+def test_prepare_native_candidate_cli_keeps_active_legacy_and_reuses_exact_document(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active, binary, old_root, cache, environment = fixture(tmp_path)
+    launcher.publish_selection(active, launcher.proposed_selection(binary, old_root, environment))
+    before = active.read_bytes()
+    root = tmp_path / "candidate-root"
+    root.mkdir(mode=0o700)
+    image = tmp_path / "candidate-searchd"
+    image.write_bytes(NATIVE_CANDIDATE_SEARCHD)
+    image.chmod(0o700)
+    config = tmp_path / "native.json"
+    native_config(config, root)
+    receipt = native_receipt()
+    deployment = tmp_path / "candidate-deployment"
+    deployment.mkdir(mode=0o700)
+    receipt_path = deployment / "boot-receipt.json"
+    write_wire(receipt_path, json.dumps(receipt.to_wire()))
+    candidate = deployment / "candidate.json"
+    args = [
+        "prepare-native-candidate", "--selection", str(active),
+        "--expected-selection-sha256", hashlib.sha256(before).hexdigest(),
+        "--candidate", str(candidate), "--binary", str(image),
+        "--binary-sha256", hashlib.sha256(NATIVE_CANDIDATE_SEARCHD).hexdigest(),
+        "--state-root", str(root), "--config", str(config),
+        "--config-sha256", hashlib.sha256(config.read_bytes()).hexdigest(),
+        "--receipt", str(receipt_path), "--root-nonce", receipt.root_nonce_hex,
+        "--manifest-operation", receipt.manifest_operation_json,
+        "--source-cut-digest", receipt.source_cut_digest_hex,
+        "--env", f"QUANTA_INDEX_CACHE_ROOT={cache}", "--env", "PATH=/usr/bin:/bin",
+    ]
+
+    for flag in (
+        "--binary-sha256", "--config-sha256", "--root-nonce", "--source-cut-digest",
+        "--expected-selection-sha256",
+    ):
+        wrong = args.copy()
+        wrong[wrong.index(flag) + 1] = "ff" * 32
+        assert launcher.main(wrong) == 1
+        assert not candidate.exists()
+    wrong_operation = args.copy()
+    foreign_operation = json.loads(receipt.manifest_operation_json)
+    foreign_operation["sequence"] += 1
+    wrong_operation[wrong_operation.index("--manifest-operation") + 1] = json.dumps(foreign_operation)
+    assert launcher.main(wrong_operation) == 1
+    assert not candidate.exists()
+    assert (cache / "events").read_text().splitlines() == [f"verify:{old_root}"]
+    capsys.readouterr()
+
+    write_wire(cache / "fixed-receipt.json", json.dumps(receipt.to_wire()))
+    receipt_path.unlink()
+    (cache / "refuse-candidate-verify").touch()
+    with launcher.deployment_lock(active):
+        assert launcher.main(args) == 1
+    assert receipt_path.exists() and not candidate.exists()
+    (cache / "refuse-candidate-verify").unlink()
+    with launcher.deployment_lock(active):
+        assert launcher.main(args) == 0
+    payload = candidate.read_bytes()
+    metadata = candidate.stat()
+    assert stat.S_IMODE(metadata.st_mode) == 0o600
+    assert json.loads(capsys.readouterr().out) == {
+        "candidate_path": str(candidate),
+        "candidate_sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    assert active.read_bytes() == before
+    assert launcher.main(args) == 0
+    assert candidate.read_bytes() == payload
+    assert candidate.stat().st_ino == metadata.st_ino
+    assert (cache / "events").read_text().splitlines().count("select-candidate") == 1
+    assert (cache / "events").read_text().splitlines().count("verify-candidate") == 3
+    changed = args + ["--env", "LANG=C"]
+    assert launcher.main(changed) == 1
+    assert candidate.read_bytes() == payload
+    assert active.read_bytes() == before
+
+    def assert_refuses_unsynced_rewrite(target: Path) -> None:
+        original = target.read_bytes()
+        target_inode = target.stat().st_ino
+        synced_files = []
+        real_fsync = os.fsync
+
+        def rewrite_after_sync(descriptor: int) -> None:
+            real_fsync(descriptor)
+            observed = os.fstat(descriptor)
+            if observed.st_ino == target_inode:
+                synced_files.append(observed.st_ino)
+                write_wire(target, original.decode() + " ")
+
+        with monkeypatch.context() as injection:
+            injection.setattr(launcher.os, "fsync", rewrite_after_sync)
+            assert launcher.main(args) == 1
+        assert synced_files == [target_inode]
+        assert "durability is uncertain" in capsys.readouterr().err
+        assert active.read_bytes() == before
+        write_wire(target, original.decode())
+
+    for target in [receipt_path, candidate]:
+        assert_refuses_unsynced_rewrite(target)
+
+
+def test_prepare_native_candidate_from_selected_native_keeps_active_head(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    active, _binary, old_root, cache, environment = fixture(tmp_path)
+    image = tmp_path / "candidate-searchd"
+    image.write_bytes(NATIVE_CANDIDATE_SEARCHD)
+    image.chmod(0o700)
+    old_config = tmp_path / "old-native.json"
+    native_config(old_config, old_root)
+    old = replace(
+        launcher.proposed_selection(image, old_root, environment),
+        native_config=old_config,
+        native_config_sha256=hashlib.sha256(old_config.read_bytes()).hexdigest(),
+        native_boot_receipt=native_receipt(),
+    )
+    launcher.publish_selection(active, old)
+    before = active.read_bytes()
+    before_inode = active.stat().st_ino
+
+    root = tmp_path / "next-root"
+    root.mkdir(mode=0o700)
+    config = tmp_path / "next-native.json"
+    native_config(config, root)
+    receipt_wire = native_receipt().to_wire()
+    receipt_wire["root_nonce_hex"] = "22" * 32
+    receipt_wire["manifest_operation"]["sequence"] += 1
+    write_wire(cache / "fixed-receipt.json", json.dumps(receipt_wire))
+    receipt = launcher.NativeBootReceipt.from_wire(receipt_wire)
+    deployment = tmp_path / "next-deployment"
+    deployment.mkdir(mode=0o700)
+    candidate = deployment / "candidate.json"
+    receipt_path = deployment / "boot.json"
+    args = [
+        "prepare-native-candidate", "--selection", str(active),
+        "--expected-selection-sha256", hashlib.sha256(before).hexdigest(),
+        "--candidate", str(candidate), "--binary", str(image),
+        "--binary-sha256", hashlib.sha256(image.read_bytes()).hexdigest(),
+        "--state-root", str(root), "--config", str(config),
+        "--config-sha256", hashlib.sha256(config.read_bytes()).hexdigest(),
+        "--receipt", str(receipt_path), "--root-nonce", receipt.root_nonce_hex,
+        "--manifest-operation", receipt.manifest_operation_json,
+        "--source-cut-digest", receipt.source_cut_digest_hex,
+        "--env", f"QUANTA_INDEX_CACHE_ROOT={cache}", "--env", "PATH=/usr/bin:/bin",
+    ]
+    stale = args.copy()
+    stale[stale.index("--expected-selection-sha256") + 1] = "ff" * 32
+    assert launcher.main(stale) == 1
+    assert "current selection changed; inspect before switching" in capsys.readouterr().err
+    assert not candidate.exists() and not receipt_path.exists()
+    same_root = args.copy()
+    same_root[same_root.index("--state-root") + 1] = str(old_root)
+    same_root[same_root.index("--config") + 1] = str(old_config)
+    same_root[same_root.index("--config-sha256") + 1] = hashlib.sha256(
+        old_config.read_bytes()
+    ).hexdigest()
+    assert launcher.main(same_root) == 1
+    assert "switch roots must be distinct and non-nested" in capsys.readouterr().err
+    assert not candidate.exists() and not receipt_path.exists()
+    assert active.read_bytes() == before
+    assert active.stat().st_ino == before_inode
+
+    assert launcher.main(args) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "candidate_path": str(candidate),
+        "candidate_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+    }
+    assert active.read_bytes() == before
+    assert active.stat().st_ino == before_inode
+    assert (cache / "events").read_text().splitlines() == [
+        f"verify-native:{old_config}:{hashlib.sha256(old_config.read_bytes()).hexdigest()}",
+        "select-candidate", "verify-candidate",
+    ]
+
+
+@pytest.mark.parametrize(
+    "long_endpoint",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(sys.platform != "linux", reason="Linux procfd socket address"),
+        ),
+    ],
+)
+@pytest.mark.parametrize("current_mode_v1", ["legacy", "native"])
+def test_build_native_candidate_reaps_before_boot_and_reuses_durable_full(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], long_endpoint: bool,
+    current_mode_v1: str,
+) -> None:
+    active, binary, old_root, cache, environment = fixture(tmp_path)
+    deployment = tmp_path / "candidate-deployment"
+    deployment.mkdir(mode=0o700)
+    root = tmp_path / "candidate-root"
+    root.mkdir(mode=0o700)
+    endpoint = tmp_path / "candidate-ipc" / "q.sock"
+    if long_endpoint:
+        parent = tmp_path / ("socket-owner-" * 12)
+        endpoint = parent / endpoint.name
+    assert not endpoint.parent.exists()
+    config = tmp_path / "native.json"
+    write_wire(config, json.dumps({"state_root": str(root), "socket_path": str(endpoint)}))
+    receipt = native_receipt().to_wire()
+    if current_mode_v1 == "native":
+        receipt["root_nonce_hex"] = "22" * 32
+        receipt["manifest_operation"]["sequence"] += 1
+    write_wire(cache / "fixed-receipt.json", json.dumps(receipt))
+    expected_handoff = {
+        field: receipt[field]
+        for field in ("root_nonce_hex", "manifest_operation", "source_cut_digest_hex")
+    }
+    expected_handoff["original_full_sequence"] = 17
+
+    image = tmp_path / "candidate-searchd"
+    python = Path(sys.executable).resolve()
+    image.write_text(f"#!{python}\n" + """
+import json, os, signal, socket, sys
+from pathlib import Path
+cache = Path(os.environ["QUANTA_INDEX_CACHE_ROOT"])
+with (cache / "events").open("a") as output:
+    output.write(sys.argv[1] + "\\n")
+if sys.argv[1] == "serve-native-candidate":
+    endpoint = Path(json.loads(Path(sys.argv[3]).read_bytes())["socket_path"])
+    endpoint.parent.mkdir(mode=0o700, exist_ok=True)
+    stopping = False
+    def drain(*_):
+        global stopping
+        stopping = True
+    signal.signal(signal.SIGTERM, drain)
+    (cache / "owned-pid").write_text(str(os.getpid()))
+    directory = None
+    address = endpoint
+    if len(os.fsencode(endpoint)) >= 108 and sys.platform == "linux":
+        directory = os.open(endpoint.parent, os.O_PATH | os.O_DIRECTORY)
+        address = Path(f"/proc/self/fd/{directory}") / endpoint.name
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(str(address))
+            server.listen()
+            server.settimeout(0.1)
+            while not stopping:
+                try:
+                    with server.accept()[0]:
+                        pass
+                except socket.timeout:
+                    continue
+    finally:
+        endpoint.unlink()
+        if directory is not None:
+            os.close(directory)
+    refused = (cache / "refuse-drain").exists()
+    with (cache / "events").open("a") as output:
+        output.write("drain-refused\\n" if refused else "drain-complete\\n")
+    sys.exit(47 if refused else 0)
+elif sys.argv[1] == "select-native-candidate":
+    try:
+        os.kill(int((cache / "owned-pid").read_text()), 0)
+    except ProcessLookupError:
+        pass
+    else:
+        sys.exit(49)
+    assert not Path(json.loads(Path(sys.argv[3]).read_bytes())["socket_path"]).exists()
+    assert json.loads(sys.argv[9]) == json.loads((cache / "fixed-receipt.json").read_bytes())["manifest_operation"]
+    if not (cache / "allow-boot").exists():
+        sys.exit(25)
+    os.umask(0o077)
+    Path(sys.argv[13]).write_bytes((cache / "fixed-receipt.json").read_bytes())
+elif sys.argv[1] == "verify-native-candidate":
+    assert len(sys.argv) == 16
+    assert sys.argv[12] == "--catalog-content-digest"
+elif sys.argv[1] != "verify-native-state":
+    sys.exit(3)
+""")
+    image.chmod(0o700)
+    if current_mode_v1 == "native":
+        old_config = tmp_path / "old-native.json"
+        native_config(old_config, old_root)
+        old = replace(
+            launcher.proposed_selection(image, old_root, environment),
+            native_config=old_config,
+            native_config_sha256=hashlib.sha256(old_config.read_bytes()).hexdigest(),
+            native_boot_receipt=native_receipt(),
+        )
+    else:
+        old = launcher.proposed_selection(binary, old_root, environment)
+    launcher.publish_selection(active, old)
+    before = active.read_bytes()
+    producer = tmp_path / "producer"
+    producer.write_text(f"#!{python}\n" + """
+import json, os, subprocess, sys
+from hashlib import sha256
+from pathlib import Path
+assert sys.argv[1] == "--prepare-native-candidate-full"
+flags = dict(zip(sys.argv[2::2], sys.argv[3::2]))
+cache = Path(os.environ["FIXTURE_CACHE"])
+assert flags["--native-candidate-q-pid"] == (cache / "owned-pid").read_text()
+assert flags["--native-candidate-resident-socket"] == str(cache / "resident.sock")
+assert flags["--native-candidate-runtime-session-id"] == "retained-session"
+if flags.get("--native-candidate-history-source") == "snapshot":
+    active = Path(flags["--native-candidate-active-selection-path"])
+    assert active.is_absolute()
+    assert flags["--native-candidate-active-selection-sha256"] == sha256(active.read_bytes()).hexdigest()
+    config = Path(flags["--native-candidate-q-config"])
+    assert config.is_absolute()
+    assert flags["--native-candidate-q-config-sha256"] == sha256(config.read_bytes()).hexdigest()
+else:
+    assert "--native-candidate-active-selection-path" not in flags
+    assert "--native-candidate-active-selection-sha256" not in flags
+    assert "--native-candidate-q-config" not in flags
+    assert "--native-candidate-q-config-sha256" not in flags
+producer_image = Path(sys.argv[0])
+assert flags["--quanta-internal-filesystem-scan-worker-path-v1"] == str(producer_image)
+assert flags["--quanta-internal-filesystem-scan-worker-sha256-v1"] == sha256(producer_image.read_bytes()).hexdigest()
+os.kill(int(flags["--native-candidate-q-pid"]), 0)
+assert Path(flags["--native-source-socket"]).is_socket()
+lock = Path(os.environ["FIXTURE_DEPLOYMENT_LOCK"]).stat()
+for entry in Path("/dev/fd").iterdir():
+    try:
+        descriptor = os.fstat(int(entry.name))
+    except OSError:
+        continue
+    if os.path.samestat(descriptor, lock):
+        break
+else:
+    raise AssertionError("the FULL producer must retain the candidate deployment lock")
+with (cache / "events").open("a") as output:
+    output.write("producer\\n")
+subprocess.Popen([sys.executable, "-c", "import os,time; from pathlib import Path; "
+                  "time.sleep(0.3); Path(os.environ['FIXTURE_CACHE'], 'late-worker').touch()"])
+print(os.environ["FIXTURE_HANDOFF"])
+""")
+    producer.chmod(0o700)
+    candidate = deployment / "candidate.json"
+    receipt_path = deployment / "boot.json"
+    args = [
+        "build-native-candidate", "--selection", str(active),
+        "--expected-selection-sha256", hashlib.sha256(before).hexdigest(),
+        "--candidate", str(candidate), "--binary", str(image),
+        "--binary-sha256", hashlib.sha256(image.read_bytes()).hexdigest(),
+        "--state-root", str(root), "--config", str(config),
+        "--config-sha256", hashlib.sha256(config.read_bytes()).hexdigest(),
+        "--receipt", str(receipt_path), "--producer", str(producer),
+        "--producer-sha256", hashlib.sha256(producer.read_bytes()).hexdigest(),
+        "--env", f"QUANTA_INDEX_CACHE_ROOT={cache}",
+        "--producer-env", f"FIXTURE_CACHE={cache}",
+        "--producer-env", f"FIXTURE_DEPLOYMENT_LOCK={deployment / launcher.DEPLOYMENT_LOCK_NAME}",
+        "--producer-env", f"FIXTURE_HANDOFF={json.dumps(expected_handoff)}",
+        "--timeout-seconds", "5", "--", "--native-candidate-expected-snapshot", "1",
+        "--native-candidate-resident-socket", str(cache / "resident.sock"),
+        "--native-candidate-runtime-session-id", "retained-session",
+    ]
+    if current_mode_v1 == "legacy":
+        args.extend(("--native-candidate-history-source", "snapshot"))
+    assert launcher.main([
+        *args, "--quanta-internal-filesystem-scan-worker-path-v1", str(image),
+    ]) == 1
+    assert launcher.main([
+        *args, "--native-candidate-active-selection-path", str(active),
+    ]) == 1
+    assert launcher.main([
+        *args, "--native-candidate-q-config", str(config),
+    ]) == 1
+    assert not endpoint.parent.exists(), "invalid worker pin must fail before starting Q"
+    if current_mode_v1 == "native":
+        assert launcher.main([*args, "--native-candidate-history-source", "snapshot"]) == 1
+        assert not endpoint.parent.exists()
+    (cache / "refuse-drain").touch()
+    with launcher.deployment_lock(active):
+        assert launcher.main(args) == 1
+        assert not candidate.exists() and not receipt_path.exists() and not endpoint.exists()
+        handoff = deployment / ".candidate.json.full-handoff.json"
+        retained_handoff = handoff.read_bytes()
+        assert not (deployment / ".candidate.json.clean-drain.json").exists()
+        retained_events = (cache / "events").read_text()
+        assert "select-native-candidate" not in retained_events.splitlines()
+        capsys.readouterr()
+        foreign_replacements = [
+            ("--native-candidate-resident-socket", str(cache / "other.sock")),
+            ("--native-candidate-runtime-session-id", "foreign-session"),
+        ]
+        if current_mode_v1 == "legacy":
+            foreign_replacements.append(("--native-candidate-history-source", "replay"))
+        for flag, replacement in foreign_replacements:
+            foreign_args = args.copy()
+            foreign_args[foreign_args.index(flag) + 1] = replacement
+            assert launcher.main(foreign_args) == 1
+            assert "candidate FULL handoff differs from preparation inputs" in capsys.readouterr().err
+            assert handoff.read_bytes() == retained_handoff
+            assert (cache / "events").read_text() == retained_events
+            assert active.read_bytes() == before
+            assert not candidate.exists() and not receipt_path.exists() and not endpoint.exists()
+        (cache / "refuse-drain").unlink()
+        assert launcher.main(args) == 1
+        assert (deployment / ".candidate.json.clean-drain.json").exists()
+        assert not candidate.exists() and not receipt_path.exists()
+        (cache / "allow-boot").touch()
+        assert launcher.main(args) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result == {
+        "candidate_path": str(candidate),
+        "candidate_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+        "original_full_sequence": 17,
+    }
+    assert active.read_bytes() == before
+    initial_event_v1 = (
+        "verify-native-state" if current_mode_v1 == "native" else f"verify:{old_root}"
+    )
+    assert (cache / "events").read_text().splitlines() == [
+        initial_event_v1, "serve-native-candidate", "producer",
+        "drain-refused", "serve-native-candidate", "drain-complete",
+        "select-native-candidate", "select-native-candidate", "verify-native-candidate",
+    ]
+    assert launcher.main(args) == 0
+    capsys.readouterr()
+    assert active.read_bytes() == before
+    events_v1 = (cache / "events").read_text().splitlines()
+    assert events_v1.count("producer") == 1
+    assert events_v1.count("serve-native-candidate") == 2
+    assert events_v1.count("select-native-candidate") == 2
+    time.sleep(0.5)
+    assert not (cache / "late-worker").exists()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux peer credentials")
+def test_candidate_readiness_rejects_a_listener_owned_by_another_process(tmp_path: Path) -> None:
+    endpoint = tmp_path / "foreign.sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as foreign:
+        foreign.bind(str(endpoint))
+        foreign.listen()
+        with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"]) as child:
+            try:
+                with pytest.raises(launcher.SelectionError, match="different process"):
+                    launcher._wait_candidate_endpoint(child, lambda: False, endpoint, time.monotonic() + 2)
+            finally:
+                child.terminate()
+
+
+def test_build_native_candidate_interrupt_during_owned_drain_refuses_boot(tmp_path: Path) -> None:
+    active, _binary, old_root, cache, environment = fixture(tmp_path)
+    launcher.publish_selection(active, launcher.proposed_selection(_binary, old_root, environment))
+    deployment = tmp_path / "candidate-deployment"
+    deployment.mkdir(mode=0o700)
+    root = tmp_path / "candidate-root"
+    root.mkdir(mode=0o700)
+    endpoint = tmp_path / "q.sock"
+    config = tmp_path / "native.json"
+    write_wire(config, json.dumps({"state_root": str(root), "socket_path": str(endpoint)}))
+    image = tmp_path / "candidate-searchd"
+    python = Path(sys.executable).resolve()
+    image.write_text(f"#!{python}\n" + """
+import json, os, signal, socket, sys, time
+from pathlib import Path
+cache = Path(os.environ["QUANTA_INDEX_CACHE_ROOT"])
+if sys.argv[1] == "select-native-candidate":
+    (cache / "boot-invoked").touch()
+    sys.exit(41)
+if sys.argv[1] != "serve-native-candidate":
+    sys.exit(42)
+endpoint = Path(json.loads(Path(sys.argv[3]).read_bytes())["socket_path"])
+signal.signal(signal.SIGINT, lambda *_: (cache / "interrupted").touch())
+def drain(*_):
+    (cache / "draining").touch()
+    while not (cache / "release-drain").exists():
+        time.sleep(0.01)
+    sys.exit(0)
+signal.signal(signal.SIGTERM, drain)
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+    server.bind(str(endpoint))
+    server.listen()
+    while True:
+        with server.accept()[0]:
+            pass
+""")
+    image.chmod(0o700)
+    producer = tmp_path / "producer"
+    handoff = native_receipt().to_wire()
+    handoff = {field: handoff[field] for field in (
+        "root_nonce_hex", "manifest_operation", "source_cut_digest_hex"
+    )}
+    handoff["original_full_sequence"] = 17
+    producer.write_text(f"#!{python}\n" + """
+import os
+print(os.environ["FIXTURE_HANDOFF"])
+""")
+    producer.chmod(0o700)
+    candidate = deployment / "candidate.json"
+    receipt_path = deployment / "boot.json"
+    args = [
+        sys.executable, str(Path(launcher.__file__)), "build-native-candidate",
+        "--selection", str(active),
+        "--expected-selection-sha256", hashlib.sha256(active.read_bytes()).hexdigest(),
+        "--candidate", str(candidate), "--binary", str(image),
+        "--binary-sha256", hashlib.sha256(image.read_bytes()).hexdigest(),
+        "--state-root", str(root), "--config", str(config),
+        "--config-sha256", hashlib.sha256(config.read_bytes()).hexdigest(),
+        "--receipt", str(receipt_path), "--producer", str(producer),
+        "--producer-sha256", hashlib.sha256(producer.read_bytes()).hexdigest(),
+        "--env", f"QUANTA_INDEX_CACHE_ROOT={cache}",
+        "--producer-env", f"FIXTURE_HANDOFF={json.dumps(handoff)}",
+        "--timeout-seconds", "5",
+    ]
+    parent = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        wait_for(cache / "draining")
+        parent.send_signal(signal.SIGINT)
+        wait_for(cache / "interrupted")
+        (cache / "release-drain").touch()
+        _out, err = parent.communicate(timeout=5)
+        assert parent.returncode == 1
+        assert b"candidate preparation interrupted" in err
+        assert not (cache / "boot-invoked").exists()
+        assert not receipt_path.exists() and not candidate.exists()
+        assert (deployment / ".candidate.json.full-handoff.json").exists()
+    finally:
+        (cache / "release-drain").touch()
+        if parent.poll() is None:
+            parent.kill()
+            parent.communicate(timeout=5)
+
+
+def test_create_only_publication_interrupt_has_single_link_and_is_retryable(tmp_path: Path) -> None:
+    target = tmp_path / "candidate.json"
+    payload = b'{"candidate":"fixed"}\n'
+
+    def interrupt(stage: str) -> None:
+        if stage == "after_rename":
+            raise KeyboardInterrupt()
+
+    with launcher.deployment_lock(target) as lock_fd:
+        with pytest.raises(launcher.PersistenceUncertain):
+            launcher._publish_control_file_locked(
+                target, payload, lock_fd, fault_hook=interrupt, create_only=True
+            )
+    assert target.read_bytes() == payload
+    assert target.stat().st_nlink == 1
+    assert not list(tmp_path.glob(".candidate.json.tmp-*"))
+    with launcher.deployment_lock(target) as lock_fd:
+        launcher._sync_retained_publication(
+            target, lock_fd, payload, 1024, lambda body: body
+        )
+        with pytest.raises(launcher.SelectionError, match="candidate already exists"):
+            launcher._publish_control_file_locked(target, b"replacement", lock_fd, create_only=True)
+    assert target.read_bytes() == payload
+    assert not list(tmp_path.glob(".candidate.json.tmp-*"))
+
+
+def test_candidate_boot_signal_after_receipt_refuses_selection_then_retries(tmp_path: Path) -> None:
+    active, legacy_binary, old_root, cache, environment = fixture(tmp_path)
+    launcher.publish_selection(active, launcher.proposed_selection(legacy_binary, old_root, environment))
+    before = active.read_bytes()
+    deployment = tmp_path / "candidate-deployment"
+    deployment.mkdir(mode=0o700)
+    root = tmp_path / "candidate-root"
+    root.mkdir(mode=0o700)
+    config = tmp_path / "native.json"
+    native_config(config, root)
+    receipt = native_receipt()
+    write_wire(cache / "fixed-receipt.json", json.dumps(receipt.to_wire()))
+    image = tmp_path / "candidate-searchd"
+    python = Path(sys.executable).resolve()
+    image.write_text(f"#!{python}\n" + """
+import os, signal, sys, time
+from pathlib import Path
+cache = Path(os.environ["QUANTA_INDEX_CACHE_ROOT"])
+with (cache / "events").open("a") as stream:
+    stream.write(sys.argv[1] + "\\n")
+if sys.argv[1] == "select-native-candidate":
+    signal.signal(signal.SIGINT, lambda *_: (cache / "boot-interrupted").touch())
+    os.umask(0o077)
+    Path(sys.argv[13]).write_bytes((cache / "fixed-receipt.json").read_bytes())
+    (cache / "boot-written").touch()
+    while not (cache / "release-boot").exists():
+        time.sleep(0.01)
+elif sys.argv[1] != "verify-native-candidate":
+    sys.exit(43)
+""")
+    image.chmod(0o700)
+    candidate = deployment / "candidate.json"
+    receipt_path = deployment / "boot.json"
+    args = [
+        "prepare-native-candidate", "--selection", str(active),
+        "--expected-selection-sha256", hashlib.sha256(before).hexdigest(),
+        "--candidate", str(candidate), "--binary", str(image),
+        "--binary-sha256", hashlib.sha256(image.read_bytes()).hexdigest(),
+        "--state-root", str(root), "--config", str(config),
+        "--config-sha256", hashlib.sha256(config.read_bytes()).hexdigest(),
+        "--receipt", str(receipt_path), "--root-nonce", receipt.root_nonce_hex,
+        "--manifest-operation", receipt.manifest_operation_json,
+        "--source-cut-digest", receipt.source_cut_digest_hex,
+        "--env", f"QUANTA_INDEX_CACHE_ROOT={cache}",
+    ]
+    parent = subprocess.Popen(
+        [sys.executable, str(Path(launcher.__file__)), *args],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    try:
+        wait_for(cache / "boot-written")
+        parent.send_signal(signal.SIGINT)
+        wait_for(cache / "boot-interrupted")
+        (cache / "release-boot").touch()
+        _out, err = parent.communicate(timeout=5)
+        assert parent.returncode == 1
+        assert b"select-native-candidate interrupted" in err
+        assert receipt_path.exists() and not candidate.exists()
+    finally:
+        (cache / "release-boot").touch()
+        if parent.poll() is None:
+            parent.kill()
+            parent.communicate(timeout=5)
+    assert launcher.main(args) == 0
+    assert candidate.exists() and active.read_bytes() == before
+    assert (cache / "events").read_text().splitlines() == [
+        f"verify:{old_root}",
+        "select-native-candidate", "verify-native-candidate",
+    ]
+
+
+@pytest.mark.parametrize("current_mode_v1", ["legacy", "native"])
+def test_serve_native_candidate_pins_config_and_reaps_before_releasing_lock(
+    tmp_path: Path, current_mode_v1: str,
+) -> None:
+    active, binary, old_root, cache, environment = fixture(tmp_path)
+    deployment = tmp_path / "candidate-deployment"
+    deployment.mkdir(mode=0o700)
+    candidate = deployment / "candidate.json"
+    root = tmp_path / "candidate-root"
+    root.mkdir(mode=0o700)
+    config = tmp_path / "native.json"
+    native_config(config, root)
+    digest = hashlib.sha256(config.read_bytes()).hexdigest()
+    image = tmp_path / "candidate-searchd"
+    image.write_text(
+        "#!/bin/sh\nset -eu\n"
+        '[ "$1" = serve-native-candidate ] && [ "$2" = --config ] && [ "$4" = --config-digest ]\n'
+        f'[ "$3" = "{config}" ] && [ "$5" = {digest} ] && [ "$#" -eq 5 ]\n'
+        'trap \'exit 0\' TERM\n'
+        'echo $$ > "$QUANTA_INDEX_CACHE_ROOT/child-pid"\n'
+        'while :; do sleep 1; done\n',
+        encoding="utf-8",
+    )
+    image.chmod(0o700)
+    if current_mode_v1 == "native":
+        old_image = tmp_path / "old-native-searchd"
+        old_image.write_bytes(NATIVE_CANDIDATE_SEARCHD)
+        old_image.chmod(0o700)
+        old_config = tmp_path / "old-native.json"
+        native_config(old_config, old_root)
+        old = replace(
+            launcher.proposed_selection(old_image, old_root, environment),
+            native_config=old_config,
+            native_config_sha256=hashlib.sha256(old_config.read_bytes()).hexdigest(),
+            native_boot_receipt=native_receipt(),
+        )
+    else:
+        old = launcher.proposed_selection(binary, old_root, environment)
+    launcher.publish_selection(active, old)
+    before = active.read_bytes()
+    args = [
+        sys.executable, str(Path(launcher.__file__)), "serve-native-candidate",
+        "--selection", str(active), "--expected-selection-sha256", hashlib.sha256(before).hexdigest(),
+        "--candidate", str(candidate), "--binary", str(image),
+        "--binary-sha256", hashlib.sha256(image.read_bytes()).hexdigest(),
+        "--state-root", str(root), "--config", str(config), "--config-sha256", digest,
+        "--env", f"QUANTA_INDEX_CACHE_ROOT={cache}", "--env", "PATH=/usr/bin:/bin",
+    ]
+    with launcher.deployment_lock(active):
+        parent = subprocess.Popen(args)
+        child_pid = None
+        try:
+            wait_for(cache / "child-pid")
+            child_pid = int((cache / "child-pid").read_text())
+            with pytest.raises(launcher.DeploymentBusy), launcher.deployment_lock(candidate):
+                raise AssertionError("running candidate lost its lock")
+            parent.send_signal(signal.SIGTERM)
+            assert parent.wait(timeout=5) == 0
+            with pytest.raises(ProcessLookupError):
+                os.kill(child_pid, 0)
+            child_pid = None
+            with launcher.deployment_lock(candidate):
+                assert not candidate.exists()
+        finally:
+            if parent.poll() is None:
+                parent.kill()
+                parent.wait(timeout=5)
+            if child_pid is not None:
+                try:
+                    os.killpg(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+    assert active.read_bytes() == before
+
+
 def test_native_selection_refuses_config_for_other_root(tmp_path: Path) -> None:
     _path, binary, root, _cache, environment = fixture(tmp_path)
     config = tmp_path / "native.json"
@@ -555,8 +1274,8 @@ def test_interruption_between_rename_and_return_reports_uncertain_authority(
     candidate = launcher.proposed_selection(binary, next_root, environment)
     replace = os.replace
 
-    def interrupted_replace(source: str | Path, destination: str | Path) -> None:
-        replace(source, destination)
+    def interrupted_replace(source: str | Path, destination: str | Path, **kwargs) -> None:
+        replace(source, destination, **kwargs)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(launcher.os, "replace", interrupted_replace)
@@ -564,6 +1283,18 @@ def test_interruption_between_rename_and_return_reports_uncertain_authority(
         launcher.publish_selection(path, candidate)
     assert read_wire(path) == raw_selection(binary, next_root, environment)
     assert not list(path.parent.glob(".selection.json.tmp-*"))
+
+
+def test_install_refuses_the_deployment_lock_as_a_selection(tmp_path: Path) -> None:
+    path, binary, root, cache, environment = fixture(tmp_path)
+    lock = path.with_name(launcher.DEPLOYMENT_LOCK_NAME)
+    lock.touch(mode=0o600)
+    inode = lock.stat().st_ino
+    with pytest.raises(launcher.SelectionError, match="aliases the deployment lock"):
+        launcher.publish_selection(lock, launcher.proposed_selection(binary, root, environment))
+    assert lock.stat().st_ino == inode
+    assert lock.read_bytes() == b""
+    assert not (cache / "events").exists()
 
 
 @pytest.mark.parametrize("cut", ["after_file_fsync", "after_rename", "after_directory_fsync"])
@@ -902,6 +1633,16 @@ def legacy_to_native_switch_fixture(tmp_path: Path):
     return path, old, new, cache, previous
 
 
+def native_published_handoff(selection: launcher.Selection) -> dict[str, str]:
+    receipt = selection.native_boot_receipt
+    assert receipt is not None
+    return {
+        "target_operation_json": receipt.manifest_operation_json,
+        "published_operation_json": receipt.manifest_operation_json,
+        "published_source_cut_digest_hex": receipt.source_cut_digest_hex,
+    }
+
+
 def independent_selection_fingerprint(path: Path) -> str:
     wire = json.loads(path.read_bytes())
     payload = (json.dumps(wire, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -1095,6 +1836,7 @@ def test_legacy_to_fresh_native_switch_uses_cas_and_candidate_verifier(tmp_path:
         before,
         previous_selection_path=previous,
         expected_previous_selection_sha256=before,
+        **native_published_handoff(new),
     )
     assert read_wire(path) == new.to_wire()
     events = (cache / "events").read_text().splitlines()
@@ -1104,17 +1846,27 @@ def test_legacy_to_fresh_native_switch_uses_cas_and_candidate_verifier(tmp_path:
     ]
     assert original != path.read_bytes()
     assert previous.read_bytes() == original
-    launcher.rollback_legacy_selection(
-        path, previous, independent_selection_fingerprint(path), before
-    )
-    assert path.read_bytes() == original
-    assert (cache / "events").read_text().splitlines() == [
-        *events,
-        f"verify-native:{new.native_config}:{new.native_config_sha256}",
-    ]
+    with pytest.raises(launcher.SelectionError, match="offline.*producer"):
+        launcher.rollback_legacy_selection(
+            path, previous, independent_selection_fingerprint(path), before
+        )
+    assert read_wire(path) == new.to_wire()
+    assert previous.read_bytes() == original
+    assert (cache / "events").read_text().splitlines() == events
 
 
-@pytest.mark.parametrize("fault", ["missing", "target", "published", "source"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "missing_all",
+        "missing_target",
+        "missing_published",
+        "missing_source",
+        "target",
+        "published",
+        "source",
+    ],
+)
 def test_native_switch_refuses_incomplete_or_foreign_published_handoff_before_verifier(
     tmp_path: Path, fault: str
 ) -> None:
@@ -1134,8 +1886,15 @@ def test_native_switch_refuses_incomplete_or_foreign_published_handoff_before_ve
             "55" * 32 if fault == "source" else receipt.source_cut_digest_hex
         ),
     }
-    if fault == "missing":
-        axes["published_source_cut_digest_hex"] = None
+    if fault == "missing_all":
+        axes = {}
+    elif fault.startswith("missing_"):
+        missing_axis = {
+            "missing_target": "target_operation_json",
+            "missing_published": "published_operation_json",
+            "missing_source": "published_source_cut_digest_hex",
+        }[fault]
+        axes.pop(missing_axis)
     with pytest.raises(launcher.SelectionError, match="handoff"):
         launcher.switch_native_selection(
             path,
@@ -1213,6 +1972,40 @@ def test_native_switch_cli_forwards_published_handoff_before_verifier(tmp_path: 
     assert (cache / "events").read_bytes() == events
 
 
+def test_legacy_switch_cli_requires_published_handoff_before_verifier(tmp_path: Path) -> None:
+    path, _old, new, cache, previous = legacy_to_native_switch_fixture(tmp_path)
+    original, events = path.read_bytes(), (cache / "events").read_bytes()
+    receipt_path = tmp_path / "candidate-receipt.json"
+    assert new.native_boot_receipt is not None
+    write_wire(receipt_path, json.dumps(new.native_boot_receipt.to_wire()))
+    expected = independent_selection_fingerprint(path)
+    status = launcher.main(
+        [
+            "switch-native",
+            "--selection",
+            str(path),
+            "--expected-selection-sha256",
+            expected,
+            "--previous-selection",
+            str(previous),
+            "--expected-previous-selection-sha256",
+            expected,
+            "--binary",
+            str(new.binary),
+            "--state-root",
+            str(new.state_root),
+            "--config",
+            str(new.native_config),
+            "--receipt",
+            str(receipt_path),
+            *[item for name, value in new.environment for item in ("--env", f"{name}={value}")],
+        ]
+    )
+    assert status == 1
+    assert path.read_bytes() == original
+    assert (cache / "events").read_bytes() == events
+
+
 @pytest.mark.parametrize(
     "fault",
     ["stale_cas", "candidate_refusal", "old_binary_changed", "backup_mismatch", "backup_alias"],
@@ -1247,15 +2040,44 @@ def test_legacy_to_native_switch_refusal_preserves_selection(
             expected,
             previous_selection_path=previous,
             expected_previous_selection_sha256=independent_selection_fingerprint(path),
+            **native_published_handoff(new),
         )
     assert path.read_bytes() == original
     assert (cache / "events").read_bytes() == events
 
 
-@pytest.mark.parametrize("fault", ["stale_cas", "backup_mismatch", "native_verifier"])
+@pytest.mark.parametrize("fault", ["stale_cas", "backup_mismatch", "old_binary_changed"])
 def test_legacy_rollback_refusal_preserves_native_selection(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+    tmp_path: Path, fault: str
 ) -> None:
+    path, old, new, cache, previous = legacy_to_native_switch_fixture(tmp_path)
+    old_digest = independent_selection_fingerprint(path)
+    launcher.switch_native_selection(
+        path,
+        new,
+        old_digest,
+        previous_selection_path=previous,
+        expected_previous_selection_sha256=old_digest,
+        **native_published_handoff(new),
+    )
+    original, events = path.read_bytes(), (cache / "events").read_bytes()
+    current_digest = independent_selection_fingerprint(path)
+    if fault == "stale_cas":
+        current_digest = "00" * 32
+        refusal = "current selection changed"
+    elif fault == "backup_mismatch":
+        previous.write_bytes(b"changed snapshot")
+        refusal = "invalid selection JSON"
+    else:
+        old.binary.write_bytes(b"changed Legacy binary")
+        refusal = "binary SHA-256 changed"
+    with pytest.raises(launcher.SelectionError, match=refusal):
+        launcher.rollback_legacy_selection(path, previous, current_digest, old_digest)
+    assert path.read_bytes() == original
+    assert (cache / "events").read_bytes() == events
+
+
+def test_rollback_refuses_absent_producer_and_catalog_quiescence(tmp_path: Path) -> None:
     path, _old, new, cache, previous = legacy_to_native_switch_fixture(tmp_path)
     old_digest = independent_selection_fingerprint(path)
     launcher.switch_native_selection(
@@ -1264,27 +2086,20 @@ def test_legacy_rollback_refusal_preserves_native_selection(
         old_digest,
         previous_selection_path=previous,
         expected_previous_selection_sha256=old_digest,
+        **native_published_handoff(new),
     )
-    original, events = path.read_bytes(), (cache / "events").read_bytes()
-    current_digest = independent_selection_fingerprint(path)
-    if fault == "stale_cas":
-        current_digest = "00" * 32
-    elif fault == "backup_mismatch":
-        previous.write_bytes(b"changed snapshot")
-    else:
-
-        def reject_native(selection, _lock):
-            assert selection == new
-            raise launcher.SelectionError("current Native verifier refused")
-
-        monkeypatch.setattr(launcher, "_verify_bootstrap_locked", reject_native)
-    with pytest.raises(launcher.SelectionError):
-        launcher.rollback_legacy_selection(path, previous, current_digest, old_digest)
-    assert path.read_bytes() == original
+    before, events = path.read_bytes(), (cache / "events").read_bytes()
+    # BOOT succeeds, but no producer admission fence, durable high-water or
+    # outbox evidence exists. Restoring Legacy could discard unseen work.
+    with pytest.raises(launcher.SelectionError, match="offline.*producer"):
+        launcher.rollback_legacy_selection(
+            path, previous, independent_selection_fingerprint(path), old_digest
+        )
+    assert path.read_bytes() == before
     assert (cache / "events").read_bytes() == events
 
 
-def test_legacy_cutover_postrename_uncertainty_uses_saved_selection_for_recovery(
+def test_legacy_cutover_postrename_uncertainty_does_not_authorize_rollback(
     tmp_path: Path,
 ) -> None:
     path, old, new, _cache, previous = legacy_to_native_switch_fixture(tmp_path)
@@ -1301,6 +2116,7 @@ def test_legacy_cutover_postrename_uncertainty_uses_saved_selection_for_recovery
             old_digest,
             previous_selection_path=previous,
             expected_previous_selection_sha256=old_digest,
+            **native_published_handoff(new),
             fault_hook=interrupt,
         )
     assert read_wire(path) == new.to_wire()
@@ -1311,14 +2127,19 @@ def test_legacy_cutover_postrename_uncertainty_uses_saved_selection_for_recovery
             old_digest,
             previous_selection_path=previous,
             expected_previous_selection_sha256=old_digest,
+            **native_published_handoff(new),
         )
-    launcher.rollback_legacy_selection(
-        path, previous, independent_selection_fingerprint(path), old_digest
-    )
-    assert read_wire(path) == old.to_wire()
+    with pytest.raises(launcher.SelectionError, match="offline.*producer"):
+        launcher.rollback_legacy_selection(
+            path, previous, independent_selection_fingerprint(path), old_digest
+        )
+    assert read_wire(path) == new.to_wire()
+    assert read_wire(previous) == old.to_wire()
 
 
-def test_legacy_cutover_and_rollback_cli_consume_saved_selection(tmp_path: Path) -> None:
+def test_legacy_cutover_cli_preserves_prior_head_and_rollback_cli_refuses_missing_authorities(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
     path, old, new, _cache, previous = legacy_to_native_switch_fixture(tmp_path)
     receipt = tmp_path / "new-receipt.json"
     write_wire(receipt, json.dumps(new.native_boot_receipt.to_wire()))
@@ -1343,6 +2164,12 @@ def test_legacy_cutover_and_rollback_cli_consume_saved_selection(tmp_path: Path)
                 str(new.native_config),
                 "--receipt",
                 str(receipt),
+                "--target-operation",
+                new.native_boot_receipt.manifest_operation_json,
+                "--published-operation",
+                new.native_boot_receipt.manifest_operation_json,
+                "--published-source-cut-digest",
+                new.native_boot_receipt.source_cut_digest_hex,
                 *[item for name, value in new.environment for item in ("--env", f"{name}={value}")],
             ]
         )
@@ -1363,36 +2190,69 @@ def test_legacy_cutover_and_rollback_cli_consume_saved_selection(tmp_path: Path)
                 old_digest,
             ]
         )
-        == 0
+        == 1
     )
-    assert read_wire(path) == old.to_wire()
+    assert "offline Catalog" in capsys.readouterr().err
+    assert read_wire(path) == new.to_wire()
+    assert read_wire(previous) == old.to_wire()
 
 
-def test_native_cross_root_switch_and_explicit_rollback(tmp_path: Path) -> None:
+def test_native_cross_root_switch_with_full_handoff_still_requires_quiescence(
+    tmp_path: Path,
+) -> None:
     path, old, new, cache = native_switch_fixture(tmp_path)
-    old_wire = read_wire(path)
+    original, events = path.read_bytes(), (cache / "events").read_bytes()
     before = independent_selection_fingerprint(path)
     assert launcher.inspect_selection(path) == {
         "selection_sha256": before,
         "mode": "native",
         "state_root": str(old.state_root),
     }
-    launcher.switch_native_selection(path, new, before)
-    switched = read_wire(path)
-    assert switched["state_root"] == str(new.state_root)
-    assert switched["native_boot_receipt"]["root_nonce_hex"] == "55" * 32
-    events = (cache / "events").read_text().splitlines()
-    assert len(events) == 3
-    assert events[1].startswith(f"verify-native:{old.native_config}:")
-    assert events[2].startswith(f"verify-native:{new.native_config}:")
-    launcher.switch_native_selection(path, old, independent_selection_fingerprint(path))
-    assert read_wire(path) == old_wire
-    assert len((cache / "events").read_text().splitlines()) == 5
+    with pytest.raises(launcher.SelectionError, match="offline.*producer"):
+        launcher.switch_native_selection(path, new, before, **native_published_handoff(new))
+    assert path.read_bytes() == original
+    assert (cache / "events").read_bytes() == events
 
 
-@pytest.mark.parametrize("axis", ["stale_cas", "same_root", "nested", "copied_nonce", "workspace"])
+def test_native_cross_root_switch_refuses_absent_producer_and_catalog_quiescence(
+    tmp_path: Path,
+) -> None:
+    path, _old, new, cache = native_switch_fixture(tmp_path)
+    before, events = path.read_bytes(), (cache / "events").read_bytes()
+    with pytest.raises(launcher.SelectionError, match="offline.*producer"):
+        launcher.switch_native_selection(path, new, independent_selection_fingerprint(path))
+    assert path.read_bytes() == before
+    assert (cache / "events").read_bytes() == events
+
+
+def test_native_to_native_switch_refuses_partial_published_handoff(tmp_path: Path) -> None:
+    path, _old, new, cache = native_switch_fixture(tmp_path)
+    original, events = path.read_bytes(), (cache / "events").read_bytes()
+    axes = native_published_handoff(new)
+    axes.pop("published_source_cut_digest_hex")
+    with pytest.raises(launcher.SelectionError, match="handoff"):
+        launcher.switch_native_selection(
+            path,
+            new,
+            independent_selection_fingerprint(path),
+            **axes,
+        )
+    assert path.read_bytes() == original
+    assert (cache / "events").read_bytes() == events
+
+
+@pytest.mark.parametrize(
+    ("axis", "refusal"),
+    [
+        ("stale_cas", "current selection changed"),
+        ("same_root", "distinct and non-nested"),
+        ("nested", "distinct and non-nested"),
+        ("copied_nonce", "independent Native incarnations"),
+        ("workspace", "another workspace"),
+    ],
+)
 def test_native_switch_refuses_foreign_or_stale_candidate_before_verifier(
-    tmp_path: Path, axis: str
+    tmp_path: Path, axis: str, refusal: str
 ) -> None:
     from dataclasses import replace
 
@@ -1418,30 +2278,36 @@ def test_native_switch_refuses_foreign_or_stale_candidate_before_verifier(
         else:
             wire["manifest_operation"]["workspace"]["tenant"] = [99] * 16
         new = replace(new, native_boot_receipt=launcher.NativeBootReceipt.from_wire(wire))
-    with pytest.raises(launcher.SelectionError):
+    with pytest.raises(launcher.SelectionError, match=refusal):
         launcher.switch_native_selection(path, new, expected)
     assert path.read_bytes() == original
     assert (cache / "events").read_bytes() == events
 
 
-@pytest.mark.parametrize("which", ["current", "candidate"])
-def test_native_switch_verifier_refusal_preserves_selection(
-    tmp_path: Path, monkeypatch, which: str
+def test_legacy_cutover_candidate_verifier_refusal_preserves_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path, old, new, _cache = native_switch_fixture(tmp_path)
+    path, _old, new, _cache, previous = legacy_to_native_switch_fixture(tmp_path)
     original = path.read_bytes()
+    expected = independent_selection_fingerprint(path)
     visits = []
 
     def verify(selection, _lock):
         visits.append(selection.state_root)
-        if selection == (old if which == "current" else new):
-            raise launcher.SelectionError("fixed stale/incomplete receipt refusal")
+        raise launcher.SelectionError("fixed stale/incomplete receipt refusal")
 
     monkeypatch.setattr(launcher, "_verify_bootstrap_locked", verify)
     with pytest.raises(launcher.SelectionError, match="stale/incomplete"):
-        launcher.switch_native_selection(path, new, independent_selection_fingerprint(path))
+        launcher.switch_native_selection(
+            path,
+            new,
+            expected,
+            previous_selection_path=previous,
+            expected_previous_selection_sha256=expected,
+            **native_published_handoff(new),
+        )
     assert path.read_bytes() == original
-    assert visits == ([old.state_root] if which == "current" else [old.state_root, new.state_root])
+    assert visits == [new.state_root]
 
 
 def test_native_cross_root_install_cannot_bypass_switch_cas(tmp_path: Path) -> None:
@@ -1453,8 +2319,42 @@ def test_native_cross_root_install_cannot_bypass_switch_cas(tmp_path: Path) -> N
     assert (cache / "events").read_bytes() == events
 
 
-def test_native_switch_rechecks_cas_after_preflight(tmp_path: Path) -> None:
-    path, _old, new, _cache = native_switch_fixture(tmp_path)
+@pytest.mark.parametrize("axis", ["operation", "object", "source", "catalog", "nonce"])
+def test_same_root_native_install_cannot_replace_installed_boot_baseline(
+    tmp_path: Path, axis: str
+) -> None:
+    path, old, _unused, cache = native_switch_fixture(tmp_path)
+    assert old.native_boot_receipt is not None and old.native_config is not None
+    wire = old.native_boot_receipt.to_wire()
+    if axis == "operation":
+        wire["manifest_operation"]["sequence"] = 2
+    else:
+        field = {
+            "object": "manifest_object_hex",
+            "source": "source_cut_digest_hex",
+            "catalog": "install_catalog_digest_hex",
+            "nonce": "root_nonce_hex",
+        }[axis]
+        wire[field] = "ab" * 32
+    reissued = launcher.proposed_native_selection(
+        old.binary, old.state_root, old.native_config, dict(old.environment),
+        launcher.NativeBootReceipt.from_wire(wire),
+    )
+    original, events = path.read_bytes(), (cache / "events").read_bytes()
+    refusal = None
+    try:
+        launcher.publish_selection(path, reissued)
+    except launcher.SelectionError as error:
+        refusal = error
+    # A verifier accepting a newly issued BOOT cannot move the first installed
+    # baseline. Check bytes and subprocess side effects before the diagnostic.
+    assert path.read_bytes() == original, "reissued BOOT replaced the installed baseline"
+    assert (cache / "events").read_bytes() == events
+    assert refusal is not None and "installed Native baseline" in str(refusal)
+
+
+def test_legacy_switch_rechecks_cas_after_preflight(tmp_path: Path) -> None:
+    path, _old, new, _cache, previous = legacy_to_native_switch_fixture(tmp_path)
     expected = independent_selection_fingerprint(path)
     competing = read_wire(path)
     competing["environment"]["LANG"] = "C"
@@ -1464,13 +2364,21 @@ def test_native_switch_rechecks_cas_after_preflight(tmp_path: Path) -> None:
             write_wire(path, json.dumps(competing))
 
     with pytest.raises(launcher.SelectionError, match="current selection changed"):
-        launcher.switch_native_selection(path, new, expected, fault_hook=change_current)
+        launcher.switch_native_selection(
+            path,
+            new,
+            expected,
+            previous_selection_path=previous,
+            expected_previous_selection_sha256=expected,
+            **native_published_handoff(new),
+            fault_hook=change_current,
+        )
     assert read_wire(path) == competing
     assert not list(path.parent.glob(".selection.json.tmp-*"))
 
 
-def test_native_switch_postrename_interrupt_requires_new_inspection(tmp_path: Path) -> None:
-    path, _old, new, _cache = native_switch_fixture(tmp_path)
+def test_legacy_switch_postrename_interrupt_requires_new_inspection(tmp_path: Path) -> None:
+    path, _old, new, _cache, previous = legacy_to_native_switch_fixture(tmp_path)
     expected = independent_selection_fingerprint(path)
 
     def interrupt(stage):
@@ -1478,10 +2386,58 @@ def test_native_switch_postrename_interrupt_requires_new_inspection(tmp_path: Pa
             raise KeyboardInterrupt()
 
     with pytest.raises(launcher.PersistenceUncertain):
-        launcher.switch_native_selection(path, new, expected, fault_hook=interrupt)
+        launcher.switch_native_selection(
+            path,
+            new,
+            expected,
+            previous_selection_path=previous,
+            expected_previous_selection_sha256=expected,
+            **native_published_handoff(new),
+            fault_hook=interrupt,
+        )
     assert read_wire(path)["state_root"] == str(new.state_root)
     with pytest.raises(launcher.SelectionError, match="current selection changed"):
         launcher.switch_native_selection(path, new, expected)
+
+
+@pytest.mark.parametrize(
+    "stage", ["after_file_fsync", "after_rename", "after_directory_fsync"]
+)
+def test_legacy_switch_checks_the_actual_published_selection(
+    tmp_path: Path, stage: str
+) -> None:
+    path, _old, new, _cache, previous = legacy_to_native_switch_fixture(tmp_path)
+    original = path.read_bytes()
+    expected = independent_selection_fingerprint(path)
+    replacement = b"{}\n"
+
+    def replace_publication(reached: str) -> None:
+        if reached != stage:
+            return
+        target = path
+        if reached == "after_file_fsync":
+            (target,) = path.parent.glob(f".{path.name}.tmp-*")
+            target.unlink()
+        write_wire(target, replacement.decode())
+
+    failure = launcher.SelectionError if stage == "after_file_fsync" else launcher.PersistenceUncertain
+    with pytest.raises(failure) as caught:
+        launcher.switch_native_selection(
+            path,
+            new,
+            expected,
+            previous_selection_path=previous,
+            expected_previous_selection_sha256=expected,
+            **native_published_handoff(new),
+            fault_hook=replace_publication,
+        )
+    if stage == "after_file_fsync":
+        assert not isinstance(caught.value, launcher.PersistenceUncertain)
+        assert path.read_bytes() == original
+        (temporary,) = path.parent.glob(f".{path.name}.tmp-*")
+        assert temporary.read_bytes() == replacement
+    else:
+        assert path.read_bytes() == replacement
 
 
 def test_native_inspection_does_not_emit_environment_secrets(tmp_path: Path, capsys) -> None:
@@ -1495,3 +2451,37 @@ def test_native_inspection_does_not_emit_environment_secrets(tmp_path: Path, cap
     output = capsys.readouterr().out
     assert secret not in output and "OPENAI_API_KEY" not in output
     assert json.loads(output)["selection_sha256"] == independent_selection_fingerprint(path)
+
+
+def test_selection_temporary_stays_in_the_locked_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, _old, new, _cache, previous = legacy_to_native_switch_fixture(tmp_path)
+    original = path.read_bytes()
+    expected = independent_selection_fingerprint(path)
+    parent = path.parent
+    parked = parent.with_name(f"{parent.name}-parked")
+    real_open = os.open
+    swapped = False
+
+    def open_after_directory_swap(name, flags, *args, **kwargs):
+        nonlocal swapped
+        if not swapped and flags & os.O_EXCL and Path(name).name.startswith(f".{path.name}.tmp-"):
+            swapped = True
+            parent.rename(parked)
+            parent.mkdir(mode=0o700)
+        return real_open(name, flags, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "open", open_after_directory_swap)
+        with pytest.raises(launcher.SelectionError) as caught:
+            launcher.switch_native_selection(
+                path, new, expected, previous_selection_path=previous,
+                expected_previous_selection_sha256=expected, **native_published_handoff(new),
+            )
+
+    assert swapped
+    assert not isinstance(caught.value, launcher.PersistenceUncertain)
+    assert (parked / path.name).read_bytes() == original
+    assert list(parent.iterdir()) == []
+    assert list(parked.glob(f".{path.name}.tmp-*")) == []

@@ -31,6 +31,7 @@ const EXIT_TRANSPORT: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 const EXIT_REMOTE: u8 = 3;
 const EXIT_PROTOCOL: u8 = 4;
+const EXIT_UNSUPPORTED: u8 = 5;
 
 pub fn run<I, T>(args: I, stdout: &mut dyn Write, stderr: &mut dyn Write) -> ExitCode
 where
@@ -40,7 +41,18 @@ where
     match run_inner(args, stdout, stderr) {
         Ok(code) => code,
         Err(error) => {
-            match writeln!(stderr, "error: {}", error.message) {
+            let rendered = if let Some(capability) = error.unsupported {
+                serde_json::json!({
+                    "errorContractVersion": quanta_index_sdk::UNSUPPORTED_QUERY_DIAGNOSTIC_VERSION,
+                    "code": capability.code(),
+                    "capability": capability.as_str(),
+                    "message": error.message,
+                })
+                .to_string()
+            } else {
+                format!("error: {}", error.message)
+            };
+            match writeln!(stderr, "{rendered}") {
                 Ok(()) | Err(_) => {}
             }
             if error.exit_code == EXIT_USAGE {
@@ -68,13 +80,18 @@ where
             .ok_or_else(|| CliError::usage("native command missing".into()))?;
         return native::run(native_args, stdout);
     }
+    // Supported ordinary commands use the same canonical Native parser/DTOs.
+    // Legacy comparison fixtures must opt into their distinct generation contract.
+    if !args.first().is_some_and(|command| command == "legacy") {
+        return native::run(&args, stdout);
+    }
     let ParsedCommand {
         kind,
         output,
         connect_options,
         request,
-    } = ParsedCommand::parse(args)?;
-    let client = QuantaIndex::connect(connect_options).map_err(map_sdk_error)?;
+    } = ParsedCommand::parse(args.into_iter().skip(1))?;
+    let client = QuantaIndex::connect_legacy(connect_options).map_err(map_sdk_error)?;
     // Process readiness, generation status and doctor dispatch via CONTROL, not the
     // query plane. Branch them here so the query path (`dispatch_query_request`
     // -> `validate_response_kind` -> `render_response`) stays untouched.
@@ -288,6 +305,7 @@ fn dispatch_query_request(
 fn map_sdk_error(error: SdkError) -> CliError {
     match error {
         SdkError::Usage(message) => CliError::usage(message),
+        SdkError::UnsupportedNativeQuery { capability } => CliError::unsupported(capability),
         SdkError::Protocol(message) => CliError::protocol(message),
         SdkError::Serialization(message) => {
             CliError::protocol(format!("ipc serialization failed: {message}"))
@@ -456,12 +474,22 @@ fn usage() -> &'static str {
     "\
 quanta-index-searchctl
 
-Global flags:
+Native subcommands (default; optional `native` prefix):
+  read-view        --socket PATH --workspace HEX --epoch N [--output pretty|json]
+  search-text      --socket PATH --workspace HEX --epoch N --instance HEX --query-text TEXT --top-k N [--syntax native|sourcegraph] [--output pretty|json]
+  query-repository-paths --socket PATH --workspace HEX --epoch N --instance HEX --prefix PATH --limit 1..128 [--after-json JSON] [--output json]
+  read-session-open|renew|status|profile|release|settlement
+  search-text-page|search-hybrid-file
+  history          --socket PATH --session-json JSON --instance HEX --query-text TEXT --top-k N --order recency|relevance [--syntax native|sourcegraph] [--after-json JSON] [--output json]
+  Retained commands require explicit caller session/key inputs and --output json.
+
+Legacy comparison/test rail: legacy <subcommand> [flags]
+Legacy flags:
   --socket PATH
   --state-root PATH
   --output pretty|json|prometheus   (prometheus: `metrics` only)
 
-Read-only subcommands:
+Legacy comparison/test subcommands:
   lexical          --repo-id ID --revision-id REV --manifest-generation N [--syntax code_search|native|sourcegraph] --query-text TEXT --top-k N [--cursor-json PATH|-]
   symbol           --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-]
   semantic         --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N [--scope-query TEXT --scope-syntax native|sourcegraph --scope-top-k N]
@@ -547,13 +575,23 @@ type CliResult<T> = Result<T, CliError>;
 struct CliError {
     exit_code: u8,
     message: String,
+    unsupported: Option<quanta_index_sdk::LegacyQueryCapabilityV1>,
 }
 
 impl CliError {
+    fn unsupported(capability: quanta_index_sdk::LegacyQueryCapabilityV1) -> Self {
+        Self {
+            exit_code: EXIT_UNSUPPORTED,
+            message: SdkError::UnsupportedNativeQuery { capability }.to_string(),
+            unsupported: Some(capability),
+        }
+    }
+
     fn usage(message: String) -> Self {
         Self {
             exit_code: EXIT_USAGE,
             message,
+            unsupported: None,
         }
     }
 
@@ -561,6 +599,7 @@ impl CliError {
         Self {
             exit_code: EXIT_TRANSPORT,
             message,
+            unsupported: None,
         }
     }
 
@@ -568,6 +607,7 @@ impl CliError {
         Self {
             exit_code: EXIT_REMOTE,
             message,
+            unsupported: None,
         }
     }
 
@@ -575,6 +615,7 @@ impl CliError {
         Self {
             exit_code: EXIT_PROTOCOL,
             message,
+            unsupported: None,
         }
     }
 }

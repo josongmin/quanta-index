@@ -22,8 +22,9 @@ pub use model2vec::{
 };
 pub use openai::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
-    DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, EmbeddingTransport, HttpResponse, MAX_CONCURRENCY,
-    OpenAiEmbeddingProvider, OpenAiProviderConfig, ReqwestBlockingTransport,
+    DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, EmbeddingTransport, HttpResponse, LOCAL_CODE_DIMENSION,
+    LOCAL_CODE_MODEL_ID, LOCAL_CODE_MODEL_REVISION, LOCAL_CODE_WIRE_MODEL, LocalCodeBindingV1,
+    MAX_CONCURRENCY, OpenAiEmbeddingProvider, OpenAiProviderConfig, ReqwestBlockingTransport,
 };
 pub use pool::{
     ProviderAttemptDrainReport, ProviderAttemptIngressSnapshot, ProviderAttemptOfflineReason,

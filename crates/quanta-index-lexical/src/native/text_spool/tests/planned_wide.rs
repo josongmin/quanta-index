@@ -172,11 +172,11 @@ fn planned_ordinals_above_sql_page_promote_and_stream_in_root_order() -> Result<
             .next_edit(&mut work)?
             .ok_or(IndexError::ResourceLimited)?;
         check_eq!(
-            row.root,
+            row.root(),
             u32::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?
         );
-        check_eq!(row.edit.key.as_slice(), b"\0ordinal");
-        check_eq!(row.edit.next, Some((*reference).into()));
+        check_eq!(row.key(), b"\0ordinal");
+        check_eq!(row.next()?, Some((*reference).into()));
     }
     check!(cursor.next_edit(&mut work)?.is_none());
     Ok(())

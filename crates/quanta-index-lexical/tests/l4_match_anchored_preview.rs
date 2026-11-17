@@ -1,5 +1,6 @@
 //! L4 source-bound adapter regressions. This exercises sealed read views,
 //! indexed/manual selection and preview conversion; it is not SDK/E2E proof.
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 #![expect(
     clippy::panic_in_result_fn,

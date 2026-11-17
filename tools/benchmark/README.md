@@ -12,6 +12,11 @@ output roots. Use `list` and `plan` while editing.
 - [Agent recording usage](agent_outcome/README.md): A/B/C JSONL inputs.
 - [Architecture decisions](../../docs/adr/README.md): contracts and measurement policy.
 
+The registered `retrieval-diagnostic` and code-search pair use the Legacy
+generation SDK/`serve` path. In these guides, a local or native runner means a
+Rust producer, not automatic selection of `serve-native`. Explicit Native file
+capture uses the [Native file profile](retrieval/README.md#explicit-native-file-profile).
+
 ## Inspect, run and verify
 
 ```sh
@@ -157,12 +162,46 @@ Warm controls: `DSL_BENCH_WARM_SAMPLES=100`, `DSL_BENCH_WARM_REPEATS=5`,
 `DSL_BENCH_WARM_PRIME_QUERIES=5`. Comparison requires at least 200 warm samples
 and 20 cold samples per row.
 
+To rerun a Legacy producer from a frozen release, supply the checkout commit
+and the SHA-256 of its prebuilt executable. Select `--bin-mode cold` and the
+cold executable for fresh-process measurements. Use a distinct output for
+each mode.
+
+```sh
+python3 tools/benchmark/run_dsl_cold_matrix.py --bin-mode warm \
+  --bin-cmd /archive/release/bin/dsl_warm_matrix --bin-cwd /archive/release/source \
+  --bin-head "$release_commit" --bin-sha256 "sha256:$warm_sha256" \
+  --out /archive/results/warm-matrix.json
+```
+
+Use the original release build receipt to verify that the executable was
+built from the supplied commit. The replay checks the provided commitments and
+the emitted artifact. Baseline admission still uses the guarded authority run.
+
 For manual artifact inspection:
 
 ```sh
 python3 tools/ci/lint/check-bench-artifacts.py --profile dsl-authority --require --skip-baselines
 python3 tools/benchmark/compare_dsl_bench.py /external/baseline.json /external/current.json
 ```
+
+To run the Native Text and History SDK matrix, use `just rust-bench-dsl-native
+<warm|cold> <runner> <runner-sha> <daemon> <daemon-sha> <history-fixture>
+<fixture-sha> <out>`. Supply the matching warm or cold runner, absolute input
+paths, `sha256:`-prefixed digests and an output path outside the checkout. Both
+modes reopen the producer's Published History fixture, so its socket must be
+stopped. The runner obtains the case list from the pinned Rust binary. A
+complete result uses `native-dsl-matrix-v1` and is diagnostic. The existing
+`dsl-authority` profile owns Linux comparison baseline admission.
+
+Add `--native-artifact --bin-cwd <frozen-checkout> --bin-head <full-commit>`
+after `<out>` to assemble the same collected bytes through the pinned Rust
+`BenchArtifactV1` writer. Assembly requires a clean checkout and a matching
+runner. The common artifact preserves the raw matrix and all 33 registry rows.
+The 19 remaining migrations carry an unmeasured reason and the artifact keeps
+its diagnostic qualification. The existing baseline admission refuses that
+qualification. Each mode writes its final output only after input and artifact
+validation completes.
 
 Comparator options: `--rel-threshold`, `--abs-threshold-ms`,
 `--p95-rel-threshold`, `--p95-abs-threshold-ms`. Exit codes: `0` accepted,
@@ -183,12 +222,20 @@ just rust-verify-hellgate-cross-repo
 just rust-verify-hellgate-all
 just benchmark-policy-local
 python3 tools/benchmark/sourcegraph_parity.py --write --check
-python3 tools/benchmark/run_scan_vs_index.py --scales 2000,20000,100000
 ```
 
 Sourcegraph coverage output is [the generated reference](../../docs/reference/sourcegraph-filter-parity.md).
-Scan-vs-index writes `artifacts/experiments/scan-vs-index.md` and native JSON
-per scale; it is exploratory and is not admitted as a DSL baseline.
+The recorded scan-vs-index experiment can be reproduced using the binary
+from a frozen Legacy checkout. The runner invokes it with that checkout as
+its working directory so the binary records the Legacy source revision.
+
+```sh
+python3 tools/benchmark/run_scan_vs_index.py \
+  --bin-cmd /path/to/legacy/scan_vs_index --bin-cwd /path/to/legacy-checkout
+```
+
+The runner writes a Markdown report and one JSON artifact per scale under
+`artifacts/experiments/`. Recorded capture keeps this experiment diagnostic.
 
 ## Find outputs and handle failures
 

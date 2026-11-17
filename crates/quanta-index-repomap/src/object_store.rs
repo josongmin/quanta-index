@@ -30,9 +30,16 @@ use sha2::{Digest as _, Sha256};
 use quanta_index_contract::{
     CandidateObjectDigestV1, CanonicalRepoMapCodecErrorV1, QuarantineIncidentDigestV1,
     QuarantineIncidentV1, QuarantinePayloadDigestV1, QuarantineReasonCodeV1,
-    RepoMapCandidateEnvelopeV1, StateRootUuidCommitmentV1,
+    RepoMapCandidateEnvelopeV1, RepoMapTerminalReceiptV2, StateRootUuidCommitmentV1,
 };
 use quanta_index_core::CoreError;
+use quanta_index_core::index::{
+    IndexError, MemoryLifetime, ObjectReadIoPort, WorkBudget, WorkUsage,
+    existing_file::{
+        ExistingFileIdentityV1, ExistingFileReadFailureV1, read_existing_file_v1,
+        read_existing_private_file_bytes_v1,
+    },
+};
 use quanta_index_core::publication_admission::PublicationObjectReader;
 use quanta_index_core::publication_capacity::InodeKey;
 use quanta_index_core::{
@@ -211,7 +218,189 @@ pub(crate) enum ObjectVerificationErrorV1 {
     Operational(CoreError),
 }
 
+/// Files checked against one active Catalog candidate. The caller must retain
+/// the original offline root authority while checking these observations.
+pub struct VerifiedActiveRepoMapFilesV1 {
+    digest: CandidateObjectDigestV1,
+    owner: u32,
+    uuid: ExistingFileIdentityV1,
+    object: ExistingFileIdentityV1,
+}
+
+impl VerifiedActiveRepoMapFilesV1 {
+    /// Recheck the physical layout and the read file identities before reporting
+    /// durable selection. This uses the original root's admitted readers.
+    pub fn require_current_v1(
+        &self,
+        root: &Path,
+        io: &dyn ObjectReadIoPort,
+        budget: &mut WorkBudget,
+    ) -> Result<(), ExistingFileReadFailureV1> {
+        let _frame = recovery_path_memory(root, budget)?;
+        let layout = root.join("repo-map");
+        let relative = CandidateObjectAddressV1::new(self.digest).relative_path();
+        verify_recovery_layout(&layout, &relative, self.owner, budget)?;
+        self.uuid
+            .require_current_v1(&layout.join(ROOT_UUID_FILE_NAME), io, budget)?;
+        self.object
+            .require_current_v1(&layout.join(relative), io, budget)
+    }
+}
+
+fn recovery_path_memory(
+    root: &Path,
+    budget: &WorkBudget,
+) -> Result<quanta_index_core::index::MemoryLease, IndexError> {
+    let path_bytes =
+        u64::try_from(root.as_os_str().len()).map_err(|_| IndexError::ResourceLimited)?;
+    let frame = path_bytes
+        .checked_mul(16)
+        .and_then(|n| n.checked_add(16_384))
+        .ok_or(IndexError::ResourceLimited)?;
+    budget
+        .reserve_memory(frame, MemoryLifetime::Temporary)?
+        .ok_or(IndexError::ResourceLimited)
+}
+
+fn verify_recovery_layout(
+    layout: &Path,
+    relative: &Path,
+    owner: u32,
+    budget: &mut WorkBudget,
+) -> Result<(), ExistingFileReadFailureV1> {
+    // The real reader separately checks the path with no-follow traversal.
+    budget.charge(WorkUsage {
+        reads: 8,
+        ..WorkUsage::default()
+    })?;
+    for directory in
+        std::iter::once(layout.to_path_buf()).chain(traversed_directories(layout, relative)?)
+    {
+        let metadata = fs::symlink_metadata(&directory)?;
+        if !metadata.is_dir()
+            || metadata.uid() != owner
+            || metadata.mode() & 0o777 != StateRootSecurityContextV1::DIRECTORY_MODE
+        {
+            return Err(IndexError::DigestConflict.into());
+        }
+    }
+    for marker in LEGACY_V1_DIR_NAMES {
+        match fs::symlink_metadata(layout.join(marker)) {
+            Ok(_) => return Err(IndexError::DigestConflict.into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
 impl RepoMapObjectStore {
+    /// Verify the already active Legacy candidate under the caller's held
+    /// read-only root and budget. Reuse the serving decoder without opening
+    /// a serving store, creating a UUID, or quarantining a bad candidate.
+    pub(crate) fn verify_existing_active_candidate_v1(
+        root: &Path,
+        candidate: &quanta_index_catalog::RepoMapCandidateRowV1,
+        receipts: Option<(&RepoMapTerminalReceiptV2, &RepoMapTerminalReceiptV2)>,
+        owner: u32,
+        maximum_bytes: u64,
+        io: &dyn quanta_index_core::index::ObjectReadIoPort,
+        budget: &mut quanta_index_core::index::WorkBudget,
+    ) -> Result<VerifiedActiveRepoMapFilesV1, ExistingFileReadFailureV1> {
+        let _frame = recovery_path_memory(root, budget)?;
+        let layout = root.join("repo-map");
+        let root = layout.as_path();
+        let digest = CandidateObjectDigestV1::from_bytes(candidate.object_address);
+        let relative = CandidateObjectAddressV1::new(digest).relative_path();
+        let path = root.join(&relative);
+        verify_recovery_layout(root, &relative, owner, budget)?;
+        let uuid_path = root.join(ROOT_UUID_FILE_NAME);
+        let uuid = read_existing_file_v1(&uuid_path, owner, ROOT_UUID_BYTES as u64, io, budget)?;
+        let uuid_identity = uuid.identity_v1();
+        if uuid.bytes_v1().len() != ROOT_UUID_BYTES
+            || uuid_identity.mode_v1() & 0o777 != StateRootSecurityContextV1::FILE_MODE
+        {
+            return Err(IndexError::DigestConflict.into());
+        }
+        let object = read_existing_private_file_bytes_v1(&path, owner, maximum_bytes, io, budget)?;
+        let object_identity = object.identity_v1();
+        if object_identity.mode_v1() & 0o777 != StateRootSecurityContextV1::FILE_MODE {
+            return Err(IndexError::DigestConflict.into());
+        }
+        let meta_bytes = u64::try_from(candidate.projection_meta.len())
+            .map_err(|_| IndexError::ResourceLimited)?;
+        let meta_work = meta_bytes
+            .checked_mul(32)
+            .ok_or(IndexError::ResourceLimited)?;
+        budget.charge(WorkUsage {
+            bytes: meta_work,
+            ..WorkUsage::default()
+        })?;
+        let _meta_memory = budget
+            .reserve_memory(
+                meta_work
+                    .checked_mul(2)
+                    .ok_or(IndexError::ResourceLimited)?,
+                MemoryLifetime::Temporary,
+            )?
+            .ok_or(IndexError::ResourceLimited)?;
+        let object_bytes =
+            u64::try_from(object.bytes_v1().len()).map_err(|_| IndexError::ResourceLimited)?;
+        // Admit hashing, the canonical round trip and a full structural pass.
+        budget.charge(WorkUsage {
+            bytes: object_bytes
+                .checked_mul(16)
+                .ok_or(IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        // The input has its own lease. The codec owns a payload copy and its
+        // re-encode buffer, while the structural pass keeps one row at a time.
+        let _decode_memory = budget
+            .reserve_memory(
+                object_bytes
+                    .checked_mul(4)
+                    .and_then(|bytes| bytes.checked_add(64 * 1024))
+                    .ok_or(IndexError::ResourceLimited)?,
+                MemoryLifetime::Temporary,
+            )?
+            .ok_or(IndexError::ResourceLimited)?;
+        let envelope = Self::verify_raw(digest, &candidate.candidate_commitment, object.bytes_v1())
+            .map_err(|failure| CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message: failure.detail,
+            })?;
+        let identity = envelope.logical_identity();
+        if identity.repository_revision().repo_id().as_str() != candidate.repo_id
+            || identity.repository_revision().revision_id().as_str() != candidate.revision_id
+            || identity.generation() != candidate.manifest_generation
+            || envelope.artifact().byte_size() != candidate.byte_size
+            || envelope.artifact().content_digest().as_bytes() != &candidate.content_digest
+        {
+            return Err(IndexError::DigestConflict.into());
+        }
+        let meta = crate::CandidateProjectionMeta::from_json(&candidate.projection_meta)?;
+        if let Some((publish, activate)) = receipts {
+            for receipt in [publish, activate] {
+                if receipt.manifest_digest != meta.manifest_digest
+                    || receipt.snapshot_id != meta.snapshot_id
+                    || receipt.projection_version != meta.projection_version
+                    || receipt.authority_digest != meta.authority_digest
+                    || receipt.source_bundle_digest != meta.source_bundle_digest
+                {
+                    return Err(IndexError::DigestConflict.into());
+                }
+            }
+        }
+        crate::materializer::validate_compiled_payload(envelope.compiled_payload())?;
+        budget.checkpoint()?;
+        Ok(VerifiedActiveRepoMapFilesV1 {
+            digest,
+            owner,
+            uuid: uuid_identity,
+            object: object_identity,
+        })
+    }
+
     /// Open (creating if needed) the layout-V3 root and its security
     /// context. The effective uid is taken from the root directory itself
     /// (this process created or adopted it); the uuid commitment is bound
@@ -464,16 +653,19 @@ impl RepoMapObjectStore {
                 ));
             }
         };
-        Self::verify_raw(digest, expected_commitment, raw)
-            .map_err(ObjectVerificationErrorV1::Corrupt)
+        Self::verify_raw(digest, expected_commitment, &raw).map_err(|mut failure| {
+            if failure.observed_byte_size.is_some() {
+                failure.raw_bytes = Some(raw);
+            }
+            ObjectVerificationErrorV1::Corrupt(failure)
+        })
     }
 
     fn verify_raw(
         digest: CandidateObjectDigestV1,
         expected_commitment: &[u8; 32],
-        raw: Vec<u8>,
+        raw: &[u8],
     ) -> Result<RepoMapCandidateEnvelopeV1, ObjectVerificationFailureV1> {
-        let raw_bytes = raw.clone();
         let observed_byte_size =
             Some(
                 u64::try_from(raw.len()).map_err(|error| ObjectVerificationFailureV1 {
@@ -485,11 +677,11 @@ impl RepoMapObjectStore {
                     observed_byte_size: None,
                 })?,
             );
-        if CandidateObjectDigestV1::for_canonical_envelope(&raw) != digest {
+        if CandidateObjectDigestV1::for_canonical_envelope(raw) != digest {
             return Err(ObjectVerificationFailureV1 {
                 reason: QuarantineReasonCodeV1::AddressDigestMismatch,
                 detail: "raw object bytes do not match the catalog content address".to_string(),
-                raw_bytes: Some(raw),
+                raw_bytes: None,
                 observed_byte_size,
             });
         }
@@ -499,43 +691,41 @@ impl RepoMapObjectStore {
         // (`NonCanonicalEnvelope`, `EnvelopeDecodeFailed`,
         // `LogicalIdentityMismatch`), never the address mismatch that was
         // already ruled out.
-        let envelope =
-            RepoMapCandidateEnvelopeV1::decode_canonical(raw_bytes.as_slice()).map_err(|err| {
-                ObjectVerificationFailureV1 {
-                    reason: match err {
-                        CanonicalRepoMapCodecErrorV1::TrailingBytes
-                        | CanonicalRepoMapCodecErrorV1::NonCanonicalInteger => {
-                            QuarantineReasonCodeV1::NonCanonicalEnvelope
-                        }
-                        CanonicalRepoMapCodecErrorV1::ArtifactBindingMismatch => {
-                            QuarantineReasonCodeV1::LogicalIdentityMismatch
-                        }
-                        CanonicalRepoMapCodecErrorV1::UnexpectedEnd
-                        | CanonicalRepoMapCodecErrorV1::WrongType(_)
-                        | CanonicalRepoMapCodecErrorV1::InvalidValue(_)
-                        | CanonicalRepoMapCodecErrorV1::InvalidUtf8
-                        | CanonicalRepoMapCodecErrorV1::Identity(_)
-                        | CanonicalRepoMapCodecErrorV1::EvidenceBindingMismatch
-                        | CanonicalRepoMapCodecErrorV1::LengthOutOfRange
-                        | CanonicalRepoMapCodecErrorV1::InvalidDigestText => {
-                            QuarantineReasonCodeV1::EnvelopeDecodeFailed
-                        }
-                    },
-                    detail: err.to_string(),
-                    raw_bytes: Some(raw_bytes.clone()),
-                    observed_byte_size,
-                }
-            })?;
-        // `decode_canonical` enforces decode → exact re-encode equality
-        // internally, so the payload identity check is the commitment. A
-        // decoded envelope already hashes to its address, so a disagreement
-        // with the catalog row is the row's logical identity.
+        let envelope = RepoMapCandidateEnvelopeV1::decode_canonical(raw).map_err(|err| {
+            ObjectVerificationFailureV1 {
+                reason: match err {
+                    CanonicalRepoMapCodecErrorV1::TrailingBytes
+                    | CanonicalRepoMapCodecErrorV1::NonCanonicalInteger => {
+                        QuarantineReasonCodeV1::NonCanonicalEnvelope
+                    }
+                    CanonicalRepoMapCodecErrorV1::ArtifactBindingMismatch => {
+                        QuarantineReasonCodeV1::LogicalIdentityMismatch
+                    }
+                    CanonicalRepoMapCodecErrorV1::UnexpectedEnd
+                    | CanonicalRepoMapCodecErrorV1::WrongType(_)
+                    | CanonicalRepoMapCodecErrorV1::InvalidValue(_)
+                    | CanonicalRepoMapCodecErrorV1::InvalidUtf8
+                    | CanonicalRepoMapCodecErrorV1::Identity(_)
+                    | CanonicalRepoMapCodecErrorV1::EvidenceBindingMismatch
+                    | CanonicalRepoMapCodecErrorV1::LengthOutOfRange
+                    | CanonicalRepoMapCodecErrorV1::InvalidDigestText => {
+                        QuarantineReasonCodeV1::EnvelopeDecodeFailed
+                    }
+                },
+                detail: err.to_string(),
+                raw_bytes: None,
+                observed_byte_size,
+            }
+        })?;
+        // The decoder already compared its exact re-encoding to the raw bytes
+        // authenticated by the address check. Only the catalog commitment
+        // remains to be checked.
         let commitment = envelope
             .commitment()
             .map_err(|err| ObjectVerificationFailureV1 {
                 reason: QuarantineReasonCodeV1::LogicalIdentityMismatch,
                 detail: err.to_string(),
-                raw_bytes: Some(raw_bytes.clone()),
+                raw_bytes: None,
                 observed_byte_size,
             })?;
         if commitment.as_bytes() != expected_commitment {
@@ -544,33 +734,7 @@ impl RepoMapObjectStore {
                 detail: format!(
                     "sealed object commitment {commitment} does not match the catalog row commitment"
                 ),
-                raw_bytes: Some(raw_bytes),
-                observed_byte_size,
-            });
-        }
-        // The envelope's own address is the plain digest of its canonical
-        // bytes, and `decode_canonical` already proved those bytes are the
-        // ones on disk, which the address check above proved hash to the
-        // address they were read from. So this disagreement cannot happen;
-        // if a refactor ever makes it reachable, the evidence contract
-        // refuses `AddressDigestMismatch` for address-consistent bytes and
-        // the refusal is loud rather than a mislabelled quarantine.
-        let object_digest =
-            envelope
-                .object_digest()
-                .map_err(|err| ObjectVerificationFailureV1 {
-                    reason: QuarantineReasonCodeV1::AddressDigestMismatch,
-                    detail: err.to_string(),
-                    raw_bytes: Some(raw_bytes.clone()),
-                    observed_byte_size,
-                })?;
-        if object_digest != digest {
-            return Err(ObjectVerificationFailureV1 {
-                reason: QuarantineReasonCodeV1::AddressDigestMismatch,
-                detail: format!(
-                    "sealed object address digest {digest} does not match its envelope"
-                ),
-                raw_bytes: Some(raw_bytes),
+                raw_bytes: None,
                 observed_byte_size,
             });
         }

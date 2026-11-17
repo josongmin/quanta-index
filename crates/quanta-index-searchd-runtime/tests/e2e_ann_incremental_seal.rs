@@ -272,6 +272,7 @@ fn verify_append_case(rt: &mut E2eRuntime) -> TestResult {
                     top_k: TOP_K,
                 },
                 max_work_units: 1_000_000,
+                canonical_ties: false,
             },
         )
     })?;

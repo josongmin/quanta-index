@@ -46,10 +46,7 @@ fn parse_absolute_timeref_ms(trimmed: &str) -> Option<u64> {
 
 #[must_use]
 pub fn parse_rev_at_time_spec(value: &str) -> Option<&str> {
-    let trimmed = value.trim();
-    let payload = trimmed.strip_prefix("at.time(")?.strip_suffix(')')?;
-    let payload = payload.trim();
-    (!payload.is_empty()).then_some(payload)
+    quanta_index_contract::parse_rev_at_time_spec(value)
 }
 
 #[must_use]

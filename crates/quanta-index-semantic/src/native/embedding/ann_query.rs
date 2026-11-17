@@ -5,26 +5,36 @@ use std::{cmp::Ordering, collections::BinaryHeap};
 
 use quanta_index_contract::native_protocol::NativeSemanticTraversal;
 use quanta_index_core::index::{
-    IndexError, MapRoot, MemoryLease, MemoryLifetime, ObjectRef, OwnerKey, StoredObject, WorkUsage,
-    owner_from_map_key, owner_map_key,
+    IndexError, MapRoot, MemoryLease, MemoryLifetime, ObjectRef, OwnerKey, OwnerMemberBinding,
+    StoredObject, WorkUsage, owner_from_map_key, owner_map_key,
 };
 use quanta_index_core::{
-    DiagnosticAnnRegionObservationV1, DiagnosticAnnRegionPhaseV1, DiagnosticStageV1,
+    DiagnosticAnnIndexKindV1, DiagnosticAnnRegionObservationV1, DiagnosticAnnRegionPhaseV1,
+    DiagnosticStageV1,
 };
 
+use super::native_graph;
 use super::{
-    RankedHit, ReadContext, SearchQuery, SearchResult,
+    ChunkMember, EmbeddingVector, LoadedOwnerArtifact, OwnerArtifact, RankedHit, ReadContext,
+    SearchQuery, SearchResult, SemanticSourceFile,
     ann_directory::{AnnDirectory, MAX_DELTA_OWNERS},
-    cosine, finish_ranked, overlay, rank_member, search_exact, search_selected_exact_path,
-    selected_owner::SelectedOwner,
-    validate_search_query,
-};
-use crate::native::{
-    ann_files, ann_lance, ann_session::AnnLanceSession, ann_store::AnnStoreLimits,
+    cosine, finish_ranked, load_rank_member, rank_decoded_member, rank_member, search_exact,
+    search_exact_with_delta, search_selected_exact_path,
+    selected_owner::{SelectedOwner, scan_ordered_page},
+    source_file, validate_rank_vector, validate_search_query,
 };
 
 const MAX_ROUTED_REGIONS: usize = 8;
-const TABLE_NAME: &str = "region";
+const MAX_CACHED_ARTIFACT_BYTES: usize = 512 * 1024;
+const MAX_CACHED_MEMBERS: usize = 8;
+
+const fn region_was_capped(traversal: NativeSemanticTraversal) -> bool {
+    matches!(
+        traversal,
+        NativeSemanticTraversal::ExactCapped
+            | NativeSemanticTraversal::Approximate { capped: true }
+    )
+}
 
 struct RoutedRegions {
     entries: Vec<RoutedRegion>,
@@ -37,31 +47,181 @@ struct RoutedRegion {
     object: StoredObject,
 }
 
-#[derive(Clone, Copy)]
 struct SeenOwner {
     owner: OwnerKey,
     stale: bool,
+    member: Option<(ObjectRef, OwnerMemberBinding)>,
 }
 
-fn insert_seen(
-    seen: &mut Vec<SeenOwner>,
+struct CachedMember {
+    reference: ObjectRef,
+    artifact: OwnerArtifact,
+    bytes: usize,
+}
+
+struct RegionArtifactCache<'a> {
+    members: [Option<CachedMember>; MAX_CACHED_MEMBERS],
+    next: usize,
+    candidates: &'a native_graph::Candidates,
+}
+
+impl<'a> RegionArtifactCache<'a> {
+    fn new(candidates: &'a native_graph::Candidates) -> Self {
+        Self {
+            members: Default::default(),
+            next: 0,
+            candidates,
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        self.candidates
+            .reusable_scratch_bytes()
+            .min(MAX_CACHED_ARTIFACT_BYTES)
+    }
+
+    fn get(&mut self, reference: ObjectRef) -> Option<&mut OwnerArtifact> {
+        self.members
+            .iter_mut()
+            .flatten()
+            .find(|entry| entry.reference == reference)
+            .map(|entry| &mut entry.artifact)
+    }
+
+    fn remember(&mut self, reference: ObjectRef, loaded: LoadedOwnerArtifact) {
+        let capacity = self.capacity();
+        let bytes = decoded_backing(&loaded);
+        if bytes > capacity {
+            return;
+        }
+        let mut live_bytes = bytes;
+        self.members[self.next] = None;
+        for cached in &mut self.members {
+            if let Some(member) = cached {
+                live_bytes += member.bytes;
+                if live_bytes > capacity {
+                    live_bytes -= member.bytes;
+                    *cached = None;
+                }
+            }
+        }
+        // Only the decoded artifact transfers to the candidates' scratch.
+        // The source record, if still present, keeps its own decode grant.
+        self.members[self.next] = Some(CachedMember {
+            reference,
+            artifact: loaded.artifact,
+            bytes,
+        });
+        self.next = (self.next + 1) % MAX_CACHED_MEMBERS;
+    }
+}
+
+fn load_cached_file(
+    member: &OwnerMemberBinding,
+    selected: &SelectedOwner,
+    heap: &BinaryHeap<RankedHit>,
+    query: &SearchQuery<'_>,
+    context: &mut ReadContext<'_>,
+) -> Result<Option<SemanticSourceFile>, IndexError> {
+    if !query.source_files {
+        return Ok(None);
+    }
+    let file_owner = selected
+        .contribution
+        .map_or(Some(member.owner), |contribution| contribution.source_owner);
+    let record = file_owner
+        .zip(member.input.source)
+        .and_then(|(owner, source)| source_file::retained_record(heap, owner, source));
+    source_file::load(member, selected.contribution, record, query, context)
+}
+
+fn decoded_backing(artifact: &LoadedOwnerArtifact) -> usize {
+    let vectors = &artifact.vectors;
+    let mut bytes = vectors.capacity() * std::mem::size_of::<EmbeddingVector>()
+        + artifact.chunks.capacity() * std::mem::size_of::<ChunkMember>();
+    for vector in vectors {
+        bytes += vector.id.capacity() + vector.values.capacity() * std::mem::size_of::<f32>();
+    }
+    bytes
+}
+
+enum Candidate<'a> {
+    Delta(&'a OwnerMemberBinding),
+    Region(&'a native_graph::Row),
+}
+
+/// Canonical bindings from a complete, ordered scan of the bounded delta.
+pub(super) struct ExactDeltaMembers {
+    entries: Vec<(ObjectRef, OwnerMemberBinding)>,
+    _memory: Option<MemoryLease>,
+}
+
+impl ExactDeltaMembers {
+    fn reserve(count: usize, context: &ReadContext<'_>) -> Result<Self, IndexError> {
+        let bytes = count
+            .checked_mul(std::mem::size_of::<(ObjectRef, OwnerMemberBinding)>())
+            .ok_or(IndexError::ResourceLimited)?;
+        let memory = if bytes == 0 {
+            None
+        } else {
+            context.budget.reserve_memory(
+                u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+                MemoryLifetime::Temporary,
+            )?
+        };
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(count)
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        if entries.capacity() > count {
+            return Err(IndexError::ResourceLimited);
+        }
+        Ok(Self {
+            entries,
+            _memory: memory,
+        })
+    }
+
+    pub(super) fn current(
+        &self,
+        owner: OwnerKey,
+        reference: ObjectRef,
+    ) -> Option<&OwnerMemberBinding> {
+        let index = self
+            .entries
+            .binary_search_by_key(&owner, |(_, member)| member.owner)
+            .ok()?;
+        let (actual, member) = self.entries.get(index)?;
+        (*actual == reference).then_some(member)
+    }
+}
+
+fn insert_seen<'a>(
+    seen: &'a mut Vec<SeenOwner>,
     owner: OwnerKey,
     stale: bool,
     limit: usize,
     capped: &mut bool,
-) -> Result<bool, IndexError> {
+) -> Result<Option<&'a mut SeenOwner>, IndexError> {
     match seen.binary_search_by_key(&owner, |entry| entry.owner) {
-        Ok(_index) => Ok(true),
+        Ok(index) => Ok(seen.get_mut(index)),
         Err(_index) if seen.len() >= limit => {
             *capped = true;
-            Ok(false)
+            Ok(None)
         }
         Err(index) => {
             if seen.len() == seen.capacity() {
                 return Err(IndexError::ResourceLimited);
             }
-            seen.insert(index, SeenOwner { owner, stale });
-            Ok(true)
+            seen.insert(
+                index,
+                SeenOwner {
+                    owner,
+                    stale,
+                    member: None,
+                },
+            );
+            Ok(seen.get_mut(index))
         }
     }
 }
@@ -73,7 +233,7 @@ fn insert_seen(
 fn rank_selected(
     owner: OwnerKey,
     expected_member: ObjectRef,
-    candidate: Option<&ann_lance::RegionCandidate>,
+    candidate: Candidate<'_>,
     query: &SearchQuery<'_>,
     query_norm: f64,
     top_k: usize,
@@ -81,6 +241,7 @@ fn rank_selected(
     seen: &mut Vec<SeenOwner>,
     durable_limit: usize,
     capped: &mut bool,
+    mut cached: Option<&mut RegionArtifactCache<'_>>,
     context: &mut ReadContext<'_>,
 ) -> Result<bool, IndexError> {
     let key = owner_map_key(owner);
@@ -91,58 +252,130 @@ fn rank_selected(
         // Old immutable regions can retain a deleted owner.
         return Ok(false);
     };
-    if seen
-        .binary_search_by_key(&owner, |entry| entry.owner)
-        .is_err()
-        && seen.len() >= durable_limit
-    {
-        *capped = true;
+    let coverage = quanta_index_core::index::read_owner_coverage(
+        coverage_ref,
+        &key,
+        context.objects,
+        context.budget,
+    )?;
+    let current = coverage.covered == Some(coverage.desired);
+    if current && coverage.searchable.is_some() && coverage.searchable != Some(expected_member) {
+        // A superseded candidate cannot claim the current replacement's slot.
         return Ok(false);
     }
-    let selected = SelectedOwner::load(&key, coverage_ref, query, context)?;
-    let stale = selected.coverage.covered != Some(selected.coverage.desired)
-        || selected.coverage.searchable.is_none();
-    if !insert_seen(seen, owner, stale, durable_limit, capped)? {
+    let selected = SelectedOwner::authenticate(
+        &key,
+        coverage,
+        query.coverage,
+        query.projection.as_ref(),
+        query.source_owners,
+        context,
+    )?;
+    let cached_member = if matches!(candidate, Candidate::Region(_)) {
+        cached.as_mut().and_then(|cache| cache.get(expected_member))
+    } else {
+        None
+    };
+    let selected_input = if cached_member.is_none() && query.source_files {
+        // Projection members can share a file without sharing an artifact.
+        let record = selected.contribution.and_then(|contribution| {
+            source_file::retained_record(heap, contribution.source_owner?, contribution.source?)
+        });
+        let std::ops::ControlFlow::Continue(input) = selected.rank_input(query, record, context)?
+        else {
+            return Ok(false);
+        };
+        input
+    } else {
+        if cached_member.is_none() && selected.has_no_candidate(false) {
+            return Ok(false);
+        }
+        None
+    };
+    let stale = !current || coverage.searchable.is_none();
+    let Some(seen_owner) = insert_seen(seen, owner, stale, durable_limit, capped)? else {
         return Ok(false);
-    }
+    };
     if stale {
         return Ok(false);
     }
-    if selected.coverage.searchable != Some(expected_member) {
-        // This selected owner superseded the immutable region member.
-        return Ok(false);
+    let (member, only) = match candidate {
+        Candidate::Delta(member) => {
+            selected.validate_member_identity(member, query)?;
+            seen_owner.member = Some((expected_member, member.clone()));
+            (member, None)
+        }
+        Candidate::Region(row) => {
+            // The selected immutable coverage still points to expected_member.
+            // Reuse its binding while checking each candidate's own stamp and ID.
+            let member = match &seen_owner.member {
+                Some((reference, member)) if *reference == expected_member => member,
+                _ => {
+                    &seen_owner
+                        .member
+                        .insert((expected_member, selected.current_member(query, context)?))
+                        .1
+                }
+            };
+            selected.validate_member_identity(member, query)?;
+            if row.owner != member.owner || row.member != member.logical_commitment {
+                return Err(IndexError::CorruptObject(
+                    "native graph candidate member stamp differs".into(),
+                ));
+            }
+            (member, Some(row.vector_id.as_slice()))
+        }
+    };
+    let selected_input = if !query.source_files && cached_member.is_none() {
+        let std::ops::ControlFlow::Continue(input) = selected.rank_input(query, None, context)?
+        else {
+            return Ok(false);
+        };
+        input
+    } else {
+        selected_input
+    };
+    if let (Some(id), Some(artifact)) = (only, cached_member) {
+        // Graph rows are unique by owner and ID. A prior candidate may have
+        // moved its ID into a result, but it cannot be this row's ID.
+        validate_rank_vector(artifact, Some(id))?;
+        let file = load_cached_file(member, &selected, heap, query, context)?;
+        return rank_decoded_member(
+            owner, artifact, file, only, query, query_norm, top_k, heap, context,
+        );
     }
-    let member = selected.current_member(query, context)?;
-    if let Some(candidate) = candidate
-        && !ann_lance::selected_input_matches(
-            candidate,
-            member.owner,
-            member.logical_commitment,
-            &candidate.vector_id,
-            member.input,
-        )
-    {
-        return Err(IndexError::CorruptObject(
-            "ANN candidate member/input stamp differs".into(),
-        ));
-    }
-    if !selected.matches_exact_path(query, context)? {
-        return Ok(false);
+    if let (Some(cache), Some(id)) = (cached, only) {
+        let (mut artifact, file) =
+            load_rank_member(member, selected_input, Some(id), query, context)?;
+        // File metadata belongs to the hit; the cache owns neither an Arc
+        // clone nor any retained memory after the heap evicts that file.
+        let reusable = artifact.vectors.len() > 1 && (!query.source_files || file.is_some());
+        let ranked = rank_decoded_member(
+            owner,
+            &mut artifact.artifact,
+            file,
+            Some(id),
+            query,
+            query_norm,
+            top_k,
+            heap,
+            context,
+        )?;
+        if reusable {
+            cache.remember(expected_member, artifact);
+        }
+        return Ok(ranked);
     }
     rank_member(
-        &member,
-        selected.contribution,
-        candidate.map(|candidate| candidate.vector_id.as_slice()),
+        member,
+        selected_input,
+        only,
         query,
         query_norm,
         top_k,
         heap,
         context,
-    )?;
-    Ok(!query
-        .overlay
-        .as_ref()
-        .is_some_and(|overlay| overlay::masks(overlay.documents, owner)))
+    )
 }
 
 fn route_regions(
@@ -168,7 +401,7 @@ fn route_regions(
     let mut after = None;
     let mut count = 0u32;
     loop {
-        let page = directory.region_page(after, 64, context)?;
+        let page = directory.region_page(after, 64, after.is_some(), context)?;
         for (key, reference) in &page.entries {
             let reference = *reference.as_object_ref()?;
             let ordinal = u64::from_be_bytes(key.as_slice().try_into().map_err(|_error| {
@@ -231,13 +464,24 @@ fn route_regions(
     })
 }
 
-pub(super) async fn search(
+#[cfg(test)]
+pub(super) fn search(
     query: &SearchQuery<'_>,
     context: &mut ReadContext<'_>,
 ) -> Result<SearchResult, IndexError> {
+    super::ann_directory::validate_coverage_layout(query.coverage)?;
+    let directory = AnnDirectory::load_for_coverage(query.coverage, query.recipe, context)?;
+    search_loaded(query, directory.as_ref(), context)
+}
+
+pub(super) fn search_loaded(
+    query: &SearchQuery<'_>,
+    directory: Option<&AnnDirectory>,
+    context: &mut ReadContext<'_>,
+) -> Result<SearchResult, IndexError> {
     let query_norm = validate_search_query(query)?;
-    let directory_ref = match query.coverage.searchable {
-        Some(reference) => reference,
+    let directory = match directory {
+        Some(directory) => directory,
         None if query.coverage.owners == MapRoot(None)
             && query
                 .overlay
@@ -248,33 +492,20 @@ pub(super) async fn search(
         }
         None => return Err(IndexError::SnapshotUnavailable),
     };
-    let directory = AnnDirectory::load(directory_ref, query.recipe.fingerprint(), context)?;
-    if directory.owners != query.coverage.owners {
-        return Err(IndexError::CorruptObject(
-            "ANN directory owners differ from selected coverage".into(),
-        ));
-    }
     if let Some(result) = super::lexical_scope::search(query, context)? {
         return Ok(result);
     }
-    if let Some(result) = search_selected_exact_path(query, context)? {
+    if let Some(result) = search_selected_exact_path(query, Some(directory), context)? {
         return Ok(result);
     }
     let small_exact = if directory.region_count == 0 {
-        let selected = context.maps.scan(
+        let selected = scan_ordered_page(
             query.coverage.owners,
             None,
             MAX_DELTA_OWNERS,
-            context.budget,
+            false,
+            context,
         )?;
-        if selected.entries.len()
-            > usize::try_from(MAX_DELTA_OWNERS).map_err(|_error| IndexError::ResourceLimited)?
-            || (selected.entries.is_empty() && selected.has_more)
-        {
-            return Err(IndexError::BackendViolation(
-                "ANN small-population scan exceeded its bounded page".into(),
-            ));
-        }
         !selected.has_more
     } else {
         false
@@ -291,8 +522,13 @@ pub(super) async fn search(
         .ok_or(IndexError::ResourceLimited)?;
     let delta_owners =
         usize::try_from(directory.delta_owners).map_err(|_error| IndexError::ResourceLimited)?;
+    let mut exact_delta = if small_exact {
+        Some(ExactDeltaMembers::reserve(delta_owners, context)?)
+    } else {
+        None
+    };
     let max_candidates = MAX_ROUTED_REGIONS
-        .checked_mul(ann_lance::MAX_REGION_CANDIDATES)
+        .checked_mul(native_graph::MAX_REGION_CANDIDATES)
         .and_then(|count| count.checked_add(delta_owners))
         .ok_or(IndexError::ResourceLimited)?;
     let seen_capacity = durable_limit.min(max_candidates);
@@ -323,7 +559,7 @@ pub(super) async fn search(
     let mut heap = BinaryHeap::new();
     heap.try_reserve_exact(top_k)
         .map_err(|_error| IndexError::ResourceLimited)?;
-    let mut capped = top_k > ann_lance::MAX_REGION_CANDIDATES
+    let mut capped = top_k > native_graph::MAX_REGION_CANDIDATES
         || u64::from(directory.region_count)
             > u64::try_from(MAX_ROUTED_REGIONS).map_err(|_error| IndexError::ResourceLimited)?;
 
@@ -331,36 +567,33 @@ pub(super) async fn search(
     let mut after: Option<[u8; 38]> = None;
     let mut delta_entries = 0u32;
     loop {
-        context.budget.checkpoint()?;
-        let page = context.maps.scan(
+        let page = scan_ordered_page(
             directory.delta,
             after.as_ref().map(<[u8; 38]>::as_slice),
             query.page_size.min(MAX_DELTA_OWNERS),
-            context.budget,
+            after.is_some(),
+            context,
         )?;
-        if page.entries.is_empty() && page.has_more {
-            return Err(IndexError::BackendViolation(
-                "ANN delta map scan made no progress".into(),
-            ));
-        }
         for (key, member_ref) in &page.entries {
             let member_ref = member_ref.as_object_ref()?;
             context.budget.checkpoint()?;
             delta_entries = delta_entries
                 .checked_add(1)
                 .ok_or(IndexError::ResourceLimited)?;
-            if delta_entries > MAX_DELTA_OWNERS {
+            if delta_entries > directory.delta_owners {
                 return Err(IndexError::CorruptObject(
-                    "ANN delta map exceeds owner bound".into(),
+                    "ANN delta map exceeds declared owner count".into(),
                 ));
             }
             let owner = owner_from_map_key(key)?;
-            let _binding = directory.delta_member_from_page(owner, *member_ref, context)?;
-            if !small_exact {
-                let _accepted = rank_selected(
+            let binding = directory.delta_member_from_page(owner, *member_ref, context)?;
+            if let Some(exact_delta) = exact_delta.as_mut() {
+                exact_delta.entries.push((*member_ref, binding));
+            } else {
+                let _rescored = rank_selected(
                     owner,
                     *member_ref,
-                    None,
+                    Candidate::Delta(&binding),
                     query,
                     query_norm,
                     top_k,
@@ -368,6 +601,7 @@ pub(super) async fn search(
                     &mut seen,
                     durable_limit,
                     &mut capped,
+                    None,
                     context,
                 )?;
             }
@@ -391,115 +625,101 @@ pub(super) async fn search(
             "ANN delta map count differs from directory".into(),
         ));
     }
-    if small_exact {
+    if let Some(exact_delta) = exact_delta {
         // This small population has a bounded independent exact oracle.
-        return search_exact(query, context);
+        drop(heap);
+        drop(_heap_memory);
+        drop(seen);
+        drop(_seen_memory);
+        return search_exact_with_delta(query, Some(&exact_delta), context);
     }
 
-    let routes = route_regions(&directory, query, query_norm, context)?;
+    let routes = route_regions(directory, query, query_norm, context)?;
     for routed in routes.entries {
-        let span = crate::build::begin_build_stage(
+        let span = crate::build_diagnostic::begin_build_stage(
             context.budget.request().diagnostic_context(),
             DiagnosticStageV1::QueryCandidate,
         );
-        let region_result = async {
+        let region_result = (|| {
             context.budget.checkpoint()?;
             let ordinal = routed.ordinal;
             let descriptor = directory.region_from_retained(ordinal, routed.object, context)?;
-            let fileset = ann_files::load_fileset(
+            let graph = native_graph::load(
                 context.objects,
                 descriptor.descriptor.fileset,
                 context.budget,
             )?;
-            let seal_dimension = usize::try_from(fileset.seal.dimension)
-                .map_err(|_error| IndexError::ResourceLimited)?;
-            if fileset.seal.recipe != directory.recipe
-                || fileset.seal.generation
+            if graph.seal.recipe != directory.recipe
+                || graph.seal.generation
                     != ordinal.checked_add(1).ok_or(IndexError::ResourceLimited)?
-                || fileset.seal.rows != descriptor.descriptor.rows
-                || seal_dimension != descriptor.descriptor.center.len()
+                || graph.seal.rows != descriptor.descriptor.rows
+                || graph.seal.dimension as usize != descriptor.descriptor.center.len()
             {
                 return Err(IndexError::CorruptObject(
-                    "ANN selected region seal differs from directory".into(),
+                    "native graph selected seal differs from directory".into(),
                 ));
             }
-            let max_read_bytes = fileset
-                .total_length
-                .checked_mul(8)
-                .and_then(|bytes| bytes.checked_add(1_048_576))
-                .ok_or(IndexError::ResourceLimited)?
-                .min(64 * 1024 * 1024);
-            let limits = AnnStoreLimits {
-                max_write_bytes: fileset.total_length.max(1),
-                max_read_bytes,
-                ..AnnStoreLimits::default()
-            };
-            let session = AnnLanceSession::hydrate(&fileset, limits, context.budget).await?;
-            let connection = session.connect().await?;
-            let table = connection
-                .open_table(TABLE_NAME)
-                .execute()
-                .await
-                .map_err(|error| IndexError::Storage(format!("ANN selected table: {error}")));
-            let table = session.resolve(table)?;
-            let opened = ann_lance::open_region(table, fileset.seal.clone(), context.budget).await;
-            let region = session.resolve(opened)?;
-            let region_top_k = top_k.min(ann_lance::MAX_REGION_CANDIDATES);
-            let candidate_cap = ann_lance::MAX_REGION_CANDIDATES;
-            let objects = context.objects;
-            let maps = context.maps;
-            let members = descriptor.descriptor.members;
-            let page = ann_lance::query_region(
-                &region,
+            let candidates = graph.candidates(
                 query.vector,
-                region_top_k,
-                region_top_k,
-                candidate_cap,
+                native_graph::MAX_REGION_ROWS,
+                native_graph::MAX_REGION_CANDIDATES,
                 context.budget,
-                |candidate, budget| {
-                    let mut read = ReadContext {
-                        objects,
-                        maps,
-                        budget,
-                    };
-                    let key = owner_map_key(candidate.owner);
-                    let Some(member_ref) = read.maps.lookup_object(members, &key, read.budget)?
-                    else {
-                        return Err(IndexError::CorruptObject(
-                            "ANN candidate is absent from sealed region members".into(),
-                        ));
-                    };
-                    let accepted = rank_selected(
-                        candidate.owner,
-                        member_ref,
-                        Some(candidate),
-                        query,
-                        query_norm,
-                        top_k,
-                        &mut heap,
-                        &mut seen,
-                        durable_limit,
-                        &mut capped,
-                        &mut read,
-                    )?;
-                    Ok(accepted)
-                },
-            )
-            .await;
-            let page = session.resolve(page)?;
+            )?;
+            // Preserve the original owner funding across all routed regions.
+            // A raw graph frontier is not permission to re-open every owner.
+            // File duplicates may refill this window, bounded by the existing
+            // candidate/owner caps; truncation remains an explicit limitation.
+            // Deleted, superseded and source-free rows do not spend this
+            // original-vector window merely by occupying a graph position.
+            let initial_rescores = top_k
+                .checked_mul(4)
+                .ok_or(IndexError::ResourceLimited)?
+                .max(64)
+                .min(native_graph::MAX_REGION_CANDIDATES);
+            let mut rescore_capped = false;
+            let mut rescored = 0usize;
+            let mut cached = RegionArtifactCache::new(&candidates);
+            for &index in &candidates.indices {
+                if rescored >= initial_rescores
+                    && !(query.source_files && heap.len() < top_k && seen.len() < durable_limit)
+                {
+                    rescore_capped = true;
+                    break;
+                }
+                context.budget.checkpoint()?;
+                let candidate = &graph.rows[index];
+                let key = owner_map_key(candidate.owner);
+                let Some(member_ref) = context.maps.lookup_object(
+                    descriptor.descriptor.members,
+                    &key,
+                    context.budget,
+                )?
+                else {
+                    return Err(IndexError::CorruptObject(
+                        "native graph candidate absent from sealed members".into(),
+                    ));
+                };
+                let did_rescore = rank_selected(
+                    candidate.owner,
+                    member_ref,
+                    Candidate::Region(candidate),
+                    query,
+                    query_norm,
+                    top_k,
+                    &mut heap,
+                    &mut seen,
+                    durable_limit,
+                    &mut capped,
+                    Some(&mut cached),
+                    context,
+                )?;
+                if did_rescore {
+                    rescored = rescored.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                }
+            }
             if let (Some(diagnostic), Some(span)) =
                 (context.budget.request().diagnostic_context(), span.as_ref())
             {
-                let files = u32::try_from(fileset.files.len())
-                    .map_err(|_error| IndexError::ResourceLimited)?;
-                let chunks = fileset.files.iter().try_fold(0u32, |count, file| {
-                    count
-                        .checked_add(
-                            u32::try_from(file.chunks.len())
-                                .map_err(|_error| IndexError::ResourceLimited)?,
-                        )
-                        .ok_or(IndexError::ResourceLimited)
-                })?;
                 diagnostic.ann_region_observation(
                     span,
                     DiagnosticAnnRegionObservationV1 {
@@ -507,18 +727,19 @@ pub(super) async fn search(
                         fileset_ref: descriptor.descriptor.fileset.0.0,
                         descriptor_ref: Some(descriptor.reference().0.0),
                         ordinal,
-                        rows: fileset.seal.rows,
-                        index_kind: ann_files::diagnostic_index_kind(&fileset.seal)?,
-                        files,
-                        chunks,
+                        rows: graph.seal.rows,
+                        index_kind: DiagnosticAnnIndexKindV1::Hnsw,
+                        files: 1,
+                        chunks: 1,
                     },
                 );
             }
-            Ok::<_, IndexError>(page.traversal)
-        }
-        .await;
-        crate::build::finish_build_stage(span, region_result.is_ok());
-        if !matches!(region_result?, NativeSemanticTraversal::ExactExhausted) {
+            Ok::<_, IndexError>(NativeSemanticTraversal::Approximate {
+                capped: candidates.capped || rescore_capped,
+            })
+        })();
+        crate::build_diagnostic::finish_build_stage(span, region_result.is_ok());
+        if region_was_capped(region_result?) {
             capped = true;
         }
     }
@@ -535,4 +756,21 @@ pub(super) async fn search(
         NativeSemanticTraversal::Approximate { capped },
         context,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NativeSemanticTraversal, region_was_capped};
+
+    #[test]
+    fn region_approximation_does_not_imply_an_explicit_cap() {
+        assert!(!region_was_capped(NativeSemanticTraversal::ExactExhausted));
+        assert!(!region_was_capped(NativeSemanticTraversal::Approximate {
+            capped: false,
+        }));
+        assert!(region_was_capped(NativeSemanticTraversal::ExactCapped));
+        assert!(region_was_capped(NativeSemanticTraversal::Approximate {
+            capped: true,
+        }));
+    }
 }

@@ -24,14 +24,19 @@ use std::collections::BTreeSet;
 
 use imbl::OrdMap;
 use quanta_index_contract::{
-    AuxEpochV1, ChunkId, DirtyIngestBatch, DirtyMutation, HistoryIngestBatch, HistoryRefMutation,
-    ManifestGeneration, RepoId, RevisionId, RuntimeCatalogIngestBatch, SearchCorpusIngestBatch,
+    AuxEpochV1, ChunkId, DirtyIngestBatch, DirtyMutation, HistoryDiffHunkUpsert,
+    HistoryIngestBatch, HistoryRefMutation, HistoryRefUpsert, ManifestGeneration, RepoId,
+    RevisionId, RuntimeCatalogIngestBatch, SearchCorpusIngestBatch, SearchPlaneErrorCodeV2,
     SearchPlaneTrackKind, SearchScopeSurface, SourceFileKey, StructuralIngestBatch,
+    index::Digest,
     lex::{CommitRecord, CommitSha, DiffHunkRecord},
 };
 use quanta_index_core::{
+    AUX_EPOCH_EXPIRED_CODE, AUX_EPOCH_UNKNOWN_CODE, AuxiliaryAuthorityCatalogPort,
     AuxiliaryDomainV1, AuxiliaryGenerationKeyV1, AuxiliaryMutationBatchV1, AuxiliaryRowFamilyV1,
     AuxiliaryRowKeyV1, AuxiliaryRowMutationV1, AuxiliaryRowV1, AuxiliaryTrackRowV1, CoreError,
+    domains::auxiliary::{HistoryReadbackRowV1, HistorySnapshotDigestV1, HistorySourceCutV1},
+    index::WorkBudget,
 };
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 use serde::{Deserialize, Serialize};
@@ -44,6 +49,9 @@ use crate::readiness::{
     enforce_runtime_catalog_batch_order, validate_runtime_catalog_doc_ids,
     verify_parse_tree_against_chunk_map,
 };
+
+pub(crate) mod history_source;
+pub use history_source::{HistoryReplayFenceV1, HistorySourceReplayV1, ReplayedHistorySourceV1};
 
 /// Separator between the commit sha and the path in a diff-hunk row key.
 const DIFF_KEY_SEPARATOR: u8 = 0x1f;
@@ -145,7 +153,7 @@ fn diff_key_bytes(key: &HistoryDiffKey) -> Vec<u8> {
     bytes
 }
 
-fn diff_key_from_bytes(bytes: &[u8]) -> Result<HistoryDiffKey, CoreError> {
+pub(crate) fn decode_diff_key(bytes: &[u8]) -> Result<(CommitSha, &str), CoreError> {
     let (sha, rest) = bytes.split_at_checked(COMMIT_SHA_LEN).ok_or_else(|| {
         CoreError::Storage("auxiliary authority: diff-hunk row key is too short".to_string())
     })?;
@@ -160,10 +168,10 @@ fn diff_key_from_bytes(bytes: &[u8]) -> Result<HistoryDiffKey, CoreError> {
             "auxiliary authority: diff-hunk row key path is not UTF-8: {err}"
         ))
     })?;
-    Ok(HistoryDiffKey::new(CommitSha::from_bytes(sha), path))
+    Ok((CommitSha::from_bytes(sha), path))
 }
 
-fn commit_sha_from_bytes(bytes: &[u8]) -> Result<CommitSha, CoreError> {
+pub(crate) fn commit_sha_from_bytes(bytes: &[u8]) -> Result<CommitSha, CoreError> {
     <[u8; COMMIT_SHA_LEN]>::try_from(bytes)
         .map(CommitSha::from_bytes)
         .map_err(|_wrong_length| {
@@ -188,6 +196,156 @@ fn history_typed(
     message: String,
 ) -> CoreError {
     CoreError::Typed { code, message }
+}
+
+fn corrupt_history(message: &str) -> CoreError {
+    history_typed(SearchPlaneErrorCodeV2::CatalogRowCorrupt, message.into())
+}
+
+pub(crate) fn read_history_source_snapshot(
+    catalog: &dyn AuxiliaryAuthorityCatalogPort,
+    source: &HistorySourceCutV1,
+    replay_predecessor: &HistorySourceCutV1,
+    budget: &mut WorkBudget,
+    visit: &mut dyn FnMut(HistoryReadbackRowV1, &mut WorkBudget) -> Result<(), CoreError>,
+) -> Result<(), CoreError> {
+    if source.snapshot_digest == Digest([0; 32]) {
+        return Err(CoreError::InvalidContract(
+            "History source snapshot digest is absent".into(),
+        ));
+    }
+    if source.replay_start == Digest([0; 32]) || replay_predecessor != source {
+        return Err(CoreError::InvalidContract(
+            "History replay start is absent or differs from the committed source cut".into(),
+        ));
+    }
+    if source.durable_epoch == AuxEpochV1::GENESIS {
+        return Err(history_typed(
+            AUX_EPOCH_UNKNOWN_CODE,
+            "History genesis is not a durable source epoch".into(),
+        ));
+    }
+
+    let generation = &source.generation;
+    let mut hash = HistorySnapshotDigestV1::new(generation);
+    let mut saw_epoch = false;
+    let mut saw_meta = false;
+    catalog.for_each_history_row(generation, budget, &mut |row, budget| {
+        let key = &row.key;
+        if key.domain != AuxiliaryDomainV1::History || &key.generation != generation {
+            return Err(corrupt_history("History scan returned a foreign row"));
+        }
+        if !saw_epoch {
+            if key.family != AuxiliaryRowFamilyV1::Epoch || !key.row_key.is_empty() {
+                return Err(corrupt_history(
+                    "History scan must start with its singleton epoch",
+                ));
+            }
+            let actual: AuxEpochV1 =
+                decode("epoch", &row.value).map_err(history_projection_error)?;
+            if actual != source.durable_epoch {
+                let code = if actual == AuxEpochV1::GENESIS || source.durable_epoch > actual {
+                    AUX_EPOCH_UNKNOWN_CODE
+                } else {
+                    AUX_EPOCH_EXPIRED_CODE
+                };
+                return Err(history_typed(
+                    code,
+                    format!(
+                        "History durable epoch is {actual}, requested {}",
+                        source.durable_epoch
+                    ),
+                ));
+            }
+            saw_epoch = true;
+        } else {
+            let decoded = decode_history_row(&row).map_err(history_projection_error)?;
+            saw_meta |= matches!(&decoded, HistoryReadbackRowV1::Materialization { .. });
+            visit(decoded, budget)?;
+        }
+        hash.push_row(key.family, &key.row_key, &row.value);
+        Ok(())
+    })?;
+    budget
+        .request()
+        .checkpoint("History source snapshot digest")?;
+    if !saw_epoch || !saw_meta {
+        return Err(corrupt_history(
+            "History snapshot is missing epoch or materialization metadata",
+        ));
+    }
+    if hash.finish() != source.snapshot_digest {
+        return Err(corrupt_history(
+            "History snapshot does not match the source owner's row-set digest",
+        ));
+    }
+    Ok(())
+}
+
+fn history_projection_error(error: CoreError) -> CoreError {
+    history_typed(
+        SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+        format!("History source row cannot be projected: {error}"),
+    )
+}
+
+pub(crate) fn decode_history_row(row: &AuxiliaryRowV1) -> Result<HistoryReadbackRowV1, CoreError> {
+    let key = &row.key;
+    Ok(match key.family {
+        AuxiliaryRowFamilyV1::Commit => {
+            let sha = commit_sha_from_bytes(&key.row_key)?;
+            let record: CommitRecord = decode("commit", &row.value)?;
+            if sha != record.sha {
+                return Err(corrupt_history(
+                    "History commit key differs from the stored commit SHA",
+                ));
+            }
+            HistoryReadbackRowV1::Commit(record)
+        }
+        AuxiliaryRowFamilyV1::Ref | AuxiliaryRowFamilyV1::Tag => {
+            let family = key.family.as_code_str();
+            let update = HistoryRefUpsert {
+                name: utf8_key(family, &key.row_key)?.into(),
+                sha: decode(family, &row.value)?,
+            };
+            if key.family == AuxiliaryRowFamilyV1::Ref {
+                HistoryReadbackRowV1::Ref(update)
+            } else {
+                HistoryReadbackRowV1::Tag(update)
+            }
+        }
+        AuxiliaryRowFamilyV1::DiffHunk => {
+            let (commit_sha, file_path) = decode_diff_key(&key.row_key)?;
+            HistoryReadbackRowV1::DiffHunk(HistoryDiffHunkUpsert {
+                commit_sha,
+                file_path: file_path.into(),
+                record: decode("diff-hunk", &row.value)?,
+            })
+        }
+        AuxiliaryRowFamilyV1::StateMeta => {
+            if !key.row_key.is_empty() {
+                return Err(corrupt_history("History materialization key must be empty"));
+            }
+            let meta: HistoryStateMeta = decode("history state-meta", &row.value)?;
+            HistoryReadbackRowV1::Materialization {
+                commits: meta.commits_materialized,
+                refs: meta.refs_materialized,
+                tags: meta.tags_materialized,
+                diff_hunks: meta.diff_hunks_materialized,
+            }
+        }
+        AuxiliaryRowFamilyV1::DirtyDoc
+        | AuxiliaryRowFamilyV1::ChangedDoc
+        | AuxiliaryRowFamilyV1::DocFacet
+        | AuxiliaryRowFamilyV1::Snapshot
+        | AuxiliaryRowFamilyV1::AffectedDocs
+        | AuxiliaryRowFamilyV1::InvalidatedByDocs
+        | AuxiliaryRowFamilyV1::Chunk
+        | AuxiliaryRowFamilyV1::ParseTree
+        | AuxiliaryRowFamilyV1::Epoch => {
+            return Err(corrupt_history("invalid History record family"));
+        }
+    })
 }
 
 /// Validate `batch` against `current` and name what it changes; the
@@ -1058,9 +1216,9 @@ pub(crate) fn restore_row_into(ledger: &mut Ledger, row: &AuxiliaryRowV1) -> Res
                     state.restore_tag(name, sha);
                 }
                 AuxiliaryRowFamilyV1::DiffHunk => {
-                    let diff_key = diff_key_from_bytes(&key.row_key)?;
+                    let (commit_sha, file_path) = decode_diff_key(&key.row_key)?;
                     let record: DiffHunkRecord = decode("diff-hunk", &row.value)?;
-                    state.restore_diff_hunk(diff_key, record);
+                    state.restore_diff_hunk(HistoryDiffKey::new(commit_sha, file_path), record);
                 }
                 AuxiliaryRowFamilyV1::StateMeta => {
                     let meta: HistoryStateMeta = decode("history state-meta", &row.value)?;

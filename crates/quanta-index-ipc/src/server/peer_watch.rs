@@ -113,15 +113,15 @@ fn cancel_before_reporting_hangup(
     cancel: &CancelHandleV1,
     counters: &IpcServerCounters,
 ) {
-    // Terminal replies must see the closed peer even if a cancellation waiter
-    // panics. Publish the counter only after cancel set the budget flag.
-    hung_up.store(true, Ordering::Release);
     struct ReportHangup<'a>(&'a IpcServerCounters);
     impl Drop for ReportHangup<'_> {
         fn drop(&mut self) {
             self.0.peer_hangup_detected();
         }
     }
+    // Terminal replies must see the closed peer even if a cancellation waiter
+    // panics. Publish the counter only after cancel set the budget flag.
+    hung_up.store(true, Ordering::Release);
     let report = ReportHangup(counters);
     cancel.cancel();
     drop(report);
@@ -304,12 +304,14 @@ fn poll_timeout() -> Timespec {
 /// Whether the peer can still receive: a zero-byte send succeeds while
 /// the peer's read side is open and fails with `EPIPE` once it is gone.
 ///
+/// Also used once after dispatch-slot admission to reject a peer that left
+/// while queued, without creating a watcher or invoking cancellation callbacks.
 /// A half-close (`shutdown(Write)` on the peer) leaves its read side open,
 /// so this is what tells a waiting peer from a departed one; `poll` alone
 /// cannot, because Darwin reports `POLLHUP` for both. `SIGPIPE` is not a
 /// concern: the Rust runtime ignores it, and the socket carries
 /// `SO_NOSIGPIPE` where the platform has it.
-fn peer_can_receive(stream: &UnixStream) -> bool {
+pub(super) fn peer_can_receive(stream: &UnixStream) -> bool {
     let fd = std::os::fd::AsFd::as_fd(stream);
     match send(fd, &[], peer_probe_send_flags()) {
         Ok(_sent) => true,

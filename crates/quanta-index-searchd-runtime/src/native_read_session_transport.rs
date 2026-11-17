@@ -1,5 +1,13 @@
 //! Credential-bound product read leases over the existing Native control plane.
 
+use std::sync::Arc;
+
+mod history;
+pub(crate) use history::ScopedNativeHistoryPage;
+mod hybrid;
+mod page;
+pub(crate) use page::ScopedNativeTextPage;
+
 use quanta_index_contract::{
     TextQueryRequest,
     index::IndexInstanceId,
@@ -11,7 +19,8 @@ use quanta_index_contract::{
 use quanta_index_core::{
     RequestBudgetV1,
     index::{
-        IndexError, NativeReadSettlementScope, NativeReadSettlementStatus, WorkBudget,
+        IndexError, MemoryLease, MemoryLifetime, MemoryScope, MemoryScopePort,
+        NativeReadSettlementScope, NativeReadSettlementStatus, WorkBudget,
         effort::ReservationGuard,
     },
 };
@@ -20,11 +29,40 @@ use quanta_index_ipc::DispatchContextV1;
 use crate::{
     native::{NativeDispatcher, ScopedNativeTextResult, plan_native_text},
     native_reply::NativeReply,
-    native_resources::NativeClassScheduler,
+    native_resources::{NativeClassScheduler, NativeResourceLedger},
     native_work_diagnostic::{
         self, ReadFailureRoute, ReadFailureStage, RetainedSearchTimer, SessionCustodyPart,
     },
 };
+
+// Catalog observations may finish after Control and Interactive are returned.
+// Fund their short retained custody in the same ledger and protected envelope
+// used by transport responses, without retaining an execution reservation.
+struct ReadAttemptMemory {
+    resources: Arc<NativeResourceLedger>,
+    _backing: MemoryLease,
+}
+
+impl MemoryScopePort for ReadAttemptMemory {
+    fn reserve(&self, bytes: u64, _lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+        // Even attempt-local Temporary data is conservatively detached here:
+        // its request spans both execution reservations and finalization.
+        self.resources.reserve_response_memory(bytes)
+    }
+}
+
+fn attempt_memory(resources: &Arc<NativeResourceLedger>) -> Result<MemoryScope, IndexError> {
+    let bytes = std::mem::size_of::<ReadAttemptMemory>()
+        .checked_add(std::mem::size_of::<[usize; 2]>())
+        .and_then(|bytes| bytes.checked_add(16))
+        .ok_or(IndexError::ResourceLimited)?;
+    let bytes = u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?;
+    let backing = resources.reserve_response_memory(bytes)?;
+    Ok(MemoryScope::new(Arc::new(ReadAttemptMemory {
+        resources: Arc::clone(resources),
+        _backing: backing,
+    })))
+}
 
 fn scope(ticket: &quanta_index_kernel::ReadTicket) -> NativeReadSettlementScope {
     let target = ticket.view().identity;
@@ -50,45 +88,176 @@ pub(super) fn dispatch(
     let sessions = dispatcher.read_sessions.get().ok_or_else(|| {
         IndexError::InvalidInput("product read sessions are not configured".into())
     })?;
-    let gate = WorkBudget::with_request(dispatcher.limits, budget.clone());
-    if let NativeReadSessionRequest::SearchText {
-        session,
-        instance,
-        query,
-    } = request
-    {
+    let mut gate = WorkBudget::with_request(dispatcher.limits, budget.clone());
+    if matches!(
+        &request,
+        NativeReadSessionRequest::SearchText { .. }
+            | NativeReadSessionRequest::SearchTextPage { .. }
+            | NativeReadSessionRequest::SearchHybridFile { .. }
+            | NativeReadSessionRequest::SearchHistory { .. }
+            | NativeReadSessionRequest::ReadHistoryCut { .. }
+            | NativeReadSessionRequest::ReadHistoryGeneration { .. }
+            | NativeReadSessionRequest::ReadProfile { .. }
+    ) {
+        let session = match &request {
+            NativeReadSessionRequest::SearchText { session, .. }
+            | NativeReadSessionRequest::SearchTextPage { session, .. }
+            | NativeReadSessionRequest::SearchHybridFile { session, .. }
+            | NativeReadSessionRequest::SearchHistory { session, .. }
+            | NativeReadSessionRequest::ReadHistoryCut { session, .. }
+            | NativeReadSessionRequest::ReadHistoryGeneration { session, .. }
+            | NativeReadSessionRequest::ReadProfile { session } => *session,
+            _ => {
+                return Err(IndexError::BackendViolation(
+                    "retained request kind differs".into(),
+                ));
+            }
+        };
+        gate.bind_memory_scope(Some(attempt_memory(&dispatcher.resources)?));
         let mut work = WorkBudget::with_request(dispatcher.limits, budget.clone());
         let timer = RetainedSearchTimer::new(context);
         let ticket_observation = timer
             .is_enabled()
-            .then(|| quanta_index_catalog::TicketValidationObservation::begin(&dispatcher.catalog))
+            .then(|| {
+                quanta_index_catalog::TicketValidationObservation::begin(
+                    &dispatcher.catalog,
+                    Some(quanta_index_searchd::app::thread_cpu_now_ns),
+                )
+            })
             .flatten();
-        let result = sessions
-            .with_ticket(
-                uid,
-                session,
-                &gate,
-                || {
-                    timer.mark(ReadFailureStage::ControlAdmission);
-                    let control = dispatcher
-                        .control_scheduler
-                        .acquire_control_for_request(dispatcher.control_need, &gate)?;
-                    timer.mark_session_custody(SessionCustodyPart::EntryPre);
-                    Ok(control)
-                },
-                |ticket, control| {
-                    let result = search(
-                        dispatcher, ticket, instance, &query, &mut work, &timer, control,
-                    );
-                    if result.is_ok() {
-                        timer.mark_session_custody(SessionCustodyPart::ExitPost);
+        let result = sessions.with_ticket(
+            uid,
+            session,
+            &gate,
+            || {
+                timer.mark(ReadFailureStage::ControlAdmission);
+                let control = dispatcher
+                    .control_scheduler
+                    .acquire_control_for_request(dispatcher.control_need, &gate)?;
+                timer.mark_session_custody(SessionCustodyPart::EntryPre);
+                Ok(control)
+            },
+            |ticket, attempt, control| {
+                let result = match request {
+                    NativeReadSessionRequest::ReadProfile { .. } => {
+                        timer.mark(ReadFailureStage::QueryPreparation);
+                        // Profile DATA survives execution admission and finalization,
+                        // so its canonical loader uses detached response custody.
+                        let result = (|| {
+                            work.bind_memory_scope(Some(attempt_memory(&dispatcher.resources)?));
+                            dispatcher
+                                .kernel
+                                .read_session_profile_for_attempt(ticket, attempt, &mut work)
+                        })();
+                        drop(control);
+                        result.map(|profile| NativeReply::ReadSessionProfile { session, profile })
                     }
-                    result
-                },
-            )
-            .map(NativeReply::Text);
+                    NativeReadSessionRequest::ReadHistoryCut { instance, .. } => {
+                        timer.mark(ReadFailureStage::QueryPreparation);
+                        let result = (|| {
+                            work.bind_memory_scope(Some(attempt_memory(&dispatcher.resources)?));
+                            dispatcher.kernel.with_history_read_context_for_attempt(
+                                ticket,
+                                attempt,
+                                instance,
+                                &mut work,
+                                |context| quanta_index_search_plane::native_history::read_native_history_cut_v1(context),
+                            )
+                        })();
+                        drop(control);
+                        result.map(|(member, cut, memory)| NativeReply::ReadSessionHistoryCut {
+                            value: quanta_index_contract::native_protocol::NativeReadSessionHistoryCutV1 {
+                                session,
+                                view: ticket.view().identity,
+                                instance,
+                                member,
+                                cut,
+                            },
+                            _memory: memory,
+                        })
+                    }
+
+                    NativeReadSessionRequest::ReadHistoryGeneration { instance, .. } => {
+                        timer.mark(ReadFailureStage::QueryPreparation);
+                        let result = (|| {
+                            let slot = NativeReply::reserve_canonical(|bytes| {
+                                dispatcher.resources.reserve_response_memory(bytes).map(Some)
+                            })?;
+                            work.bind_memory_scope(Some(attempt_memory(&dispatcher.resources)?));
+                            let (member, source_input, inputs, predecessor_context) = dispatcher.kernel.with_history_read_context_for_attempt(
+                                ticket, attempt, instance, &mut work,
+                                quanta_index_search_plane::native_history::read_native_history_generation_v1,
+                            )?;
+                            Ok(slot.finish(NativeIndexResponse::HistoryGeneration(
+                                quanta_index_contract::native_protocol::NativeReadSessionHistoryGenerationV1 {
+                                    session, view: ticket.view().identity, instance,
+                                    member, source_input, inputs, predecessor_context,
+                                },
+                            )))
+                        })();
+                        drop(control);
+                        result
+                    }
+                    NativeReadSessionRequest::SearchText {
+                        instance, query, ..
+                    } => search(
+                        dispatcher, ticket, attempt, instance, &query, &mut work, &timer, control,
+                    )
+                    .map(NativeReply::Text),
+                    NativeReadSessionRequest::SearchTextPage {
+                        instance,
+                        query,
+                        after,
+                        ..
+                    } => page::search(
+                        dispatcher, ticket, attempt, session, instance, &query, after, &mut work,
+                        &timer, control,
+                    )
+                    .map(NativeReply::TextPage),
+                    NativeReadSessionRequest::SearchHistory {
+                        instance,
+                        query,
+                        after,
+                        ..
+                    } => history::search(
+                        dispatcher, ticket, attempt, session, instance, &query, after, &mut work,
+                        &timer, control,
+                    )
+                    .map(NativeReply::HistoryPage),
+                    NativeReadSessionRequest::SearchHybridFile {
+                        text_instance,
+                        semantic_instance,
+                        text_query,
+                        semantic_query,
+                        file_top_k,
+                        ..
+                    } => hybrid::search(
+                        dispatcher,
+                        ticket,
+                        attempt,
+                        session,
+                        text_instance,
+                        semantic_instance,
+                        &text_query,
+                        semantic_query,
+                        file_top_k,
+                        &mut work,
+                        &timer,
+                        control,
+                    )
+                    .map(NativeReply::HybridFile),
+                    _ => Err(IndexError::BackendViolation(
+                        "retained request kind differs".into(),
+                    )),
+                };
+                if result.is_ok() {
+                    timer.mark_session_custody(SessionCustodyPart::ExitPost);
+                }
+                result
+            },
+        );
         if let Some(timings) = ticket_observation.and_then(|observation| observation.snapshot()) {
-            timer.record_ticket_validation_timings(timings);
+            timer.record_ticket_validation_timings(&timings);
         }
         let observed_budget = if work.first_denial().is_some() {
             &work
@@ -189,7 +358,13 @@ pub(super) fn dispatch(
                     has_remaining_target_pins: observation.has_remaining_target_pins,
                 })
             }
-            NativeReadSessionRequest::SearchText { .. } => {
+            NativeReadSessionRequest::ReadProfile { .. }
+            | NativeReadSessionRequest::ReadHistoryCut { .. }
+            | NativeReadSessionRequest::ReadHistoryGeneration { .. }
+            | NativeReadSessionRequest::SearchText { .. }
+            | NativeReadSessionRequest::SearchTextPage { .. }
+            | NativeReadSessionRequest::SearchHybridFile { .. }
+            | NativeReadSessionRequest::SearchHistory { .. } => {
                 return Err(IndexError::BackendViolation(
                     "retained text request reached control reply".into(),
                 ));
@@ -212,6 +387,7 @@ pub(super) fn dispatch(
 fn search(
     dispatcher: &NativeDispatcher,
     ticket: &quanta_index_kernel::ReadTicket,
+    attempt: &mut quanta_index_kernel::TicketReadAttempt<'_>,
     instance: IndexInstanceId,
     query: &TextQueryRequest,
     work: &mut WorkBudget,
@@ -224,9 +400,41 @@ fn search(
         work.reserve_memory(bytes, lifetime)
     })?;
     let limit = planned.result_limit()?;
-    let result = dispatcher.kernel.with_prepared_stage_for_ticket(
+    execute_text(
+        dispatcher,
+        ticket,
+        attempt,
+        instance,
+        planned,
+        work,
+        timer,
+        control,
+        |outcome, work| {
+            crate::native_text_result::convert(outcome, instance, limit, |bytes, lifetime| {
+                work.reserve_memory(bytes, lifetime)
+            })
+        },
+    )
+}
+
+fn execute_text<T>(
+    dispatcher: &NativeDispatcher,
+    ticket: &quanta_index_kernel::ReadTicket,
+    attempt: &mut quanta_index_kernel::TicketReadAttempt<'_>,
+    instance: IndexInstanceId,
+    planned: quanta_index_lexical::native::PlannedTextRead,
+    work: &mut WorkBudget,
+    timer: &RetainedSearchTimer,
+    control: ReservationGuard<NativeClassScheduler>,
+    project: impl FnOnce(
+        quanta_index_core::index::QueryOutcome<quanta_index_lexical::native::TextReadResult>,
+        &WorkBudget,
+    ) -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    let result = dispatcher.kernel.with_prepared_stage_for_read_attempt(
         &dispatcher.text_queries,
         ticket,
+        attempt,
         instance,
         planned,
         work,
@@ -252,12 +460,7 @@ fn search(
                 selected.then_some(&mut timings),
                 |outcome, work| {
                     timer.mark(ReadFailureStage::ResultConversion);
-                    let result = crate::native_text_result::convert(
-                        outcome,
-                        instance,
-                        limit,
-                        |bytes, lifetime| work.reserve_memory(bytes, lifetime),
-                    );
+                    let result = project(outcome, work);
                     timer.mark(ReadFailureStage::QueryExecution);
                     result
                 },
@@ -296,4 +499,82 @@ pub(super) fn drain(dispatcher: &NativeDispatcher) -> Result<(), IndexError> {
             .map(|observation| observation.has_remaining_target_pins)
     })?;
     report.first_error.map_or(Ok(()), Err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::native_resources::NativeResourcePlan;
+    use quanta_index_core::index::effort::ResourceNeed;
+
+    #[test]
+    fn observation_memory_outlives_scope_without_execution_or_escaping_the_cap()
+    -> Result<(), IndexError> {
+        let unit = ResourceNeed {
+            cpu_units: 1,
+            io_bytes: 1024,
+            memory_bytes: 2048,
+            provider_units: 0,
+        };
+        let resources = NativeResourceLedger::new(NativeResourcePlan {
+            capacity: ResourceNeed {
+                cpu_units: 4,
+                io_bytes: 4096,
+                memory_bytes: 16 * 1024,
+                provider_units: 0,
+            },
+            control: unit,
+            interactive: unit,
+            core: unit,
+            enrichment: unit,
+        })?;
+        let baseline = resources.snapshot()?;
+        let scope = attempt_memory(&resources)?;
+        let attempt = scope.reserve(128, MemoryLifetime::Temporary)?;
+        let observation = scope.reserve(1024, MemoryLifetime::Retained)?;
+        if resources.snapshot()?.reserved != baseline.reserved {
+            return Err(IndexError::BackendViolation(
+                "read observation reserved execution capacity".into(),
+            ));
+        }
+        drop(scope);
+        if resources.snapshot()?.retained_memory_bytes == 0 {
+            return Err(IndexError::BackendViolation(
+                "observation lost its charge with the request scope".into(),
+            ));
+        }
+        drop(observation);
+        drop(attempt);
+        if resources.snapshot()? != baseline {
+            return Err(IndexError::BackendViolation(
+                "observation memory did not return to baseline".into(),
+            ));
+        }
+        let scope = attempt_memory(&resources)?;
+        let mut live = Vec::new();
+        let mut refused = false;
+        for _ in 0..32 {
+            match scope.reserve(1024, MemoryLifetime::Retained) {
+                Ok(memory) => live.push(memory),
+                Err(IndexError::ResourceLimited) => {
+                    refused = true;
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if !refused {
+            return Err(IndexError::BackendViolation(
+                "read observations escaped the shared memory hard cap".into(),
+            ));
+        }
+        drop(live);
+        drop(scope);
+        if resources.snapshot()? != baseline {
+            return Err(IndexError::BackendViolation(
+                "refused observation leaked its memory custody".into(),
+            ));
+        }
+        Ok(())
+    }
 }

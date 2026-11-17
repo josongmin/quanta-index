@@ -23,6 +23,8 @@ struct ModelMaps {
     scans: AtomicUsize,
     applies: AtomicUsize,
     stop_early: bool,
+    record_edit_identity: bool,
+    edit_identity: Mutex<Vec<usize>>,
 }
 impl ModelMaps {
     fn keep(&self, rows: BTreeMap<Vec<u8>, ObjectRef>) -> Result<MapRoot, IndexError> {
@@ -200,21 +202,27 @@ impl PersistentMapPort for ModelMaps {
         };
         let mut previous: Option<OrdinalMapEdit> = None;
         while let Some(row) = input.next_edit(budget)? {
+            if self.record_edit_identity {
+                self.edit_identity
+                    .lock()
+                    .map_err(|_error| IndexError::Storage("model lock".into()))?
+                    .push(row.key().as_ptr() as usize);
+            }
             if previous.as_ref().is_some_and(|old| {
-                old.root > row.root || (old.root == row.root && old.edit.key >= row.edit.key)
+                old.root() > row.root() || (old.root() == row.root() && old.key() >= row.key())
             }) {
                 return Err(IndexError::Conflict);
             }
             let map = next
-                .get_mut(usize::try_from(row.root).map_err(|_error| IndexError::ResourceLimited)?)
+                .get_mut(usize::try_from(row.root()).map_err(|_error| IndexError::ResourceLimited)?)
                 .ok_or(IndexError::Conflict)?;
-            if map.get(&row.edit.key).copied() != row.edit.expected {
+            if map.get(row.key()).copied() != row.expected()? {
                 return Err(IndexError::Conflict);
             }
-            if let Some(value) = row.edit.next {
-                let _old = map.insert(row.edit.key.clone(), value);
+            if let Some(value) = row.next()? {
+                let _old = map.insert(row.key().to_vec(), value);
             } else {
-                let _old = map.remove(&row.edit.key);
+                let _old = map.remove(row.key());
             }
             previous = Some(row);
         }
@@ -259,6 +267,7 @@ fn row(key: &[u8], expected: Option<ObjectRef>, next: Option<ObjectRef>) -> Ordi
             next: next.map(Into::into),
         },
     )
+    .unwrap_or_else(|error| panic!("fixed model edit is invalid: {error}"))
 }
 fn entry_budget() -> Result<WorkBudget, IndexError> {
     Ok(WorkBudget::new(
@@ -620,7 +629,7 @@ fn mixed_root_ordinals_empty_roots_and_malformed_complete_streams_are_exact()
                 expected: None,
                 next: Some((reference(2)).into()),
             },
-        ),
+        )?,
     ];
     let results = entry_patch::apply(
         EntryMapUse::Inventory,
@@ -667,7 +676,7 @@ fn mixed_root_ordinals_empty_roots_and_malformed_complete_streams_are_exact()
             expected: None,
             next: Some((reference(1)).into()),
         },
-    );
+    )?;
     for malformed in [
         vec![],
         vec![foreign],
@@ -704,5 +713,139 @@ fn mixed_root_ordinals_empty_roots_and_malformed_complete_streams_are_exact()
             .iter()
             .all(|root| *root == EntryMap::default())
     );
+    Ok(())
+}
+
+#[test]
+fn inventory_tree_moves_original_edits_and_keeps_full_stream_validation() -> Result<(), IndexError>
+{
+    let objects = CanonicalObjects::default();
+    let maps = ModelMaps {
+        record_edit_identity: true,
+        ..ModelMaps::default()
+    };
+    let fixture = visitor_fixture()?;
+    let scratch = TestScratch::default();
+    let custody = TestCustody;
+    let mut work = budget()?;
+    let mut context = AttemptContext {
+        attempt: test_attempt(fixture.ticket.view.identity.workspace),
+        objects: &objects,
+        maps: &maps,
+        custody: &custody,
+        scratch: &scratch,
+        budget: &mut work,
+    };
+    let edits = (0_u16..513)
+        .map(|ordinal| {
+            OrdinalMapEdit::unscoped(
+                1,
+                MapEdit {
+                    key: ordinal.to_be_bytes().to_vec(),
+                    expected: None,
+                    next: Some(reference(7).into()),
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let expected = edits
+        .iter()
+        .map(|row| (row.key().to_vec(), reference(7)))
+        .collect::<BTreeMap<_, _>>();
+    let output = entry_patch::apply(
+        EntryMapUse::Inventory,
+        &[EntryMap::default(); 2],
+        &[0, 513],
+        &mut Rows::new(edits.clone()),
+        |_slot| Ok(Rows::new(Vec::new())),
+        &mut context,
+        None,
+    )?;
+    check_eq!(output.len(), 2);
+    assert_rows(&objects, &maps, &output.as_slice()[0], &BTreeMap::new())?;
+    assert_rows(&objects, &maps, &output.as_slice()[1], &expected)?;
+    let identities = maps
+        .edit_identity
+        .lock()
+        .map_err(|_error| IndexError::Storage("model lock".into()))?;
+    check_eq!(identities.len(), edits.len());
+    for (observed, original) in identities.iter().zip(&edits) {
+        check_eq!(*observed, original.key().as_ptr() as usize);
+    }
+    drop(identities);
+    drop(output);
+    drop(context);
+
+    let mut bad_expected = edits.clone();
+    bad_expected[0] = OrdinalMapEdit::unscoped(
+        1,
+        MapEdit {
+            key: 0_u16.to_be_bytes().to_vec(),
+            expected: Some(reference(9).into()),
+            next: Some(reference(7).into()),
+        },
+    )?;
+    let mut bad_order = edits.clone();
+    bad_order.swap(0, 1);
+    let mut inline_next = edits.clone();
+    inline_next[0] = OrdinalMapEdit::unscoped(
+        1,
+        MapEdit {
+            key: 0_u16.to_be_bytes().to_vec(),
+            expected: None,
+            next: Some(MapValue::inline(b"x", Vec::<ObjectRef>::new())?),
+        },
+    )?;
+    for (input, expected_error) in [
+        (bad_expected, "conflict"),
+        (bad_order, "corrupt"),
+        (inline_next, "corrupt"),
+    ] {
+        let mut work = budget()?;
+        let mut context = AttemptContext {
+            attempt: test_attempt(fixture.ticket.view.identity.workspace),
+            objects: &objects,
+            maps: &maps,
+            custody: &custody,
+            scratch: &scratch,
+            budget: &mut work,
+        };
+        let result = entry_patch::apply(
+            EntryMapUse::Inventory,
+            &[EntryMap::default(); 2],
+            &[0, 513],
+            &mut Rows::new(input),
+            |_slot| Ok(Rows::new(Vec::new())),
+            &mut context,
+            None,
+        );
+        match expected_error {
+            "conflict" => check!(matches!(result, Err(IndexError::Conflict))),
+            _ => check!(matches!(result, Err(IndexError::CorruptObject(_)))),
+        }
+    }
+    let mut interrupted = Rows::new(edits);
+    interrupted.fail_at_end = true;
+    let mut work = budget()?;
+    let mut context = AttemptContext {
+        attempt: test_attempt(fixture.ticket.view.identity.workspace),
+        objects: &objects,
+        maps: &maps,
+        custody: &custody,
+        scratch: &scratch,
+        budget: &mut work,
+    };
+    check!(matches!(
+        entry_patch::apply(
+            EntryMapUse::Inventory,
+            &[EntryMap::default(); 2],
+            &[0, 513],
+            &mut interrupted,
+            |_slot| Ok(Rows::new(Vec::new())),
+            &mut context,
+            None,
+        ),
+        Err(IndexError::Cancelled)
+    ));
     Ok(())
 }

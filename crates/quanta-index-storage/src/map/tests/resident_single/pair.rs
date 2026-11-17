@@ -63,7 +63,7 @@ fn resident_pair_matches_scalar_gold_and_preserves_both_old_roots() -> TestResul
                 .map(|(slot, edit)| {
                     OrdinalMapEdit::unscoped(u32::try_from(slot).expect("two fixed roots"), edit)
                 })
-                .collect::<Vec<_>>()
+                .collect::<Result<Vec<_>, _>>()?
                 .into_iter(),
         );
         let result = store.apply_stream(&[base, base], &mut input, &sink, &mut work)?;
@@ -122,7 +122,7 @@ fn resident_pair_matches_scalar_gold_and_preserves_both_old_roots() -> TestResul
                 .map(|(slot, edit)| {
                     OrdinalMapEdit::unscoped(u32::try_from(slot).expect("two fixed roots"), edit)
                 })
-                .collect::<Vec<_>>()
+                .collect::<Result<Vec<_>, _>>()?
                 .into_iter(),
         );
         let roots = store.apply_stream(&bases, &mut input, &sink, &mut work)?;
@@ -158,7 +158,7 @@ fn resident_pair_requires_eof_and_replays_a_non_pair_without_installing_prefix()
         .map(|root| {
             OrdinalMapEdit::unscoped(root, MapEdit::objects(b"a".to_vec(), None, Some(value)))
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     let mut broken = TailFailure(rows.clone().into_iter());
     check!(matches!(
         store.apply_stream(&[MapRoot(None); 2], &mut broken, &sink, &mut work),
@@ -168,7 +168,7 @@ fn resident_pair_requires_eof_and_replays_a_non_pair_without_installing_prefix()
     invalid.push(OrdinalMapEdit::unscoped(
         2,
         MapEdit::objects(b"b".to_vec(), None, Some(value)),
-    ));
+    )?);
     let mut input = TestEditCursor(invalid.into_iter());
     check!(matches!(
         store.apply_stream(&[MapRoot(None); 2], &mut input, &sink, &mut work),

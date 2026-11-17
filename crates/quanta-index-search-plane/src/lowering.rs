@@ -10,8 +10,8 @@ use quanta_index_contract::{
     valid_code_search_typo_identifier,
 };
 use quanta_index_lq_bridge::{
-    BridgeError, BridgeErrorCode, SgFilter, SgQuery, SourcegraphVersionTag, parse_sourcegraph,
-    translate_query,
+    BridgeError, BridgeErrorCode, SgFilter, SgQuery, SourcegraphVersionTag,
+    lower_sourcegraph_query, parse_sourcegraph, translate_query,
 };
 use quanta_index_lq_norm::{
     LQ_VERSION_TAG, LqParseError, LqParseErrorCode, LqSpan, limits::MAX_INPUT_BYTES,
@@ -340,7 +340,8 @@ pub(crate) fn reject_code_search_on_nonlexical_route(
 }
 
 pub fn lower_sourcegraph_query_text(query_text: &str) -> Result<LqQuery, CoreError> {
-    lower_sourcegraph_query_text_for_route(query_text, SourcegraphLoweringRoute::Lexical)
+    let query = lower_sourcegraph_query(query_text).map_err(|err| map_bridge_error(&err))?;
+    reject_sourcegraph_structural_lexical_shape(query)
 }
 
 #[expect(
@@ -350,47 +351,22 @@ pub fn lower_sourcegraph_query_text(query_text: &str) -> Result<LqQuery, CoreErr
 pub(crate) fn lower_sourcegraph_structural_query_text(
     query_text: &str,
 ) -> Result<LqQuery, CoreError> {
-    lower_sourcegraph_query_text_for_route(query_text, SourcegraphLoweringRoute::Structural)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SourcegraphLoweringRoute {
-    Lexical,
-    Structural,
-}
-
-fn lower_sourcegraph_query_text_for_route(
-    query_text: &str,
-    route: SourcegraphLoweringRoute,
-) -> Result<LqQuery, CoreError> {
     let sourcegraph = parse_sourcegraph(query_text).map_err(|err| map_bridge_error(&err))?;
-    let (sourcegraph, saw_structural_patterntype) = match route {
-        SourcegraphLoweringRoute::Lexical => (sourcegraph, false),
-        SourcegraphLoweringRoute::Structural => {
-            strip_sourcegraph_structural_patterntype(sourcegraph)
-                .map_err(|err| map_bridge_error(&err))?
-        }
-    };
+    let (sourcegraph, saw_structural_patterntype) =
+        strip_sourcegraph_structural_patterntype(sourcegraph)
+            .map_err(|err| map_bridge_error(&err))?;
     let version = SourcegraphVersionTag::supported().map_err(|err| map_bridge_error(&err))?;
     let mut query = translate_query(sourcegraph, &version, query_text.len())
         .map_err(|err| map_bridge_error(&err))?;
-    if saw_structural_patterntype {
-        query.options.pattern_type = LqPatternType::Structural;
+    if !saw_structural_patterntype {
+        return Err(CoreError::Typed {
+            code: map_bridge_code(BridgeErrorCode::BridgeTranslateFail),
+            message: "bridge: Sourcegraph structural route requires `patterntype:structural`"
+                .to_string(),
+        });
     }
-    match route {
-        SourcegraphLoweringRoute::Lexical => reject_sourcegraph_structural_lexical_shape(query),
-        SourcegraphLoweringRoute::Structural => {
-            if !saw_structural_patterntype {
-                return Err(CoreError::Typed {
-                    code: map_bridge_code(BridgeErrorCode::BridgeTranslateFail),
-                    message:
-                        "bridge: Sourcegraph structural route requires `patterntype:structural`"
-                            .to_string(),
-                });
-            }
-            lower_sourcegraph_structural_shape(query_text, query)
-        }
-    }
+    query.options.pattern_type = LqPatternType::Structural;
+    lower_sourcegraph_structural_shape(query_text, query)
 }
 
 fn strip_sourcegraph_structural_patterntype(

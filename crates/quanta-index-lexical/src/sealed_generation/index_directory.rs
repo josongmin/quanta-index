@@ -24,7 +24,7 @@ use tantivy::directory::{
     WritePtr,
 };
 
-pub(crate) const MAX_INDEX_CONTROL_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) use crate::legacy::names::MAX_INDEX_CONTROL_BYTES;
 
 #[derive(Clone, Debug)]
 pub(crate) struct SealedIndexDirectory {

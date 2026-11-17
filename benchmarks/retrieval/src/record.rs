@@ -20,7 +20,7 @@ use serde_json::{Map, Value};
 use crate::canonical::canonical_json;
 use crate::chunking::count_tokens;
 use crate::corpus::SourceFile;
-use crate::published_units::{PublishedUnitKind, PublishedUnitRegistry};
+use crate::published_units::{PublishedUnit, PublishedUnitKind, PublishedUnitRegistry};
 use crate::query_plan::{
     NlPlanConfig, QueryInputPolicy, QueryPlan, QueryPlanError, execution_profile_sha256,
     execution_profile_value, ordering_contract, plan_query,
@@ -205,10 +205,8 @@ impl PackTask {
         config: &NlPlanConfig,
     ) -> Result<QueryPlan, QueryPlanError> {
         let plan = plan_query(policy, &self.query, config)?;
-        if self.semantic_input.is_some() {
-            if policy != QueryInputPolicy::NaturalLanguage {
-                return Err(QueryPlanError::SemanticInputRequiresNaturalLanguage);
-            }
+        if self.semantic_input.is_some() && policy != QueryInputPolicy::NaturalLanguage {
+            return Err(QueryPlanError::SemanticInputRequiresNaturalLanguage);
         }
         Ok(plan)
     }
@@ -674,7 +672,11 @@ fn validate_chunk_config_value(config: &Value) -> BenchResult<()> {
     Ok(())
 }
 
-fn capture_value(capture_id: &str, capture: &CaptureProvenance) -> BenchResult<Value> {
+fn capture_value(
+    capture_id: &str,
+    capture: &CaptureProvenance,
+    hybrid_file_bound: bool,
+) -> BenchResult<Value> {
     if ![
         "whole_file",
         "fixed_window_strict",
@@ -754,7 +756,8 @@ fn capture_value(capture_id: &str, capture: &CaptureProvenance) -> BenchResult<V
             .get("policy")
             .and_then(Value::as_str),
         Some("code_search_file" | "code_search_exact_content_file")
-    ) {
+    ) || hybrid_file_bound
+    {
         let object = value.as_object_mut().ok_or_else(|| {
             BenchError::Protocol(format!("capture {capture_id} JSON is not an object"))
         })?;
@@ -826,62 +829,58 @@ pub fn native_span_proofs(
     Ok(proofs)
 }
 
-/// Prove one SDK hit against pinned source bytes and emit the evaluator's
-/// candidate object. Returned with its 1-based rank.
-///
-/// Authority is the typed published-unit registry (RBR-05): a chunk hit
-/// must match its published chunk span (unanchored hits fall back to the
-/// published chunk bytes), and a symbol hit must match its published
-/// definition span — the engine's snippet is a reference name, never
-/// source-byte evidence.
-fn prove_hit(
-    hit: &RankedHit,
-    rank: usize,
-    files: &BTreeMap<String, SourceFile>,
-    units: &PublishedUnitRegistry,
-) -> BenchResult<ProvenHit> {
-    if hit.file_authority.is_some() {
-        return prove_file_hit(hit, rank, files);
-    }
-    let file = files.get(&hit.path).ok_or_else(|| {
-        BenchError::Protocol(format!("SDK hit outside admitted universe: {}", hit.path))
+/// Borrow the published unit and frozen source block before materialization.
+struct PublishedHitBinding<'a> {
+    file: &'a SourceFile,
+    unit: &'a PublishedUnit,
+    start_line: u32,
+    end_line: u32,
+    start: usize,
+    end: usize,
+    block: &'a [u8],
+}
+
+/// Resolve a returned chunk or symbol to the published unit and frozen source
+/// span without building a scored candidate object.
+fn bind_published_hit<'a>(
+    candidate_id: &str,
+    path: &str,
+    sdk_start_line: u32,
+    sdk_end_line: u32,
+    snippet: &str,
+    files: &'a BTreeMap<String, SourceFile>,
+    units: &'a PublishedUnitRegistry,
+) -> BenchResult<PublishedHitBinding<'a>> {
+    let file = files.get(path).ok_or_else(|| {
+        BenchError::Protocol(format!("SDK hit outside admitted universe: {path}"))
     })?;
-    let unit = units.get(&hit.candidate_id).ok_or_else(|| {
-        BenchError::Protocol(format!(
-            "SDK hit has no published unit ID: {}",
-            hit.candidate_id
-        ))
+    let unit = units.get(candidate_id).ok_or_else(|| {
+        BenchError::Protocol(format!("SDK hit has no published unit ID: {candidate_id}"))
     })?;
-    if unit.path != hit.path {
+    if unit.path != path {
         return Err(BenchError::Protocol(format!(
-            "SDK hit path differs from published unit: {}",
-            hit.candidate_id
+            "SDK hit path differs from published unit: {candidate_id}"
         )));
     }
-    let (start_line, end_line) = if hit.start_line == 0 && hit.end_line == 0 {
+    let (start_line, end_line) = if sdk_start_line == 0 && sdk_end_line == 0 {
         match unit.kind {
             PublishedUnitKind::Chunk => {
                 // Only the chunk authority can prove an unanchored hit, and
                 // only when the returned snippet is exactly the published
                 // chunk text.
-                let chunk = units.chunk_text(&hit.candidate_id).ok_or_else(|| {
-                    BenchError::Protocol(format!(
-                        "published chunk disappeared: {}",
-                        hit.candidate_id
-                    ))
+                let chunk = units.chunk_text(candidate_id).ok_or_else(|| {
+                    BenchError::Protocol(format!("published chunk disappeared: {candidate_id}"))
                 })?;
-                if chunk != hit.snippet.as_str() {
+                if chunk != snippet {
                     return Err(BenchError::Protocol(format!(
-                        "SDK unanchored hit differs from published chunk: {}",
-                        hit.candidate_id
+                        "SDK unanchored hit differs from published chunk: {candidate_id}"
                     )));
                 }
                 (unit.start_line, unit.end_line)
             }
             PublishedUnitKind::Symbol => {
                 return Err(BenchError::Protocol(format!(
-                    "SDK unanchored symbol hit has no proving authority: {}",
-                    hit.candidate_id
+                    "SDK unanchored symbol hit has no proving authority: {candidate_id}"
                 )));
             }
             PublishedUnitKind::File => {
@@ -891,18 +890,17 @@ fn prove_hit(
             }
         }
     } else {
-        if (hit.start_line, hit.end_line) != (unit.start_line, unit.end_line) {
+        if (sdk_start_line, sdk_end_line) != (unit.start_line, unit.end_line) {
             return Err(BenchError::Protocol(format!(
                 "SDK hit span differs from published unit: {}:{}-{} (published {}-{})",
-                hit.path, hit.start_line, hit.end_line, unit.start_line, unit.end_line
+                path, sdk_start_line, sdk_end_line, unit.start_line, unit.end_line
             )));
         }
-        (hit.start_line, hit.end_line)
+        (sdk_start_line, sdk_end_line)
     };
     if start_line == 0 || end_line == 0 || start_line > end_line {
         return Err(BenchError::Protocol(format!(
-            "SDK hit has an inverted line span: {}:{}-{}",
-            hit.path, start_line, end_line
+            "SDK hit has an inverted line span: {path}:{start_line}-{end_line}"
         )));
     }
     let start_line_index = usize::try_from(start_line).map_err(|err| {
@@ -912,11 +910,49 @@ fn prove_hit(
         .map_err(|err| BenchError::Protocol(format!("SDK hit end line cannot fit usize: {err}")))?;
     let (start, end) = file.line_span_bytes(start_line_index, end_line_index)?;
     let block = file.bytes.get(start..end).ok_or_else(|| {
-        BenchError::Protocol(format!(
-            "SDK hit block is outside source bytes: {}",
-            hit.path
-        ))
+        BenchError::Protocol(format!("SDK hit block is outside source bytes: {path}"))
     })?;
+    Ok(PublishedHitBinding {
+        file,
+        unit,
+        start_line,
+        end_line,
+        start,
+        end,
+        block,
+    })
+}
+
+/// Prove one SDK hit and emit the evaluator's ranked candidate.
+///
+/// Chunk spans come from published units. Unanchored chunks require exact chunk text.
+/// Symbol snippets are reference names, not source-byte evidence.
+fn prove_hit(
+    hit: &RankedHit,
+    rank: usize,
+    files: &BTreeMap<String, SourceFile>,
+    units: &PublishedUnitRegistry,
+) -> BenchResult<ProvenHit> {
+    if hit.file_authority.is_some() {
+        return prove_file_hit(hit, rank, files);
+    }
+    let PublishedHitBinding {
+        file,
+        unit,
+        start_line,
+        end_line,
+        start,
+        end,
+        block,
+    } = bind_published_hit(
+        &hit.candidate_id,
+        &hit.path,
+        hit.start_line,
+        hit.end_line,
+        &hit.snippet,
+        files,
+        units,
+    )?;
     let text = std::str::from_utf8(block).map_err(|err| {
         BenchError::Protocol(format!("SDK hit block is not UTF-8: {}: {err}", hit.path))
     })?;
@@ -1170,7 +1206,7 @@ fn timings_value(latency: Duration) -> BenchResult<Value> {
 ///
 /// `rank_unit` says only what one ranked item is. `ordering` says whether the
 /// order is a scored ranking or the path order of a match-only restriction.
-fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Value> {
+fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy, route: &str) -> BenchResult<Value> {
     let rank_unit = match policy {
         QueryInputPolicy::LiteralFile
         | QueryInputPolicy::KeywordFile
@@ -1208,6 +1244,17 @@ fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Va
             Value::from("native_sdk_score_v1"),
         );
     }
+    if route == "hybrid_file" {
+        let _previous = object.insert("rank_unit".to_string(), Value::from("distinct_file"));
+        let _previous = object.insert(
+            "ordering".to_string(),
+            Value::from("file_rrf_desc_lexical_presence_key_v1"),
+        );
+        let _previous = object.insert(
+            "score_evidence".to_string(),
+            Value::from("hybrid_file_rrf_v1"),
+        );
+    }
     Ok(result)
 }
 
@@ -1222,6 +1269,11 @@ pub fn result_value(
     files: &BTreeMap<String, SourceFile>,
     units: &PublishedUnitRegistry,
 ) -> BenchResult<Value> {
+    if route == "hybrid_file" && plan.policy != QueryInputPolicy::NaturalLanguage {
+        return Err(BenchError::Protocol(
+            "hybrid_file requires natural_language chunk query policy".to_string(),
+        ));
+    }
     if ordering_contract(plan.policy).is_some() && route != "lexical" {
         return Err(BenchError::Protocol(format!(
             "{} result requires lexical route, got {route}",
@@ -1244,7 +1296,128 @@ pub fn result_value(
         ))
     })?;
     match outcome {
+        QueryOutcome::ReturnedFiles {
+            response,
+            lane_top_k,
+            file_top_k,
+            latency,
+        } => {
+            if route != "hybrid_file" || *lane_top_k != top_k || response.file_top_k != *file_top_k
+            {
+                return Err(BenchError::Protocol(
+                    "typed hybrid file response differs from route or declared chunk cap".into(),
+                ));
+            }
+            if response
+                .results
+                .iter()
+                .any(|hit| hit.file.source_repo_id != response.generation.repo_id)
+            {
+                return Err(BenchError::Protocol(
+                    "hybrid file source repository differs from captured repository".into(),
+                ));
+            }
+            let mut candidates = Vec::new();
+            if classification.status != "error" {
+                candidates.reserve(response.results.len());
+                let mut seen_units = BTreeSet::new();
+                for (position, file_hit) in response.results.iter().enumerate() {
+                    let candidate = file_hit.representative().ok_or_else(|| {
+                        BenchError::Protocol("hybrid file hit lacks representative".into())
+                    })?;
+                    if candidate.repo_relative_path != file_hit.file.repo_relative_path
+                        || candidate.source_repo_id != file_hit.file.source_repo_id
+                        || !seen_units.insert(candidate.candidate_id.as_str())
+                    {
+                        return Err(BenchError::Protocol(
+                            "hybrid file representative differs from distinct file identity".into(),
+                        ));
+                    }
+                    let rank = position
+                        .checked_add(1)
+                        .ok_or_else(|| BenchError::Protocol("hybrid file rank overflow".into()))?;
+                    if let (Some(_), Some(dense)) = (&file_hit.lexical, &file_hit.dense) {
+                        let dense = &dense.candidate;
+                        let binding = bind_published_hit(
+                            &dense.candidate_id,
+                            dense.repo_relative_path.as_str(),
+                            dense.start_line,
+                            dense.end_line,
+                            &dense.snippet,
+                            files,
+                            units,
+                        )?;
+                        if binding.unit.kind != PublishedUnitKind::Chunk {
+                            return Err(BenchError::Protocol(
+                                "hybrid file lane witness is not a published chunk".into(),
+                            ));
+                        }
+                    }
+                    let chunk_hit = RankedHit {
+                        candidate_id: candidate.candidate_id.clone(),
+                        path: candidate.repo_relative_path.as_str().to_string(),
+                        start_line: candidate.start_line,
+                        end_line: candidate.end_line,
+                        snippet: candidate.snippet.clone(),
+                        score: f64::from(candidate.score),
+                        file_authority: None,
+                        contributions: Vec::new(),
+                    };
+                    let mut proven = prove_hit(&chunk_hit, rank, files, units)?;
+                    if proven.unit_kind != PublishedUnitKind::Chunk {
+                        return Err(BenchError::Protocol(
+                            "hybrid file representative is not a published chunk".into(),
+                        ));
+                    }
+                    let score =
+                        serde_json::Number::from_f64(file_hit.file_rrf_score).ok_or_else(|| {
+                            BenchError::Protocol("hybrid file score is not finite".into())
+                        })?;
+                    let object = proven.candidate.as_object_mut().ok_or_else(|| {
+                        BenchError::Protocol("hybrid file candidate proof is not an object".into())
+                    })?;
+                    let _previous = object.insert("score".to_string(), Value::Number(score));
+                    candidates.push(proven.candidate);
+                }
+            }
+            let error = classification
+                .error_code
+                .as_ref()
+                .map_or(Value::Null, |code| {
+                    error_value(
+                        code,
+                        classification
+                            .error_message
+                            .as_deref()
+                            .unwrap_or("hybrid file error"),
+                    )
+                });
+            bind_rank_unit(
+                serde_json::json!({
+                    "task_id": task_id,
+                    "route": route,
+                    "status": classification.status,
+                    "candidates": candidates,
+                    "query_identity": query_identity,
+                    "timings": timings_value(*latency)?,
+                    "error": error,
+                    "hybrid_file_evidence": {
+                        "schema_version": 1,
+                        "lane_top_k": lane_top_k,
+                        "file_top_k": file_top_k,
+                        "response": response,
+                    }
+                }),
+                plan.policy,
+                route,
+            )
+        }
         QueryOutcome::ReturnedWindow { hits, latency, .. } => {
+            if route == "hybrid_file" {
+                return Err(BenchError::Protocol(
+                    "hybrid_file requires a typed file response".into(),
+                ));
+            }
             let hit_count = u64::try_from(hits.len()).map_err(|err| {
                 BenchError::Protocol(format!("SDK hit count cannot fit u64: {err}"))
             })?;
@@ -1278,6 +1451,7 @@ pub fn result_value(
                         "error": error,
                     }),
                     plan.policy,
+                    route,
                 );
             }
             let mut candidates = Vec::with_capacity(hits.len());
@@ -1387,6 +1561,7 @@ pub fn result_value(
                     "error": null,
                 }),
                 plan.policy,
+                route,
             )
         }
         QueryOutcome::RejectedResponse { latency, .. }
@@ -1404,6 +1579,7 @@ pub fn result_value(
                 ),
             }),
             plan.policy,
+            route,
         ),
     }
 }
@@ -1427,6 +1603,7 @@ pub struct RunnerRecordInput<'a> {
     pub plans: &'a BTreeMap<String, QueryPlan>,
     pub nl_config: &'a NlPlanConfig,
     pub top_k: u32,
+    pub file_top_k: Option<u32>,
 }
 
 pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
@@ -1440,12 +1617,27 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
         plans,
         nl_config,
         top_k,
+        file_top_k,
     } = *input;
     if top_k != pack.contract_top_k {
         return Err(BenchError::Protocol(format!(
             "runner top_k={top_k} differs from the comparison contract top_k={}",
             pack.contract_top_k
         )));
+    }
+    if provenance.contains_key("hybrid_file")
+        && pack.tasks.iter().any(|task| task.semantic_input.is_some())
+    {
+        return Err(BenchError::Protocol(
+            "hybrid_file record cannot bind a Go trace semantic input".into(),
+        ));
+    }
+    if provenance.contains_key("hybrid_file") != file_top_k.is_some()
+        || file_top_k.is_some_and(|cap| cap == 0 || cap > top_k)
+    {
+        return Err(BenchError::Protocol(
+            "hybrid_file route requires a separately declared file cap within chunk top_k".into(),
+        ));
     }
     // Every task must have exactly one plan, and all plans must agree on
     // the policy/config identity: a record cannot mix policies.
@@ -1544,8 +1736,13 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
                 "capture_id {capture_id} execution profile differs from the task plans"
             )));
         }
-        let _previous =
-            captures_value.insert(capture_id.clone(), capture_value(capture_id, capture)?);
+        let hybrid_file_bound = provenance
+            .get("hybrid_file")
+            .is_some_and(|entry| entry.capture_id.as_str() == capture_id.as_str());
+        let _previous = captures_value.insert(
+            capture_id.clone(),
+            capture_value(capture_id, capture, hybrid_file_bound)?,
+        );
     }
     let mut results = Vec::new();
     for task in &pack.tasks {
@@ -1569,6 +1766,16 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
             let classification = outcome
                 .classification()
                 .map_err(|message| BenchError::Protocol(message.to_string()))?;
+            if let QueryOutcome::ReturnedFiles {
+                file_top_k: observed_cap,
+                ..
+            } = outcome
+                && Some(*observed_cap) != file_top_k
+            {
+                return Err(BenchError::Protocol(
+                    "hybrid file result cap differs from declared runner cap".into(),
+                ));
+            }
             if row["task_id"] != task.task_id
                 || row["route"] != **route
                 || row["status"] != classification.status
@@ -1592,7 +1799,7 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
             "completed response inventory differs".to_string(),
         ));
     }
-    Ok(serde_json::json!({
+    let mut record = serde_json::json!({
         "schema_version": RUNNER_SCHEMA_VERSION,
         "span_accounting_version": 1,
         "query_pack_sha256": pack.pack_sha256,
@@ -1611,7 +1818,14 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
         "captures": captures_value,
         "route_provenance": provenance_value,
         "results": results,
-    }))
+    });
+    if let Some(cap) = file_top_k {
+        let fields = record
+            .as_object_mut()
+            .ok_or_else(|| BenchError::Protocol("completed record is not an object".to_string()))?;
+        let _previous = fields.insert("file_top_k".to_string(), Value::from(cap));
+    }
+    Ok(record)
 }
 
 #[cfg(test)]
@@ -1815,6 +2029,144 @@ mod tests {
                 .expect_err("CodeSearch identity is not a Native representative")
                 .to_string()
                 .contains("incompatible file identity")
+        );
+    }
+
+    #[test]
+    fn hybrid_file_recorder_proves_both_lane_witnesses() {
+        use quanta_index_contract::{
+            GenerationPin, HybridFileHitV1, HybridFileLaneWitnessV1, HybridFileQueryResponseV1,
+            LexicalCandidate, SearchExplanation, hybrid_file_candidate_pool_sha256_v1,
+        };
+
+        let (files, units, hit) = status_fixture();
+        let plan = plan_query(
+            QueryInputPolicy::NaturalLanguage,
+            "find main",
+            &NlPlanConfig::default(),
+        )
+        .expect("natural language plan");
+        let pin = GenerationPin::new(
+            RepoId::new("bench-repo").expect("repo"),
+            RevisionId::new("bench-revision").expect("revision"),
+            ManifestGeneration::new(1),
+        );
+        let candidate = LexicalCandidate {
+            source_repo_id: pin.repo_id.clone(),
+            source: None,
+            preview: None,
+            candidate_id: hit.candidate_id.clone(),
+            repo_id: pin.repo_id.clone(),
+            revision_id: pin.revision_id.clone(),
+            manifest_generation: pin.manifest_generation,
+            repo_relative_path: RepoRelativePath::new(hit.path.clone()),
+            start_line: hit.start_line,
+            end_line: hit.end_line,
+            score: 1.0,
+            snippet: hit.snippet.clone(),
+            snippet_hit_offset: None,
+            highlights: Vec::new(),
+        };
+        let pool_digest =
+            hybrid_file_candidate_pool_sha256_v1(&pin, std::slice::from_ref(&candidate))
+                .expect("pool digest");
+        let mut response = HybridFileQueryResponseV1 {
+            generation: pin.clone(),
+            selected_active_head: None,
+            file_top_k: 2,
+            bounded_file_count: 1,
+            lexical_pool_sha256: pool_digest,
+            dense_pool_sha256: pool_digest,
+            results: vec![HybridFileHitV1 {
+                file: SourceFileKey {
+                    source_repo_id: pin.repo_id.clone(),
+                    repo_relative_path: candidate.repo_relative_path.clone(),
+                },
+                lexical: Some(HybridFileLaneWitnessV1 {
+                    file_rank: 1,
+                    chunk_rank: 1,
+                    candidate: candidate.clone(),
+                }),
+                dense: Some(HybridFileLaneWitnessV1 {
+                    file_rank: 1,
+                    chunk_rank: 1,
+                    candidate,
+                }),
+                file_rrf_score: 2.0 / 61.0,
+            }],
+            lexical_window: QueryResultWindowV2::exact_probe(1),
+            dense_window: QueryResultWindowV2::exact_probe(1),
+            explanation: SearchExplanation::empty(),
+        };
+        let record = |response: HybridFileQueryResponseV1| {
+            result_value(
+                "T1",
+                "hybrid_file",
+                &QueryOutcome::ReturnedFiles {
+                    response: Box::new(response),
+                    lane_top_k: 4,
+                    file_top_k: 2,
+                    latency: Duration::from_millis(1),
+                },
+                &plan,
+                4,
+                &files,
+                &units,
+            )
+        };
+        assert_eq!(
+            record(response.clone()).expect("both witnesses are published")["candidates"][0]["span_accounting"]
+                ["unit_id"],
+            "chunk-id"
+        );
+
+        let dense = &mut response.results[0]
+            .dense
+            .as_mut()
+            .expect("dense witness")
+            .candidate;
+        dense.candidate_id = "unpublished-dense-chunk".to_string();
+        response.dense_pool_sha256 =
+            hybrid_file_candidate_pool_sha256_v1(&pin, std::slice::from_ref(dense))
+                .expect("changed pool digest");
+        assert!(response.validate_v1().is_ok(), "typed ranks remain valid");
+        assert!(
+            record(response.clone())
+                .expect_err("unpublished dense witness must fail")
+                .to_string()
+                .contains("no published unit ID")
+        );
+
+        let dense = &mut response.results[0]
+            .dense
+            .as_mut()
+            .expect("dense witness")
+            .candidate;
+        dense.candidate_id = "chunk-id".to_string();
+        dense.start_line = 2;
+        dense.end_line = 2;
+        assert!(response.validate_v1().is_ok(), "typed ranks remain valid");
+        assert!(
+            record(response.clone())
+                .expect_err("dense witness span drift must fail")
+                .to_string()
+                .contains("span differs from published unit")
+        );
+
+        let dense = &mut response.results[0]
+            .dense
+            .as_mut()
+            .expect("dense witness")
+            .candidate;
+        dense.start_line = 0;
+        dense.end_line = 0;
+        dense.snippet = "not the published chunk".to_string();
+        assert!(response.validate_v1().is_ok(), "typed ranks remain valid");
+        assert!(
+            record(response)
+                .expect_err("unanchored dense witness text drift must fail")
+                .to_string()
+                .contains("unanchored hit differs from published chunk")
         );
     }
 
@@ -2162,7 +2514,10 @@ mod tests {
         assert_eq!(plan.lexical_request, legacy.lexical_request);
         assert_eq!(plan.semantic_text, legacy.semantic_text);
         assert_eq!(plan.semantic_text_sha256, legacy.semantic_text_sha256);
-        let typed = loaded.tasks[0].semantic_input.as_ref().expect("typed trace");
+        let typed = loaded.tasks[0]
+            .semantic_input
+            .as_ref()
+            .expect("typed trace");
         assert_eq!(typed.text(), text);
         assert_eq!(typed.text_sha256(), digest);
         assert_eq!(typed.failure_excerpt(), failure_excerpt);
@@ -2575,9 +2930,18 @@ mod tests {
     #[test]
     fn quanta_capture_binds_source_pin() {
         let mut capture = v3_capture_fixture();
-        let historical = capture_value("cap-1", &capture).expect("historical capture");
+        let historical = capture_value("cap-1", &capture, false).expect("historical capture");
         assert!(historical.get("source_repo_id").is_none());
         assert!(historical.get("source_revision_id").is_none());
+        capture.execution_profile =
+            execution_profile_value(QueryInputPolicy::NaturalLanguage, &NlPlanConfig::default());
+        capture.execution_profile_sha256 =
+            execution_profile_sha256(QueryInputPolicy::NaturalLanguage, &NlPlanConfig::default());
+        let ordinary_nl = capture_value("cap-1", &capture, false).expect("ordinary NL capture");
+        assert!(ordinary_nl.get("source_repo_id").is_none());
+        let bound_file = capture_value("cap-1", &capture, true).expect("hybrid file capture");
+        assert_eq!(bound_file["source_repo_id"], "bench-repo");
+        assert_eq!(bound_file["source_revision_id"], "bench-revision");
         for policy in [
             QueryInputPolicy::CodeSearchFile,
             QueryInputPolicy::CodeSearchExactContentFile,
@@ -2585,14 +2949,14 @@ mod tests {
             capture.execution_profile = execution_profile_value(policy, &NlPlanConfig::default());
             capture.execution_profile_sha256 =
                 execution_profile_sha256(policy, &NlPlanConfig::default());
-            let value = capture_value("cap-1", &capture)
+            let value = capture_value("cap-1", &capture, false)
                 .expect("source-bound capture without candidate rows");
             assert_eq!(value["source_repo_id"], "bench-repo");
             assert_eq!(value["source_revision_id"], "bench-revision");
         }
         let mut missing = capture;
         missing.source_revision_id.clear();
-        assert!(capture_value("cap-1", &missing).is_err());
+        assert!(capture_value("cap-1", &missing, false).is_err());
     }
 
     #[test]
@@ -2672,6 +3036,7 @@ mod tests {
             plans: &plans,
             nl_config: &nl_config,
             top_k: 10,
+            file_top_k: None,
         })
         .expect("v3 record assembles");
         assert_eq!(
@@ -2732,6 +3097,7 @@ mod tests {
             plans: &tampered_plans,
             nl_config: &nl_config,
             top_k: 10,
+            file_top_k: None,
         });
         assert!(
             tampered.is_err_and(|error| error.to_string().contains("canonical request identity"))
@@ -2970,6 +3336,7 @@ mod tests {
                 plans: &plans,
                 nl_config: &nl_config,
                 top_k,
+                file_top_k: None,
             })
         };
         let good_provenance = BTreeMap::from([(

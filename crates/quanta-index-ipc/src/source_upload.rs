@@ -9,7 +9,7 @@ use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStringExt as _;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, SystemTime};
 
 use quanta_index_contract::{
@@ -20,8 +20,8 @@ use quanta_index_contract::{
 use quanta_index_core::publication_admission::PublicationControlReader;
 use quanta_index_core::publication_capacity::InodeKey;
 use quanta_index_core::{
-    CoreError, RequestBudgetV1, SourcePublicationUploadFileAdmissionPort,
-    SourcePublicationUploadPort,
+    CoreError, RequestBudgetV1, SourcePublicationUploadCleanupDisposition,
+    SourcePublicationUploadFileAdmissionPort, SourcePublicationUploadPort,
 };
 use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, mkdirat, open, openat, statat, unlinkat};
 use rustix::io::Errno;
@@ -199,8 +199,11 @@ where
 
 /// One private staging directory with a disk byte quota and a slot quota.
 ///
-/// Completed publications remove their upload. Abandoned uploads expire
-/// independently of source-event authority; a producer can re-upload them.
+/// Completed publications settle upload cleanup immediately or report a
+/// bounded process-local deferral. A restart retains the physical body under
+/// the same staging TTL and file admission ledger, not a durable cleanup
+/// promise. Abandoned uploads expire independently of source-event authority;
+/// a producer can re-upload them.
 pub struct SourcePublicationUploadStore {
     root: PathBuf,
     directory: File,
@@ -209,6 +212,12 @@ pub struct SourcePublicationUploadStore {
     max_body_bytes: u64,
     file_admission: Option<Arc<dyn SourcePublicationUploadFileAdmissionPort>>,
     operations: Mutex<()>,
+    pending_cleanup: Mutex<Vec<PendingCleanup>>,
+}
+
+struct PendingCleanup {
+    identity: SourcePublicationUploadIdentity,
+    last_error: Option<CoreError>,
 }
 
 /// Filesystem custody retained and revalidated at each upload transition.
@@ -285,6 +294,20 @@ fn finish_with_retirement<T>(
         (Err(primary), Ok(())) => Err(primary),
         (Ok(_), Err(retirement)) => Err(retirement),
         (Err(primary), Err(retirement)) => Err(attach_retirement(primary, &retirement)),
+    }
+}
+
+fn finish_with_cleanup<T>(
+    result: Result<T, CoreError>,
+    cleanup: Result<(), CoreError>,
+) -> Result<T, CoreError> {
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(primary), Err(cleanup)) => Err(CoreError::Storage(format!(
+            "{primary}; pending upload cleanup also failed: {cleanup}"
+        ))),
     }
 }
 
@@ -510,6 +533,9 @@ impl SourcePublicationUploadStore {
             max_body_bytes,
             file_admission,
             operations: Mutex::new(()),
+            // This queue is process-local. A restart retains the physical
+            // bodies under the existing staging TTL and admission ledger.
+            pending_cleanup: Mutex::new(Vec::new()),
         };
         store.require_current_root()?;
         // An ACK may be issued after the first body arrives. Persist the
@@ -753,6 +779,7 @@ impl SourcePublicationUploadStore {
         file: &mut R,
         input_len: usize,
         budget: &RequestBudgetV1,
+        reserve_decoded_bytes: &mut dyn FnMut(u64) -> Result<(), CoreError>,
     ) -> Result<SearchCorpusIngestBatch, CoreError> {
         // The guard sits below buffering: work can consume at most one
         // bounded refill before it observes cancellation again.
@@ -775,6 +802,20 @@ impl SourcePublicationUploadStore {
                 "source upload decoded collection storage exceeds its bound",
             ));
         }
+        let body_bytes = u64::try_from(input_len).map_err(|error| {
+            invalid(format!(
+                "source upload decoded-byte reservation overflow: {error}"
+            ))
+        })?;
+        let text_bytes = u64::try_from(text_storage).map_err(|error| {
+            invalid(format!(
+                "source upload decoded-byte reservation overflow: {error}"
+            ))
+        })?;
+        let decoded_bytes = text_bytes
+            .checked_add(body_bytes)
+            .ok_or_else(|| invalid("source upload decoded-byte reservation overflow"))?;
+        reserve_decoded_bytes(decoded_bytes)?;
         budget.checkpoint("source_upload.decode")?;
         file.rewind()
             .map_err(|error| admitted_io_error("source upload decode rewind", &error))?;
@@ -798,6 +839,139 @@ impl SourcePublicationUploadStore {
         }
         budget.checkpoint("source_upload.decode")?;
         Ok(batch)
+    }
+
+    fn discard_locked(&self, identity: SourcePublicationUploadIdentity) -> Result<(), CoreError> {
+        self.reconcile_admission()?;
+        self.require_current_root()?;
+        let name = self.body_name(identity)?;
+        if !self.body_exists(&name)? {
+            return Ok(());
+        }
+        let file = self.open_body_reader(&name)?;
+        let result = (|| {
+            let meta = file.metadata()?;
+            self.require_current_root()?;
+            if self.file_admission.is_some() {
+                self.delete_admitted_body(&name, &meta)?;
+            } else {
+                unlinkat(&self.directory, Path::new(&name), AtFlags::empty()).map_err(storage)?;
+                self.directory.sync_all().map_err(storage)?;
+            }
+            self.require_current_root()
+        })();
+        finish_with_retirement(result, file.retire())
+    }
+
+    fn pending_cleanup_lock(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, Vec<PendingCleanup>>, CoreError> {
+        self.pending_cleanup
+            .lock()
+            .map_err(|_error| CoreError::Storage("source upload pending cleanup poisoned".into()))
+    }
+
+    fn enqueue_pending_cleanup(
+        &self,
+        identity: SourcePublicationUploadIdentity,
+    ) -> SourcePublicationUploadCleanupDisposition {
+        let mut pending = match self.pending_cleanup_lock() {
+            Ok(pending) => pending,
+            Err(error) => return SourcePublicationUploadCleanupDisposition::Failed(error),
+        };
+        if let Some(existing) = pending.iter().find(|entry| entry.identity == identity) {
+            return existing.last_error.clone().map_or(
+                SourcePublicationUploadCleanupDisposition::Deferred,
+                SourcePublicationUploadCleanupDisposition::Failed,
+            );
+        }
+        if pending.len() >= SOURCE_PUBLICATION_UPLOAD_STAGING_SLOTS {
+            return SourcePublicationUploadCleanupDisposition::Failed(CoreError::Storage(
+                "source upload pending cleanup queue is full".into(),
+            ));
+        }
+        pending.push(PendingCleanup {
+            identity,
+            last_error: None,
+        });
+        SourcePublicationUploadCleanupDisposition::Deferred
+    }
+
+    fn record_failed_cleanup(
+        &self,
+        identity: SourcePublicationUploadIdentity,
+        error: CoreError,
+    ) -> Result<(), CoreError> {
+        let mut pending = self.pending_cleanup_lock()?;
+        if let Some(existing) = pending.iter_mut().find(|entry| entry.identity == identity) {
+            existing.last_error = Some(error);
+            drop(pending);
+            return Ok(());
+        }
+        if pending.len() >= SOURCE_PUBLICATION_UPLOAD_STAGING_SLOTS {
+            drop(pending);
+            return Err(CoreError::Storage(
+                "source upload pending cleanup queue is full".into(),
+            ));
+        }
+        pending.push(PendingCleanup {
+            identity,
+            last_error: Some(error),
+        });
+        drop(pending);
+        Ok(())
+    }
+
+    /// Each operation sees at most eight pending identities. Keep failures in
+    /// the queue so the next settlement can report the physical cause; never
+    /// mutate the body currently being staged, read, or explicitly discarded.
+    fn drain_pending_cleanup_locked(
+        &self,
+        current: SourcePublicationUploadIdentity,
+    ) -> Result<(), CoreError> {
+        let candidates: Vec<_> = self
+            .pending_cleanup_lock()?
+            .iter()
+            .filter(|entry| entry.identity != current)
+            .map(|entry| entry.identity)
+            .collect();
+        for identity in candidates {
+            let result = self.discard_locked(identity);
+            let mut pending = self.pending_cleanup_lock()?;
+            match result {
+                Ok(()) => {
+                    if let Some(index) = pending.iter().position(|entry| entry.identity == identity)
+                    {
+                        drop(pending.remove(index));
+                    }
+                }
+                Err(error) => {
+                    if let Some(entry) = pending.iter_mut().find(|entry| entry.identity == identity)
+                    {
+                        entry.last_error = Some(error);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_pending_cleanup(
+        &self,
+        identity: SourcePublicationUploadIdentity,
+    ) -> Result<(), CoreError> {
+        self.pending_cleanup_lock()?
+            .retain(|entry| entry.identity != identity);
+        Ok(())
+    }
+
+    fn begin_operation(&self) -> Result<std::sync::MutexGuard<'_, ()>, CoreError> {
+        self.operations.try_lock().map_err(|error| match error {
+            TryLockError::WouldBlock => busy("source upload store busy"),
+            TryLockError::Poisoned(_) => {
+                CoreError::Storage("source upload store operations poisoned".into())
+            }
+        })
     }
 
     fn stage_admitted(
@@ -947,10 +1121,8 @@ impl SourcePublicationUploadPort for SourcePublicationUploadStore {
         budget: &RequestBudgetV1,
     ) -> Result<SourcePublicationUploadAck, CoreError> {
         budget.checkpoint("source_upload.stage")?;
-        let _operation = self
-            .operations
-            .try_lock()
-            .map_err(|_error| busy("source upload store busy"))?;
+        let _operation = self.begin_operation()?;
+        self.drain_pending_cleanup_locked(part.identity)?;
         self.reconcile_admission()?;
         self.require_current_root()?;
         let name = self.body_name(part.identity)?;
@@ -978,7 +1150,8 @@ impl SourcePublicationUploadPort for SourcePublicationUploadStore {
             }
         }
         if self.file_admission.is_some() {
-            return self.stage_admitted(part, &name, exists, total, end, budget);
+            let result = self.stage_admitted(part, &name, exists, total, end, budget);
+            return finish_with_cleanup(result, self.drain_pending_cleanup_locked(part.identity));
         }
         // Admit growth before creating a body: refused requests must not
         // consume slots with empty files. The store mutex fences inventory
@@ -1031,22 +1204,23 @@ impl SourcePublicationUploadPort for SourcePublicationUploadStore {
         self.require_body_entry(&name, &file)?;
         self.require_current_root()?;
         budget.checkpoint("source_upload.ack")?;
-        Ok(SourcePublicationUploadAck {
+        let ack = SourcePublicationUploadAck {
             identity: part.identity,
             next_offset: end,
-        })
+        };
+        self.drain_pending_cleanup_locked(part.identity)?;
+        Ok(ack)
     }
 
     fn load(
         &self,
         identity: SourcePublicationUploadIdentity,
         budget: &RequestBudgetV1,
+        reserve_decoded_bytes: &mut dyn FnMut(u64) -> Result<(), CoreError>,
     ) -> Result<SearchCorpusIngestBatch, CoreError> {
         budget.checkpoint("source_upload.load")?;
-        let _operation = self
-            .operations
-            .try_lock()
-            .map_err(|_error| busy("source upload store busy"))?;
+        let _operation = self.begin_operation()?;
+        self.drain_pending_cleanup_locked(identity)?;
         self.reconcile_admission()?;
         self.require_current_root()?;
         let name = self.body_name(identity)?;
@@ -1079,39 +1253,63 @@ impl SourcePublicationUploadPort for SourcePublicationUploadStore {
                 .map_err(|error| admitted_io_error("source upload verify rewind", &error))?;
             // Walk before materialization without buffering a complete body.
             let input_len = usize::try_from(identity.body_bytes).map_err(storage)?;
-            let batch = self.decode_body(&mut file, input_len, budget)?;
+            let batch = self.decode_body(&mut file, input_len, budget, reserve_decoded_bytes)?;
             self.require_body_metadata(&name, &file.metadata()?)?;
             self.require_current_root()?;
             budget.checkpoint("source_upload.load")?;
             Ok(batch)
         })();
-        finish_with_retirement(result, file.retire())
+        let result = finish_with_retirement(result, file.retire());
+        finish_with_cleanup(result, self.drain_pending_cleanup_locked(identity))
     }
 
     fn discard(&self, identity: SourcePublicationUploadIdentity) -> Result<(), CoreError> {
-        let _operation = self
-            .operations
-            .try_lock()
-            .map_err(|_error| busy("source upload store busy"))?;
-        self.reconcile_admission()?;
-        self.require_current_root()?;
-        let name = self.body_name(identity)?;
-        if !self.body_exists(&name)? {
-            return Ok(());
+        let _operation = self.begin_operation()?;
+        self.drain_pending_cleanup_locked(identity)?;
+        self.discard_locked(identity)?;
+        self.remove_pending_cleanup(identity)
+    }
+
+    fn settle_published(
+        &self,
+        identity: SourcePublicationUploadIdentity,
+    ) -> SourcePublicationUploadCleanupDisposition {
+        if let Err(error) = self.body_name(identity) {
+            return SourcePublicationUploadCleanupDisposition::Failed(error);
         }
-        let file = self.open_body_reader(&name)?;
-        let result = (|| {
-            let meta = file.metadata()?;
-            self.require_current_root()?;
-            if self.file_admission.is_some() {
-                self.delete_admitted_body(&name, &meta)?;
-            } else {
-                unlinkat(&self.directory, Path::new(&name), AtFlags::empty()).map_err(storage)?;
-                self.directory.sync_all().map_err(storage)?;
+        let _operation = match self.operations.try_lock() {
+            Ok(operation) => operation,
+            Err(TryLockError::WouldBlock) => return self.enqueue_pending_cleanup(identity),
+            Err(TryLockError::Poisoned(_)) => {
+                return SourcePublicationUploadCleanupDisposition::Failed(CoreError::Storage(
+                    "source upload store operations poisoned".into(),
+                ));
             }
-            self.require_current_root()
-        })();
-        finish_with_retirement(result, file.retire())
+        };
+        let result = self.discard_locked(identity);
+        let disposition = match result {
+            Ok(()) => match self.remove_pending_cleanup(identity) {
+                Ok(()) => SourcePublicationUploadCleanupDisposition::Complete,
+                Err(error) => SourcePublicationUploadCleanupDisposition::Failed(error),
+            },
+            Err(error) => {
+                // Retain the body and retry at a later operation. The current
+                // response carries the original physical cause, not Deferred.
+                match self.record_failed_cleanup(identity, error.clone()) {
+                    Ok(()) => SourcePublicationUploadCleanupDisposition::Failed(error),
+                    Err(queue_error) => {
+                        SourcePublicationUploadCleanupDisposition::Failed(CoreError::Storage(
+                            format!("{error}; cleanup retry registration failed: {queue_error}"),
+                        ))
+                    }
+                }
+            }
+        };
+        // A different request's cleanup never replaces this settlement.
+        match self.drain_pending_cleanup_locked(identity) {
+            Ok(()) => disposition,
+            Err(error) => SourcePublicationUploadCleanupDisposition::Failed(error),
+        }
     }
 }
 
@@ -1124,6 +1322,146 @@ mod tests {
     use std::time::Instant;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn permit_direct_load(_: u64) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    #[test]
+    fn staged_publication_reservation_refusal_precedes_decode() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let store = SourcePublicationUploadStore::open(
+            root.path().join("uploads"),
+            SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
+        )
+        .expect("open");
+        let bytes = crate::encode_cbor_payload(&batch()).expect("valid body");
+        let mut input = io::Cursor::new(bytes.clone());
+        let mut called = 0;
+        let error = store
+            .decode_body(
+                &mut input,
+                bytes.len(),
+                &RequestBudgetV1::unbounded(),
+                &mut |reserved| {
+                    called += 1;
+                    assert!(reserved >= u64::try_from(bytes.len()).expect("body length"));
+                    Err(busy("fixture admission refusal"))
+                },
+            )
+            .expect_err("reservation must refuse materialization");
+        assert_eq!(called, 1);
+        assert_eq!(input.position(), bytes.len() as u64);
+        assert!(matches!(
+            error,
+            CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogBusy,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn published_cleanup_defers_under_store_operation_and_drains_afterward() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let store = SourcePublicationUploadStore::open(
+            root.path().join("uploads"),
+            SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
+        )?;
+        let payload = batch();
+        let identity = source_publication_upload_identity(&payload)?;
+        for_each_source_publication_upload_part(
+            &payload,
+            identity,
+            |part| -> Result<(), CoreError> {
+                let ack = store.stage(&part, &budget())?;
+                assert_eq!(ack.identity, identity);
+                assert_eq!(
+                    ack.next_offset,
+                    part.offset
+                        .checked_add(u64::try_from(part.bytes.len()).expect("part length"))
+                        .expect("part end")
+                );
+                Ok(())
+            },
+        )?;
+        let operation = store.operations.lock().map_err(storage)?;
+        if store.settle_published(identity) != SourcePublicationUploadCleanupDisposition::Deferred
+            || store.pending_cleanup_lock()?.len() != 1
+            || !store.path(identity)?.exists()
+        {
+            return Err("busy published cleanup did not retain one body and pending entry".into());
+        }
+        drop(operation);
+        let unrelated = SourcePublicationUploadIdentity {
+            body_sha256: [0x5a; 32],
+            body_bytes: 1,
+        };
+        store.discard(unrelated)?;
+        if store.path(identity)?.exists() || !store.pending_cleanup_lock()?.is_empty() {
+            return Err("unrelated operation did not drain the deferred body".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_cleanup_retains_body_across_store_restart_and_queue_is_bounded() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("uploads");
+        let store = SourcePublicationUploadStore::open(&path, SOURCE_PUBLICATION_UPLOAD_MAX_BYTES)?;
+        let payload = batch();
+        let identity = source_publication_upload_identity(&payload)?;
+        for_each_source_publication_upload_part(
+            &payload,
+            identity,
+            |part| -> Result<(), CoreError> {
+                let ack = store.stage(&part, &budget())?;
+                assert_eq!(ack.identity, identity);
+                assert_eq!(
+                    ack.next_offset,
+                    part.offset
+                        .checked_add(u64::try_from(part.bytes.len()).expect("part length"))
+                        .expect("part end")
+                );
+                Ok(())
+            },
+        )?;
+        let operation = store.operations.lock().map_err(storage)?;
+        if store.settle_published(identity) != SourcePublicationUploadCleanupDisposition::Deferred {
+            return Err("busy published cleanup was not deferred".into());
+        }
+        for index in 1..SOURCE_PUBLICATION_UPLOAD_STAGING_SLOTS {
+            let other = SourcePublicationUploadIdentity {
+                body_sha256: [u8::try_from(index)?; 32],
+                body_bytes: 1,
+            };
+            if store.settle_published(other) != SourcePublicationUploadCleanupDisposition::Deferred
+            {
+                return Err("pending cleanup queue refused a bounded slot".into());
+            }
+        }
+        let overflow = SourcePublicationUploadIdentity {
+            body_sha256: [0xfe; 32],
+            body_bytes: 1,
+        };
+        if !matches!(
+            store.settle_published(overflow),
+            SourcePublicationUploadCleanupDisposition::Failed(CoreError::Storage(_))
+        ) {
+            return Err("pending cleanup queue exceeded its eight-entry bound".into());
+        }
+        drop(operation);
+        drop(store);
+        let restarted =
+            SourcePublicationUploadStore::open(&path, SOURCE_PUBLICATION_UPLOAD_MAX_BYTES)?;
+        if restarted.load(identity, &budget(), &mut permit_direct_load)? != payload
+            || !restarted.pending_cleanup_lock()?.is_empty()
+        {
+            return Err("restart lost retained body or invented a durable cleanup queue".into());
+        }
+        restarted.discard(identity)?;
+        Ok(())
+    }
 
     fn budget() -> RequestBudgetV1 {
         RequestBudgetV1::until(
@@ -1236,7 +1574,7 @@ mod tests {
             eof_reads: 0,
         };
         let error = store
-            .decode_body(&mut source, bytes.len(), &budget)
+            .decode_body(&mut source, bytes.len(), &budget, &mut permit_direct_load)
             .expect_err("cancellation at final EOF must not return a batch");
         let (code, message) = error.into_search_plane_wire();
         assert_eq!(code, SearchPlaneErrorCodeV2::RequestCancelled);
@@ -1293,6 +1631,7 @@ mod tests {
                         &mut io::Cursor::new(&bytes),
                         input_len,
                         &RequestBudgetV1::unbounded(),
+                        &mut permit_direct_load,
                     )
                     .expect("uncancelled body remains valid"),
                 batch,
@@ -1308,7 +1647,7 @@ mod tests {
                     selected_bytes: 0,
                 };
                 let error = store
-                    .decode_body(&mut reader, input_len, &budget)
+                    .decode_body(&mut reader, input_len, &budget, &mut permit_direct_load)
                     .expect_err("cancelled decode must not return a batch");
                 let (code, message) = error.into_search_plane_wire();
                 assert_eq!(code, SearchPlaneErrorCodeV2::RequestCancelled);
@@ -1341,7 +1680,9 @@ mod tests {
                 .checked_sub(Duration::from_secs(1))
                 .expect("fixture expired deadline must be representable"),
         );
-        let error = store.load(identity, &expired).expect_err("expired request");
+        let error = store
+            .load(identity, &expired, &mut permit_direct_load)
+            .expect_err("expired request");
         assert!(matches!(
             error,
             CoreError::Typed {
@@ -1407,11 +1748,17 @@ mod tests {
             SourcePublicationUploadStore::open(&path, SOURCE_PUBLICATION_UPLOAD_MAX_BYTES)
                 .expect("reopen");
         assert_eq!(
-            restarted.load(identity, &budget()).expect("complete body"),
+            restarted
+                .load(identity, &budget(), &mut permit_direct_load)
+                .expect("complete body"),
             batch
         );
         restarted.discard(identity).expect("discard");
-        assert!(restarted.load(identity, &budget()).is_err());
+        assert!(
+            restarted
+                .load(identity, &budget(), &mut permit_direct_load)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1451,7 +1798,11 @@ mod tests {
                 .next_offset,
             3
         );
-        assert!(store.load(identity, &budget()).is_err());
+        assert!(
+            store
+                .load(identity, &budget(), &mut permit_direct_load)
+                .is_err()
+        );
         assert!(
             store
                 .stage(
@@ -1486,7 +1837,7 @@ mod tests {
             )
             .expect("complete wrong body");
         let error = store
-            .load(identity, &budget())
+            .load(identity, &budget(), &mut permit_direct_load)
             .expect_err("digest mismatch");
         assert!(error.to_string().contains("digest mismatch"));
     }
@@ -1618,7 +1969,11 @@ mod tests {
                     &budget(),
                 )
                 .expect("stage opaque bytes");
-            assert!(store.load(identity, &budget()).is_err());
+            assert!(
+                store
+                    .load(identity, &budget(), &mut permit_direct_load)
+                    .is_err()
+            );
             store.discard(identity).expect("discard rejected body");
         }
     }
@@ -1693,7 +2048,11 @@ mod tests {
         fs::write(&outside, b"original").expect("outside fixture");
         std::os::unix::fs::symlink(&outside, store.path(identity).expect("path")).expect("symlink");
         assert!(store.stage(&part, &budget()).is_err());
-        assert!(store.load(identity, &budget()).is_err());
+        assert!(
+            store
+                .load(identity, &budget(), &mut permit_direct_load)
+                .is_err()
+        );
         assert_eq!(
             fs::read(&outside).expect("unchanged external file"),
             b"original"
@@ -1736,7 +2095,7 @@ mod tests {
     }
 
     #[test]
-    fn replaced_upload_root_refuses_stage_load_and_discard_without_touching_replacement()
+    fn replaced_upload_root_refuses_stage_load_and_cleanup_without_touching_replacement()
     -> TestResult {
         use std::os::unix::fs::PermissionsExt as _;
 
@@ -1764,8 +2123,14 @@ mod tests {
         fs::write(root.join("untouched"), b"replacement")?;
 
         if store.stage(&part, &budget()).is_ok()
-            || store.load(identity, &budget()).is_ok()
+            || store
+                .load(identity, &budget(), &mut permit_direct_load)
+                .is_ok()
             || store.discard(identity).is_ok()
+            || !matches!(
+                store.settle_published(identity),
+                SourcePublicationUploadCleanupDisposition::Failed(_)
+            )
         {
             return Err("a replaced upload root accepted an operation".into());
         }
@@ -1846,7 +2211,9 @@ mod tests {
                 &budget(),
             )
             .is_ok()
-            || store.load(identity, &budget()).is_ok()
+            || store
+                .load(identity, &budget(), &mut permit_direct_load)
+                .is_ok()
         {
             return Err("a FIFO was accepted as an upload body".into());
         }
@@ -1901,12 +2268,15 @@ mod tests {
         };
         use std::os::unix::fs::OpenOptionsExt as _;
         use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc;
 
         struct RecordingAdmission {
             root: PathBuf,
             calls: Arc<Mutex<Vec<&'static str>>>,
             refuse_write: AtomicBool,
             refuse_read: Arc<AtomicBool>,
+            refuse_delete: AtomicBool,
+            hold_next_reader: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
         }
 
         impl RecordingAdmission {
@@ -1916,6 +2286,8 @@ mod tests {
                     calls: Arc::new(Mutex::new(Vec::new())),
                     refuse_write: AtomicBool::new(false),
                     refuse_read: Arc::new(AtomicBool::new(false)),
+                    refuse_delete: AtomicBool::new(false),
+                    hold_next_reader: Mutex::new(None),
                 })
             }
             fn record(&self, call: &'static str) -> Result<(), CoreError> {
@@ -2125,6 +2497,13 @@ mod tests {
             ) -> Result<Box<dyn PublicationControlOpenTicket>, CoreError> {
                 self.require_path(path)?;
                 self.record("begin_reader")?;
+                let hold = self.hold_next_reader.lock().map_err(storage)?.take();
+                if let Some((entered, release)) = hold {
+                    entered.send(()).map_err(storage)?;
+                    release
+                        .recv_timeout(Duration::from_secs(5))
+                        .map_err(storage)?;
+                }
                 Ok(Box::new(RecordingTicket {
                     calls: self.calls.clone(),
                     refuse_read: self.refuse_read.clone(),
@@ -2137,6 +2516,12 @@ mod tests {
                 length: u64,
             ) -> Result<(), CoreError> {
                 self.require_path(path)?;
+                if self.refuse_delete.load(Ordering::SeqCst) {
+                    return Err(CoreError::storage_io(
+                        "fixture upload unlink",
+                        &io::Error::other("fixture unlink failure"),
+                    ));
+                }
                 let meta = fs::symlink_metadata(path).map_err(storage)?;
                 if (meta.dev(), meta.ino(), meta.len()) != (inode.device, inode.inode, length) {
                     return Err(invalid("fixture deletion witness mismatch"));
@@ -2183,7 +2568,7 @@ mod tests {
             if store.stage(&first, &budget())?.next_offset != u64::try_from(split)?
                 || store.stage(&first, &budget())?.next_offset != u64::try_from(split)?
                 || store.stage(&second, &budget())?.next_offset != identity.body_bytes
-                || store.load(identity, &budget())? != payload
+                || store.load(identity, &budget(), &mut permit_direct_load)? != payload
             {
                 return Err("qualified upload changed bytes or retry offset".into());
             }
@@ -2195,6 +2580,120 @@ mod tests {
                 || admission.count("begin_reader")? != admission.count("reader_retire")?
             {
                 return Err("qualified upload did not settle exact physical operations".into());
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn unrelated_load_completion_drains_published_cleanup_without_reversing_it() -> TestResult {
+            let parent = tempfile::tempdir()?;
+            let root = parent.path().join("uploads");
+            let admission = RecordingAdmission::new(root);
+            let store = Arc::new(SourcePublicationUploadStore::open_at_with_file_admission(
+                File::open(parent.path())?,
+                parent.path(),
+                OsStr::new("uploads"),
+                SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
+                admission.clone(),
+            )?);
+            let published = batch();
+            let published_identity = source_publication_upload_identity(&published)?;
+            let mut reading = batch();
+            reading.manifest_digest.push('b');
+            let reading_identity = source_publication_upload_identity(&reading)?;
+            for (payload, identity) in [
+                (&published, published_identity),
+                (&reading, reading_identity),
+            ] {
+                for_each_source_publication_upload_part(
+                    payload,
+                    identity,
+                    |part| -> Result<(), CoreError> {
+                        let ack = store.stage(&part, &budget())?;
+                        assert_eq!(ack.identity, identity);
+                        assert_eq!(
+                            ack.next_offset,
+                            part.offset
+                                .checked_add(u64::try_from(part.bytes.len()).expect("part length"))
+                                .expect("part end")
+                        );
+                        Ok(())
+                    },
+                )?;
+            }
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            *admission.hold_next_reader.lock().map_err(storage)? = Some((entered_tx, release_rx));
+            let reader_store = store.clone();
+            let worker = std::thread::spawn(move || {
+                reader_store.load(reading_identity, &budget(), &mut permit_direct_load)
+            });
+            entered_rx.recv_timeout(Duration::from_secs(5))?;
+            if store.settle_published(published_identity)
+                != SourcePublicationUploadCleanupDisposition::Deferred
+                || !store.path(published_identity)?.exists()
+            {
+                return Err("concurrent load did not defer published cleanup".into());
+            }
+            release_tx.send(())?;
+            let decoded = worker.join().map_err(|_| "load worker panicked")??;
+            if decoded != reading
+                || store.path(published_identity)?.exists()
+                || !store.path(reading_identity)?.exists()
+                || !store.pending_cleanup_lock()?.is_empty()
+            {
+                return Err("unrelated load did not drain only the published body".into());
+            }
+            store.discard(reading_identity)?;
+            Ok(())
+        }
+
+        #[test]
+        fn published_cleanup_surfaces_io_failure_and_retries_retained_body() -> TestResult {
+            let parent = tempfile::tempdir()?;
+            let root = parent.path().join("uploads");
+            let admission = RecordingAdmission::new(root);
+            let store = SourcePublicationUploadStore::open_at_with_file_admission(
+                File::open(parent.path())?,
+                parent.path(),
+                OsStr::new("uploads"),
+                SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
+                admission.clone(),
+            )?;
+            let payload = batch();
+            let identity = source_publication_upload_identity(&payload)?;
+            for_each_source_publication_upload_part(
+                &payload,
+                identity,
+                |part| -> Result<(), CoreError> {
+                    let ack = store.stage(&part, &budget())?;
+                    assert_eq!(ack.identity, identity);
+                    assert_eq!(
+                        ack.next_offset,
+                        part.offset
+                            .checked_add(u64::try_from(part.bytes.len()).expect("part length"))
+                            .expect("part end")
+                    );
+                    Ok(())
+                },
+            )?;
+            admission.refuse_delete.store(true, Ordering::SeqCst);
+            if !matches!(
+                store.settle_published(identity),
+                SourcePublicationUploadCleanupDisposition::Failed(CoreError::StorageIo { ref message, .. })
+                    if message.contains("fixture unlink failure")
+            ) || !store.path(identity)?.exists()
+                || store.pending_cleanup_lock()?.len() != 1
+            {
+                return Err("cleanup I/O failure was hidden or lost body custody".into());
+            }
+            admission.refuse_delete.store(false, Ordering::SeqCst);
+            store.discard(SourcePublicationUploadIdentity {
+                body_sha256: [0x5a; 32],
+                body_bytes: 1,
+            })?;
+            if store.path(identity)?.exists() || !store.pending_cleanup_lock()?.is_empty() {
+                return Err("later operation did not retry failed cleanup".into());
             }
             Ok(())
         }
@@ -2273,7 +2772,7 @@ mod tests {
             let _ack = store.stage(&part, &budget())?;
             admission.refuse_read.store(true, Ordering::SeqCst);
             if !matches!(
-                store.load(identity, &budget()),
+                store.load(identity, &budget(), &mut permit_direct_load),
                 Err(CoreError::Typed {
                     code: SearchPlaneErrorCodeV2::CatalogBusy,
                     ..

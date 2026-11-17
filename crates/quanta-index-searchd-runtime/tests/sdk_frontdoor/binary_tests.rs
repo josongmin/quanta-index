@@ -100,6 +100,7 @@ fn assert_binary_semantic_work_settlement(client: &QuantaIndex) -> TestResult {
             top_k: 2,
         },
         max_work_units: 1_000_000,
+        canonical_ties: false,
     };
     let response = client.semantic().query_work_bounded_v1(request.clone())?;
     if response.query.generation != pin()

@@ -44,7 +44,7 @@ use sha2::{Digest, Sha256};
 
 use quanta_index_core::CoreError;
 
-use crate::connection::{SqliteCatalog, blob32, engine_error};
+use crate::connection::{SqliteCatalog, engine_error};
 
 const ALLOCATOR_DOMAIN: &[u8] = b"quanta-index:catalog:sequence-row:v1\0";
 const EVENT_COMMITMENT_DOMAIN: &[u8] = b"quanta-index:catalog:sequence-event-commitment:v1\0";
@@ -291,7 +291,7 @@ fn read_gc_floor(
     path: &std::path::Path,
     identity: &[u8; 32],
 ) -> Result<Option<(i64, [u8; 32])>, CoreError> {
-    let row: Option<(i64, Vec<u8>, Vec<u8>)> = connection
+    let row: Option<(i64, FixedDigest32, FixedDigest32)> = connection
         .query_row(
             "SELECT invalidation_sequence, target_commitment, row_sha256
              FROM operation_gc_floor_v1 WHERE identity_digest = ?1",
@@ -303,8 +303,8 @@ fn read_gc_floor(
     let Some((sequence, target, digest)) = row else {
         return Ok(None);
     };
-    let target = blob32("operation GC target", &target)?;
-    let digest = blob32("operation GC row digest", &digest)?;
+    let target = target.checked("operation GC target")?;
+    let digest = digest.checked("operation GC row digest")?;
     if digest != gc_floor_row_digest(sequence, identity, &target) {
         return Err(corrupt("operation GC floor row has a wrong digest"));
     }
@@ -328,12 +328,12 @@ pub(crate) fn verify_gc_floor_domain_integrity(
         .prepare("SELECT identity_digest FROM operation_gc_floor_v1")
         .map_err(|error| engine_error("prepare operation GC floor scan", path, &error))?;
     let identities = statement
-        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .query_map([], |row| row.get::<_, FixedDigest32>(0))
         .map_err(|error| engine_error("scan operation GC floors", path, &error))?;
     for identity in identities {
         let identity =
             identity.map_err(|error| engine_error("read GC floor identity", path, &error))?;
-        let identity = blob32("operation GC identity", &identity)?;
+        let identity = identity.checked("operation GC identity")?;
         if read_gc_floor(connection, path, &identity)?.is_none() {
             return Err(corrupt(
                 "operation GC floor disappeared during integrity scan",
@@ -377,7 +377,7 @@ fn read_allocator(
                 Ok((
                     row.get::<_, Option<i64>>(0)?,
                     row.get::<_, i64>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, FixedDigest32>(2)?,
                 ))
             },
         )
@@ -392,7 +392,7 @@ fn read_allocator(
             )));
         }
     };
-    let stored = blob32("allocator row digest", &digest)?;
+    let stored = digest.checked("allocator row digest")?;
     if allocator_digest(next, exhausted) != stored {
         return Err(corrupt(
             "sequence allocator row does not match its own digest",
@@ -504,21 +504,7 @@ pub(crate) fn reconcile(
     transaction: &rusqlite::Transaction<'_>,
     path: &std::path::Path,
 ) -> Result<(), CoreError> {
-    let max: Option<i64> = transaction
-        .query_row(
-            "SELECT MAX(sequence) FROM catalog_sequence_event_v2",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| engine_error("read ledger maximum", path, &error))?;
-    let (expected_next, expected_exhausted) = match max {
-        None => (Some(1_i64), false),
-        Some(i64::MAX) => (None, true),
-        // Overflow is impossible in this arm: `i64::MAX` is handled above,
-        // so `max + 1` always fits; saturating keeps the unreachable arm a
-        // no-op rather than a panic path.
-        Some(max) => (Some(max.saturating_add(1)), false),
-    };
+    let (max, expected_next, expected_exhausted) = expected_allocator(transaction, path)?;
     let existing = read_allocator(transaction, path)?;
     if existing.exhausted && !expected_exhausted {
         return Err(corrupt(&format!(
@@ -549,7 +535,88 @@ pub(crate) fn reconcile(
     Ok(())
 }
 
-pub(crate) type EventRawRow = (i64, i64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+/// A read-only source root cannot repair a lagging allocator at selection.
+pub(crate) fn verify_allocator_exact(
+    connection: &Connection,
+    path: &std::path::Path,
+) -> Result<(), CoreError> {
+    let (_, expected_next, expected_exhausted) = expected_allocator(connection, path)?;
+    let existing = read_allocator(connection, path)?;
+    if existing.next != expected_next || existing.exhausted != expected_exhausted {
+        return Err(corrupt(
+            "sequence allocator does not match its generic ledger",
+        ));
+    }
+    Ok(())
+}
+
+fn expected_allocator(
+    connection: &Connection,
+    path: &std::path::Path,
+) -> Result<(Option<i64>, Option<i64>, bool), CoreError> {
+    let max: Option<i64> = connection
+        .query_row(
+            "SELECT MAX(sequence) FROM catalog_sequence_event_v2",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| engine_error("read ledger maximum", path, &error))?;
+    let (expected_next, expected_exhausted) = match max {
+        None => (Some(1_i64), false),
+        Some(i64::MAX) => (None, true),
+        // Overflow is impossible in this arm: `i64::MAX` is handled above,
+        // so `max + 1` always fits; saturating keeps the unreachable arm a
+        // no-op rather than a panic path.
+        Some(max) => (Some(max.saturating_add(1)), false),
+    };
+    Ok((max, expected_next, expected_exhausted))
+}
+
+/// A fixed-width digest decoded on the stack. A wrong BLOB length remains a
+/// typed Catalog corruption rather than allocating an unbounded Vec first.
+#[derive(Clone, Copy)]
+pub(crate) enum FixedDigest32 {
+    Exact([u8; 32]),
+    WrongLength(usize),
+    WrongType,
+}
+
+impl rusqlite::types::FromSql for FixedDigest32 {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        Ok(match value {
+            rusqlite::types::ValueRef::Blob(blob) => match <[u8; 32]>::try_from(blob) {
+                Ok(digest) => Self::Exact(digest),
+                Err(_) => Self::WrongLength(blob.len()),
+            },
+            _ => Self::WrongType,
+        })
+    }
+}
+
+impl FixedDigest32 {
+    pub(crate) fn checked(self, label: &str) -> Result<[u8; 32], CoreError> {
+        match self {
+            Self::Exact(digest) => Ok(digest),
+            Self::WrongLength(length) => Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message: format!("catalog: {label} is {length} bytes, expected 32"),
+            }),
+            Self::WrongType => Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message: format!("catalog: {label} is not a BLOB"),
+            }),
+        }
+    }
+}
+
+pub(crate) type EventRawRow = (
+    i64,
+    i64,
+    FixedDigest32,
+    FixedDigest32,
+    FixedDigest32,
+    FixedDigest32,
+);
 
 pub(crate) fn event_raw_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRawRow> {
     Ok((
@@ -567,10 +634,10 @@ pub(crate) fn checked_event_row(
 ) -> Result<(i64, SequenceEventKindV1, [u8; 32], [u8; 32]), CoreError> {
     let (sequence, kind_code, identity, payload, commitment, row_digest) = raw;
     let kind = SequenceEventKindV1::from_code(kind_code)?;
-    let identity = blob32("event identity digest", &identity)?;
-    let payload = blob32("event payload digest", &payload)?;
-    let commitment = blob32("event commitment", &commitment)?;
-    let stored = blob32("event row digest", &row_digest)?;
+    let identity = identity.checked("event identity digest")?;
+    let payload = payload.checked("event payload digest")?;
+    let commitment = commitment.checked("event commitment")?;
+    let stored = row_digest.checked("event row digest")?;
     if event_commitment(sequence, kind, &identity, &payload) != commitment
         || event_row_digest(sequence, kind, &identity, &payload, &commitment) != stored
     {
@@ -656,7 +723,7 @@ pub(crate) fn has_later_invalidation(
     identity_digest: &[u8; 32],
     target_commitment: &[u8; 32],
 ) -> Result<bool, CoreError> {
-    let next_invalidation: Option<(i64, Vec<u8>)> = connection
+    let next_invalidation: Option<(i64, FixedDigest32)> = connection
         .query_row(
             "SELECT sequence, payload_digest FROM catalog_sequence_event_v2
              WHERE kind IN (?1, ?2) AND identity_digest = ?3 AND sequence > ?4
@@ -674,7 +741,7 @@ pub(crate) fn has_later_invalidation(
     let Some((invalidation_sequence, payload)) = next_invalidation else {
         return Ok(false);
     };
-    if blob32("invalidation target", &payload)? != *target_commitment {
+    if payload.checked("invalidation target")? != *target_commitment {
         return Ok(false);
     }
     let intervening_terminal: Option<i64> = connection

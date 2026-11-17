@@ -177,7 +177,7 @@ impl SearchPlaneDispatcher {
 }
 
 /// A cursor continues exactly the walk it was issued under.
-fn ensure_cursor_continues_order(
+pub(crate) fn ensure_cursor_continues_order(
     order: HistoryOrderV1,
     cursor: Option<&HistoryCursor>,
 ) -> Result<(), CoreError> {
@@ -251,7 +251,7 @@ struct HistoryShardRequirements {
 
 /// Every shard `query` reads must be materialized in the pinned snapshot;
 /// a missing one is refused typed before the scan.
-pub(super) fn ensure_history_shards_ready(
+pub(crate) fn ensure_history_shards_ready(
     state: &HistoryAuthorityState,
     query: &LqQuery,
 ) -> Result<(), CoreError> {
@@ -452,6 +452,17 @@ fn execute_history_query(
     top_k: u32,
     cursor: Option<&HistoryCursor>,
 ) -> Result<HistoryPage, CoreError> {
+    execute_history_query_with_work(query, state, epoch, top_k, cursor, &mut || Ok(()))
+}
+
+pub(crate) fn execute_history_query_with_work(
+    query: &LqQuery,
+    state: &HistoryAuthorityState,
+    epoch: AuxEpochV1,
+    top_k: u32,
+    cursor: Option<&HistoryCursor>,
+    work: &mut dyn FnMut() -> Result<(), CoreError>,
+) -> Result<HistoryPage, CoreError> {
     let kind = resolve_history_query_kind(query)?;
     ensure_cursor_kind(kind, cursor)?;
     let limit = top_k_limit(top_k);
@@ -459,6 +470,7 @@ fn execute_history_query(
     match kind {
         HistoryQueryKind::Commit => {
             for record in state.commits().values() {
+                work()?;
                 selector.examined_one();
                 if history_commit_matches(query, state, record)? {
                     selector.offer(HistoryRank::for_commit(record));
@@ -491,6 +503,7 @@ fn execute_history_query(
         }
         HistoryQueryKind::Diff => {
             for (key, record) in state.diff_hunks() {
+                work()?;
                 selector.examined_one();
                 let Some(commit) = state.commits().get(&key.commit_sha()) else {
                     continue;

@@ -81,7 +81,7 @@ fn publish_failure_context(
         .checked_add(Duration::from_secs(1))
         .map_or_else(
             || "diagnostic deadline unavailable".to_string(),
-            |deadline| match QuantaIndex::connect(
+            |deadline| match QuantaIndex::connect_legacy(
                 ConnectOptions::from_state_root(state_root).with_request_io_deadline(deadline),
             ) {
                 Ok(probe) => {
@@ -644,13 +644,24 @@ fn trace_timeline_process_kill_keeps_partial_without_cross_clock_join() -> TestR
         json_str(foreign_event, "capture_id")?,
         json_str(&other_export, "capture_id")?
     );
+    let killed_wire = std::fs::read_to_string(&trace)?;
+    let other_wire = std::fs::read_to_string(&other_trace)?;
+    let raw_header = killed_wire.lines().next().ok_or("trace wire header absent")?;
+    let raw_foreign_event = other_wire.lines().nth(1).ok_or("foreign wire event absent")?;
     let mixed = state.path().join("mixed-after-kill.jsonl");
-    std::fs::write(&mixed, format!("{header}\n{foreign_event}\n"))?;
-    let mixed_export = export_trace_status(&mixed, &state.path().join("mixed-export"))?;
+    std::fs::write(&mixed, format!("{raw_header}\n{raw_foreign_event}\n"))?;
+    let mixed_export_root = state.path().join("mixed-export");
+    let mixed_export = export_trace_status(&mixed, &mixed_export_root)?;
     assert_eq!(json_str(&mixed_export, "capture_status")?, "invalid");
     assert_eq!(
         json_str(&mixed_export, "reason")?,
-        "causal event capture ID changed"
+        format!(
+            "unsafe benchmark evidence {}: causal event capture ID changed",
+            mixed_export_root
+                .canonicalize()?
+                .join("causal-timeline.jsonl")
+                .display()
+        )
     );
     assert_eq!(json_field(&mixed_export, "viewer_available")?, false);
     Ok(())
@@ -948,7 +959,7 @@ fn connect_process(
     if tier == ScaleTier::Medium {
         return process.connect();
     }
-    Ok(QuantaIndex::connect(
+    Ok(QuantaIndex::connect_legacy(
         ConnectOptions::from_state_root(state).with_request_io_timeout(SUPPORTED_PROFILE_TIMEOUT),
     )?)
 }

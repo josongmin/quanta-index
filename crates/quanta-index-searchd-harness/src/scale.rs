@@ -30,10 +30,6 @@
 //! route samples must be present; a legitimately absent query cold-open is null.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::Write as _;
-use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,9 +46,9 @@ use quanta_index_contract::{
     QueryConstraintSetV1, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::{
-    DiagnosticContextV1, DiagnosticHealthCodeV1, DiagnosticLaneV1, DiagnosticPhaseV1,
-    DiagnosticRootKindV1, DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1,
-    DiagnosticTraceErrorV1, LexicalIndexOpenPort as _, LexicalPageSpec, RequestBudgetV1,
+    DiagnosticContextV1, DiagnosticLaneV1, DiagnosticPhaseV1, DiagnosticRootKindV1,
+    DiagnosticStageV1, DiagnosticTerminalV1, LexicalIndexOpenPort as _, LexicalPageSpec,
+    RequestBudgetV1,
 };
 use quanta_index_ipc::ServerAdmissionPolicy;
 use quanta_index_lexical::LexicalAdapter;
@@ -64,24 +60,24 @@ use serde_json::{Value, json};
 use crate::artifact::{
     BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, DiskAmplificationV1,
     GitHeadV1, HostV1, LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily,
-    config_digest, corpus_digest, corpus_digest_refs, directory_bytes, model_revision_of,
-    saturating_u64,
+    config_digest, corpus_digest, directory_bytes, model_revision_of, saturating_u64,
 };
 use crate::harness::{
     E2eRuntime, E2eTextChunkSpec, HARNESS_HISTORY_MAX_REVISION_PAIRS,
     ObservedSearchCorpusPublication,
 };
-
-#[path = "scale/native_index.rs"]
-mod native_index;
-pub use native_index::{
-    NativeCorpusInput, NativeIndexMeasurement, measure_index_native_tier, measure_native_corpus,
-    native_source_binding_for_failure,
-    write_index_native_artifacts,
+use crate::scale_diagnostic_span::optional_diagnostic_span;
+use crate::scale_disk_census::allocated_root_bytes_with_cancel;
+pub use crate::scale_failure::{ScaleAdmissionLimit, ScaleAdmissionRefusal, ScaleStageError};
+use crate::scale_failure::{ScaleRuntimeFailure, stage_or_preserve};
+pub use crate::scale_provenance::{
+    DIMENSION, ScaleSourceBinding, scoped_corpus_digest, source_binding_for_failure,
+    source_binding_for_failure_in_dimension, tier_manifest_json,
 };
-
-/// The artifact dimension this rail writes.
-pub const DIMENSION: &str = "scale";
+pub use crate::scale_refusal::{
+    refusal_json, refusal_json_with_context, write_refusal_artifact,
+    write_refusal_artifact_with_context,
+};
 
 /// Explicit native scale capacity profile; small unit fixtures keep their own
 /// 16 MiB history policy. These are bounded supported-profile inputs, not
@@ -117,23 +113,7 @@ pub struct ScaleRuntimeConfig {
     pub disk_observation: DiskObservationMode,
 }
 
-/// Disk census policy for a timed phase. Both modes retain boundary snapshots.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum DiskObservationMode {
-    #[default]
-    BoundaryOnly,
-    Periodic,
-}
-
-impl DiskObservationMode {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::BoundaryOnly => "boundary-only",
-            Self::Periodic => "periodic",
-        }
-    }
-}
+pub use crate::scale_disk_census::DiskObservationMode;
 
 impl ScaleRuntimeConfig {
     pub fn effective_timeout_ms(self) -> AnyResult<u64> {
@@ -240,247 +220,11 @@ fn with_capacity_profile(mut value: Value) -> AnyResult<Value> {
     Ok(value)
 }
 
-/// The deterministic query the small-tier measurement issues.
-///
-/// Every generated file embeds this token at the configured hit density, so a
-/// correct lexical engine returns a non-empty ordering. An empty result is a
-/// rail failure, not a benign zero.
-const SCALE_QUERY_TOKEN: &str = "scale_needle_token";
-
-/// Result cap for the measured small-tier query.
-const SCALE_TOP_K: u32 = 10;
-
-/// A scale tier's declared shape.
-///
-/// These are the knobs a reviewer reads to understand "how big is `large`": they
-/// are inputs to the generator, not measured outputs. `hit_density` and
-/// `symbol_density` are per-thousand rates (parts per 1000) so they stay integer
-/// and exactly reproducible — no float seeding into the deterministic stream.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TierParams {
-    pub tier: ScaleTier,
-    pub repo_count: u32,
-    pub files_per_repo: u32,
-    pub avg_file_lines: u32,
-    /// Hit occurrences per 1000 lines (the query token's planted frequency).
-    pub hit_density_per_mille: u32,
-    /// Symbol-bearing lines per 1000 lines.
-    pub symbol_density_per_mille: u32,
-}
-
-impl TierParams {
-    /// Total file count = `repo_count * files_per_repo`, saturating.
-    #[must_use]
-    pub fn total_files(&self) -> u32 {
-        self.repo_count.saturating_mul(self.files_per_repo)
-    }
-}
-
-/// The four declared scale tiers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
-pub enum ScaleTier {
-    Small,
-    Medium,
-    Large,
-    Xlarge,
-}
-
-impl ScaleTier {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Small => "small",
-            Self::Medium => "medium",
-            Self::Large => "large",
-            Self::Xlarge => "xlarge",
-        }
-    }
-
-    /// The default invocation selects small; every tier is separately
-    /// selectable and must pass its own source and wire admission checks.
-    #[must_use]
-    pub fn is_default_tier(self) -> bool {
-        matches!(self, Self::Small)
-    }
-}
-
-// The declared shape for each tier. Calibrated so `small` is genuinely cheap to
-// run on a developer machine while the larger tiers grow file count and per-file
-// size roughly an order of magnitude at a step, keeping the progression
-// auditable. Each tier is a named const so [`params_for`] can return it through a
-// total match (no fallible lookup), and [`TIER_MANIFEST`] stays the single
-// ordered source the manifest artifact serializes.
-const TIER_SMALL: TierParams = TierParams {
-    tier: ScaleTier::Small,
-    repo_count: 1,
-    files_per_repo: 16,
-    avg_file_lines: 40,
-    hit_density_per_mille: 60,
-    symbol_density_per_mille: 120,
+use crate::source_fixture::{SCALE_QUERY_TOKEN, file_query_token};
+pub use crate::source_fixture::{
+    ScaleTier, ScopedFile, TIER_MANIFEST, TierParams, generate_corpus, generate_scoped_corpus,
+    params_for, repo_query_token,
 };
-const TIER_MEDIUM: TierParams = TierParams {
-    tier: ScaleTier::Medium,
-    repo_count: 4,
-    files_per_repo: 64,
-    avg_file_lines: 80,
-    hit_density_per_mille: 40,
-    symbol_density_per_mille: 100,
-};
-const TIER_LARGE: TierParams = TierParams {
-    tier: ScaleTier::Large,
-    repo_count: 16,
-    files_per_repo: 256,
-    avg_file_lines: 120,
-    hit_density_per_mille: 25,
-    symbol_density_per_mille: 80,
-};
-const TIER_XLARGE: TierParams = TierParams {
-    tier: ScaleTier::Xlarge,
-    repo_count: 64,
-    files_per_repo: 512,
-    avg_file_lines: 200,
-    hit_density_per_mille: 15,
-    symbol_density_per_mille: 60,
-};
-
-/// The checked-in tier manifest: the four declared tiers in growth order.
-pub const TIER_MANIFEST: &[TierParams] = &[TIER_SMALL, TIER_MEDIUM, TIER_LARGE, TIER_XLARGE];
-
-/// Look up the declared params for a tier.
-///
-/// Total by construction: the match is exhaustive over [`ScaleTier`], so every
-/// tier resolves to its declared row without a fallible lookup or a default.
-#[must_use]
-pub fn params_for(tier: ScaleTier) -> TierParams {
-    match tier {
-        ScaleTier::Small => TIER_SMALL,
-        ScaleTier::Medium => TIER_MEDIUM,
-        ScaleTier::Large => TIER_LARGE,
-        ScaleTier::Xlarge => TIER_XLARGE,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Deterministic content derivation (no rand, no clock).
-// ---------------------------------------------------------------------------
-
-/// FNV-1a 64-bit offset basis.
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-/// FNV-1a 64-bit prime.
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-/// FNV-1a hash of a `u64` mixed into a running state.
-///
-/// Deterministic and dependency-free; the dominant primitive behind both the
-/// per-file seed and the word stream.
-fn fnv1a_mix(mut state: u64, value: u64) -> u64 {
-    for shift in [0u32, 8, 16, 24, 32, 40, 48, 56] {
-        let byte = (value >> shift) & 0xff;
-        state ^= byte;
-        state = state.wrapping_mul(FNV_PRIME);
-    }
-    state
-}
-
-/// Derive a stable per-file seed from `(tier, repo_index, file_index, seed)`.
-fn file_seed(tier: ScaleTier, repo_index: u32, file_index: u32, seed: u64) -> u64 {
-    let mut state = FNV_OFFSET;
-    state = fnv1a_mix(state, tier_tag(tier));
-    state = fnv1a_mix(state, u64::from(repo_index));
-    state = fnv1a_mix(state, u64::from(file_index));
-    fnv1a_mix(state, seed)
-}
-
-/// Distinct numeric tag per tier so tiers never collide in the seed space.
-fn tier_tag(tier: ScaleTier) -> u64 {
-    match tier {
-        ScaleTier::Small => 1,
-        ScaleTier::Medium => 2,
-        ScaleTier::Large => 3,
-        ScaleTier::Xlarge => 4,
-    }
-}
-
-/// A tiny LCG word picker. Deterministic, period-irrelevant here (we only need
-/// reproducible, well-spread token selection, not cryptographic quality).
-fn lcg_next(state: u64) -> u64 {
-    // Numerical Recipes constants.
-    state
-        .wrapping_mul(6_364_136_223_846_793_005)
-        .wrapping_add(1_442_695_040_888_963_407)
-}
-
-/// A small fixed vocabulary the generator draws from for filler tokens.
-///
-/// Its length is exactly 16 (asserted below) so [`vocab_index`] can select an
-/// entry with the low four bits of the stream state — equivalent to `% 16` but
-/// with no overflow path and no fallible length conversion.
-const VOCAB: &[&str] = &[
-    "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa",
-    "lambda", "mu", "nu", "xi", "omicron", "pi",
-];
-
-const _: () = assert!(
-    VOCAB.len() == 16,
-    "vocab_index selects with the low 4 bits and assumes a 16-entry VOCAB"
-);
-
-/// Pick a filler word for a given stream state.
-///
-/// [`vocab_index`] always yields an in-range index, so the `get` is total; the
-/// `unwrap_or` default is unreachable and present only to keep the read
-/// panic-free.
-fn pick_word(state: u64) -> &'static str {
-    VOCAB.get(vocab_index(state)).copied().unwrap_or("alpha")
-}
-
-/// Fold the 64-bit stream state into a `VOCAB` index in `0..16`.
-///
-/// The low four bits are always a valid index into the 16-entry table, so the
-/// `u64 -> usize` narrowing is exact on every supported target.
-#[expect(
-    clippy::as_conversions,
-    reason = "state & 0xF is in 0..=15, so the u64->usize narrowing is exact on every supported target"
-)]
-fn vocab_index(state: u64) -> usize {
-    (state & 0xF) as usize
-}
-
-// ---------------------------------------------------------------------------
-// Corpus generation.
-// ---------------------------------------------------------------------------
-
-/// Generate the seeded synthetic corpus for `(tier, seed)`.
-///
-/// Output is a deterministic `Vec<(path, content)>`: identical for the same
-/// `(tier, seed)`, different for a different seed. Each file is laid out as
-/// `repo{r}/src/file_{f}.rs` and carries:
-///
-/// - a deterministic set of filler lines drawn from `VOCAB`;
-/// - the query token `SCALE_QUERY_TOKEN` planted at the tier's `hit_density`;
-/// - synthetic `fn` symbol lines at the tier's `symbol_density`.
-#[must_use]
-pub fn generate_corpus(tier: ScaleTier, seed: u64) -> Vec<(String, String)> {
-    let params = params_for(tier);
-    let mut out: Vec<(String, String)> = Vec::new();
-    for repo_index in 0..params.repo_count {
-        for file_index in 0..params.files_per_repo {
-            let path = format!("repo{repo_index}/src/file_{file_index}.rs");
-            let content = generate_file(tier, &params, repo_index, file_index, seed);
-            out.push((path, content));
-        }
-    }
-    out
-}
-
-/// A source file's identity inside one serving owner. The path is relative to
-/// `source_repo_id`; two source repositories may own the same relative path.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ScopedFile {
-    pub source_repo_id: String,
-    pub repo_relative_path: String,
-    pub content: String,
-}
 
 fn parse_source_repo_index(source_repo_id: &str) -> AnyResult<u32> {
     let suffix = source_repo_id
@@ -491,59 +235,8 @@ fn parse_source_repo_index(source_repo_id: &str) -> AnyResult<u32> {
         .map_err(|error| anyhow::anyhow!("scale: invalid source repo ID {source_repo_id}: {error}"))
 }
 
-/// Planted query token unique to one generated source repository.
-#[must_use]
-pub fn repo_query_token(repo_index: u32) -> String {
-    format!("scalereponeedle{repo_index:03}")
-}
-
-fn file_query_token(repo_index: u32, file_index: u32) -> String {
-    format!("scalefileneedle{repo_index:03}file{file_index:05}")
-}
-
-/// Reuse the seeded file generator while assigning real source-repository
-/// identities. The extra repo-specific anchor makes each source repo
-/// independently observable through lexical queries.
-pub fn generate_scoped_corpus(tier: ScaleTier, seed: u64) -> AnyResult<Vec<ScopedFile>> {
-    let params = params_for(tier);
-    let mut files = Vec::with_capacity(usize::try_from(params.total_files())?);
-    for repo_index in 0..params.repo_count {
-        for file_index in 0..params.files_per_repo {
-            let mut content = generate_file(tier, &params, repo_index, file_index, seed);
-            writeln!(&mut content, "// {} anchor", repo_query_token(repo_index))?;
-            writeln!(
-                &mut content,
-                "// {} anchor",
-                file_query_token(repo_index, file_index)
-            )?;
-            files.push(ScopedFile {
-                source_repo_id: format!("repo{repo_index}"),
-                repo_relative_path: format!("src/file_{file_index}.rs"),
-                content,
-            });
-        }
-    }
-    Ok(files)
-}
-
-/// Bind the existing corpus digest to the source identity.
-///
-/// The generator reserves `repoN` as a single path component, so this canonical
-/// projection is injective over this fixture and matches the old path shape.
-#[must_use]
-pub fn scoped_corpus_digest(dimension: &str, files: &[ScopedFile]) -> String {
-    let paths = files
-        .iter()
-        .map(|file| format!("{}/{}", file.source_repo_id, file.repo_relative_path))
-        .collect::<Vec<_>>();
-    corpus_digest_refs(
-        dimension,
-        paths
-            .iter()
-            .zip(files)
-            .map(|(path, file)| (path.as_str(), file.content.as_str())),
-    )
-}
+/// Result cap for the measured small-tier query.
+const SCALE_TOP_K: u32 = 10;
 
 /// Source-derived identities and expected result counts, independent of the
 /// engine's candidate list or ranking.
@@ -677,6 +370,15 @@ impl ScopedOracle {
     }
 }
 
+fn require_result_count(observed: usize, expected: usize, phase: &str) -> AnyResult<()> {
+    if observed != expected {
+        return Err(anyhow::anyhow!(
+            "scale: {phase} returned {observed} candidates, source oracle requires {expected}"
+        ));
+    }
+    Ok(())
+}
+
 /// The scale fixture and source paths are ASCII.
 ///
 /// Count distinct three-byte windows per file/surface, matching the file
@@ -687,109 +389,6 @@ const MAX_SCALE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_SCALE_SOURCE_BYTES: u64 = 128 * 1024 * 1024;
 fn scale_posting_membership_limit() -> u64 {
     u64::from(quanta_index_lexical::FILE_AUTHORITY_POSTING_MEMBERSHIP_LIMIT)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ScaleAdmissionLimit {
-    SourceFileBytes,
-    TotalSourceBytes,
-    TrigramPostingMemberships,
-}
-
-impl ScaleAdmissionLimit {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::SourceFileBytes => "lexical_source_file_bytes_8m",
-            Self::TotalSourceBytes => "lexical_total_source_bytes_128m",
-            Self::TrigramPostingMemberships => "lexical_trigram_posting_memberships",
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct ScaleAdmissionRefusal {
-    pub limit: ScaleAdmissionLimit,
-    pub observed: u64,
-    pub maximum: u64,
-}
-
-impl std::fmt::Display for ScaleAdmissionRefusal {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "scale: {} admission refused: observed {} > maximum {}",
-            self.limit.as_str(),
-            self.observed,
-            self.maximum
-        )
-    }
-}
-
-impl std::error::Error for ScaleAdmissionRefusal {}
-
-#[derive(Debug)]
-pub struct ScaleStageError {
-    pub stage: &'static str,
-    pub limit: Option<ScaleAdmissionLimit>,
-    pub observed: Option<u64>,
-    pub maximum: Option<u64>,
-    pub message: String,
-}
-
-impl std::fmt::Display for ScaleStageError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "scale {}: {}", self.stage, self.message)
-    }
-}
-
-impl std::error::Error for ScaleStageError {}
-
-impl ScaleStageError {
-    #[must_use]
-    pub fn operation(stage: &'static str, error: &anyhow::Error) -> Self {
-        Self {
-            stage,
-            limit: None,
-            observed: None,
-            maximum: None,
-            message: format!("{error:#}"),
-        }
-    }
-
-    #[must_use]
-    pub fn source_admission(error: &anyhow::Error) -> Self {
-        let refusal = error.downcast_ref::<ScaleAdmissionRefusal>();
-        Self {
-            stage: "source_preflight",
-            limit: refusal.map(|refusal| refusal.limit),
-            observed: refusal.map(|refusal| refusal.observed),
-            maximum: refusal.map(|refusal| refusal.maximum),
-            message: format!("{error:#}"),
-        }
-    }
-
-    #[must_use]
-    pub fn wire_admission(error: &anyhow::Error) -> Self {
-        Self {
-            stage: "wire_preflight",
-            limit: None,
-            observed: None,
-            maximum: None,
-            message: format!("{error:#}"),
-        }
-    }
-}
-
-fn stage_or_preserve<E: Into<anyhow::Error>>(stage: &'static str, error: E) -> anyhow::Error {
-    let error = error.into();
-    if error.downcast_ref::<ScaleStageError>().is_some()
-        || error.downcast_ref::<ScaleRuntimeFailure>().is_some()
-    {
-        error
-    } else {
-        ScaleStageError::operation(stage, &error).into()
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -872,41 +471,6 @@ pub fn preflight_scoped_corpus(files: &[ScopedFile]) -> AnyResult<ScopedCorpusAd
         source_bytes,
         posting_memberships,
     })
-}
-
-/// Build one file's content deterministically.
-fn generate_file(
-    tier: ScaleTier,
-    params: &TierParams,
-    repo_index: u32,
-    file_index: u32,
-    seed: u64,
-) -> String {
-    let mut state = file_seed(tier, repo_index, file_index, seed);
-    let mut lines: Vec<String> = Vec::new();
-    for line_index in 0..params.avg_file_lines {
-        state = lcg_next(state);
-        // `per_mille` thresholds: planted features fire when the rolled value's
-        // low 1000-modulus lands under the configured density.
-        let roll = state % 1000;
-        if roll < u64::from(params.hit_density_per_mille) {
-            lines.push(format!("// {SCALE_QUERY_TOKEN} {}", pick_word(state)));
-        } else if roll < u64::from(params.symbol_density_per_mille) {
-            lines.push(format!(
-                "fn sym_{repo_index}_{file_index}_{line_index}() {{ /* {} */ }}",
-                pick_word(state)
-            ));
-        } else {
-            lines.push(format!("let {} = {};", pick_word(state), line_index));
-        }
-    }
-    // Guarantee at least one hit per file so the measured query is never empty
-    // by an unlucky-but-deterministic roll; this is a construction guarantee,
-    // documented, not a silent fallback over a failure.
-    lines.push(format!("// guaranteed {SCALE_QUERY_TOKEN} anchor"));
-    let mut content = lines.join("\n");
-    content.push('\n');
-    content
 }
 
 // ---------------------------------------------------------------------------
@@ -1434,80 +998,6 @@ struct DiskPoint {
 /// between directory entries; a blocked metadata, `read_dir`, iterator or
 /// `statvfs` syscall cannot be interrupted here.
 #[cfg(unix)]
-fn allocated_root_bytes_with_cancel(
-    root: &Path,
-    cancelled: impl FnMut() -> bool,
-) -> AnyResult<u64> {
-    let [total, _, _] = allocated_root_scopes(root, cancelled, |_path, _metadata| Ok(0))?;
-    Ok(total)
-}
-
-#[cfg(unix)]
-fn allocated_root_scopes(
-    root: &Path,
-    mut cancelled: impl FnMut() -> bool,
-    mut subsets: impl FnMut(&Path, &fs::Metadata) -> AnyResult<u8>,
-) -> AnyResult<[u64; 3]> {
-    let mut pending = vec![root.to_path_buf()];
-    // Each inode records the fixture, state and scratch memberships in order.
-    let mut seen = std::collections::HashMap::<(u64, u64), u8>::new();
-    let mut totals = [0_u64; 3];
-    while let Some(path) = pending.pop() {
-        anyhow::ensure!(!cancelled(), "disk_probe_cancelled");
-        let metadata = fs::symlink_metadata(&path)?;
-        let scopes = 1 | subsets(&path, &metadata)?;
-        let prior = seen.entry((metadata.dev(), metadata.ino())).or_default();
-        let new_scopes = scopes & !*prior;
-        *prior |= scopes;
-        // A hard link reached outside a subset must still count when the
-        // same inode is later reached through a path inside that subset.
-        if new_scopes == 0 {
-            continue;
-        }
-        let bytes = metadata
-            .blocks()
-            .checked_mul(512)
-            .context("scale: allocated-block byte count overflow")?;
-        for (scope, total) in totals.iter_mut().enumerate() {
-            if new_scopes & (1 << scope) != 0 {
-                *total = total
-                    .checked_add(bytes)
-                    .context("scale: allocated root byte count overflow")?;
-            }
-        }
-        if new_scopes & 1 != 0 && metadata.is_dir() {
-            anyhow::ensure!(!cancelled(), "disk_probe_cancelled");
-            for entry in fs::read_dir(path)? {
-                anyhow::ensure!(!cancelled(), "disk_probe_cancelled");
-                pending.push(entry?.path());
-            }
-        }
-    }
-    Ok(totals)
-}
-
-#[cfg(unix)]
-fn allocated_native_fixture_with_cancel(
-    state: &Path,
-    cancelled: impl FnMut() -> bool,
-) -> AnyResult<[u64; 3]> {
-    let fixture = state
-        .parent()
-        .context("native state root has no fixture parent")?;
-    let scratch = state.join("native-scratch-v1");
-    let mut state_seen = false;
-    let totals = allocated_root_scopes(fixture, cancelled, |path, metadata| {
-        if path == state {
-            anyhow::ensure!(metadata.is_dir(), "native state root is not a directory");
-            state_seen = true;
-        }
-        Ok((u8::from(path.starts_with(state)) << 1) | (u8::from(path.starts_with(&scratch)) << 2))
-    })?;
-    anyhow::ensure!(state_seen, "native state root absent from fixture census");
-    Ok(totals)
-}
-
-#[cfg(unix)]
 fn disk_snapshot_result(root: &Path, stopped: Option<&AtomicBool>) -> AnyResult<DiskSnapshotV1> {
     let allocated_bytes = allocated_root_bytes_with_cancel(root, || {
         stopped.is_some_and(|flag| flag.load(Ordering::Acquire))
@@ -1636,33 +1126,6 @@ struct PhaseSampler {
     stopped: Arc<AtomicBool>,
     worker: Option<RssSamplerJoinV1>,
     disk_worker: Option<thread::JoinHandle<(Vec<DiskPoint>, f64)>>,
-}
-
-// Sampling and measurement continue when trace spans fail, while the capture
-// records the typed fault for the final trace verdict.
-fn optional_diagnostic_span(
-    context: &DiagnosticContextV1,
-    result: Result<DiagnosticSpanGuardV1, DiagnosticTraceErrorV1>,
-) -> Option<DiagnosticSpanGuardV1> {
-    match result {
-        Ok(span) => Some(span),
-        Err(error) => {
-            let code = match error {
-                DiagnosticTraceErrorV1::SpanIdentityExhausted => {
-                    DiagnosticHealthCodeV1::CounterOverflow
-                }
-                DiagnosticTraceErrorV1::ClockRegressed => DiagnosticHealthCodeV1::ClockRegressed,
-                DiagnosticTraceErrorV1::ForeignCaptureSpan => {
-                    DiagnosticHealthCodeV1::ForeignCaptureSpan
-                }
-                DiagnosticTraceErrorV1::MissingParentSpan => {
-                    DiagnosticHealthCodeV1::MissingParentSpan
-                }
-            };
-            context.health(code);
-            None
-        }
-    }
 }
 
 impl PhaseSampler {
@@ -2325,37 +1788,6 @@ fn timeout_ms(client_timeout: Option<Duration>) -> AnyResult<u64> {
     Ok(millis)
 }
 
-/// Keep the measurement error and daemon teardown error separately.
-///
-/// A failed driver must never turn a failed measurement into a successful
-/// tier, and a panic in `E2eRuntime::Drop` must not erase the primary error.
-#[derive(Debug)]
-struct ScaleRuntimeFailure {
-    primary: Option<anyhow::Error>,
-    cleanup: anyhow::Error,
-    cleanup_context: &'static str,
-}
-
-impl std::fmt::Display for ScaleRuntimeFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(primary) = &self.primary {
-            write!(
-                formatter,
-                "scale measurement failed: {primary:#}; {} failed: {:#}",
-                self.cleanup_context, self.cleanup
-            )
-        } else {
-            write!(
-                formatter,
-                "scale {} failed: {:#}",
-                self.cleanup_context, self.cleanup
-            )
-        }
-    }
-}
-
-impl std::error::Error for ScaleRuntimeFailure {}
-
 fn finish_runtime_measurement<T>(
     measurement: AnyResult<T>,
     cleanup: AnyResult<()>,
@@ -2477,15 +1909,6 @@ fn expected_small_result_count(corpus: &[(String, String)]) -> AnyResult<usize> 
         ));
     }
     Ok(corpus.len().min(usize::try_from(SCALE_TOP_K)?))
-}
-
-fn require_result_count(observed: usize, expected: usize, phase: &str) -> AnyResult<()> {
-    if observed != expected {
-        return Err(anyhow::anyhow!(
-            "scale: {phase} returned {observed} candidates, source oracle requires {expected}"
-        ));
-    }
-    Ok(())
 }
 
 /// Keep the socket-query clock free of validation work while refusing any
@@ -3653,252 +3076,9 @@ pub fn measure_tier_with_runtime_config_and_capture(
     Ok(measurement)
 }
 
-/// Source identity for a refusal, recomputed from the deterministic generator
-/// only after a failed run. It is never substituted for a successful timing.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ScaleSourceBinding {
-    pub tier: ScaleTier,
-    pub seed: u64,
-    pub serving_owner_count: u32,
-    pub source_repo_count: u32,
-    pub file_count: usize,
-    pub corpus_bytes: u64,
-    pub source_bytes: u64,
-    pub corpus_digest: String,
-}
-
-pub fn source_binding_for_failure(tier: ScaleTier, seed: u64) -> AnyResult<ScaleSourceBinding> {
-    source_binding_for_failure_in_dimension(DIMENSION, tier, seed)
-}
-
-/// Reuse the scale fixture identity for another rail without reusing its
-/// domain-separated digest as if it were the same measurement.
-pub fn source_binding_for_failure_in_dimension(
-    dimension: &str,
-    tier: ScaleTier,
-    seed: u64,
-) -> AnyResult<ScaleSourceBinding> {
-    let params = params_for(tier);
-    let (corpus_digest, file_count, corpus_bytes) = if tier == ScaleTier::Small {
-        let corpus = generate_corpus(tier, seed);
-        let bytes = corpus.iter().try_fold(0_u64, |total, (_, content)| {
-            total
-                .checked_add(u64::try_from(content.len())?)
-                .ok_or_else(|| anyhow::anyhow!("scale: corpus byte count overflow"))
-        })?;
-        (corpus_digest(dimension, &corpus), corpus.len(), bytes)
-    } else {
-        let files = generate_scoped_corpus(tier, seed)?;
-        let bytes = files.iter().try_fold(0_u64, |total, file| {
-            total
-                .checked_add(u64::try_from(file.content.len())?)
-                .ok_or_else(|| anyhow::anyhow!("scale: corpus byte count overflow"))
-        })?;
-        (scoped_corpus_digest(dimension, &files), files.len(), bytes)
-    };
-    let source_bytes = corpus_bytes
-        .checked_add(u64::try_from(file_count)?)
-        .ok_or_else(|| anyhow::anyhow!("scale: source byte count overflow"))?;
-    Ok(ScaleSourceBinding {
-        tier,
-        seed,
-        serving_owner_count: 1,
-        source_repo_count: params.repo_count,
-        file_count,
-        corpus_bytes,
-        source_bytes,
-        corpus_digest,
-    })
-}
-
-#[must_use]
-pub fn refusal_json(
-    binding: &ScaleSourceBinding,
-    git_head: &GitHeadV1,
-    host: &HostV1,
-    error: &anyhow::Error,
-) -> Value {
-    refusal_json_with_context(binding, git_head, host, error, DIMENSION, None)
-}
-
-/// Common failure record for rails sharing the scale source fixture. The
-/// execution context names the request schedule without changing scale's
-/// existing refusal schema when it is absent.
-pub fn refusal_json_with_context(
-    binding: &ScaleSourceBinding,
-    git_head: &GitHeadV1,
-    host: &HostV1,
-    error: &anyhow::Error,
-    dimension: &str,
-    execution: Option<&Value>,
-) -> Value {
-    let runtime_failure = error.downcast_ref::<ScaleRuntimeFailure>();
-    let mut primary = error;
-    let mut secondary_failures = Vec::new();
-    while let Some(failure) = primary.downcast_ref::<ScaleRuntimeFailure>() {
-        secondary_failures.push(json!({
-            "context": failure.cleanup_context,
-            "message": format!("{:#}", failure.cleanup),
-        }));
-        primary = failure.primary.as_ref().unwrap_or(&failure.cleanup);
-    }
-    let stage = primary.downcast_ref::<ScaleStageError>();
-    let mut failure = serde_json::Map::new();
-    let _previous = failure.insert(
-        "stage".to_string(),
-        json!(stage.map_or("execution_unclassified", |failure| failure.stage)),
-    );
-    let _previous = failure.insert(
-        "limit".to_string(),
-        json!(
-            stage
-                .and_then(|failure| failure.limit)
-                .map(ScaleAdmissionLimit::as_str)
-        ),
-    );
-    let _previous = failure.insert(
-        "observed".to_string(),
-        json!(stage.and_then(|failure| failure.observed)),
-    );
-    let _previous = failure.insert(
-        "maximum".to_string(),
-        json!(stage.and_then(|failure| failure.maximum)),
-    );
-    let _previous = failure.insert("message".to_string(), json!(format!("{primary:#}")));
-    if let Some(runtime_failure) = runtime_failure {
-        let _previous = failure.insert(
-            "primary".to_string(),
-            runtime_failure.primary.as_ref().map_or(
-                Value::Null,
-                |error| json!({ "message": format!("{error:#}") }),
-            ),
-        );
-        let _previous = failure.insert(
-            "cleanup".to_string(),
-            json!({
-                "context": runtime_failure.cleanup_context,
-                "message": format!("{:#}", runtime_failure.cleanup),
-            }),
-        );
-        let _previous = failure.insert("secondary_failures".to_string(), json!(secondary_failures));
-    }
-    if dimension == "scale-index-native"
-        && let Some(prefix) = error.downcast_ref::<native_index::NativeFailurePrefix>()
-    {
-        let _previous = failure.insert("phase_prefix".to_string(), prefix.phases.clone());
-    }
-    if dimension == "scale-index-native"
-        && let Some(captures) = native_index::failure_capture_detail(error)
-    {
-        let _previous = failure.insert("child_trace_files".to_string(), captures);
-    }
-    let mut record = serde_json::Map::new();
-    let _previous = record.insert(
-        "kind".to_string(),
-        json!(format!("quanta-index-{dimension}-failure")),
-    );
-    let _previous = record.insert("schema_version".to_string(), json!(1));
-    let _previous = record.insert(
-        "status".to_string(),
-        json!(
-            if runtime_failure.is_none() && stage.and_then(|failure| failure.limit).is_some() {
-                "refused"
-            } else {
-                "failed"
-            }
-        ),
-    );
-    let _previous = record.insert(
-        "source".to_string(),
-        json!({
-            "tier": binding.tier.as_str(),
-            "seed": binding.seed,
-            "serving_owner_count": binding.serving_owner_count,
-            "source_repo_count": binding.source_repo_count,
-            "file_count": binding.file_count,
-            "corpus_bytes": binding.corpus_bytes,
-            "source_bytes": binding.source_bytes,
-            "corpus_digest": binding.corpus_digest,
-            "corpus_digest_kind": if dimension == "scale-index-native" {
-                "generated_scoped_source_repo_path_v1"
-            } else if binding.tier == ScaleTier::Small {
-                "generated_chunk_content_prefixed_path_v1"
-            } else {
-                "generated_chunk_content_source_repo_path_v1"
-            },
-        }),
-    );
-    let _previous = record.insert(
-        "provenance".to_string(),
-        json!({
-            "git_head": git_head.as_str(),
-            "host": host,
-        }),
-    );
-    let _previous = record.insert("failure".to_string(), Value::Object(failure));
-    if let Some(execution) = execution {
-        let _previous = record.insert("execution".to_string(), execution.clone());
-    }
-    Value::Object(record)
-}
-
-pub fn write_refusal_artifact(
-    binding: &ScaleSourceBinding,
-    dir: &Path,
-    git_head: &GitHeadV1,
-    host: &HostV1,
-    error: &anyhow::Error,
-) -> AnyResult<()> {
-    write_refusal_artifact_with_context(binding, dir, git_head, host, error, DIMENSION, None)
-}
-
-pub fn write_refusal_artifact_with_context(
-    binding: &ScaleSourceBinding,
-    dir: &Path,
-    git_head: &GitHeadV1,
-    host: &HostV1,
-    error: &anyhow::Error,
-    dimension: &str,
-    execution: Option<&Value>,
-) -> AnyResult<()> {
-    crate::artifact::write_json_pretty_noclobber(
-        &dir.join("refusal.json"),
-        &refusal_json_with_context(binding, git_head, host, error, dimension, execution),
-    )
-}
-
 // ---------------------------------------------------------------------------
 // Artifact emission (BenchArtifactV1; the tier manifest is a plain record).
 // ---------------------------------------------------------------------------
-
-fn tier_params_json(params: &TierParams) -> Value {
-    json!({
-        "tier": params.tier.as_str(),
-        "repo_count": params.repo_count,
-        "files_per_repo": params.files_per_repo,
-        "avg_file_lines": params.avg_file_lines,
-        "hit_density_per_mille": params.hit_density_per_mille,
-        "symbol_density_per_mille": params.symbol_density_per_mille,
-        "total_files": params.total_files(),
-        "default_run": params.tier.is_default_tier(),
-        "selectable": true,
-        "serving_owner_count": 1,
-        "source_repo_count": params.repo_count,
-        "qualification_owner": "canonical-quiet-host-run",
-    })
-}
-
-/// The checked-in tier manifest, serialized.
-#[must_use]
-pub fn tier_manifest_json() -> Value {
-    json!({
-        "kind": "quanta-index-scale-tier-manifest",
-        "manifest_schema_version": 2,
-        "dimension": "scale",
-        "query_token": SCALE_QUERY_TOKEN,
-        "tiers": TIER_MANIFEST.iter().map(tier_params_json).collect::<Vec<_>>(),
-    })
-}
 
 /// The measured tier as the artifact's detail: every phase on its own,
 /// named for what measured it.
@@ -4556,7 +3736,10 @@ pub fn write_artifacts(
 )]
 mod tests {
     //! Generator, artifact and narrow runtime behavior.
+    use std::fs;
+
     use super::*;
+    use crate::scale_disk_census::allocated_native_fixture_with_cancel;
     use quanta_index_contract::{
         BatchPublishReceipt, GenerationSnapshot, IngestStageDurations, IngestStageReport,
         LexicalBuildStageDurationsV1, RepoId, RevisionId, SearchCorpusIngestObservation,
@@ -5091,6 +4274,8 @@ mod tests {
 
     #[test]
     fn native_fixture_counts_hard_links_in_each_subset_once() -> AnyResult<()> {
+        use std::os::unix::fs::MetadataExt as _;
+
         let fixture = tempfile::tempdir()?;
         let state = fixture.path().join("state");
         let scratch = state.join("native-scratch-v1");
@@ -6624,6 +5809,7 @@ mod tests {
                 request_id,
                 requested: requested.clone(),
                 outcome: SearchCorpusPublishOutcome {
+                    upload_cleanup: None,
                     publication: requested,
                     receipt,
                     observation: Some(observation),

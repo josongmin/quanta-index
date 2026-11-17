@@ -25,6 +25,7 @@
 //! per-char final-sigma folding) say so in their label so a future normalizer
 //! change updates the golden deliberately.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/source_fixture.rs"]

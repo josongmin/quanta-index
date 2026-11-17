@@ -293,7 +293,7 @@ fn real_commit_io_refusal_precedes_physical_install_and_discards_scratch()
                 expected: None,
                 next: None,
             },
-        ),
+        )?,
         &mut work,
     )?;
     let before = state.refused_writes.load(Ordering::SeqCst);

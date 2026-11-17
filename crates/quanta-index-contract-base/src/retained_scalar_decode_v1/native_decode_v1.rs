@@ -15,6 +15,7 @@ mod sealed {
     impl Leaf for u64 {}
     impl Leaf for [u8; 16] {}
     impl Leaf for [u8; 32] {}
+    impl Leaf for crate::NativeCutoverDigest64V1 {}
 }
 
 /// Closed canonical wire leaves supported by the retained unit decoder.
@@ -30,6 +31,7 @@ impl NativeRetainedScalarLeafV1 for u32 {}
 impl NativeRetainedScalarLeafV1 for u64 {}
 impl NativeRetainedScalarLeafV1 for [u8; 16] {}
 impl NativeRetainedScalarLeafV1 for [u8; 32] {}
+impl NativeRetainedScalarLeafV1 for crate::NativeCutoverDigest64V1 {}
 
 /// Source-free physical DATA for one closed leaf occurrence.
 ///

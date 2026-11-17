@@ -13,6 +13,7 @@ import pytest
 from tools.benchmark.evidence import RawFile
 from tools.benchmark.retrieval.causal_cost_profile import (
     _native_child_trace,
+    _native_stderr_summary,
     parse_trace,
     replay,
     validate_native_product_artifacts,
@@ -254,7 +255,11 @@ def _manifest() -> dict:
 
 
 def _native_child(
-    path: Path, capture_id: str, *, publication: bool, schema_version: int = 2
+    path: Path, capture_id: str, *, publication: bool, schema_version: int = 2,
+    source_publication: bool = False, lexical_witness: str | None = None,
+    lexical_before_publication: bool = False,
+    prepare_before_apply: bool = False,
+    boot_after_query: bool = False,
 ) -> tuple[RawFile, dict]:
     header = {
         "record_type": "header",
@@ -296,6 +301,19 @@ def _native_child(
                 }
             )
 
+    def lexical() -> None:
+        event({"type": "span_begin", "span_id": 7, "stage": "request", "lane_id": 0,
+               "root_kind": "request"})
+        event({"type": "request_identity", "span_id": 7, "request_id": 2,
+               "plane": "control", "connection_id": 2})
+        event({"type": "span_begin", "span_id": 8, "parent_span_id": 7,
+               "stage": "query_lexical", "lane_id": 2})
+        event({"type": "span_end", "span_id": 8, "outcome": "ok"})
+        terminal = {"type": "span_end", "span_id": 7, "outcome": lexical_witness}
+        if lexical_witness != "ok":
+            terminal["error_code"] = 1
+        event(terminal)
+
     event(
         {
             "type": "span_begin",
@@ -305,16 +323,22 @@ def _native_child(
             "lane_id": 1,
         }
     )
-    event(
-        {
-            "type": "span_begin",
-            "span_id": 2,
-            "parent_span_id": 1,
-            "stage": "runtime_boot",
-            "lane_id": 1,
-        }
-    )
-    event({"type": "span_end", "span_id": 2, "outcome": "ok"})
+    def boot() -> None:
+        event(
+            {
+                "type": "span_begin",
+                "span_id": 2,
+                "parent_span_id": 1,
+                "stage": "runtime_boot",
+                "lane_id": 1,
+            }
+        )
+        event({"type": "span_end", "span_id": 2, "outcome": "ok"})
+
+    if not boot_after_query:
+        boot()
+    if lexical_witness is not None and lexical_before_publication:
+        lexical()
     event(
         {
             "type": "span_begin",
@@ -334,18 +358,27 @@ def _native_child(
         }
     )
     if publication:
-        for span_id, stage in ((4, "build_prepare"), (5, "native_publish")):
+        stages = [(4, "build_prepare"), (5, "native_publish")]
+        if source_publication:
+            stages.insert(0, (6, "native_source_apply"))
+        if prepare_before_apply:
+            stages[0], stages[1] = stages[1], stages[0]
+        for span_id, stage in stages:
             event(
                 {
                     "type": "span_begin",
                     "span_id": span_id,
                     "parent_span_id": 3,
                     "stage": stage,
-                    "lane_id": 1,
+                    "lane_id": 3 if source_publication else 1,
                 }
             )
             event({"type": "span_end", "span_id": span_id, "outcome": "ok"})
     event({"type": "span_end", "span_id": 3, "outcome": "ok"})
+    if lexical_witness is not None and not lexical_before_publication:
+        lexical()
+    if boot_after_query:
+        boot()
     for key, value in (("sync_calls", 3), ("sync_failures", 0), ("sync_elapsed_ns", 27)):
         event({"type": "counter", "span_id": 1, "key": key, "value": value})
     event({"type": "span_end", "span_id": 1, "outcome": "ok"})
@@ -2156,6 +2189,93 @@ def test_legacy_schema_keeps_its_counter_order_contract(tmp_path: Path) -> None:
     assert parse_timeline(raw.path.read_bytes())["status"] == "complete"
 
 
+@pytest.mark.parametrize("change", [
+    "none", "parent_alias", "same_epoch", "truncated", "swapped", "replacement", "oversized",
+    "reconfigure_only", "no_first_lexical", "no_reopen_lexical", "cancelled_reopen_query",
+    "lexical_before_publication", "prepare_before_apply", "first_boot_after_query",
+    "reopen_boot_after_query",
+])
+def test_native_corpus_record_checks_both_daemon_epochs(tmp_path: Path, change: str) -> None:
+    from tools.benchmark.retrieval.causal_cost_profile import validate_native_corpus_record
+
+    first = tmp_path / "first.trace.jsonl"
+    reopen = tmp_path / "reopen.trace.jsonl"
+    _native_child(
+        first, "1" * 32, publication=True, schema_version=5,
+        source_publication=change != "reconfigure_only",
+        lexical_witness=None if change == "no_first_lexical" else "ok",
+        lexical_before_publication=change == "lexical_before_publication",
+        prepare_before_apply=change == "prepare_before_apply",
+        boot_after_query=change == "first_boot_after_query",
+    )
+    _native_child(
+        reopen, "2" * 32, publication=False, schema_version=5,
+        lexical_witness={"no_reopen_lexical": None, "cancelled_reopen_query": "cancelled"}.get(
+            change, "ok"
+        ),
+        boot_after_query=change == "reopen_boot_after_query",
+    )
+    if change == "same_epoch":
+        _native_child(
+            tmp_path / "duplicate", "1" * 32, publication=False, schema_version=5,
+            lexical_witness="ok",
+        )
+        (tmp_path / "duplicate").replace(reopen)
+    elif change == "truncated":
+        reopen.write_bytes(b"".join(reopen.read_bytes().splitlines(keepends=True)[:-1]))
+    elif change == "swapped":
+        first_bytes = first.read_bytes()
+        first.write_bytes(reopen.read_bytes())
+        reopen.write_bytes(first_bytes)
+    first_sha256 = hashlib.sha256(first.read_bytes()).hexdigest()
+    reopen_sha256 = hashlib.sha256(reopen.read_bytes()).hexdigest()
+    if change == "replacement":
+        _native_child(tmp_path / "replacement", "3" * 32, publication=False, schema_version=5)
+        (tmp_path / "replacement").replace(reopen)
+    if change == "oversized":
+        with reopen.open("r+b") as stream:
+            stream.truncate(67_108_865)
+    reported_dir = tmp_path
+    if change == "parent_alias":
+        reported_dir = tmp_path / "alias"
+        reported_dir.symlink_to(tmp_path, target_is_directory=True)
+    result = {
+        "status": "VERIFIED",
+        "record_trace": {
+            "max_output_bytes": 67_108_864,
+            "first": str(reported_dir / first.name),
+            "reopen": str(reported_dir / reopen.name),
+            "first_sha256": first_sha256,
+            "reopen_sha256": reopen_sha256,
+            "verification": "NOT_RUN",
+        },
+    }
+    if change in ("no_first_lexical", "no_reopen_lexical", "cancelled_reopen_query", "lexical_before_publication"):
+        with pytest.raises(ValueError, match="successful Native lexical request"):
+            validate_native_corpus_record(tmp_path, result)
+        return
+    if change == "prepare_before_apply":
+        with pytest.raises(ValueError, match="ordered source apply, prepare and publish"):
+            validate_native_corpus_record(tmp_path, result)
+        return
+    if change in ("first_boot_after_query", "reopen_boot_after_query"):
+        with pytest.raises(ValueError, match="request precedes successful runtime boot"):
+            validate_native_corpus_record(tmp_path, result)
+        return
+    if change not in ("none", "parent_alias"):
+        with pytest.raises(ValueError):
+            validate_native_corpus_record(tmp_path, result)
+        return
+    report = validate_native_corpus_record(tmp_path, result)
+    assert report == {
+        "status": "VERIFIED",
+        "captures": {
+            "first": {"capture_id": "1" * 32, "sha256": first_sha256},
+            "reopen": {"capture_id": "2" * 32, "sha256": reopen_sha256},
+        },
+    }
+
+
 def test_native_product_rechecks_children_under_explicit_trace_cap(tmp_path: Path) -> None:
     summary, children, workload = _native_product_fixture(tmp_path)
     product = _native_validate(
@@ -2836,3 +2956,126 @@ def test_native_manifest_refuses_producer_contract_drift(
             expected_churn_cycles=0,
             child_records=children,
         )
+
+
+def _paired_stderr_fixture(tmp_path: Path, size: int) -> tuple[RawFile, dict, str]:
+    """Independent 8KiB + 8KiB wire oracle; do not import producer bounds."""
+    summary, children, _ = _native_product_fixture(tmp_path)
+    descriptor = summary["detail"]["child_trace_files"]["captures"][0]["stderr_tail"]
+    path = children["first"]["stderr_file"].path
+    final = path.read_bytes()
+    assert size >= len(final) + 1
+    initial = b"success sample 1\nsuccess sample 2\nsuccess sample 3\n"
+    content = (initial + b"x" * size)[: size - len(final) - 1] + b"\n" + final
+    assert len(content) == size
+    path.write_bytes(content)
+    raw = RawFile.capture(path)
+    offset = max(0, size - 8192)
+    prefix = content[:min(offset, 8192)]
+    descriptor.update({
+        "whole_file_bytes_at_drain": size,
+        "tail_offset": offset,
+        "tail_bytes": size - offset,
+        "tail_sha256": hashlib.sha256(content[offset:]).hexdigest(),
+        "retained_budget_bytes": 16384,
+        "scope": "bounded disjoint prefix and tail within 16KiB total; full file content not hashed",
+        "prefix": {"offset": 0, "bytes": len(prefix),
+                   "sha256": hashlib.sha256(prefix).hexdigest()},
+    })
+    return raw, descriptor, summary["detail"]["child_trace_files"]["captures"][0]["capture_id"]
+
+
+@pytest.mark.parametrize("size", (2048, 8191, 8192, 8193, 16383, 16384, 16385, 32768))
+def test_native_paired_stderr_boundary_and_existing_object_io_contract(tmp_path: Path, size: int) -> None:
+    raw, descriptor, capture_id = _paired_stderr_fixture(tmp_path, size)
+    parsed = _native_stderr_summary(raw, descriptor, capture_id)
+    assert parsed == {"capture_id": capture_id, "status": "quiescent", **NATIVE_IO_GOLD}
+    assert descriptor["prefix"]["bytes"] + descriptor["tail_bytes"] == min(size, 16384)
+    assert descriptor["prefix"]["bytes"] <= descriptor["tail_offset"]
+
+
+@pytest.mark.parametrize("fault", (
+    "missing_prefix", "missing_budget", "missing_pair", "missing_hash", "prefix_hash", "prefix_bytes",
+    "prefix_offset", "prefix_unknown", "budget", "tail_offset", "tail_hash", "bool_bytes",
+    "overflow_bytes", "truncated_summary",
+))
+def test_native_paired_stderr_refuses_missing_tampered_or_overbudget_descriptor(
+    tmp_path: Path, fault: str,
+) -> None:
+    raw, descriptor, capture_id = _paired_stderr_fixture(tmp_path, 32768)
+    if fault == "missing_prefix":
+        del descriptor["prefix"]
+    elif fault == "missing_budget":
+        del descriptor["retained_budget_bytes"]
+    elif fault == "missing_pair":
+        del descriptor["prefix"]
+        del descriptor["retained_budget_bytes"]
+    elif fault == "missing_hash":
+        del descriptor["prefix"]["sha256"]
+    elif fault == "prefix_hash":
+        descriptor["prefix"]["sha256"] = "0" * 64
+    elif fault == "prefix_bytes":
+        descriptor["prefix"]["bytes"] += 1
+    elif fault == "prefix_offset":
+        descriptor["prefix"]["offset"] = 1
+    elif fault == "prefix_unknown":
+        descriptor["prefix"]["extra"] = 0
+    elif fault == "budget":
+        descriptor["retained_budget_bytes"] = 32768
+    elif fault == "tail_offset":
+        descriptor["tail_offset"] -= 1
+    elif fault == "tail_hash":
+        descriptor["tail_sha256"] = "0" * 64
+    elif fault == "bool_bytes":
+        descriptor["prefix"]["bytes"] = True
+    elif fault == "overflow_bytes":
+        descriptor["prefix"]["bytes"] = 2**64
+    else:
+        changed = raw.path.read_bytes()[:-1]
+        raw.path.write_bytes(changed)
+        raw = RawFile.capture(raw.path)
+        descriptor["whole_file_bytes_at_drain"] -= 1
+        descriptor["tail_offset"] -= 1
+        descriptor["tail_sha256"] = hashlib.sha256(changed[-8192:]).hexdigest()
+    with pytest.raises(ValueError):
+        _native_stderr_summary(raw, descriptor, capture_id)
+
+
+@pytest.mark.parametrize("fault", ("prefix", "truncate", "replace", "mode", "hardlink"))
+def test_native_paired_stderr_revalidates_raw_file_custody(tmp_path: Path, fault: str) -> None:
+    raw, descriptor, capture_id = _paired_stderr_fixture(tmp_path, 32768)
+    content = raw.path.read_bytes()
+    if fault == "prefix":
+        raw.path.write_bytes(b"X" + content[1:])
+    elif fault == "truncate":
+        raw.path.write_bytes(content[:20000])
+    elif fault == "replace":
+        replacement = raw.path.with_name("replacement.stderr")
+        replacement.write_bytes(content)
+        replacement.chmod(0o600)
+        replacement.replace(raw.path)
+    elif fault == "mode":
+        raw.path.chmod(0o640)
+    else:
+        os.link(raw.path, raw.path.with_name("alias.stderr"))
+    with pytest.raises(ValueError):
+        _native_stderr_summary(raw, descriptor, capture_id)
+
+
+@pytest.mark.parametrize("method", ("ps_o_rss_kib", "proc_pid_rusage_resident_bytes_start_identity"))
+def test_native_macos_child_rss_methods_preserve_unsupported_aggregate_scope(tmp_path: Path, method: str) -> None:
+    summary, children, workload = _native_product_fixture(tmp_path, sampling=True, host_os="macos")
+    epochs = summary["detail"]["native_resource_observation"]["epochs"]
+    for epoch in epochs:
+        epoch["child_rss"]["method"] = method
+    _native_validate(summary, children, workload, expected_resource_sampling=True)
+    assert all(epoch["aggregate_process_rss"]["method"] == "unsupported" for epoch in epochs)
+    assert all(epoch["child_process_io"]["method"] == "unsupported" for epoch in epochs)
+
+
+@pytest.mark.parametrize("method", ("proc_pid_rusage_phys_footprint", "proc_pid_rusage_peak_rss", "resident_size", None))
+def test_native_macos_child_rss_rejects_footprint_peak_and_missing_method(tmp_path: Path, method: str | None) -> None:
+    summary, children, workload = _native_product_fixture(tmp_path, sampling=True, host_os="macos")
+    summary["detail"]["native_resource_observation"]["epochs"][0]["child_rss"]["method"] = method
+    with pytest.raises(ValueError, match="native macOS child RSS method is unsupported"):
+        _native_validate(summary, children, workload, expected_resource_sampling=True)

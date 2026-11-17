@@ -5,6 +5,7 @@
 //! serves its independently fixed row count. These entry tests do not claim a
 //! mid-loop interruption; direct BudgetProbe/collector tests cover that layer.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/source_fixture.rs"]

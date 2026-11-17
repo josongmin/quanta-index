@@ -11,6 +11,7 @@
 //! The budget is injected small here so the corpus stays small; the
 //! production default lives in core's `LexicalExecutionBudgetV1::DEFAULT`.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/source_fixture.rs"]

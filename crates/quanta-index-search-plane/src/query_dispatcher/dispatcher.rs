@@ -8,11 +8,11 @@ use std::time::Instant;
 use quanta_index_contract::{
     ActiveGenerationResolutionV1, ClusterMembershipBatchReadRequestV1, CurrentGenerationRequest,
     EarlyStopReason, GenerationPin, GoTestTraceFileQueryRequestV1, HistoryQueryRequest,
-    HybridQueryRequest, HybridSeedQueryRequest, RepoMapQueryRequest, RuntimeMetadataQueryRequest,
-    SearchCorpusActiveHeadV1, SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, SearchPlaneTrackKind, SemanticQueryRequest,
-    SemanticWorkBoundedQueryRequestV1, SemanticWorkBoundedQueryResponseV1, StructuralQueryRequest,
-    SymbolQueryRequest, TextQueryRequest,
+    HybridFileQueryRequestV1, HybridQueryRequest, HybridSeedQueryRequest, RepoMapQueryRequest,
+    RuntimeMetadataQueryRequest, SearchCorpusActiveHeadV1, SearchPlaneExplainQueryRequest,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
+    SemanticQueryRequest, SemanticWorkBoundedQueryRequestV1, SemanticWorkBoundedQueryResponseV1,
+    StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
 };
 use quanta_index_core::domains::structural::StructuralProducerPort;
 use quanta_index_core::{
@@ -228,6 +228,9 @@ impl SearchPlaneDispatcher {
                 self.dispatch_semantic_work_bounded_v1(req, budget)
             }
             SearchPlaneQueryIpcRequest::Hybrid(req) => self.dispatch_hybrid(req, budget),
+            SearchPlaneQueryIpcRequest::HybridFileV1(req) => {
+                self.dispatch_hybrid_file(&req, budget)
+            }
             SearchPlaneQueryIpcRequest::GoTestTraceFileV1(req) => {
                 self.dispatch_go_test_trace_file(&req, budget)
             }
@@ -505,7 +508,11 @@ impl SearchPlaneDispatcher {
                 let bounded_budget = budget
                     .clone()
                     .with_semantic_work_limit_v1(request.max_work_units)?;
-                let response = self.semantic_query(request.query, &bounded_budget)?;
+                let response = self.semantic_with_canonical_ties(
+                    &request.query,
+                    &bounded_budget,
+                    request.canonical_ties,
+                )?;
                 let charged_work_units = bounded_budget
                     .semantic_work_consumed_v1()?
                     .ok_or_else(|| CoreError::InvalidContract(
@@ -519,6 +526,7 @@ impl SearchPlaneDispatcher {
                 Ok(SemanticWorkBoundedQueryResponseV1 {
                     query: response,
                     charged_work_units,
+                    canonical_ties: request.canonical_ties,
                 })
             };
             match execute() {
@@ -574,6 +582,32 @@ impl SearchPlaneDispatcher {
                 Err(err) => {
                     self.emit_error_metric(requested_pin.as_ref(), &err);
                     SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+                }
+            }
+        })
+    }
+
+    fn dispatch_hybrid_file(
+        &self,
+        request: &HybridFileQueryRequestV1,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
+        let requested_pin = request.query.text_query.generation.as_ref();
+        self.observed_route(QueryRoute::Hybrid, requested_pin, || {
+            match self.hybrid_file(request, budget) {
+                Ok(response) => {
+                    self.emit_planner_metric(&response.generation);
+                    self.emit_engine_activity_metrics(
+                        &response.generation,
+                        response.explanation.engines_executed.len(),
+                        response.explanation.engines_touched.len(),
+                    );
+                    self.emit_merge_count_metric(&response.generation, response.results.len());
+                    SearchPlaneQueryIpcResponse::HybridFileV1(response)
+                }
+                Err(error) => {
+                    self.emit_error_metric(requested_pin, &error);
+                    SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(error))
                 }
             }
         })

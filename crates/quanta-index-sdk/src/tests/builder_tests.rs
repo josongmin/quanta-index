@@ -277,6 +277,7 @@ fn hybrid_builder_dispatches_go_trace_file_request_without_changing_lane_budget(
                 lexical_window: QueryResultWindowV2::exact_probe(0),
                 dense_window: QueryResultWindowV2::exact_probe(0),
                 frame_class: quanta_index_contract::GoTestTraceFrameClassV1::Exact,
+                rank_pools: None,
                 explanation: sample_explanation(),
             },
         ),
@@ -300,8 +301,382 @@ fn hybrid_builder_dispatches_go_trace_file_request_without_changing_lane_budget(
     assert_eq!(request.query.top_k, 100);
     assert_eq!(request.query.text_query.top_k, 100);
     assert_eq!(request.top_k, 20);
+    assert!(!request.include_rank_pools);
     assert_eq!(request.failure_excerpt, "handler.go:42: panic");
     assert_eq!(request.query.semantic_query_text, "handler panic");
+}
+
+#[test]
+fn hybrid_builder_opts_into_same_call_go_trace_rank_pools() {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::GoTestTraceFileV1(
+            quanta_index_contract::GoTestTraceFileQueryResponseV1 {
+                generation: sample_generation_pin(),
+                selected_active_head: None,
+                results: Vec::new(),
+                lexical_window: QueryResultWindowV2::exact_probe(0),
+                dense_window: QueryResultWindowV2::exact_probe(0),
+                frame_class: quanta_index_contract::GoTestTraceFrameClassV1::Exact,
+                rank_pools: Some(quanta_index_contract::GoTestTraceFileRankPoolsV1 {
+                    lexical: Vec::new(),
+                    dense: Vec::new(),
+                }),
+                explanation: sample_explanation(),
+            },
+        ),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let result = client
+        .search()
+        .hybrid()
+        .native("panic")
+        .semantic_text("handler panic")
+        .pinned(sample_generation_pin())
+        .top_k(100)
+        .go_test_trace_file_with_rank_pools(None, None, "handler.go:42: panic", 20);
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        result
+            .ok()
+            .and_then(|response| response.rank_pools)
+            .is_some()
+    );
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::GoTestTraceFileV1(request) =
+        captured.payload
+    else {
+        panic!("expected GoTestTraceFileV1 request");
+    };
+    assert!(request.include_rank_pools);
+    assert_eq!(request.query.top_k, 100);
+    assert_eq!(request.top_k, 20);
+}
+
+#[test]
+fn hybrid_file_builder_keeps_chunk_and_file_caps_distinct() {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::HybridFileV1(
+            quanta_index_contract::HybridFileQueryResponseV1 {
+                generation: sample_generation_pin(),
+                selected_active_head: None,
+                file_top_k: 100,
+                bounded_file_count: 0,
+                lexical_pool_sha256: quanta_index_contract::hybrid_file_candidate_pool_sha256_v1(
+                    &sample_generation_pin(),
+                    &[],
+                )
+                .expect("empty pool digest"),
+                dense_pool_sha256: quanta_index_contract::hybrid_file_candidate_pool_sha256_v1(
+                    &sample_generation_pin(),
+                    &[],
+                )
+                .expect("empty pool digest"),
+                results: Vec::new(),
+                lexical_window: QueryResultWindowV2::exact_probe(0),
+                dense_window: QueryResultWindowV2::exact_probe(0),
+                explanation: sample_explanation(),
+            },
+        ),
+    ));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let result = client
+        .search()
+        .hybrid()
+        .native("handler")
+        .semantic_text("handler")
+        .pinned(sample_generation_pin())
+        .top_k(1_000)
+        .files(100);
+    assert!(result.is_ok(), "{result:?}");
+    let captured = ok_or_fail!(only_query_request(query.as_ref()));
+    let quanta_index_contract::SearchPlaneQueryIpcRequest::HybridFileV1(request) = captured.payload
+    else {
+        panic!("expected HybridFileV1 request");
+    };
+    assert_eq!(
+        (
+            request.query.top_k,
+            request.query.text_query.top_k,
+            request.file_top_k
+        ),
+        (1_000, 1_000, 100)
+    );
+}
+
+#[test]
+fn hybrid_file_builder_refuses_response_file_cap_drift() {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::HybridFileV1(
+            quanta_index_contract::HybridFileQueryResponseV1 {
+                generation: sample_generation_pin(),
+                selected_active_head: None,
+                file_top_k: 9,
+                bounded_file_count: 0,
+                lexical_pool_sha256: quanta_index_contract::hybrid_file_candidate_pool_sha256_v1(
+                    &sample_generation_pin(),
+                    &[],
+                )
+                .expect("empty pool digest"),
+                dense_pool_sha256: quanta_index_contract::hybrid_file_candidate_pool_sha256_v1(
+                    &sample_generation_pin(),
+                    &[],
+                )
+                .expect("empty pool digest"),
+                results: Vec::new(),
+                lexical_window: QueryResultWindowV2::exact_probe(0),
+                dense_window: QueryResultWindowV2::exact_probe(0),
+                explanation: sample_explanation(),
+            },
+        ),
+    ));
+    let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
+    let result = client
+        .search()
+        .hybrid()
+        .native("handler")
+        .semantic_text("handler")
+        .pinned(sample_generation_pin())
+        .top_k(10)
+        .files(10);
+    assert!(matches!(
+        result,
+        Err(crate::SdkError::Binding {
+            axis: crate::ResponseBindingAxis::Cardinality,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn hybrid_file_builder_refuses_invalid_cap_before_transport() {
+    let query = unused_query();
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let result = client
+        .search()
+        .hybrid()
+        .native("handler")
+        .semantic_text("handler")
+        .pinned(sample_generation_pin())
+        .top_k(10)
+        .files(11);
+    assert!(
+        matches!(result, Err(crate::SdkError::Usage(_))),
+        "{result:?}"
+    );
+    assert_eq!(ok_or_fail!(query.requests.lock()).len(), 0);
+}
+
+fn hybrid_file_binding_fixture() -> quanta_index_contract::HybridFileQueryResponseV1 {
+    let pin = sample_generation_pin();
+    let candidates = [("file-a", "src/a.rs"), ("file-b", "src/b.rs")].map(|(id, path)| {
+        let mut candidate = binding_hit(id, 0.9);
+        candidate.repo_relative_path = RepoRelativePath::new(path);
+        candidate
+    });
+    let lexical_pool_sha256 = ok_or_fail!(
+        quanta_index_contract::hybrid_file_candidate_pool_sha256_v1(&pin, &candidates)
+    );
+    let dense_pool_sha256 = ok_or_fail!(
+        quanta_index_contract::hybrid_file_candidate_pool_sha256_v1(&pin, &[])
+    );
+    let results = candidates
+        .into_iter()
+        .zip([(1, 1.0 / 61.0), (2, 1.0 / 62.0)])
+        .map(
+            |(candidate, (rank, score))| quanta_index_contract::HybridFileHitV1 {
+                file: SourceFileKey {
+                    source_repo_id: candidate.source_repo_id.clone(),
+                    repo_relative_path: candidate.repo_relative_path.clone(),
+                },
+                lexical: Some(quanta_index_contract::HybridFileLaneWitnessV1 {
+                    file_rank: rank,
+                    chunk_rank: rank,
+                    candidate,
+                }),
+                dense: None,
+                file_rrf_score: score,
+            },
+        )
+        .collect();
+    quanta_index_contract::HybridFileQueryResponseV1 {
+        generation: pin,
+        selected_active_head: None,
+        file_top_k: 2,
+        bounded_file_count: 2,
+        lexical_pool_sha256,
+        dense_pool_sha256,
+        results,
+        lexical_window: QueryResultWindowV2::exact_probe(2),
+        dense_window: QueryResultWindowV2::exact_probe(0),
+        explanation: sample_explanation(),
+    }
+}
+
+fn execute_hybrid_file_with(
+    response: quanta_index_contract::HybridFileQueryResponseV1,
+    lane_cap: u32,
+    file_cap: u32,
+) -> Result<quanta_index_contract::HybridFileQueryResponseV1, crate::SdkError> {
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::HybridFileV1(response),
+    ));
+    let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
+    client
+        .search()
+        .hybrid()
+        .native("needle")
+        .semantic_text("where the needle is kept")
+        .pinned(sample_generation_pin())
+        .top_k(lane_cap)
+        .files(file_cap)
+}
+
+#[test]
+fn hybrid_file_typed_transport_preserves_the_independent_file_ranking() {
+    let response = ok_or_fail!(execute_hybrid_file_with(
+        hybrid_file_binding_fixture(),
+        2,
+        2
+    ));
+    let rows = response
+        .results
+        .iter()
+        .map(|hit| (hit.file.repo_relative_path.as_str(), hit.file_rrf_score))
+        .collect::<Vec<_>>();
+    assert_eq!(rows, [("src/a.rs", 1.0 / 61.0), ("src/b.rs", 1.0 / 62.0)]);
+}
+
+/// Typed transports bypass wire validation; malformed rankings must retain
+/// the same ranking axis as the ordinary Hybrid response.
+#[test]
+fn hybrid_file_typed_transport_refuses_invalid_rankings_on_the_ranking_axis() {
+    let good = hybrid_file_binding_fixture();
+    let mut wrong_score = good.clone();
+    let Some(first) = wrong_score.results.first_mut() else {
+        panic!("the fixed fixture has two files");
+    };
+    first.file_rrf_score = 1.0;
+    let mut wrong_order = good.clone();
+    wrong_order.results.reverse();
+    let mut repeated_file = good;
+    let Some(first) = repeated_file.results.first().cloned() else {
+        panic!("the fixed fixture has two files");
+    };
+    let Some(last) = repeated_file.results.last_mut() else {
+        panic!("the fixed fixture has two files");
+    };
+    *last = first;
+    for (case, response) in [
+        ("score", wrong_score),
+        ("order", wrong_order),
+        ("repeated file", repeated_file),
+    ] {
+        let Err(error) = execute_hybrid_file_with(response, 2, 2) else {
+            panic!("{case}: an invalid typed ranking must be refused");
+        };
+        assert!(
+            matches!(
+                error,
+                crate::SdkError::Binding {
+                    axis: crate::ResponseBindingAxis::RankingOrder,
+                    ..
+                }
+            ),
+            "{case}: expected ranking refusal, got {error:?}"
+        );
+        let rendered = error.to_string();
+        assert!(!rendered.contains("file-a") && !rendered.contains("src/a.rs"));
+    }
+}
+
+#[test]
+fn hybrid_file_typed_transport_preserves_file_and_lane_cap_refusals() {
+    let mut excess_files = hybrid_file_binding_fixture();
+    excess_files.file_top_k = 1;
+    let mut excess_lane = hybrid_file_binding_fixture();
+    excess_lane.lexical_window = QueryResultWindowV2::exact_probe(3);
+    for (case, response, file_cap) in [("file cap", excess_files, 1), ("lane cap", excess_lane, 2)]
+    {
+        let Err(error) = execute_hybrid_file_with(response, 2, file_cap) else {
+            panic!("{case}: a response exceeding the request cap must be refused");
+        };
+        assert!(
+            matches!(
+                error,
+                crate::SdkError::Binding {
+                    axis: crate::ResponseBindingAxis::Cardinality,
+                    ..
+                }
+            ),
+            "{case}: expected cap refusal, got {error:?}"
+        );
+    }
+}
+
+#[test]
+fn hybrid_file_typed_transport_refuses_invalid_bounded_pool_evidence() {
+    let mut wrong_count = hybrid_file_binding_fixture();
+    wrong_count.bounded_file_count = 0;
+    let mut wrong_empty_digest = hybrid_file_binding_fixture();
+    wrong_empty_digest.dense_pool_sha256 = [255; 32];
+    for response in [wrong_count, wrong_empty_digest] {
+        let Err(error) = execute_hybrid_file_with(response, 2, 2) else {
+            panic!("invalid bounded pool evidence must be refused");
+        };
+        assert!(matches!(
+            error,
+            crate::SdkError::Binding {
+                axis: crate::ResponseBindingAxis::RankingOrder,
+                ..
+            }
+        ));
+    }
+}
+
+#[test]
+fn hybrid_file_typed_transport_keeps_both_explicit_pin_checks() {
+    let returned_pin = sample_generation_pin();
+    let conflicting_pin = quanta_index_contract::GenerationPin::new(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(8),
+    );
+    for conflict_in_outer_query in [true, false] {
+        let query = Arc::new(StubQueryTransport::new(
+            SearchPlaneQueryIpcResponse::HybridFileV1(hybrid_file_binding_fixture()),
+        ));
+        let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
+        let request = quanta_index_contract::HybridFileQueryRequestV1 {
+            query: quanta_index_contract::HybridQueryRequest {
+                text_query: quanta_index_contract::TextQueryRequest {
+                    syntax: quanta_index_contract::TextQuerySyntax::Native,
+                    query_text: "needle".into(),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                    generation: Some(if conflict_in_outer_query {
+                        returned_pin.clone()
+                    } else {
+                        conflicting_pin.clone()
+                    }),
+                    generation_selector: Some(GenerationSelector::Pinned(returned_pin.clone())),
+                    top_k: 2,
+                    cursor: None,
+                },
+                semantic_query_text: "where the needle is kept".into(),
+                generation: Some(if conflict_in_outer_query {
+                    conflicting_pin.clone()
+                } else {
+                    returned_pin.clone()
+                }),
+                generation_selector: Some(GenerationSelector::Pinned(returned_pin.clone())),
+                top_k: 2,
+            },
+            file_top_k: 2,
+        };
+        assert!(matches!(
+            client.search().hybrid_file_request(request),
+            Err(crate::SdkError::Protocol(_))
+        ));
+    }
 }
 
 #[test]
@@ -334,6 +709,7 @@ fn go_trace_file_builder_refuses_frame_class_drift_from_raw_request() {
                 lexical_window: QueryResultWindowV2::exact_probe(0),
                 dense_window: QueryResultWindowV2::exact_probe(0),
                 frame_class: quanta_index_contract::GoTestTraceFrameClassV1::Unresolved,
+                rank_pools: None,
                 explanation: sample_explanation(),
             },
         ),

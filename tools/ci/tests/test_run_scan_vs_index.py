@@ -29,6 +29,7 @@ HEAD = "0123456789abcdef0123456789abcdef01234567"
 # `rg`/`grep` have bytes to scan, and printing a schema-2 artifact.
 FAKE_BIN = """\
 import json, os, sys
+assert os.path.basename(os.getcwd()) == "legacy-checkout"
 args = sys.argv[1:]
 known = {"--out-dir", "--index-dir", "--artifact-out", "--chunks", "--chunk-bytes",
          "--needle-count", "--samples"}
@@ -78,6 +79,8 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     import os
 
+    legacy_checkout = tmp_path / "legacy-checkout"
+    legacy_checkout.mkdir(exist_ok=True)
     return subprocess.run(
         [
             sys.executable,
@@ -94,6 +97,8 @@ def _run(
             str(tmp_path / "report" / "scan-vs-index"),
             "--bin-cmd",
             bin_cmd,
+            "--bin-cwd",
+            str(legacy_checkout),
         ],
         cwd=REPO_ROOT,
         check=False,
@@ -101,6 +106,18 @@ def _run(
         text=True,
         env={**os.environ, **(env or {})},
     )
+
+
+def test_runner_requires_the_legacy_binary_and_its_checkout() -> None:
+    result = subprocess.run(
+        [sys.executable, str(RUNNER_PATH)],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "--bin-cmd, --bin-cwd" in result.stderr
 
 
 def test_the_runner_drives_the_binary_without_a_fingerprint_and_keeps_artifacts(

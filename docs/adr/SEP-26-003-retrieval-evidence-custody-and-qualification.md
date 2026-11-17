@@ -71,6 +71,20 @@ Qualified quality keeps graded density-aware NDCG@10 as the primary metric when 
 Exact-span recall, MRR, Hit@1, context cost and abstention are secondary metrics. Quiet-host query and ingest latency
 are distinct from functional correctness.
 
+The Native holdout covers actual file discovery, identifiers, hard negatives and
+unanswerable queries. Combine independent source review with blind judging of
+the pooled candidates. Bind judgments to the repository, pre-change commit and
+file universe. Public benchmarks inform case design. Use the frozen Native DoD
+for the evaluation denominator. [Native holdout DoD](../plans/nov-12-native-cutover/DOD.md#독립-홀드아웃-실행과-판정) ·
+[CORE-Bench](https://aclanthology.org/2026.emnlp-main.1604/) ·
+[NIST qrels](https://trec.nist.gov/data/reljudge_eng.html)
+
+The isolated Zoekt comparison covers common lexical features on the same source,
+cache conditions and hardware. Record build, visibility, query and space
+separately. The Native SDK and E07 gates cover whole product costs.
+[Zoekt design](https://github.com/sourcegraph/zoekt/blob/main/doc/design.md) ·
+[E07 profiles](../plans/oct-22-finalizing/E07-performance-operations.md#fixed-profiles-and-oracles)
+
 ### Retrieval artifact and scoring contract
 
 Consolidated from the former retrieval README; executable schemas and evaluator
@@ -155,6 +169,85 @@ model/source/receipt admission and paired uncertainty. Current admission state i
 The report is evidence only for the supplied frozen suite, pinned repository
 and runner record. No arbitrary pass threshold or claim of production retrieval
 quality is inferred.
+
+### Native file replay
+
+Bind the capture and blind pack to the same frozen suite and source provenance.
+Composite inputs require release verification and the corresponding source
+universe and binding digests. Recompute the selected CatalogView's canonical
+digest. Schema 2 verifies the retained profile's session and view and requires
+distinct Text, Semantic and File instances in that profile. Each query must
+keep the session, view, configured instances, lexical artifact and semantic
+coverage bound by the capture. An empty Hybrid result for an unanswerable task
+requires `ExactExhausted` with zero skipped stale owners. Otherwise replay
+refuses the evidence. Valid approximate positives and observed false positives
+remain scoreable under the existing rubric. Replay and formal SDK holdout
+qualification have separate gates. See the
+[replay validator](../../tools/benchmark/retrieval/native_file_evidence.py) and
+[integration evidence](../plans/nov-12-native-cutover/tickets/NC-F-integration.md#f--legacy-retention-and-native-score-evidence--2026-11-14).
+
+Reconstruct Native file RRF in binary64: round each present lane's
+`1.0 / (60.0 + rank)`, add lexical then dense, and sort by descending score
+then ascending owner. An absent lane contributes zero. Require the exact fused
+owner list, lane ranks and score from the bounded pools. Equal rational sums
+can differ after binary64 rounding; rational arithmetic cannot decide their
+tie. The fixed regression uses ranks `(12, 28)` and `(6, 39)` with independent
+hexadecimal score expectations. See the
+[wire ranker](../../crates/quanta-index-contract/src/native_protocol/read_session/ranking.rs)
+and [replay regression](../../tools/ci/tests/test_native_file_evidence.py).
+
+### Native Large executable binding
+
+The existing [Large helper](../../crates/quanta-index-searchd-runtime/tests/native_product_process/large_restart.rs)
+accepts QIDX_NATIVE_LARGE_RELEASE_BIN and QIDX_NATIVE_LARGE_RELEASE_SHA256 as a
+pair. It authenticates the executable bytes before preparation and both restarts,
+and verifies them again after the final stop. Mismatch-before-spawn and
+replacement regressions are present. With neither input it uses the Cargo test
+binary and retains component scope; a supplied digest alone is not signed
+installation or release qualification. Reuse this helper in the same original
+4,096-source/owner/repository/global-rank/two-restart product gate.
+
+Mixed [managed Native builds](../../tools/benchmark/retrieval/causal_cost_build.py)
+still specify the bench profile. Local build/binary custody does not establish
+signed shipping-release identity. The existing [retirement gate](../plans/nov-12-native-cutover/TANTIVY-RETIREMENT.md#출하-바이너리와-벤치-연결의-선행-작업)
+requires actual release-daemon/config/install binding and the benchmark caller's
+own build receipt; that remains implementation/qualification work with F.
+
+### Native quality and controlled capture
+
+The [Native file runtime binder](../../benchmarks/retrieval/src/native_file_runtime.rs),
+[quality decision](../../tools/benchmark/retrieval/native_file_decision.py) and
+[existing decision CLI](../../tools/benchmark/retrieval/decision.py) are implemented
+source contracts. The same canonical family replay verifies frozen suite/pack/
+pool/source/release inputs before repository-weighted metrics and fixed quality,
+sample/strata and measured-latency gates. Native families use the existing
+repository_cluster_ci_from_native_families path and repository-weighted pairs
+before repository_cluster_ci. Unequal family/query counts keep equal repository
+weight; the single-suite report adapter is not substituted for Native families. Repeated, missing, partial, stale or
+changed inputs refuse; fixture success is not a new live SDK observation.
+
+Optional Linux connected-image capture requires daemon-binary, daemon-config
+and decision-policy together and uses the retained kernel peer descriptor with
+actual config/policy/runner inputs. Field agreement in a saved capture is not
+independent proof of process execution, installation or the 960-second operating
+profile. Native view/file/provenance and raw family membership remain required.
+
+The existing [controlled capture](../../tools/benchmark/native_file_capture.py)
+reuses CaptureEpoch/RunStore and the registered native-file-capture profile.
+The --native-execution-root and --native-execution-runs options must appear together. Replay
+checks complete family/run membership, actual subprocess/raw capture and the
+same code, lockfile and registry against the frozen plan. A plan without its
+real inputs is not runnable; a no-op module exit is not capture success.
+This creates no second execution system or installation attestor.
+
+quality_admit/quality_reject is bounded quality replay and capture consistency.
+controlled_capture_verified covers owned subprocess records and replayed raw
+capture only. execution_binding_verified, runtime_qualified and
+product_default_decision remain false; no adapter may flip them from a report
+or fixture. Actual independent Linux SDK/daemon, signed installed candidate,
+DEV/EVAL isolation and required runtime/product gates retain their own evidence.
+Historical or selected policy/API/fixture passes cannot qualify the full guard
+set, whole source cohort or product default. See [current F scope](../plans/nov-12-native-cutover/tickets/NC-F-integration.md).
 
 ### Corpus, isolation and paired decision boundaries
 

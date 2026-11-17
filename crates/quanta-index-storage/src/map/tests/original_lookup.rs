@@ -87,6 +87,23 @@ fn batch_lookup_matches_independent_values_order_absence_and_refusals() -> TestR
         Err(IndexError::ResourceLimited)
     ));
     check_eq!(tracker.live.load(Ordering::Relaxed), 0);
+
+    let mut empty_work = budget()?;
+    let memory = array_scope(MemoryLifetime::Temporary, None, &mut empty_work);
+    let mut empty_values = [Some(object.into()); 2];
+    store.lookup_batch(
+        MapRoot(None),
+        &[b"left", b"right"],
+        &mut empty_values,
+        &mut empty_work,
+    )?;
+    check_eq!(empty_values, [None, None]);
+    check_eq!(memory.refused.load(Ordering::Relaxed), 0);
+    check_eq!(empty_work.usage().reads, 0);
+    check_eq!(
+        empty_work.usage().bytes,
+        u64::try_from(2 * std::mem::size_of::<Option<MapValue>>() + 18)?
+    );
     Ok(())
 }
 

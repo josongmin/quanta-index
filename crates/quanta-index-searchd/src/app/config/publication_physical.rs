@@ -125,6 +125,14 @@ pub const TEST_STATE_ROOT_PHYSICAL_POLICY: LegacyPublicationPhysicalPolicy =
     };
 
 impl LegacyPublicationPhysicalPolicy {
+    /// Decode the same all-or-none policy from explicit retained input. This
+    /// never reads process environment or installs deployment/test defaults.
+    pub fn from_explicit_lookup_v1(
+        lookup: &dyn Fn(&str) -> Result<Option<String>>,
+    ) -> Result<Option<Self>> {
+        from_lookup(lookup)
+    }
+
     /// Reject impossible capacity windows before opening a leased state root.
     pub fn validate(self) -> Result<Self> {
         let inventory = self.inventory;

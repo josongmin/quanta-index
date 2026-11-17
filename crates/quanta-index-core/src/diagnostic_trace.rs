@@ -407,6 +407,26 @@ pub enum DiagnosticCounterV1 {
     WorkWrites,
     WorkBytes,
     WorkMutations,
+    /// Complete cold-owner shape; case-prefixed occurrence/unique key totals.
+    /// Only an exact completed tuple contributes to TextShapeCompleteOwners.
+    TextCaseOccurrences,
+    TextUniqueCanonicalTerms,
+    TextOccurrenceKeyBytes,
+    TextUniqueKeyBytes,
+    /// Mutually exclusive actual completed output paths, not attempted plans.
+    TextColdAliasOwners,
+    TextColdDirectOwners,
+    TextColdSqlOwners,
+    TextColdEmptyOwners,
+    TextShapeCompleteOwners,
+    /// Underlying object-port calls in one `SourceApply` or `BuildPrepare` phase.
+    /// A `get` can be served by the OS cache; these are not device I/O counts.
+    ObjectPortGetCalls,
+    ObjectPortGetSucceeded,
+    ObjectPortGetWireBytes,
+    ObjectPortRetainedCalls,
+    ObjectPortRetainedSucceeded,
+    ObjectPortRetainedWireBytes,
     /// CPU consumed by the same thread within one observed span. Nested spans
     /// overlap and their values must not be added together.
     ThreadCpuNs,
@@ -429,7 +449,8 @@ pub enum DiagnosticCounterV1 {
     SqliteWriteLowerEnvelopeElapsedNs,
     SqliteWritePostCallbackElapsedNs,
     SqliteWritePostCallbackRefusals,
-    /// Same-connection pager deltas during one Catalog connection lock.
+    /// Same-connection pager deltas during one Catalog connection lock or one
+    /// sampled native Posting SQL execution. Posting samples are not totals.
     /// Cache writes/spills count dirty pages, not VFS calls, bytes, or commits.
     /// All four keys are present together only after two successful snapshots.
     SqliteCacheHits,
@@ -473,12 +494,39 @@ pub enum DiagnosticCounterV1 {
     /// Entries passed to one reached managed reserve/confirm call, including
     /// retries and refusals. Not newly created files or confirmed registrations.
     ManagedObjectInputs,
+    /// Per physical managed install group: reached external edges, distinct
+    /// full references, and repeats protected by an already-held run gate.
+    /// These three diagnostic-only values are emitted together when observed.
+    ManagedObjectExternalChildReferences,
+    ManagedObjectUniqueExternalChildren,
+    ManagedObjectGuardedRepeatedExternalChildren,
+    /// Distinct planned guarded external refs also proven in a completed
+    /// earlier physical group. Diagnostic only; no cross-group fee credit.
+    ManagedObjectCrossGroupExternalChildOverlap,
+    /// Successful current full path checks for prior-group guarded refs,
+    /// including the accepted prefix of a failed physical group.
+    ManagedObjectCrossGroupRepeatedChildPathChecks,
+    /// All successful current child-path validations before group completion
+    /// or refusal. Counts actual checks, not planned edges or skipped checks.
+    ManagedObjectChildPathChecks,
+    /// Actual external-child path validations omitted before this physical
+    /// group's outcome, including the reached prefix of a failed group.
+    ManagedObjectReusedExternalChildValidations,
     /// Reached roots with a matching base and input edit fingerprint.
     MapRootReuseCandidates,
     /// Reached roots that shared a built root after scratch validation.
     MapRootReuses,
     /// Reached root build attempts, including a failed attempt.
     MapRootBuilds,
+    /// Next-value shapes of cursor positions actually yielded into a
+    /// scratch-backed MapApply, including a failed observed prefix. These are
+    /// not unique values, persisted nodes, or copy-frequency measurements.
+    MapInputNextAbsentValues,
+    MapInputNextObjectValues,
+    MapInputNextInlineValues,
+    MapInputNextInlineDataBytes,
+    MapInputNextInlineChildRefs,
+    MapInputNextWireBytes,
     /// Reached full occurrence-count validation calls on each inventory side.
     /// Includes failed calls; not physical I/O or unique-reference counts.
     TextOccurrencePriorValidationAttempts,
@@ -518,6 +566,7 @@ pub enum DiagnosticAnnRegionPhaseV1 {
 pub enum DiagnosticAnnIndexKindV1 {
     Flat,
     IvfHnswSq,
+    Hnsw,
 }
 
 /// One bounded region identity/shape observation.
@@ -525,7 +574,9 @@ pub enum DiagnosticAnnIndexKindV1 {
 /// `fileset_ref` identifies immutable bytes across installation and query;
 /// a selected query also binds
 /// the authenticated directory descriptor. Ordinals are directory-local;
-/// `chunks` counts file-manifest entries, not unique objects or bytes.
+/// `files` and `chunks` count logical backend entries: Native HNSW has one
+/// graph object/payload; file-backed modes use manifest entries. These are
+/// not physical files, FDs, extents, unique objects or allocated bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DiagnosticAnnRegionObservationV1 {
     pub phase: DiagnosticAnnRegionPhaseV1,

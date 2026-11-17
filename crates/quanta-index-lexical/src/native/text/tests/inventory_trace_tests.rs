@@ -357,3 +357,244 @@ fn inventory_trace_stages_preserve_work_and_close_under_lexical_parent() -> Resu
     }
     Ok(())
 }
+
+type ColdPrepareResult = Result<(u64, u64, bool, bool), IndexError>;
+type ColdPrepareRun = (
+    ColdPrepareResult,
+    WorkUsage,
+    Option<quanta_index_core::index::WorkBudgetDenial>,
+    String,
+);
+
+fn run_cold_prepare(
+    body: &str,
+    byte_limit: u64,
+    diagnostic: Option<DiagnosticContextV1>,
+) -> Result<ColdPrepareRun, IndexError> {
+    let fixture = visitor_fixture()?;
+    let request = RequestBudgetV1::for_duration(Duration::from_secs(30));
+    let request = if let Some(diagnostic) = diagnostic {
+        request.with_diagnostic_context(diagnostic)
+    } else {
+        request
+    };
+    let mut work = WorkBudget::with_request(
+        WorkLimits {
+            reads: 100_000,
+            writes: 100_000,
+            bytes: byte_limit,
+            mutations: 100_000,
+        },
+        request,
+    );
+    // This admits the optional token arena, then exercises the existing SQL
+    // output fallback when the packed child credit is unavailable.
+    let memory = Arc::new(TokenMemory {
+        ceiling: 16 * 1024 * 1024,
+        ..TokenMemory::default()
+    });
+    work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+        TokenMemoryScope(memory.clone()),
+    ))));
+    let scratch = TestScratch::default();
+    let custody = TestCustody;
+    let spool = TextSpool::new(&scratch, &mut work)?;
+    let mut edits = InventoryEdits::new(0)?;
+    let mut writes = OccurrenceWrites::new();
+    writes.pack_owners = true;
+    let mut confirmed = ConfirmedOccurrences::new(0)?;
+    let diagnostic = work.request().diagnostic_context().cloned();
+    let mut context = AttemptContext {
+        attempt: test_attempt(fixture.ticket.view.identity.workspace),
+        objects: &fixture.objects,
+        maps: &fixture.maps,
+        custody: &custody,
+        scratch: &scratch,
+        budget: &mut work,
+    };
+    let result = prepare_inventory(
+        body,
+        &EntryMap::default(),
+        0,
+        &mut context,
+        &spool,
+        &mut confirmed,
+        &mut edits,
+        &mut writes,
+    )
+    .map(|prepared| {
+        (
+            prepared.indexed_tokens,
+            prepared.term_count,
+            prepared.changed,
+            prepared.alias.is_some(),
+        )
+    });
+    drop((context, writes, edits, confirmed, spool));
+    check_eq!(memory.live.load(Ordering::Relaxed), 0);
+    check_budget_context_restored(&work, diagnostic.as_ref())?;
+    Ok((
+        result,
+        work.usage(),
+        work.first_denial(),
+        format!("{work:?}"),
+    ))
+}
+
+#[test]
+fn inventory_cold_prepare_work_lanes_preserve_off_record() -> Result<(), IndexError> {
+    let body = "Alpha alpha β";
+    let (off, off_usage, off_denial, _) = run_cold_prepare(body, 100_000_000, None)?;
+    let sink = Arc::new(TraceSink::default());
+    let trace = DiagnosticContextV1::new(
+        DiagnosticCaptureIdV1([78; 16]),
+        Arc::new(TraceClock::default()),
+        sink.clone(),
+    );
+    let operation = trace
+        .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))
+        .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
+    let (recorded, recorded_usage, recorded_denial, _) =
+        run_cold_prepare(body, 100_000_000, Some(trace.child_context(&operation)))?;
+    operation
+        .finish(DiagnosticTerminalV1::Ok)
+        .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
+
+    check_eq!(off?, (3, 5, true, false));
+    check_eq!(recorded?, (3, 5, true, false));
+    check_eq!(recorded_usage, off_usage);
+    check_eq!(off_denial, None);
+    check_eq!(recorded_denial, None);
+
+    let events = sink
+        .0
+        .lock()
+        .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
+    let mut parents = BTreeMap::new();
+    let mut lanes = BTreeMap::new();
+    let mut stages = BTreeMap::new();
+    let mut bytes = BTreeMap::new();
+    let mut terminals = BTreeMap::new();
+    for event in events.iter() {
+        match event.kind {
+            DiagnosticEventKindV1::SpanBegin {
+                span_id,
+                parent_span_id,
+                stage,
+                lane,
+                ..
+            } => {
+                check!(parents.insert(span_id, parent_span_id).is_none());
+                check!(stages.insert(span_id, stage).is_none());
+                check!(lanes.insert(span_id, lane).is_none());
+            }
+            DiagnosticEventKindV1::Counter {
+                span_id,
+                key: quanta_index_core::DiagnosticCounterV1::WorkBytes,
+                value,
+            } => {
+                check!(bytes.insert(span_id, value).is_none());
+            }
+            DiagnosticEventKindV1::SpanEnd { span_id, outcome } => {
+                check!(terminals.insert(span_id, outcome).is_none());
+            }
+            _ => {}
+        }
+    }
+    for (lane, parent_lane) in [(42, 34), (44, 34), (45, 34), (46, 35)] {
+        let matches = stages
+            .iter()
+            .filter(|(span_id, stage)| {
+                **stage == DiagnosticStageV1::NativeTextInventoryPrepare
+                    && lanes.get(span_id) == Some(&DiagnosticLaneV1(lane))
+            })
+            .collect::<Vec<_>>();
+        check_eq!(matches.len(), 1);
+        let span_id = *matches[0].0;
+        let parent =
+            parents.get(&span_id).copied().flatten().ok_or_else(|| {
+                IndexError::BackendViolation("cold Work lane lacks parent".into())
+            })?;
+        check_eq!(lanes.get(&parent), Some(&DiagnosticLaneV1(parent_lane)));
+        let child_bytes = *bytes
+            .get(&span_id)
+            .ok_or_else(|| IndexError::BackendViolation("cold Work lane lacks WorkBytes".into()))?;
+        check!(
+            bytes
+                .get(&parent)
+                .is_some_and(|total| *total >= child_bytes)
+        );
+        check_eq!(terminals.get(&span_id), Some(&DiagnosticTerminalV1::Ok));
+        if lane == 44 {
+            check!(child_bytes > 0);
+        }
+    }
+    check!(!stages.iter().any(|(span_id, stage)| {
+        *stage == DiagnosticStageV1::NativeTextInventoryPrepare
+            && lanes.get(span_id) == Some(&DiagnosticLaneV1(43))
+    }));
+    Ok(())
+}
+
+#[test]
+fn inventory_trace_work_refusal_preserves_first_denied_charge() -> Result<(), IndexError> {
+    let body = "Alpha alpha β";
+    let (baseline, baseline_usage, baseline_denial, _) = run_cold_prepare(body, 100_000_000, None)?;
+    check!(baseline.is_ok());
+    check_eq!(baseline_denial, None);
+    let limit = baseline_usage.bytes.checked_sub(1).ok_or_else(|| {
+        IndexError::BackendViolation("cold fixture has no billed WorkBytes".into())
+    })?;
+    let (off, off_usage, off_denial, off_budget_state) = run_cold_prepare(body, limit, None)?;
+    let sink = Arc::new(TraceSink::default());
+    let trace = DiagnosticContextV1::new(
+        DiagnosticCaptureIdV1([79; 16]),
+        Arc::new(TraceClock::default()),
+        sink.clone(),
+    );
+    let operation = trace
+        .enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(0))
+        .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
+    let (recorded, recorded_usage, recorded_denial, recorded_budget_state) =
+        run_cold_prepare(body, limit, Some(trace.child_context(&operation)))?;
+    operation
+        .finish(DiagnosticTerminalV1::Ok)
+        .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
+
+    check!(matches!(&off, Err(IndexError::ResourceLimited)));
+    check_eq!(format!("{off:?}"), format!("{recorded:?}"));
+    check_eq!(
+        off_denial,
+        Some(quanta_index_core::index::WorkBudgetDenial::Bytes)
+    );
+    check_eq!(recorded_denial, off_denial);
+    check_eq!(recorded_usage, off_usage);
+    check!(off_usage.bytes <= limit);
+    // WorkBudget debug includes the first denied charge's used, attempted,
+    // limit, axis, and caller; equality detects a changed failure prefix.
+    check!(off_budget_state.contains("denied_charge: Some"));
+    check_eq!(recorded_budget_state, off_budget_state);
+    let events = sink
+        .0
+        .lock()
+        .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
+    for lane in [42, 44] {
+        check!(events.iter().any(|event| matches!(
+            event.kind,
+            DiagnosticEventKindV1::SpanBegin {
+                stage: DiagnosticStageV1::NativeTextInventoryPrepare,
+                lane: DiagnosticLaneV1(observed),
+                ..
+            } if observed == lane
+        )));
+    }
+    check!(!events.iter().any(|event| matches!(
+        event.kind,
+        DiagnosticEventKindV1::SpanBegin {
+            stage: DiagnosticStageV1::NativeTextInventoryPrepare,
+            lane: DiagnosticLaneV1(43),
+            ..
+        }
+    )));
+    Ok(())
+}

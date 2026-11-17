@@ -1,3 +1,4 @@
+use quanta_index_contract::RepoId;
 use quanta_index_contract::index::{
     AttemptRef, CatalogView, IndexInstanceId, IngressRef, InputBinding, InstanceSpec, MapRoot,
     MemberBinding, ObjectRef, OperationStatus, OwnerKey, OwnerMutationSet, ProducerId, SourceCut,
@@ -47,48 +48,159 @@ impl SourcePathKey {
     }
 }
 
-/// A path's owner is fixed data, not a separately registered marker object.
-pub fn path_owner_map_value(owner: OwnerKey) -> Result<super::MapValue, super::IndexError> {
-    let mut bytes = [0; 32];
-    for (slot, value) in bytes
-        .iter_mut()
-        .zip(owner.producer.0.iter().chain(&owner.stable_id.0))
-    {
-        *slot = *value;
-    }
-    super::MapValue::inline(&bytes, None)
+/// A key inside one path's repository map. An empty suffix denotes the
+/// original owner whose source record has no repository identity.
+pub struct SourcePathRepositoryKey {
+    bytes: [u8; 5 + RepoId::MAX_UTF8_BYTES_V1],
+    len: usize,
 }
+
+impl SourcePathRepositoryKey {
+    pub fn new(repository: Option<&RepoId>) -> Result<Self, super::IndexError> {
+        const PREFIX: &[u8; 5] = b"repo\0";
+        let name = repository.map_or("", RepoId::as_str).as_bytes();
+        let mut bytes = [0; 5 + RepoId::MAX_UTF8_BYTES_V1];
+        bytes
+            .first_chunk_mut::<5>()
+            .ok_or(super::IndexError::ResourceLimited)?
+            .copy_from_slice(PREFIX);
+        let len = PREFIX
+            .len()
+            .checked_add(name.len())
+            .ok_or(super::IndexError::ResourceLimited)?;
+        bytes
+            .get_mut(PREFIX.len()..len)
+            .ok_or(super::IndexError::ResourceLimited)?
+            .copy_from_slice(name);
+        Ok(Self { bytes, len })
+    }
+
+    pub fn as_slice(&self) -> Result<&[u8], super::IndexError> {
+        self.bytes
+            .get(..self.len)
+            .ok_or(super::IndexError::ResourceLimited)
+    }
+}
+
+/// The value of an existing `path\0<relative path>` key. Keeping the
+/// repository map in the value preserves the path key's ordering and limit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourcePathOwners {
+    /// The original 32-byte owner record has no repository identity.
+    LegacyOwner(OwnerKey),
+    /// A nonempty repository-to-owner map reachable from the selected cut.
+    Repositories(ObjectRef),
+}
+
+impl SourcePathOwners {
+    const REPOSITORIES_TAG: &'static [u8] = b"source-path-repositories/v1";
+
+    pub fn encode(self) -> Result<super::MapValue, super::IndexError> {
+        match self {
+            Self::LegacyOwner(owner) => {
+                let mut bytes = [0; 32];
+                for (slot, value) in bytes
+                    .iter_mut()
+                    .zip(owner.producer.0.iter().chain(&owner.stable_id.0))
+                {
+                    *slot = *value;
+                }
+                super::MapValue::inline(&bytes, None)
+            }
+            Self::Repositories(root) => super::MapValue::inline(Self::REPOSITORIES_TAG, Some(root)),
+        }
+    }
+
+    pub fn decode(
+        value: super::MapValue,
+        budget: &super::WorkBudget,
+    ) -> Result<Self, super::IndexError> {
+        budget.checkpoint()?;
+        let super::MapValue::Inline(value) = value else {
+            return Err(super::IndexError::CorruptObject(
+                "path owner must be inline data".into(),
+            ));
+        };
+        let data = value.data()?;
+        match value.children()? {
+            [root] if data == Self::REPOSITORIES_TAG => Ok(Self::Repositories(*root)),
+            [] if data.len() == 32 => {
+                let (producer, stable) = data
+                    .split_at_checked(16)
+                    .ok_or(super::IndexError::ResourceLimited)?;
+                Ok(Self::LegacyOwner(OwnerKey {
+                    producer: ProducerId(
+                        producer
+                            .try_into()
+                            .map_err(|_error| super::IndexError::ResourceLimited)?,
+                    ),
+                    stable_id: StableOwnerId(
+                        stable
+                            .try_into()
+                            .map_err(|_error| super::IndexError::ResourceLimited)?,
+                    ),
+                }))
+            }
+            _ => Err(super::IndexError::CorruptObject(
+                "path owner data shape differs".into(),
+            )),
+        }
+    }
+
+    /// Reverse-check an already selected SourceRecord. The caller obtained this
+    /// value using the record's path and still checks the returned OwnerKey.
+    /// Legacy rows carry only their single owner. Bucket rows use the actual
+    /// repository of the record, including the distinct unscoped legacy slot.
+    pub fn owner_for_record(
+        self,
+        record: &SourceRecord,
+        maps: &dyn super::ports::PersistentMapPort,
+        budget: &mut super::WorkBudget,
+    ) -> Result<Option<OwnerKey>, super::IndexError> {
+        match self {
+            Self::LegacyOwner(owner) => Ok(Some(owner)),
+            Self::Repositories(root) => {
+                let key = SourcePathRepositoryKey::new(record.source_repo_id.as_ref())?;
+                Self::repository_owner(root, key.as_slice()?, maps, budget)
+            }
+        }
+    }
+
+    /// Read a leaf from a repository bucket using a canonical child key.
+    pub fn repository_owner(
+        root: ObjectRef,
+        key: &[u8],
+        maps: &dyn super::ports::PersistentMapPort,
+        budget: &mut super::WorkBudget,
+    ) -> Result<Option<OwnerKey>, super::IndexError> {
+        let marker = maps.lookup(MapRoot(Some(root)), key, budget)?;
+        match marker
+            .map(|value| Self::decode(value, budget))
+            .transpose()?
+        {
+            Some(Self::LegacyOwner(owner)) => Ok(Some(owner)),
+            None => Ok(None),
+            Some(Self::Repositories(_)) => Err(super::IndexError::CorruptObject(
+                "repository path owner must not have another child map".into(),
+            )),
+        }
+    }
+}
+
+pub fn path_owner_map_value(owner: OwnerKey) -> Result<super::MapValue, super::IndexError> {
+    SourcePathOwners::LegacyOwner(owner).encode()
+}
+
 pub fn owner_from_path_map_value(
     value: super::MapValue,
     budget: &super::WorkBudget,
 ) -> Result<OwnerKey, super::IndexError> {
-    budget.checkpoint()?;
-    let super::MapValue::Inline(value) = value else {
-        return Err(super::IndexError::CorruptObject(
-            "path owner must be inline data".into(),
-        ));
-    };
-    let data = value.data()?;
-    if !value.children()?.is_empty() || data.len() != 32 {
-        return Err(super::IndexError::CorruptObject(
-            "path owner data shape differs".into(),
-        ));
+    match SourcePathOwners::decode(value, budget)? {
+        SourcePathOwners::LegacyOwner(owner) => Ok(owner),
+        SourcePathOwners::Repositories(_) => Err(super::IndexError::InvalidInput(
+            "source path requires repository-aware selection".into(),
+        )),
     }
-    let (producer, stable) = data
-        .split_at_checked(16)
-        .ok_or(super::IndexError::ResourceLimited)?;
-    Ok(OwnerKey {
-        producer: ProducerId(
-            producer
-                .try_into()
-                .map_err(|_error| super::IndexError::ResourceLimited)?,
-        ),
-        stable_id: StableOwnerId(
-            stable
-                .try_into()
-                .map_err(|_error| super::IndexError::ResourceLimited)?,
-        ),
-    })
 }
 
 /// Canonical key for owner-scoped source, coverage and missing maps. Instance
@@ -153,6 +265,30 @@ pub struct SourceRecordOwner {
 }
 
 impl SourceRecordOwner {
+    /// Check whether the decode grant can also fund a shared wrapper after
+    /// parsing. Standalone records have no live memory authority.
+    #[must_use]
+    pub fn covers_shared_backing(&self, wrapper_bytes: usize) -> bool {
+        let SourceRecord {
+            path,
+            bytes: _,
+            byte_len: _,
+            text: _,
+            source_repo_id,
+        } = &self.record;
+        self._memory.as_ref().is_none_or(|memory| {
+            path.capacity()
+                .checked_add(
+                    source_repo_id
+                        .as_ref()
+                        .map_or(0, |repo| repo.backing_capacity()),
+                )
+                .and_then(|bytes| bytes.checked_add(wrapper_bytes))
+                .and_then(|bytes| u64::try_from(bytes).ok())
+                .is_some_and(|bytes| bytes <= memory.bytes())
+        })
+    }
+
     /// Admit conservative JSON backing before decode.
     ///
     /// Retain the allocation through use.
@@ -198,9 +334,17 @@ impl SourceRecordOwner {
             bytes: _,
             byte_len: _,
             text: _,
+            source_repo_id,
         } = &self.record;
-        let bytes =
-            u64::try_from(path.capacity()).map_err(|_error| super::IndexError::ResourceLimited)?;
+        let bytes = path
+            .capacity()
+            .checked_add(
+                source_repo_id
+                    .as_ref()
+                    .map_or(0, |repo| repo.backing_capacity()),
+            )
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(super::IndexError::ResourceLimited)?;
         let memory = if bytes == 0 {
             None
         } else {
@@ -211,9 +355,39 @@ impl SourceRecordOwner {
             record,
             _memory: original_memory,
         } = self;
-        // The replacement grant already covers the only owned record field.
+        // The replacement grant already covers the owned path and repository.
         drop(original_memory);
         Ok((record, memory))
+    }
+
+    /// Transfer only the path when the public result carries no repository ID.
+    pub fn into_retained_path(
+        self,
+        budget: &super::WorkBudget,
+    ) -> Result<(String, Option<super::MemoryLease>), super::IndexError> {
+        budget.checkpoint()?;
+        let bytes = u64::try_from(self.record.path.capacity())
+            .map_err(|_error| super::IndexError::ResourceLimited)?;
+        let memory = if bytes == 0 {
+            None
+        } else {
+            budget.reserve_memory(bytes, super::MemoryLifetime::Retained)?
+        };
+        budget.checkpoint()?;
+        let Self {
+            record,
+            _memory: original_memory,
+        } = self;
+        let SourceRecord {
+            path,
+            source_repo_id,
+            bytes: _,
+            byte_len: _,
+            text: _,
+        } = record;
+        drop(source_repo_id);
+        drop(original_memory);
+        Ok((path, memory))
     }
 
     /// Explicit standalone/test construction without registered live accounting.
@@ -314,6 +488,79 @@ mod source_record_owner_tests {
     }
 
     #[test]
+    fn source_path_owner_codec_keeps_legacy_rows_and_binds_repository_children()
+    -> Result<(), IndexError> {
+        let (budget, _) = work()?;
+        let legacy = OwnerKey {
+            producer: ProducerId([13; 16]),
+            stable_id: StableOwnerId([17; 16]),
+        };
+        let mut expected = [13; 32];
+        for byte in expected.iter_mut().skip(16) {
+            *byte = 17;
+        }
+        let old_wire = crate::index::MapValue::inline(&expected, None)?;
+        if path_owner_map_value(legacy)? != old_wire
+            || owner_from_path_map_value(old_wire, &budget)? != legacy
+        {
+            return Err(IndexError::BackendViolation(
+                "legacy path row changed".into(),
+            ));
+        }
+
+        let root = ObjectRef(Digest([71; 32]));
+        let value = SourcePathOwners::Repositories(root).encode()?;
+        if value.children()? != [root]
+            || SourcePathOwners::decode(value, &budget)? != SourcePathOwners::Repositories(root)
+            || !matches!(
+                owner_from_path_map_value(value, &budget),
+                Err(IndexError::InvalidInput(_))
+            )
+        {
+            return Err(IndexError::BackendViolation(
+                "repository path row changed".into(),
+            ));
+        }
+        for corrupt in [
+            crate::index::MapValue::inline(SourcePathOwners::REPOSITORIES_TAG, None)?,
+            crate::index::MapValue::inline(b"unknown", Some(root))?,
+        ] {
+            if !matches!(
+                SourcePathOwners::decode(corrupt, &budget),
+                Err(IndexError::CorruptObject(_))
+            ) {
+                return Err(IndexError::BackendViolation(
+                    "invalid repository path row".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn source_path_repository_keys_keep_unscoped_and_maximum_ids_distinct() -> Result<(), IndexError>
+    {
+        let legacy = SourcePathRepositoryKey::new(None)?;
+        let first =
+            RepoId::new("corp-a").map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+        let second =
+            RepoId::new("corp-b").map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+        let max = RepoId::new("x".repeat(RepoId::MAX_UTF8_BYTES_V1))
+            .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+        if legacy.as_slice()? != b"repo\0"
+            || SourcePathRepositoryKey::new(Some(&first))?.as_slice()? != b"repo\0corp-a"
+            || SourcePathRepositoryKey::new(Some(&second))?.as_slice()? != b"repo\0corp-b"
+            || SourcePathRepositoryKey::new(Some(&max))?.as_slice()?.len()
+                != 5 + RepoId::MAX_UTF8_BYTES_V1
+        {
+            return Err(IndexError::BackendViolation(
+                "source repository key changed".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn retained_transfer_keeps_fixed_record_and_overlapping_charge_without_clone()
     -> Result<(), IndexError> {
         let (budget, state) = work()?;
@@ -354,6 +601,41 @@ mod source_record_owner_tests {
         if state.live.load(Ordering::SeqCst) != 0 || state.releases.load(Ordering::SeqCst) != 2 {
             return Err(IndexError::BackendViolation(
                 "source output refund differs".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn path_only_transfer_refunds_repository_backing() -> Result<(), IndexError> {
+        let (budget, state) = work()?;
+        let mut record: SourceRecord = serde_json::from_slice(WIRE)
+            .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
+        record.source_repo_id = Some(
+            RepoId::new("authored-repository")
+                .map_err(|error| IndexError::BackendViolation(error.to_string()))?,
+        );
+        let wire = serde_json::to_vec(&record)
+            .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
+        let decoded = SourceRecordOwner::decode_json(&wire, &budget, MemoryLifetime::Temporary)?;
+        let pointer = decoded.path.as_ptr();
+        let path_bytes =
+            u64::try_from(decoded.path.capacity()).map_err(|_error| IndexError::ResourceLimited)?;
+        let (path, memory) = decoded.into_retained_path(&budget)?;
+        if path != "src/lib.rs"
+            || path.as_ptr() != pointer
+            || state.live.load(Ordering::SeqCst) != path_bytes
+            || state.retained_bytes.load(Ordering::SeqCst) != path_bytes
+        {
+            return Err(IndexError::BackendViolation(
+                "path transfer retained repository backing or copied the path".into(),
+            ));
+        }
+        drop(path);
+        drop(memory);
+        if state.live.load(Ordering::SeqCst) != 0 {
+            return Err(IndexError::BackendViolation(
+                "path storage did not refund".into(),
             ));
         }
         Ok(())
@@ -640,29 +922,95 @@ pub struct OrdinalMapEdit {
     inner: Arc<OrdinalMapEditData>,
 }
 
-/// The final shared cursor position owns its key and allocation charge.
+/// One shared cursor position retains only the canonical key and value wires.
 #[derive(Debug)]
-pub struct OrdinalMapEditData {
-    pub root: u32,
-    pub edit: MapEdit,
+struct OrdinalMapEditData {
+    root: u32,
+    key_len: u32,
+    expected_len: u16,
+    next_len: u16,
+    wire: Vec<u8>,
     memory: Option<super::MemoryLease>,
 }
 
 impl OrdinalMapEdit {
-    /// Standalone caller-owned input. Native producers use `copy_key` instead.
-    #[must_use]
-    pub fn unscoped(root: u32, edit: MapEdit) -> Self {
-        Self {
-            inner: Arc::new(OrdinalMapEditData {
-                root,
-                edit,
-                memory: None,
-            }),
-        }
+    fn wire_len(value: Option<super::MapValue>) -> Result<u16, super::IndexError> {
+        value.map_or(Ok(0), |value| {
+            u16::try_from(value.encoded_len()?).map_err(|_error| super::IndexError::ResourceLimited)
+        })
     }
 
-    pub fn allocation_bytes(key_bytes: usize) -> Result<u64, super::IndexError> {
-        let bytes = key_bytes
+    fn total_len(
+        key_bytes: usize,
+        expected_len: u16,
+        next_len: u16,
+    ) -> Result<usize, super::IndexError> {
+        key_bytes
+            .checked_add(usize::from(expected_len))
+            .and_then(|bytes| bytes.checked_add(usize::from(next_len)))
+            .ok_or(super::IndexError::ResourceLimited)
+    }
+
+    fn append_value(
+        wire: &mut Vec<u8>,
+        value: Option<super::MapValue>,
+        length: u16,
+    ) -> Result<(), super::IndexError> {
+        if let Some(value) = value {
+            let encoded = value.encoded()?;
+            let bytes = encoded.as_slice()?;
+            if bytes.len() != usize::from(length) {
+                return Err(super::IndexError::BackendViolation(
+                    "map value wire length changed during cursor construction".into(),
+                ));
+            }
+            wire.extend_from_slice(bytes);
+        } else if length != 0 {
+            return Err(super::IndexError::BackendViolation(
+                "absent map value has a cursor wire".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Standalone caller-owned input. Native producers use `copy_key` instead.
+    pub fn unscoped(root: u32, edit: MapEdit) -> Result<Self, super::IndexError> {
+        let key_len =
+            u32::try_from(edit.key.len()).map_err(|_error| super::IndexError::ResourceLimited)?;
+        let expected_len = Self::wire_len(edit.expected)?;
+        let next_len = Self::wire_len(edit.next)?;
+        let total = Self::total_len(edit.key.len(), expected_len, next_len)?;
+        let mut wire = edit.key;
+        wire.try_reserve_exact(total - wire.len())
+            .map_err(|_error| super::IndexError::ResourceLimited)?;
+        Self::append_value(&mut wire, edit.expected, expected_len)?;
+        Self::append_value(&mut wire, edit.next, next_len)?;
+        if wire.len() != total {
+            return Err(super::IndexError::BackendViolation(
+                "cursor wire length differs from canonical values".into(),
+            ));
+        }
+        Ok(Self {
+            inner: Arc::new(OrdinalMapEditData {
+                root,
+                key_len,
+                expected_len,
+                next_len,
+                wire,
+                memory: None,
+            }),
+        })
+    }
+
+    pub fn allocation_bytes(
+        key_bytes: usize,
+        expected: Option<super::MapValue>,
+        next: Option<super::MapValue>,
+    ) -> Result<u64, super::IndexError> {
+        let _key_len =
+            u32::try_from(key_bytes).map_err(|_error| super::IndexError::ResourceLimited)?;
+        let total = Self::total_len(key_bytes, Self::wire_len(expected)?, Self::wire_len(next)?)?;
+        let bytes = total
             .checked_add(std::mem::size_of::<OrdinalMapEditData>())
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<[usize; 2]>()))
             .ok_or(super::IndexError::ResourceLimited)?;
@@ -717,34 +1065,89 @@ impl OrdinalMapEdit {
         next: Option<super::MapValue>,
         budget: &super::WorkBudget,
     ) -> Result<Self, super::IndexError> {
+        budget.checkpoint()?;
         let length = parts.iter().try_fold(0usize, |length, part| {
             length
                 .checked_add(part.len())
                 .ok_or(super::IndexError::ResourceLimited)
         })?;
+        let key_len = u32::try_from(length).map_err(|_error| super::IndexError::ResourceLimited)?;
+        let expected_len = Self::wire_len(expected)?;
+        let next_len = Self::wire_len(next)?;
+        let total = Self::total_len(length, expected_len, next_len)?;
         let memory = budget.reserve_memory(
-            Self::allocation_bytes(length)?,
+            Self::allocation_bytes(length, expected, next)?,
             super::MemoryLifetime::Retained,
         )?;
-        let mut copied = Vec::new();
-        copied
-            .try_reserve_exact(length)
+        let mut wire = Vec::new();
+        wire.try_reserve_exact(total)
             .map_err(|_error| super::IndexError::ResourceLimited)?;
+        // The allocator may grant more than requested; refuse that backing
+        // before copying bytes because the retained lease funds exactly `total`.
+        if wire.capacity() != total {
+            return Err(super::IndexError::ResourceLimited);
+        }
         for part in parts {
-            copied.extend_from_slice(part);
+            wire.extend_from_slice(part);
         }
         budget.checkpoint()?;
+        Self::append_value(&mut wire, expected, expected_len)?;
+        Self::append_value(&mut wire, next, next_len)?;
+        if wire.len() != total {
+            return Err(super::IndexError::BackendViolation(
+                "cursor wire length differs from canonical values".into(),
+            ));
+        }
         Ok(Self {
             inner: Arc::new(OrdinalMapEditData {
                 root,
-                edit: MapEdit {
-                    key: copied,
-                    expected,
-                    next,
-                },
+                key_len,
+                expected_len,
+                next_len,
+                wire,
                 memory,
             }),
         })
+    }
+
+    #[must_use]
+    pub fn root(&self) -> u32 {
+        self.inner.root
+    }
+
+    #[must_use]
+    pub fn key(&self) -> &[u8] {
+        &self.inner.wire[..self.inner.key_len as usize]
+    }
+
+    #[must_use]
+    pub fn expected_wire(&self) -> Option<&[u8]> {
+        let length = usize::from(self.inner.expected_len);
+        if length == 0 {
+            return None;
+        }
+        let start = self.inner.key_len as usize;
+        Some(&self.inner.wire[start..start + length])
+    }
+
+    #[must_use]
+    pub fn next_wire(&self) -> Option<&[u8]> {
+        let length = usize::from(self.inner.next_len);
+        if length == 0 {
+            return None;
+        }
+        let start = self.inner.key_len as usize + usize::from(self.inner.expected_len);
+        Some(&self.inner.wire[start..start + length])
+    }
+
+    pub fn expected(&self) -> Result<Option<super::MapValue>, super::IndexError> {
+        self.expected_wire()
+            .map(super::MapValue::decode)
+            .transpose()
+    }
+
+    pub fn next(&self) -> Result<Option<super::MapValue>, super::IndexError> {
+        self.next_wire().map(super::MapValue::decode).transpose()
     }
 
     #[must_use]
@@ -753,16 +1156,13 @@ impl OrdinalMapEdit {
     }
 }
 
-impl Deref for OrdinalMapEdit {
-    type Target = OrdinalMapEditData;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
 impl PartialEq for OrdinalMapEditData {
     fn eq(&self, other: &Self) -> bool {
-        self.root == other.root && self.edit == other.edit
+        self.root == other.root
+            && self.key_len == other.key_len
+            && self.expected_len == other.expected_len
+            && self.next_len == other.next_len
+            && self.wire == other.wire
     }
 }
 impl Eq for OrdinalMapEditData {}
@@ -826,17 +1226,20 @@ mod ordinal_edit_tests {
     #[test]
     fn shared_position_keeps_one_charge_and_fixed_key_value_until_final_drop()
     -> Result<(), IndexError> {
-        let bytes = OrdinalMapEdit::allocation_bytes(7)?;
-        let (work, owner) = work(bytes)?;
         let next = ObjectRef(Digest([81; 32]));
+        let bytes = OrdinalMapEdit::allocation_bytes(7, None, Some(next.into()))?;
+        let (work, owner) = work(bytes)?;
         let position =
             OrdinalMapEdit::copy_object_key_parts(2, &[b"path\0", b"ab"], None, Some(next), &work)?;
         let clone = position.clone();
-        if position.root != 2
-            || position.edit.key != b"path\0ab"
-            || position.edit.next != Some(next.into())
+        let next_wire = super::super::MapValue::from(next).encoded()?;
+        if position.root() != 2
+            || position.key() != b"path\0ab"
+            || position.expected_wire().is_some()
+            || position.next()? != Some(next.into())
+            || position.next_wire() != Some(next_wire.as_slice()?)
             || position.memory_bytes() != Some(bytes)
-            || position.edit.key.as_ptr() != clone.edit.key.as_ptr()
+            || position.key().as_ptr() != clone.key().as_ptr()
         {
             return Err(IndexError::BackendViolation(
                 "owned edit value or shared backing changed".into(),
@@ -852,6 +1255,87 @@ mod ordinal_edit_tests {
         if owner.count.load(Ordering::SeqCst) != 1 {
             return Err(IndexError::BackendViolation(
                 "shared key final refund differs".into(),
+            ));
+        }
+        Ok(())
+    }
+    #[test]
+    fn object_next_fits_compact_original_budget() -> Result<(), IndexError> {
+        let key = b"path\0ab";
+        let limit = 128_u64
+            .checked_add(u64::try_from(key.len()).map_err(|_error| IndexError::ResourceLimited)?)
+            .and_then(|bytes| bytes.checked_add(33))
+            .ok_or(IndexError::ResourceLimited)?;
+        let (work, owner) = work(limit)?;
+        let next = ObjectRef(Digest([82; 32]));
+        let position = OrdinalMapEdit::copy_object_key(2, key, None, Some(next), &work)?;
+        let clone = position.clone();
+        if position.root() != 2
+            || position.key() != key
+            || position.expected()?.is_some()
+            || position.next()? != Some(next.into())
+            || position.memory_bytes().is_none_or(|bytes| bytes > limit)
+            || position.key().as_ptr() != clone.key().as_ptr()
+        {
+            return Err(IndexError::BackendViolation(
+                "compact cursor position changed values or shared backing".into(),
+            ));
+        }
+        drop(position);
+        if owner.count.load(Ordering::SeqCst) != 0 {
+            return Err(IndexError::BackendViolation(
+                "compact cursor backing refunded early".into(),
+            ));
+        }
+        drop(clone);
+        if owner.count.load(Ordering::SeqCst) != 1 {
+            return Err(IndexError::BackendViolation(
+                "compact cursor backing was not refunded once".into(),
+            ));
+        }
+        Ok(())
+    }
+    #[test]
+    fn inline_five_children_and_empty_inline_keep_canonical_wires() -> Result<(), IndexError> {
+        let first = ObjectRef(Digest([1; 32]));
+        let second = ObjectRef(Digest([2; 32]));
+        let third = ObjectRef(Digest([3; 32]));
+        let fourth = ObjectRef(Digest([4; 32]));
+        let full = super::super::MapValue::inline(&[9; 32], [first, second, first, third, fourth])?;
+        let empty = super::super::MapValue::inline(&[], [])?;
+        let full_wire = full.encoded()?;
+        let empty_wire = empty.encoded()?;
+        let bytes = OrdinalMapEdit::allocation_bytes(3, Some(empty), Some(full))?;
+        let (work, _owner) = work(bytes)?;
+        let position = OrdinalMapEdit::copy_key(7, b"key", Some(empty), Some(full), &work)?;
+        let same = OrdinalMapEdit::unscoped(
+            7,
+            MapEdit {
+                key: b"key".to_vec(),
+                expected: Some(empty),
+                next: Some(full),
+            },
+        )?;
+        let absent = OrdinalMapEdit::unscoped(
+            7,
+            MapEdit {
+                key: b"key".to_vec(),
+                expected: None,
+                next: Some(full),
+            },
+        )?;
+        let actual_next = position.next()?.ok_or(IndexError::ResourceLimited)?;
+        if position != same
+            || position == absent
+            || position.memory_bytes() != Some(bytes)
+            || position.expected()? != Some(empty)
+            || position.next()? != Some(full)
+            || position.expected_wire() != Some(empty_wire.as_slice()?)
+            || position.next_wire() != Some(full_wire.as_slice()?)
+            || actual_next.children()? != [first, second, first, third, fourth]
+        {
+            return Err(IndexError::BackendViolation(
+                "compact cursor changed inline wire, child order, or equality".into(),
             ));
         }
         Ok(())

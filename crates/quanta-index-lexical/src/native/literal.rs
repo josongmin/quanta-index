@@ -1,6 +1,6 @@
 //! Owner-local byte-literal index for the native kernel. The query capability is
 //! explicitly case-sensitive byte literals; token/ranking/regex routes stay separate.
-use super::literal_packed::{self, PackedRoot, SealInput};
+use super::literal_packed::{self, PackedRoot, SealInput, SealWitness};
 use quanta_index_core::index::{
     AttemptContext, BaseMember, DeltaInput, Digest, IndexError, InputBinding, MapRoot,
     MemberBinding, MemoryLease, MemoryLifetime, ObjectChildren, ObjectRef, OwnerKey, PlanContext,
@@ -10,6 +10,7 @@ use quanta_index_core::index::{
 };
 #[cfg(test)]
 use quanta_index_core::index::{ObjectBatchInput, StagedObjectReferences};
+use quanta_index_core::{DiagnosticLaneV1, DiagnosticStageV1, DiagnosticTerminalV1};
 #[cfg(test)]
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -212,7 +213,7 @@ pub struct LiteralPlan {
 #[derive(Clone, Debug)]
 pub struct LiteralCandidate {
     pub binding: MemberBinding,
-    seal: Option<SealInput>,
+    seal: Option<SealWitness>,
 }
 
 #[cfg(test)]
@@ -235,6 +236,43 @@ fn roots(root: Root) -> ObjectChildren {
         [Some(value), None] | [None, Some(value)] => ObjectChildren::One([value]),
         [Some(first), Some(second)] => ObjectChildren::Two([first, second]),
     }
+}
+
+pub(super) fn observe_member_work<T>(
+    context: &mut AttemptContext<'_>,
+    lane: u16,
+    work: impl FnOnce(&mut AttemptContext<'_>) -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    let parent = context.budget.request().diagnostic_context().cloned();
+    let span = parent.as_ref().and_then(|parent| {
+        parent
+            .enter(DiagnosticStageV1::BuildPrepare, DiagnosticLaneV1(lane))
+            .ok()
+    });
+    let before = span.as_ref().map(|_| context.budget.usage());
+    let result = {
+        let child = parent
+            .as_ref()
+            .zip(span.as_ref())
+            .map(|(parent, span)| parent.child_context(span));
+        let mut budget = context.budget.scoped_diagnostic_context(child);
+        let mut phase = AttemptContext {
+            attempt: context.attempt,
+            objects: context.objects,
+            maps: context.maps,
+            custody: context.custody,
+            scratch: context.scratch,
+            budget: &mut budget,
+        };
+        work(&mut phase)
+    };
+    if let (Some(span), Some(before)) = (span.as_ref(), before) {
+        context.budget.record_diagnostic_usage_delta(before, span);
+    }
+    if let Some(span) = span {
+        let _finished = span.finish(DiagnosticTerminalV1::from_result(&result));
+    }
+    result
 }
 impl IndexBuildPort for NativeLiteralIndex {
     type Delta = SourceDelta;
@@ -304,99 +342,106 @@ impl IndexBuildPort for NativeLiteralIndex {
         context: &'a mut AttemptContext<'_>,
     ) -> IndexFuture<'a, LiteralCandidate> {
         Box::pin(async move {
-            let mut prior = None;
-            if let Some(base) = &plan.base {
-                let stored = context.objects.get(base.artifact, context.budget)?;
-                let children = if let Some(root) = PackedRoot::decode(&stored.payload)? {
-                    if root.sources != base.input.root {
-                        return Err(IndexError::CorruptObject(
-                            "literal base source differs".into(),
-                        ));
-                    }
-                    prior = Some(root.blocks);
-                    root.children()
-                } else {
-                    roots(super::metadata::decode_fixed::<Root>(
-                        &stored.payload,
-                        context.budget,
-                    )?)
-                };
-                if stored.registration.reference != base.artifact
-                    || stored.registration.children.as_slice() != children.as_slice()
-                    || Digest(Sha256::digest(&stored.payload).into()) != base.logical_commitment
-                {
-                    return Err(IndexError::CorruptObject(
-                        "literal base commitment differs".into(),
-                    ));
-                }
-                if let DeltaInput::Patch(delta) = &plan.input
-                    && (delta.changed.count == 0 || delta.prior.owners == delta.next.owners)
-                {
-                    let mut cursor = SourceInputCursor::new(
-                        plan.context.source,
-                        plan.input.clone(),
-                        context.maps,
-                        context.objects,
-                    )?;
-                    while let Some(change) = cursor.next_change(context.budget)? {
-                        if change.prior.as_ref().map(|(reference, _)| reference)
-                            != change.next.as_ref().map(|(reference, _)| reference)
-                        {
+            // Lanes 40/42 partition this member's prepare/seal work beneath
+            // the enclosing BuildPrepare without changing accepted charges.
+            observe_member_work(context, 40, |context| {
+                let mut prior = None;
+                if let Some(base) = &plan.base {
+                    let stored = context.objects.get(base.artifact, context.budget)?;
+                    let children = if let Some(root) = PackedRoot::decode(&stored.payload)? {
+                        if root.sources != base.input.root {
                             return Err(IndexError::CorruptObject(
-                                "unchanged literal cut contains a source edit".into(),
+                                "literal base source differs".into(),
                             ));
                         }
-                    }
-                    if delta.prior.owners != delta.next.owners {
+                        prior = Some(root.blocks);
+                        root.children()
+                    } else {
+                        roots(super::metadata::decode_fixed::<Root>(
+                            &stored.payload,
+                            context.budget,
+                        )?)
+                    };
+                    if stored.registration.reference != base.artifact
+                        || stored.registration.children.as_slice() != children.as_slice()
+                        || Digest(Sha256::digest(&stored.payload).into()) != base.logical_commitment
+                    {
                         return Err(IndexError::CorruptObject(
-                            "empty literal patch changes source".into(),
+                            "literal base commitment differs".into(),
                         ));
                     }
-                    return Ok(LiteralCandidate {
-                        binding: MemberBinding {
-                            input: plan.context.input,
-                            ..base.clone()
-                        },
-                        seal: None,
-                    });
+                    if let DeltaInput::Patch(delta) = &plan.input
+                        && (delta.changed.count == 0 || delta.prior.owners == delta.next.owners)
+                    {
+                        let mut cursor = SourceInputCursor::new(
+                            plan.context.source,
+                            plan.input.clone(),
+                            context.maps,
+                            context.objects,
+                        )?;
+                        while let Some(change) = cursor.next_change(context.budget)? {
+                            if change.prior.as_ref().map(|(reference, _)| reference)
+                                != change.next.as_ref().map(|(reference, _)| reference)
+                            {
+                                return Err(IndexError::CorruptObject(
+                                    "unchanged literal cut contains a source edit".into(),
+                                ));
+                            }
+                        }
+                        if delta.prior.owners != delta.next.owners {
+                            return Err(IndexError::CorruptObject(
+                                "empty literal patch changes source".into(),
+                            ));
+                        }
+                        return Ok(LiteralCandidate {
+                            binding: MemberBinding {
+                                input: plan.context.input,
+                                ..base.clone()
+                            },
+                            seal: None,
+                        });
+                    }
+                    if prior.is_none() && matches!(&plan.input, DeltaInput::Patch(_)) {
+                        let mut cursor = SourceInputCursor::new(
+                            plan.context.source,
+                            plan.input.clone(),
+                            context.maps,
+                            context.objects,
+                        )?;
+                        while cursor.next_change(context.budget)?.is_some() {}
+                    }
                 }
-                if prior.is_none() && matches!(&plan.input, DeltaInput::Patch(_)) {
-                    let mut cursor = SourceInputCursor::new(
-                        plan.context.source,
-                        plan.input.clone(),
-                        context.maps,
-                        context.objects,
-                    )?;
-                    while cursor.next_change(context.budget)?.is_some() {}
-                }
-            }
 
-            let input = SealInput {
-                source: plan.context.source,
-                input: if prior.is_some() {
-                    plan.input
-                } else {
-                    // A legacy artifact stays readable in its pinned view;
-                    // the next changed view is explicitly built from the source snapshot.
-                    DeltaInput::Bootstrap
-                },
-                prior: prior.unwrap_or_default(),
-            };
-            let blocks = literal_packed::publish(&input, context)?;
-            let (artifact, logical_commitment) = PackedRoot {
-                sources: plan.context.source.owners,
-                blocks,
-            }
-            .install(context)?;
-            Ok(LiteralCandidate {
-                binding: MemberBinding {
+                let input = SealInput {
+                    source: plan.context.source,
+                    input: if prior.is_some() {
+                        plan.input
+                    } else {
+                        // A legacy artifact stays readable in its pinned view;
+                        // the next changed view is explicitly built from the source snapshot.
+                        DeltaInput::Bootstrap
+                    },
+                    prior: prior.unwrap_or_default(),
+                };
+                let (blocks, mut seal) =
+                    literal_packed::publish(&input, plan.context.input, context)?;
+                let (artifact, logical_commitment) = PackedRoot {
+                    sources: plan.context.source.owners,
+                    blocks,
+                }
+                .install(context)?;
+                let binding = MemberBinding {
                     instance: plan.context.instance.instance,
                     format: plan.context.instance.format,
                     artifact,
                     input: plan.context.input,
                     logical_commitment,
-                },
-                seal: Some(input),
+                };
+                seal.bind_member(&binding);
+                Ok(LiteralCandidate {
+                    binding,
+                    seal: Some(seal),
+                })
             })
         })
     }
@@ -407,39 +452,41 @@ impl IndexBuildPort for NativeLiteralIndex {
         context: &'a mut AttemptContext<'_>,
     ) -> IndexFuture<'a, MemberBinding> {
         Box::pin(async move {
-            let stored = context
-                .objects
-                .get(candidate.binding.artifact, context.budget)?;
-            let packed = PackedRoot::decode(&stored.payload)?;
-            let children = if let Some(root) = packed {
-                if root.sources != candidate.binding.input.root {
-                    return Err(IndexError::CorruptObject(
-                        "literal root source differs".into(),
+            observe_member_work(context, 42, |context| {
+                let stored = context
+                    .objects
+                    .get(candidate.binding.artifact, context.budget)?;
+                let packed = PackedRoot::decode(&stored.payload)?;
+                let children = if let Some(root) = packed {
+                    if root.sources != candidate.binding.input.root {
+                        return Err(IndexError::CorruptObject(
+                            "literal root source differs".into(),
+                        ));
+                    }
+                    root.children()
+                } else {
+                    roots(super::metadata::decode_fixed::<Root>(
+                        &stored.payload,
+                        context.budget,
+                    )?)
+                };
+                if stored.registration.reference != candidate.binding.artifact
+                    || stored.registration.children.as_slice() != children.as_slice()
+                    || Digest(Sha256::digest(&stored.payload).into())
+                        != candidate.binding.logical_commitment
+                {
+                    return Err(IndexError::BackendViolation(
+                        "literal root commitment mismatch".into(),
                     ));
                 }
-                root.children()
-            } else {
-                roots(super::metadata::decode_fixed::<Root>(
-                    &stored.payload,
-                    context.budget,
-                )?)
-            };
-            if stored.registration.reference != candidate.binding.artifact
-                || stored.registration.children.as_slice() != children.as_slice()
-                || Digest(Sha256::digest(&stored.payload).into())
-                    != candidate.binding.logical_commitment
-            {
-                return Err(IndexError::BackendViolation(
-                    "literal root commitment mismatch".into(),
-                ));
-            }
-            if let Some(input) = candidate.seal.as_ref() {
-                let root = packed.ok_or_else(|| {
-                    IndexError::BackendViolation("literal seal needs a block root".into())
-                })?;
-                literal_packed::seal(input, root, context)?;
-            }
-            Ok(candidate.binding)
+                if let Some(input) = candidate.seal.as_ref() {
+                    let root = packed.ok_or_else(|| {
+                        IndexError::BackendViolation("literal seal needs a block root".into())
+                    })?;
+                    literal_packed::seal(input, &candidate.binding, root, context)?;
+                }
+                Ok(candidate.binding)
+            })
         })
     }
 }

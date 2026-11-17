@@ -24,7 +24,7 @@ Routine 검사는 [AGENTS.md](../../AGENTS.md)를 따른다. 정식 purpose/rele
 | 증거 | 허용 범위 |
 | --- | --- |
 | S / U | Source·등록·API shape / owner-local unit·property invariant |
-| A / D | 실제 SQLite/Tantivy/LanceDB / full runtime·SDK·UDS composition |
+| A / D | 선택한 실제 backend(SQLite/Tantivy/LanceDB 또는 Native immutable adapter) / full runtime·SDK·UDS composition |
 | P / F | 별도 OS process·signal·lease / fault·crash·race·cancellation |
 | Q / X | Admitted relevance·latency·RSS·QPS / 실제 external producer·provider |
 

@@ -3,9 +3,10 @@ use quanta_index_contract::{
     ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1, ExplainCandidateV1,
     GenerationPin, GenerationSelector, GoTestTraceFileQueryRequestV1,
     GoTestTraceFileQueryResponseV1, GoTestTraceModuleContextV1, HybridCandidateV1,
-    HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse,
-    LexicalCandidate, RepoId, RevisionId, SearchPlaneExplainQueryRequest,
-    SearchPlaneExplainQueryResponse, SemanticCorpusKindV1, TextQueryRequest,
+    HybridFileQueryRequestV1, HybridFileQueryResponseV1, HybridQueryRequest, HybridQueryResponse,
+    HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate, RepoId, RevisionId,
+    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse, SemanticCorpusKindV1,
+    TextQueryRequest,
 };
 
 use crate::{QuantaIndexClientPayloadV1, SdkError, text_query_builder::VectorQueryBuilderState};
@@ -42,16 +43,27 @@ impl<'a> SearchNamespace<'a> {
         dispatch_hybrid_query_request_v1(self.client, request)
     }
 
+    /// Explicit file retrieval over the two ordinary hybrid chunk lanes.
+    pub fn hybrid_file_request(
+        &self,
+        request: HybridFileQueryRequestV1,
+    ) -> Result<HybridFileQueryResponseV1, SdkError> {
+        dispatch_hybrid_file_request_v1(self.client, request)
+    }
+
     /// Search a Go test failure as a bounded file result over both hybrid lanes.
-    /// This explicit profile ranks production `.go` files before `_test.go`
-    /// files and docs to investigate a production fault behind a test failure.
+    /// An exact production frame can take priority when the request names its source repo.
     /// Parsed frames are ranking hints bound to the raw `failure_excerpt`, not
     /// proof that a token came from the call stack.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "The public SDK consumes the request while response binding borrows it."
+    )]
     pub fn go_test_trace_file_request(
         &self,
         request: GoTestTraceFileQueryRequestV1,
     ) -> Result<GoTestTraceFileQueryResponseV1, SdkError> {
-        dispatch_go_test_trace_file_request_v1(self.client, request)
+        dispatch_go_test_trace_file_request_v1(self.client, &request)
     }
 
     #[must_use]
@@ -120,6 +132,7 @@ impl<'a> SearchNamespace<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridSeed(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridFileV1(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
@@ -207,6 +220,7 @@ impl<'a> SearchNamespace<'a> {
             | quanta_index_contract::SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridSeed(_)
+            | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridFileV1(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
             | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
@@ -392,6 +406,7 @@ fn dispatch_hybrid_seed_query_request_v1(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridFileV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)
@@ -554,9 +569,18 @@ impl HybridQueryBuilder<'_, true, true, true, true> {
         dispatch_hybrid_query_request_v1(self.client, self.state.build_hybrid_request()?)
     }
 
+    /// Return distinct files. `top_k` remains the per-lane chunk budget;
+    /// `file_top_k` is the independent returned-file cap.
+    pub fn files(self, file_top_k: u32) -> Result<HybridFileQueryResponseV1, SdkError> {
+        let request = HybridFileQueryRequestV1 {
+            query: self.state.build_hybrid_request()?,
+            file_top_k,
+        };
+        dispatch_hybrid_file_request_v1(self.client, request)
+    }
+
     /// Select file results from the two already configured hybrid query lanes.
-    /// This explicit profile ranks production `.go` files before `_test.go`
-    /// files and docs to investigate a production fault behind a test failure.
+    /// An exact production frame can take priority when the request names its source repo.
     /// Parsed frames are ranking hints bound to the raw `failure_excerpt`, not
     /// proof that a token came from the call stack.
     /// `top_k` remains the chunk budget per lane; `file_top_k` caps distinct files.
@@ -565,7 +589,7 @@ impl HybridQueryBuilder<'_, true, true, true, true> {
         failure_excerpt: impl Into<String>,
         file_top_k: u32,
     ) -> Result<GoTestTraceFileQueryResponseV1, SdkError> {
-        self.dispatch_go_test_trace_file(None, None, failure_excerpt.into(), file_top_k)
+        self.dispatch_go_test_trace_file(None, None, failure_excerpt.into(), file_top_k, false)
     }
 
     /// Bind parsed frame hints to the explicitly named source repository.
@@ -581,6 +605,7 @@ impl HybridQueryBuilder<'_, true, true, true, true> {
             None,
             failure_excerpt.into(),
             file_top_k,
+            false,
         )
     }
 
@@ -599,6 +624,26 @@ impl HybridQueryBuilder<'_, true, true, true, true> {
             Some(module_context),
             failure_excerpt.into(),
             file_top_k,
+            false,
+        )
+    }
+
+    /// Include the ordered, bounded chunk inputs used by this file ranking.
+    /// This optional evidence is from the same query invocation and does not
+    /// change either lane budget or the returned file cap.
+    pub fn go_test_trace_file_with_rank_pools(
+        self,
+        failure_source_repo_id: Option<RepoId>,
+        failure_module_context: Option<GoTestTraceModuleContextV1>,
+        failure_excerpt: impl Into<String>,
+        file_top_k: u32,
+    ) -> Result<GoTestTraceFileQueryResponseV1, SdkError> {
+        self.dispatch_go_test_trace_file(
+            failure_source_repo_id,
+            failure_module_context,
+            failure_excerpt.into(),
+            file_top_k,
+            true,
         )
     }
 
@@ -608,6 +653,7 @@ impl HybridQueryBuilder<'_, true, true, true, true> {
         failure_module_context: Option<GoTestTraceModuleContextV1>,
         failure_excerpt: String,
         file_top_k: u32,
+        include_rank_pools: bool,
     ) -> Result<GoTestTraceFileQueryResponseV1, SdkError> {
         let request = GoTestTraceFileQueryRequestV1 {
             query: self.state.build_hybrid_request()?,
@@ -615,35 +661,65 @@ impl HybridQueryBuilder<'_, true, true, true, true> {
             failure_source_repo_id,
             failure_module_context,
             top_k: file_top_k,
+            include_rank_pools,
         };
-        dispatch_go_test_trace_file_request_v1(self.client, request)
+        dispatch_go_test_trace_file_request_v1(self.client, &request)
     }
 }
 
 fn dispatch_go_test_trace_file_request_v1(
     client: &QuantaIndexClientPayloadV1,
-    request: GoTestTraceFileQueryRequestV1,
+    request: &GoTestTraceFileQueryRequestV1,
 ) -> Result<GoTestTraceFileQueryResponseV1, SdkError> {
-    request
-        .validate_v1()
-        .map_err(|failure| SdkError::Usage(failure.to_string()))?;
+    request.validate_v1().map_err(SdkError::Usage)?;
     let response = client.dispatch_query(
-        quanta_index_contract::SearchPlaneQueryIpcRequest::GoTestTraceFileV1(request.clone()),
+        quanta_index_contract::SearchPlaneQueryIpcRequest::GoTestTraceFileV1((*request).clone()),
     )?;
-    match response {
-        quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(results) => {
-            results.validate_against_v1(&request).map_err(|failure| {
-                SdkError::Protocol(format!(
-                    "Go test trace file response failed request binding: {failure}"
-                ))
-            })?;
-            Ok(results)
-        }
-        other => Err(SdkError::unexpected_response(
+    let quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(results) = response
+    else {
+        return Err(SdkError::unexpected_response(
             "Go test trace file response",
-            QuantaIndexClientPayloadV1::query_response_kind(&other),
-        )),
+            QuantaIndexClientPayloadV1::query_response_kind(&response),
+        ));
+    };
+    results.validate_against_v1(request).map_err(|failure| {
+        SdkError::Protocol(format!(
+            "Go test trace file response failed request binding: {failure}"
+        ))
+    })?;
+    Ok(results)
+}
+
+fn dispatch_hybrid_file_request_v1(
+    client: &QuantaIndexClientPayloadV1,
+    request: HybridFileQueryRequestV1,
+) -> Result<HybridFileQueryResponseV1, SdkError> {
+    request.validate_v1().map_err(SdkError::Usage)?;
+    // Dispatch binds the effective selectors, caps, and ranking. Preserve the
+    // explicit pins as well: a Pinned selector can shadow either of them.
+    let explicit_pins = [
+        request.query.generation.clone(),
+        request.query.text_query.generation.clone(),
+    ];
+    let response = client
+        .dispatch_query(quanta_index_contract::SearchPlaneQueryIpcRequest::HybridFileV1(request))?;
+    let quanta_index_contract::SearchPlaneQueryIpcResponse::HybridFileV1(results) = response else {
+        return Err(SdkError::unexpected_response(
+            "hybrid file response",
+            QuantaIndexClientPayloadV1::query_response_kind(&response),
+        ));
+    };
+    if explicit_pins
+        .iter()
+        .flatten()
+        .any(|pin| pin != &results.generation)
+    {
+        return Err(SdkError::Protocol(
+            "hybrid file response failed request binding: hybrid file response generation drift"
+                .to_string(),
+        ));
     }
+    Ok(results)
 }
 
 fn dispatch_hybrid_query_request_v1(
@@ -666,6 +742,7 @@ fn dispatch_hybrid_query_request_v1(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridFileV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)

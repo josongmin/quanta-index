@@ -24,7 +24,7 @@ const GRAM_ROUTE_KEY_BYTES: usize = 12;
 const LEAF_INLINE_BYTES: usize = 32 * 1024;
 pub(crate) const LEAF_DEPENDENCIES: usize = 128;
 const BRANCH_FANOUT: usize = 64;
-pub(crate) const MAX_MAP_HEIGHT: u8 = 12;
+pub(crate) use crate::legacy::names::MAX_MAP_HEIGHT;
 
 struct EditCursor<I> {
     source: I,

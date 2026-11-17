@@ -610,6 +610,9 @@ fn render_pretty(
             "CLI does not issue work-bounded semantic queries".to_string(),
         )),
         SearchPlaneQueryIpcResponse::Hybrid(payload) => render_hybrid_payload(payload, rendered),
+        SearchPlaneQueryIpcResponse::HybridFileV1(_) => Err(CliError::protocol(
+            "CLI does not issue hybrid file queries".to_string(),
+        )),
         SearchPlaneQueryIpcResponse::GoTestTraceFileV1(payload) => {
             render_go_test_trace_file_payload(payload, rendered)
         }
@@ -1224,6 +1227,7 @@ fn response_kind_name(response: &SearchPlaneQueryIpcResponse) -> &'static str {
         SearchPlaneQueryIpcResponse::Semantic(_) => "Semantic",
         SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => "SemanticWorkBoundedV1",
         SearchPlaneQueryIpcResponse::Hybrid(_) => "Hybrid",
+        SearchPlaneQueryIpcResponse::HybridFileV1(_) => "HybridFileV1",
         SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => "GoTestTraceFileV1",
         SearchPlaneQueryIpcResponse::HybridSeed(_) => "HybridSeed",
         SearchPlaneQueryIpcResponse::History(_) => "History",

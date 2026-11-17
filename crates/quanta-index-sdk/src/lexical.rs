@@ -411,6 +411,8 @@ impl<'a> SearchCorpusNamespace<'a> {
 
     /// Typed search-corpus publish entry point backed by the crate-private
     /// namespace trait owner. See QI-NS-01.
+    /// Success attests durable publication. Use `publish_outcome` to inspect
+    /// staged transport cleanup, which may be deferred or fail after commit.
     pub fn publish<const SEALED: bool>(
         &self,
         batch: &SearchCorpusBatch<SEALED>,
@@ -419,7 +421,8 @@ impl<'a> SearchCorpusNamespace<'a> {
     }
 
     /// Publish once and return the verified original target, receipt and optional
-    /// transient observation. A replay can name a different original target.
+    /// transient observation and staged transport cleanup. A replay can name a
+    /// different original target. Cleanup does not change the durable receipt.
     pub fn publish_outcome<const SEALED: bool>(
         &self,
         batch: &SearchCorpusBatch<SEALED>,
@@ -453,6 +456,8 @@ impl<'a> SearchCorpusNamespace<'a> {
     /// complete lexical + semantic identity against an explicit composite
     /// active identity. If promotion conflicts, the batch remains sealed but
     /// neither reader plane is made active.
+    /// Staged transport cleanup does not gate activation. Use
+    /// `publish_and_activate_observed` to retain its separate status.
     ///
     /// The candidate names the semantic content roots the sealed receipt
     /// attested (QI-BB-028): what the plane actually sealed, not what the
@@ -696,12 +701,12 @@ fn dispatch_search_corpus_publish_outcome_v1<const SEALED: bool>(
     wire_batch.validate_surface_mutations_v1().map_err(|err| {
         SdkError::Protocol(format!("invalid search corpus surface mutation: {err}"))
     })?;
-    let response = if quanta_index_ipc::cbor_payload_len(&wire_batch)
-        .map_err(SdkError::Transport)?
-        > quanta_index_ipc::SOURCE_PUBLICATION_INLINE_BYTES
-    {
-        let identity = quanta_index_ipc::source_publication_upload_identity(&wire_batch)
-            .map_err(SdkError::Transport)?;
+    // One bounded CBOR walk computes both the exact transport length and its
+    // staged identity. A large body no longer repeats that walk just to hash
+    // bytes already visited by the inline/staged size decision.
+    let identity = quanta_index_ipc::source_publication_upload_identity(&wire_batch)
+        .map_err(SdkError::Transport)?;
+    let response = if identity.body_bytes > quanta_index_ipc::SOURCE_PUBLICATION_INLINE_BYTES {
         quanta_index_ipc::for_each_source_publication_upload_part(&wire_batch, identity, |part| {
             // Typed dispatch binds the ACK variant, body identity and exact offset.
             let _ack = client
@@ -1109,6 +1114,7 @@ fn dispatch_text_query_request_inner(
         | quanta_index_contract::SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridFileV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::History(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(_)

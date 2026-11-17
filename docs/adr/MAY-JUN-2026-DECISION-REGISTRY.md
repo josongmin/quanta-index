@@ -4,6 +4,11 @@ Status: `Accepted`
 
 Consolidated: 2026-09-27
 
+Scope clarified: 2026-11-12. The generation backend, namespace and activation
+rows describe the Legacy family. Explicit Native selected-view contracts live
+in [NOV-12-001](NOV-12-001-native-query-and-semantic-engine.md); their product
+and default-switch acceptance remains separate.
+
 | ID | Frozen decision | Owner ADR |
 |---|---|---|
 | DSL-AUTH-01 | Executable capability is code-owned and every surface has one explicit proof state | [JUN-02-001](JUN-02-001-search-dsl-authority-and-runtime-contract.md) |
@@ -13,12 +18,12 @@ Consolidated: 2026-09-27
 | SG-PROMOTE-01 | Sourcegraph support requires admission, owner seam, execution proof, parity where applicable and a checked verdict | [JUN-06-001](JUN-06-001-sourcegraph-compatibility-boundary.md) |
 | SG-AUTH-01 | Repository metadata, topic, description, history, ownership and contributor predicates use distinct published authorities | [JUN-06-001](JUN-06-001-sourcegraph-compatibility-boundary.md) |
 | SG-CLAIM-01 | Compatibility applies to the checked inventory and does not claim full product parity | [JUN-06-001](JUN-06-001-sourcegraph-compatibility-boundary.md) |
-| SEM-BACKEND-01 | Real LanceDB is the sole durable semantic query backend | [MAY-31-001](MAY-31-001-lancedb-semantic-generation-authority.md) |
-| SEM-GEN-01 | Only validated sealed generations may serve or seed readiness | [MAY-31-001](MAY-31-001-lancedb-semantic-generation-authority.md) |
-| SEM-MIG-01 | Live boot rejects legacy journal markers before adapter open; conversion is offline-only and never a parallel authority | [MAY-31-001](MAY-31-001-lancedb-semantic-generation-authority.md) |
+| SEM-BACKEND-01 | Legacy semantic generations use real LanceDB as their durable query backend | [MAY-31-001](MAY-31-001-lancedb-semantic-generation-authority.md) |
+| SEM-GEN-01 | Only validated sealed Legacy semantic generations may serve or seed their readiness | [MAY-31-001](MAY-31-001-lancedb-semantic-generation-authority.md) |
+| SEM-MIG-01 | Legacy generation boot rejects old journal markers before adapter open; conversion is offline-only and never a parallel authority | [MAY-31-001](MAY-31-001-lancedb-semantic-generation-authority.md) |
 | SDK-FRONT-01 | External Rust consumers enter through the typed SDK; raw IPC is an internal adapter and test seam | [MAY-27-002](MAY-27-002-sdk-ingress-and-public-surface-boundary.md) |
-| SDK-NS-01 | One client exposes family-specific namespaces that lower to canonical contract routes without creating parallel engines | [MAY-27-002](MAY-27-002-sdk-ingress-and-public-surface-boundary.md) |
-| SDK-LIFE-01 | Publish, seal, activation and visibility are separate service operations; the current combined helper is not recovery proof | [MAY-27-002](MAY-27-002-sdk-ingress-and-public-surface-boundary.md) |
+| SDK-NS-01 | The Legacy generation client exposes family-specific namespaces over canonical contract routes | [MAY-27-002](MAY-27-002-sdk-ingress-and-public-surface-boundary.md) |
+| SDK-LIFE-01 | Legacy generation publish, seal, activation and visibility are separate operations; a combined helper is not recovery proof | [MAY-27-002](MAY-27-002-sdk-ingress-and-public-surface-boundary.md) |
 | VERIFY-SPLIT-01 | Fast, broad, cross-repository, performance and aggregate gates are separate claims | [JUN-08-001](JUN-08-001-verification-hellgate-and-benchmark-separation.md) |
 | PERF-SPLIT-01 | Compile, pure pipeline, warm query and cold query measurements are non-interchangeable | [JUN-08-001](JUN-08-001-verification-hellgate-and-benchmark-separation.md) |
 

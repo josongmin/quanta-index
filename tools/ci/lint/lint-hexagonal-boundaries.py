@@ -113,7 +113,10 @@ DEV_INTEGRATION_DEPS = {
 ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-contract-base": frozenset(),
     # The contract re-exports the base DTOs it is split from.
-    "quanta-index-contract": frozenset({"quanta-index-contract-base", "quanta-index-lq-norm"}),
+    "quanta-index-contract": frozenset(
+        {"quanta-index-contract-base", "quanta-index-lq-norm", "quanta-index-lq-bridge"}
+    ),
+    "quanta-index-lq-bridge": frozenset({"quanta-index-lq-norm"}),
     "quanta-index-core": frozenset({"quanta-index-contract"}),
     "quanta-index-kernel": _ADAPTER_CRATE_DEPS | frozenset({"quanta-index-scratch-sqlite"}),
     "quanta-index-storage": _ADAPTER_CRATE_DEPS | frozenset({"quanta-index-scratch-sqlite"}),
@@ -202,22 +205,6 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     # and allocation contracts, never on a composition root or another adapter.
     # Retention membership uses canonical generation and error DTOs.
     "quanta-index-scratch-sqlite": _ADAPTER_CRATE_DEPS,
-    # Non-production benchmark driver. It composes the real lexical/semantic
-    # namespace probes and catalog owner for durable lexical ID allocation,
-    # then measures lexical lookup in-process. It uses the harness artifact
-    # envelope but does not orchestrate the daemon.
-    "quanta-index-scan-experiment": frozenset(
-        {
-            "quanta-index-contract",
-            "quanta-index-core",
-            # Direct batch producers must stamp the one IPC-owned digest.
-            "quanta-index-ipc",
-            "quanta-index-lexical",
-            "quanta-index-search-plane",
-            "quanta-index-searchd-harness",
-            "quanta-index-semantic",
-        }
-    ),
     # The composition root: the one crate that names concrete adapters,
     # the embedding provider and the structural matcher included. Structural
     # repo/file filters compile once per request through the shared regex

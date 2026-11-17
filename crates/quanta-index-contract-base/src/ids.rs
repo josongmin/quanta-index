@@ -1113,6 +1113,19 @@ macro_rules! validated_identity {
 }
 
 validated_identity!(RepoId, repo_id_from_owned_v1, repo_id_from_borrowed_v1);
+impl RepoId {
+    /// Validate a borrowed repository ID without creating owned backing.
+    pub fn validate(value: &str) -> Result<(), IdentityValidationErrorV1> {
+        validate_identity(value)
+    }
+
+    /// Number of heap bytes held by this owned repository identity.
+    #[must_use]
+    pub fn backing_capacity(&self) -> usize {
+        self.0.capacity()
+    }
+}
+
 validated_identity!(
     RevisionId,
     revision_id_from_owned_v1,

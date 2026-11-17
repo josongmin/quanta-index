@@ -17,6 +17,8 @@ pub mod macros;
 
 mod native_serde;
 pub use native_serde::ClosedFieldKeySeedV1;
+mod native_cutover_digest64_v1;
+pub use native_cutover_digest64_v1::NativeCutoverDigest64V1;
 
 mod activation_token;
 pub mod admitted_decode;

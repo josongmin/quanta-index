@@ -66,6 +66,12 @@
       "minimum": 1,
       "description": "Must equal suite comparison_contract.top_k; the driver checks this before any capture."
     },
+    "file_top_k": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000,
+      "description": "Required only for the standalone hybrid_file route. Must not exceed top_k; the driver checks this cross-field bound."
+    },
     "output_root": {
       "type": "string",
       "minLength": 1
@@ -478,6 +484,25 @@
     }
   },
   "allOf": [
+    {
+      "if": {
+        "required": ["routes"],
+        "properties": {
+          "routes": {"contains": {"const": "hybrid_file"}}
+        }
+      },
+      "then": {
+        "required": ["file_top_k"],
+        "properties": {
+          "execution_profiles": {
+            "properties": {
+              "quanta": {"properties": {"policy": {"const": "natural_language"}}}
+            }
+          }
+        }
+      },
+      "else": {"not": {"required": ["file_top_k"]}}
+    },
     {
       "if": {"required": ["source_closure_reuse"]},
       "then": {

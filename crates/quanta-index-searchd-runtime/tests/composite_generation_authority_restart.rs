@@ -76,7 +76,7 @@ impl RunningRuntime {
         let (query, control, ingest) = runtime
             .socket_paths()
             .ok_or_else(|| "fixture: driver started without socket paths".to_string())?;
-        let client = QuantaIndex::connect(
+        let client = QuantaIndex::connect_legacy(
             ConnectOptions::from_state_root(state_root)
                 .with_query_socket(query)
                 .with_control_socket(control)

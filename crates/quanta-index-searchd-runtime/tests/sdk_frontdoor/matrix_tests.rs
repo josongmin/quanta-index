@@ -321,7 +321,8 @@ fn sdk_frontdoor_widened_query_matrix_executes_exact_surface_truth() -> TestResu
                     SdkError::Remote { code, message, .. }
                         if code.as_wire_str() == expected_error.code
                             && message.contains(expected_error.message_contains) => {}
-                    other @ (SdkError::Usage(_)
+                    other @ (SdkError::UnsupportedNativeQuery { .. }
+                    | SdkError::Usage(_)
                     | SdkError::Protocol(_)
                     | SdkError::Serialization(_)
                     | SdkError::Transport(_)

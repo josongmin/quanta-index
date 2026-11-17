@@ -8,10 +8,13 @@ use super::{IndexError, MapBuffer, ObjectRef, WorkBudget, WorkUsage};
 use crate::object::{MAX_INSTALL_BATCH_INPUTS, PreparedObject};
 
 const SLOTS: usize = (MAX_INSTALL_BATCH_INPUTS * 2).next_power_of_two();
-const EMPTY: usize = usize::MAX;
+type GroupPosition = u16;
+const EMPTY: GroupPosition = GroupPosition::MAX;
+const SLOT_BYTES: usize = std::mem::size_of::<GroupPosition>();
+const _: () = assert!(MAX_INSTALL_BATCH_INPUTS < (1 << 16));
 
 pub(super) struct CompletedGroup {
-    slots: MapBuffer<usize>,
+    slots: MapBuffer<GroupPosition>,
 }
 
 impl CompletedGroup {
@@ -39,8 +42,7 @@ impl CompletedGroup {
         let mut slot = Self::bucket(reference);
         for _probe in 0..SLOTS {
             budget.charge(WorkUsage {
-                bytes: u64::try_from(std::mem::size_of::<usize>())
-                    .map_err(|_error| IndexError::ResourceLimited)?,
+                bytes: u64::try_from(SLOT_BYTES).map_err(|_error| IndexError::ResourceLimited)?,
                 ..WorkUsage::default()
             })?;
             let position = *self.slots.get(slot).ok_or_else(|| {
@@ -54,7 +56,7 @@ impl CompletedGroup {
                     .map_err(|_error| IndexError::ResourceLimited)?,
                 ..WorkUsage::default()
             })?;
-            let object = objects.get(position).ok_or_else(|| {
+            let object = objects.get(usize::from(position)).ok_or_else(|| {
                 IndexError::BackendViolation("completed group position escaped its group".into())
             })?;
             if object.registration.reference == reference {
@@ -102,11 +104,13 @@ impl CompletedGroup {
                 "completed group insertion is not authenticated".into(),
             ));
         }
+        let position =
+            GroupPosition::try_from(position).map_err(|_error| IndexError::ResourceLimited)?;
         if self.slots.is_empty() {
             budget.charge(WorkUsage {
                 bytes: u64::try_from(
                     SLOTS
-                        .checked_mul(std::mem::size_of::<usize>())
+                        .checked_mul(SLOT_BYTES)
                         .and_then(|bytes| bytes.checked_mul(2))
                         .ok_or(IndexError::ResourceLimited)?,
                 )
@@ -125,8 +129,7 @@ impl CompletedGroup {
             ));
         }
         budget.charge(WorkUsage {
-            bytes: u64::try_from(std::mem::size_of::<usize>())
-                .map_err(|_error| IndexError::ResourceLimited)?,
+            bytes: u64::try_from(SLOT_BYTES).map_err(|_error| IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
         *self
@@ -141,7 +144,7 @@ impl CompletedGroup {
             bytes: u64::try_from(
                 self.slots
                     .len()
-                    .checked_mul(std::mem::size_of::<usize>())
+                    .checked_mul(SLOT_BYTES)
                     .ok_or(IndexError::ResourceLimited)?,
             )
             .map_err(|_error| IndexError::ResourceLimited)?,

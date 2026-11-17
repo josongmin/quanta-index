@@ -4,15 +4,19 @@
 //! only local IDs and feed independently readable paged Native objects.
 
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::path::Path;
 
 use quanta_index_contract::ManifestGeneration;
 use quanta_index_core::CoreError;
+#[cfg(test)]
+use quanta_index_lq_positions::MAX_POSITIONS_PER_CELL;
 use quanta_index_lq_positions::{
-    DocId as PositionsDocId, MAX_POSITIONS_PER_CELL, NormalizerVersion, Position, PositionsBuilder,
-    PositionsIndex,
+    DocId as PositionsDocId, NormalizerVersion, Position, PositionsBuilder, PositionsIndex,
 };
-use quanta_index_lq_trigram::{DocId as TrigramDocId, Trigram, TrigramIndex, TrigramIndexBuilder};
+#[cfg(test)]
+use quanta_index_lq_trigram::Trigram;
+use quanta_index_lq_trigram::{DocId as TrigramDocId, TrigramIndex, TrigramIndexBuilder};
 
 use crate::normalize::{self, CaseMode, TEXT_NORMALIZER_VERSION};
 use crate::query_errors::map_positions_error;
@@ -61,12 +65,12 @@ pub(crate) struct ShardBody {
     pub(crate) positions_folded: PositionsIndex,
 }
 
+#[cfg(test)]
 impl ShardBody {
     /// Independently derive the four posting relations from the document table.
     /// This seal oracle shares only the text normalizer with the writer. It
     /// neither calls a posting builder nor decodes untrusted position counts
     /// before comparing their complete canonical byte strings.
-    #[cfg(test)]
     pub(crate) fn verify_semantics(
         &self,
         index: u64,
@@ -149,6 +153,7 @@ impl ShardBody {
 
 /// Compare every gram key and its complete sorted doc list. A gram repeated
 /// within one document has one posting, including across UTF-8 byte windows.
+#[cfg(test)]
 fn verify_trigrams(
     docs: &BTreeMap<u64, TextAuthorityDoc>,
     observed: &TrigramIndex,
@@ -202,6 +207,7 @@ fn verify_trigrams(
 
 /// Independently encode a u32 as unsigned LEB128 for exact raw-posting
 /// comparison. Keeping this local avoids depending on the writer codec.
+#[cfg(test)]
 fn oracle_varint(mut value: u32, bytes: &mut Vec<u8>) -> Result<(), CoreError> {
     bytes.try_reserve(5).map_err(|error| {
         CoreError::Storage(format!("lexical: reserve shard varint oracle: {error}"))
@@ -224,6 +230,7 @@ fn oracle_varint(mut value: u32, bytes: &mut Vec<u8>) -> Result<(), CoreError> {
 ///
 /// The observed byte stream is never decoded here: a forged count cannot
 /// drive an allocation, and trailing/nonminimal bytes fail by inequality.
+#[cfg(test)]
 fn verify_positions(
     docs: &BTreeMap<u64, TextAuthorityDoc>,
     observed: &PositionsIndex,

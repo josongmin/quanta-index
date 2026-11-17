@@ -32,21 +32,35 @@ impl DiagnosticClockV1 for StepClock {
     }
 }
 
+#[path = "prepared_run_tests.rs"]
+mod prepared_run_tests;
 #[path = "write_preparation/tests/root_validation.rs"]
 mod root_validation;
 #[cfg(target_os = "macos")]
 #[path = "scalar_sync_tests.rs"]
 mod scalar_sync_tests;
 
-#[derive(Debug, Default)]
-struct Events(Mutex<Vec<DiagnosticEmitV1>>);
+#[derive(Debug)]
+struct Events(Mutex<Vec<DiagnosticEmitV1>>, usize);
+
+impl Events {
+    fn with_limit(limit: usize) -> Self {
+        Self(Mutex::new(Vec::new()), limit)
+    }
+}
+
+impl Default for Events {
+    fn default() -> Self {
+        Self::with_limit(64)
+    }
+}
 
 impl DiagnosticEventSinkV1 for Events {
     fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
         let Ok(mut rows) = self.0.try_lock() else {
             return false;
         };
-        if rows.len() == 64 {
+        if rows.len() == self.1 {
             return false;
         }
         rows.push(event);
@@ -66,6 +80,7 @@ struct PairProbe {
     fail_advance: bool,
     fail_advance_at: Option<u64>,
     advances: AtomicU64,
+    cancel_on_advance: Option<quanta_index_core::CancelHandleV1>,
     expected_gates: Mutex<Option<(Weak<FileObjectStore>, [bool; 256])>>,
 }
 
@@ -116,6 +131,12 @@ fn catalog_child(
 
 impl TraceAuthority {
     fn expected(&self, scope: ObjectInstallScope, objects: &[RegisteredObject]) -> bool {
+        if self.inputs == 0
+            && self.pair.is_some()
+            && matches!(scope, ObjectInstallScope::Attempt(_))
+        {
+            return !objects.is_empty() && objects.len() <= MAX_INSTALL_BATCH_INPUTS;
+        }
         objects.len() == self.inputs
             && match scope {
                 ObjectInstallScope::Bootstrap(bootstrap) => {
@@ -210,6 +231,9 @@ impl ManagedObjectInstallPort for TraceAuthority {
             return Err(IndexError::BackendViolation(
                 "injected atomic advance failure".into(),
             ));
+        }
+        if let Some(cancel) = &probe.cancel_on_advance {
+            cancel.cancel();
         }
         budget.checkpoint()?;
         probe.record("advance")

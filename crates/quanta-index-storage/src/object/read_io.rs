@@ -96,6 +96,14 @@ pub(super) fn read_wire(
     Ok(wire)
 }
 
+pub(super) fn path_memory_bytes(objects: &Path) -> Result<u64, IndexError> {
+    u64::try_from(objects.as_os_str().len())
+        .map_err(|_error| IndexError::ResourceLimited)?
+        .checked_mul(3)
+        .and_then(|bytes| bytes.checked_add(512))
+        .ok_or(IndexError::ResourceLimited)
+}
+
 pub(super) fn read_wire_with_owner(
     objects: &Path,
     namespace: Option<&NamespaceLease>,
@@ -119,12 +127,7 @@ pub(super) fn read_wire_with_owner(
         validate_private_directory(root)?;
         validate_private_directory(objects)?;
     }
-    let path_bytes = u64::try_from(objects.as_os_str().len())
-        .map_err(|_error| IndexError::ResourceLimited)?
-        .checked_mul(3)
-        .ok_or(IndexError::ResourceLimited)?
-        .checked_add(512)
-        .ok_or(IndexError::ResourceLimited)?;
+    let path_bytes = path_memory_bytes(objects)?;
     let _path_memory = budget.reserve_memory(
         path_bytes,
         quanta_index_core::index::MemoryLifetime::Temporary,

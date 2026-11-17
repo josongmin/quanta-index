@@ -48,6 +48,10 @@ POLICY = {
     "license_sources": "root_license_copying_names_excluding_code_extensions",
 }
 EXOTIC = frozenset("\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+# The previous producer emitted the same schema, policy and inventory.
+_PRE_SEQUENTIAL_GENERATOR = (
+    "sha256:f75fd7930d7441f3bd9dae28fe16d7b2cd5036e930250f358beae8d331e080e0"
+)
 
 
 def environment() -> dict:
@@ -397,19 +401,33 @@ def freeze_repo(entry: dict, checkouts: Path, stage: Path) -> dict:
     return {"recipe": entry, "tracked_inventory": rows, "license_sources": licenses, "views": views}
 
 
-def build(spec: dict, checkouts: Path, stage: Path, bundles: Path | None = None) -> dict:
+def _generator_digest() -> str:
+    return digest_bytes(_read_regular_file(Path(__file__)))
+
+
+def _build(
+    spec: dict,
+    checkouts: Path,
+    stage: Path,
+    generator_digest: str,
+    bundles: Path | None,
+) -> dict:
     entries = validate_spec(spec)
     repositories = []
     write(stage / "recipe.json", canonical_json(spec).encode())
     for entry in entries:
-        repository = freeze_repo(entry, checkouts, stage)
         relative = f"bundles/{entry['name']}.bundle"
         target = stage / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         if bundles is None:
+            repository = freeze_repo(entry, checkouts, stage)
             git(checkouts / entry["name"], "bundle", "create", str(target), "HEAD")
         else:
             shutil.copyfile(bundles / f"{entry['name']}.bundle", target)
+            checkout = checkouts / entry["name"]
+            git(checkouts, "clone", "--quiet", "--", str(target), str(checkout))
+            repository = freeze_repo(entry, checkouts, stage)
+            shutil.rmtree(checkout)
         repository["bundle"] = {"path": relative, "digest": file_digest(target)}
         repositories.append(repository)
     body = {
@@ -417,13 +435,58 @@ def build(spec: dict, checkouts: Path, stage: Path, bundles: Path | None = None)
         "kind": "external_corpus_release",
         "status": "frozen_not_admitted",
         "policy": POLICY,
-        "generator_digest": digest_bytes(_read_regular_file(Path(__file__))),
+        "generator_digest": generator_digest,
         "recipe_digest": digest_bytes(canonical_json(spec).encode()),
         "repositories": repositories,
     }
     document = {**body, "digest": digest_bytes(canonical_json(body).encode())}
     write(stage / "release.json", canonical_json(document).encode())
     return document
+
+
+def build(spec: dict, checkouts: Path, stage: Path) -> dict:
+    return _build(spec, checkouts, stage, _generator_digest(), None)
+
+
+def build_from_bundles(spec: dict, bundles: Path, stage: Path) -> dict:
+    """Create a release from the HEAD of each retained bundle in recipe order."""
+    return _rebuild(spec, bundles, stage, _generator_digest())
+
+
+def _rebuild(spec: dict, bundles: Path, stage: Path, generator: str) -> dict:
+    with tempfile.TemporaryDirectory(prefix="quanta-corpus-checkout-") as temporary:
+        return _build(spec, Path(temporary).resolve(), stage, generator, bundles)
+
+
+def replay_bundles(spec: dict, bundles: Path, stage: Path, document: dict) -> dict:
+    """Replay every Git object and verify the complete release document."""
+    owner = _generator_digest()
+    entries = validate_spec(spec)
+    if not isinstance(document, dict) or document.get("generator_digest") not in (
+        owner,
+        _PRE_SEQUENTIAL_GENERATOR,
+    ):
+        raise EvidenceError("corpus release generator differs")
+    repositories = document.get("repositories")
+    if not isinstance(repositories, list) or len(repositories) != len(entries):
+        raise EvidenceError("corpus release repository inventory differs")
+    for entry, repository in zip(entries, repositories, strict=True):
+        name = f"{entry['name']}.bundle"
+        if (
+            not isinstance(repository, dict)
+            or repository.get("recipe") != entry
+            or repository.get("bundle")
+            != {"path": f"bundles/{name}", "digest": file_digest(bundles / name)}
+        ):
+            raise EvidenceError("corpus bundle/recipe inventory differs")
+    rebuilt = _rebuild(spec, bundles, stage, document["generator_digest"])
+    if canonical_json(rebuilt) != canonical_json(document):
+        raise EvidenceError(
+            "corpus release differs from retained Git objects or complete file inventory"
+        )
+    if _generator_digest() != owner:
+        raise EvidenceError("corpus owner changed during bundle replay")
+    return rebuilt
 
 
 def file_digest(path: Path) -> str:
@@ -524,34 +587,15 @@ def validate(root: Path) -> dict:
         or document["kind"] != "external_corpus_release"
         or document["status"] != "frozen_not_admitted"
         or document["policy"] != POLICY
-        or document["generator_digest"] != digest_bytes(_read_regular_file(Path(__file__)))
+        or document["generator_digest"] not in (initial_owner, _PRE_SEQUENTIAL_GENERATOR)
         or not isinstance(document["repositories"], list)
         or len(document["repositories"]) != len(entries)
     ):
         raise EvidenceError("corpus release identity, policy or inventory differs")
     with tempfile.TemporaryDirectory(prefix="quanta-corpus-replay-") as temporary:
         scratch = Path(temporary).resolve()
-        checkouts = scratch / "checkouts"
-        checkouts.mkdir()
-        for entry, repository in zip(entries, document["repositories"], strict=True):
-            relative = f"bundles/{entry['name']}.bundle"
-            if (
-                not isinstance(repository, dict)
-                or repository.get("recipe") != entry
-                or repository.get("bundle")
-                != {"path": relative, "digest": file_digest(root / relative)}
-            ):
-                raise EvidenceError("corpus bundle/recipe inventory differs")
-            git(
-                checkouts,
-                "clone",
-                "--quiet",
-                "--",
-                str(root / relative),
-                str(checkouts / entry["name"]),
-            )
-        expected = build(spec, checkouts, scratch / "expected", bundles=root / "bundles")
-        if expected != document or regular_tree(scratch / "expected") != actual_files:
+        replay_bundles(spec, root / "bundles", scratch / "expected", document)
+        if regular_tree(scratch / "expected") != actual_files:
             raise EvidenceError(
                 "corpus release differs from retained Git objects or complete file inventory"
             )

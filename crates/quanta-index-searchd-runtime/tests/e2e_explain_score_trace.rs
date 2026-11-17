@@ -103,7 +103,7 @@ fn verify_code_search_file_scores(rt: &mut E2eRuntime) -> TestResult {
     };
     let pin = native_page.generation;
     let (query, control, ingest) = rt.socket_paths().ok_or("started runtime sockets")?;
-    let client = QuantaIndex::connect(
+    let client = QuantaIndex::connect_legacy(
         ConnectOptions::from_state_root(rt.state_root())
             .with_query_socket(query.to_path_buf())
             .with_control_socket(control.to_path_buf())

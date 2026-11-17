@@ -448,7 +448,11 @@ impl NativeReadSessions {
     ) -> Result<R, IndexError>
     where
         P: FnOnce() -> Result<T, IndexError>,
-        Q: FnOnce(&ReadTicket, T) -> Result<R, IndexError>,
+        Q: FnOnce(
+            &ReadTicket,
+            &mut quanta_index_kernel::TicketReadAttempt<'_>,
+            T,
+        ) -> Result<R, IndexError>,
     {
         let entry = self.lookup(uid, id, budget)?;
         if entry.is_closing() || entry.uncertain.load(Ordering::Acquire) {
@@ -463,15 +467,15 @@ impl NativeReadSessions {
         let ticket = guard.ticket.as_ref().ok_or_else(|| {
             IndexError::BackendViolation("active read session lost its ticket".into())
         })?;
-        if let Err(error) = ticket.validate_for_request(budget) {
-            entry.record_query_validation_failure(budget, &error);
-            return Err(error);
-        }
+        let mut attempt = ticket.begin_read_attempt(budget).inspect_err(|error| {
+            entry.record_query_validation_failure(budget, error);
+        })?;
         if entry.uncertain.load(Ordering::Acquire) {
+            attempt.abort();
             return Err(IndexError::SnapshotUnavailable);
         }
-        let result = query(ticket, prepared);
-        let post = ticket.validate_for_request(budget);
+        let result = query(ticket, &mut attempt, prepared);
+        let post = attempt.finalize();
         if let Err(error) = &post {
             entry.record_query_validation_failure(budget, error);
         }

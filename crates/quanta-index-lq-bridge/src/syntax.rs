@@ -32,6 +32,11 @@
 
 use core::fmt;
 
+use quanta_index_lq_norm::{
+    LqDirective, LqExpr, LqFilter, LqPredicateArg,
+    limits::{MAX_AST_DEPTH, MAX_INPUT_BYTES},
+};
+
 use crate::errors::{BridgeError, BridgeErrorCode};
 
 /// Closed set of v1-recognized Sourcegraph filter names.
@@ -608,12 +613,45 @@ impl<'de> serde::Deserialize<'de> for SgQuery {
     }
 }
 
+/// Logical backing for parsing and lowering a bounded Sourcegraph query.
+/// Custodial callers acquire the grant before invoking the bridge.
+#[must_use]
+pub fn sourcegraph_query_backing_bytes(input_bytes: usize) -> Option<u64> {
+    if input_bytes > MAX_INPUT_BYTES {
+        return None;
+    }
+    // Terms and predicate arguments consume source bytes. Include parser
+    // vectors and filter folding, both ASTs, and translator branch metadata.
+    let slot_bytes = std::mem::size_of::<(
+        SgQuery,
+        SgFilter,
+        LqExpr,
+        LqFilter,
+        LqDirective,
+        LqPredicateArg,
+    )>()
+    .checked_mul(8)?;
+    let bytes = input_bytes
+        .checked_add(1)?
+        .checked_mul(slot_bytes)?
+        .checked_add(input_bytes.checked_mul(16)?)?;
+    match u64::try_from(bytes) {
+        Ok(bytes) => Some(bytes),
+        Err(_) => None,
+    }
+}
+
 /// Parse a v1 Sourcegraph query string into [`SgQuery`].
 ///
 /// Returns `BRIDGE_UNSUPPORTED_FILTER` for unrecognized filter names
 /// and `BRIDGE_UNSUPPORTED_DIRECTIVE` for empty input and other
 /// directive-shaped refusals.
 pub fn parse_sourcegraph(raw: &str) -> Result<SgQuery, BridgeError> {
+    if raw.len() > MAX_INPUT_BYTES {
+        return Err(BridgeError::translate_fail(
+            "Sourcegraph query exceeds the LQ input limit",
+        ));
+    }
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err(BridgeError::unsupported_directive(
@@ -622,7 +660,7 @@ pub fn parse_sourcegraph(raw: &str) -> Result<SgQuery, BridgeError> {
         ));
     }
     let mut p = Parser::new(trimmed);
-    let q = p.parse_or()?;
+    let q = p.parse_or(1)?;
     p.skip_ws();
     if !p.is_eof() {
         return Err(BridgeError::new(
@@ -688,15 +726,15 @@ impl<'a> Parser<'a> {
         ok
     }
 
-    fn parse_or(&mut self) -> Result<SgQuery, BridgeError> {
+    fn parse_or(&mut self, depth: u32) -> Result<SgQuery, BridgeError> {
         let mut terms: Vec<SgQuery> = Vec::new();
-        let first = self.parse_and()?;
+        let first = self.parse_and(depth)?;
         terms.push(first);
         loop {
             self.skip_ws();
             let save = self.pos;
             if self.match_keyword("OR") {
-                let rhs = self.parse_and()?;
+                let rhs = self.parse_and(depth)?;
                 terms.push(rhs);
             } else {
                 self.pos = save;
@@ -713,9 +751,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_and(&mut self) -> Result<SgQuery, BridgeError> {
+    fn parse_and(&mut self, depth: u32) -> Result<SgQuery, BridgeError> {
         let mut terms: Vec<SgQuery> = Vec::new();
-        let first = self.parse_term()?;
+        let first = self.parse_term(depth)?;
         terms.push(first);
         loop {
             self.skip_ws();
@@ -741,7 +779,7 @@ impl<'a> Parser<'a> {
             if self.peek() == Some(b')') {
                 break;
             }
-            let next = self.parse_term()?;
+            let next = self.parse_term(depth)?;
             terms.push(next);
         }
         if terms.len() == 1 {
@@ -755,7 +793,12 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_term(&mut self) -> Result<SgQuery, BridgeError> {
+    fn parse_term(&mut self, depth: u32) -> Result<SgQuery, BridgeError> {
+        if depth > MAX_AST_DEPTH {
+            return Err(BridgeError::translate_fail(
+                "Sourcegraph query exceeds the LQ nesting limit",
+            ));
+        }
         self.skip_ws();
         if self.is_eof() {
             return Err(BridgeError::new(
@@ -766,13 +809,13 @@ impl<'a> Parser<'a> {
         }
         if self.match_keyword("NOT") {
             self.skip_ws();
-            let inner = self.parse_term()?;
+            let inner = self.parse_term(depth.saturating_add(1))?;
             return Ok(SgQuery::Not(Box::new(inner)));
         }
         if self.peek() == Some(b'(') {
             self.pos = self.pos.saturating_add(1);
             self.skip_ws();
-            let inner = self.parse_or()?;
+            let inner = self.parse_or(depth.saturating_add(1))?;
             self.skip_ws();
             if self.peek() != Some(b')') {
                 return Err(BridgeError::new(
@@ -1174,7 +1217,9 @@ fn is_empty_pattern_placeholder(q: &SgQuery) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{SgFilter, SgPatternKind, SgQuery, parse_sourcegraph};
+    use super::{
+        MAX_AST_DEPTH, MAX_INPUT_BYTES, SgFilter, SgPatternKind, SgQuery, parse_sourcegraph,
+    };
     use crate::errors::BridgeErrorCode;
 
     fn unwrap_ok(q: Result<SgQuery, crate::errors::BridgeError>) -> SgQuery {
@@ -1199,6 +1244,21 @@ mod tests {
         };
         assert_eq!(kind, SgPatternKind::Literal);
         assert_eq!(&*body, "foo");
+    }
+
+    #[test]
+    fn sourcegraph_limits_raw_input_and_recursive_terms() -> Result<(), std::num::TryFromIntError> {
+        let max_nesting = usize::try_from(MAX_AST_DEPTH.saturating_sub(1))?;
+        assert!(parse_sourcegraph(&"x".repeat(MAX_INPUT_BYTES)).is_ok());
+        let oversized = " ".repeat(MAX_INPUT_BYTES);
+        assert!(parse_sourcegraph(&format!("{oversized}x")).is_err());
+        assert!(parse_sourcegraph(&format!("{}x", "NOT ".repeat(max_nesting))).is_ok());
+        assert!(parse_sourcegraph(&format!("NOT {}x", "NOT ".repeat(max_nesting))).is_err());
+        let opens = "(".repeat(max_nesting);
+        let closes = ")".repeat(max_nesting);
+        assert!(parse_sourcegraph(&format!("{opens}x{closes}")).is_ok());
+        assert!(parse_sourcegraph(&format!("({opens}x{closes})")).is_err());
+        Ok(())
     }
 
     #[test]

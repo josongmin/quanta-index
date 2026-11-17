@@ -84,8 +84,15 @@ fn terminal_frames_have_no_sibling_allocation_and_small_fixed_layout() -> TestRe
     let mut work = budget()?;
     let tracker = array_scope(MemoryLifetime::Temporary, None, &mut work);
     let scalar = MapValue::inline(b"fixed", [])?;
-    let node = Node::leaf(&[], scalar, &work)?;
-    let frame = BootstrapFrame::new(MapBuffer::new(0), Some(scalar));
+    let node = Node::leaf(
+        &[],
+        RetainedMapValue::from_public(scalar, &mut work)?,
+        &work,
+    )?;
+    let frame = BootstrapFrame::new(
+        MapBuffer::new(0),
+        Some(RetainedMapValue::from_public(scalar, &mut work)?),
+    );
     check_eq!(node.branch_count(), 0);
     check_eq!(frame.branches.capacity_bytes()?, 0);
     check_eq!(node.branches.capacity_bytes()?, 0);
@@ -98,6 +105,50 @@ fn terminal_frames_have_no_sibling_allocation_and_small_fixed_layout() -> TestRe
     check!(matches!(decoded, Err(IndexError::ResourceLimited)));
     check_eq!(tracker.refused.load(Ordering::Relaxed), 1);
     check_eq!(tracker.live.load(Ordering::Relaxed), 0);
+    Ok(())
+}
+
+#[test]
+fn retained_values_keep_wire_and_share_only_granted_many_child_backing() -> TestResult {
+    let mut work = budget()?;
+    let tracker = array_scope(MemoryLifetime::Temporary, Some(0), &mut work);
+    let refs = (1_u8..=5)
+        .map(|edge| ObjectRef(quanta_index_core::index::Digest([edge; 32])))
+        .collect::<Vec<_>>();
+    for count in [0, 1, 2, 5] {
+        let public = MapValue::inline(&[9, 8], refs[..count].iter().copied())?;
+        let retained = RetainedMapValue::from_public(public, &mut work)?;
+        check_eq!(retained.children()?, &refs[..count]);
+        let mut payload = Vec::new();
+        value_codec::write(&retained, &mut payload)?;
+        check_eq!(payload, vec![1, 2, 9, 8, u8::try_from(count)?]);
+        let retained_wire = retained.to_public(&mut work)?.encoded()?;
+        let public_wire = public.encoded()?;
+        check_eq!(retained_wire.as_slice()?, public_wire.as_slice()?);
+        if count <= 1 {
+            check_eq!(tracker.live.load(Ordering::Relaxed), 0);
+        } else {
+            let held = tracker.live.load(Ordering::Relaxed);
+            check!(held > 0);
+            let alias = retained.clone();
+            drop(retained);
+            check_eq!(tracker.live.load(Ordering::Relaxed), held);
+            drop(alias);
+            check_eq!(tracker.live.load(Ordering::Relaxed), 0);
+            continue;
+        }
+    }
+    check_eq!(tracker.refused.load(Ordering::Relaxed), 0);
+
+    let mut denied = budget()?;
+    let refusal = array_scope(MemoryLifetime::Temporary, None, &mut denied);
+    let multi = MapValue::inline(&[9, 8], refs[..2].iter().copied())?;
+    check!(matches!(
+        RetainedMapValue::from_public(multi, &mut denied),
+        Err(IndexError::ResourceLimited)
+    ));
+    check_eq!(refusal.refused.load(Ordering::Relaxed), 1);
+    check_eq!(refusal.live.load(Ordering::Relaxed), 0);
     Ok(())
 }
 

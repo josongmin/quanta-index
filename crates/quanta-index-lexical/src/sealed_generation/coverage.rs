@@ -4,6 +4,7 @@
 //! This artifact is not a parser completeness
 //! proof: source hashes and extraction policy remain producer attestations.
 
+use crate::legacy::coverage_root::corrupt;
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::path::Path;
@@ -15,7 +16,7 @@ use quanta_index_contract::{
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
 
-pub(crate) const SOURCE_FILE_COVERAGE_FILE_NAME: &str = "source-file-coverage.cbor";
+pub(crate) use crate::legacy::names::SOURCE_FILE_COVERAGE_FILE_NAME;
 #[path = "coverage_pages.rs"]
 mod pages;
 pub(crate) use pages::{
@@ -150,10 +151,6 @@ impl CoverageDecodeCache {
         }
         Ok(artifact)
     }
-}
-
-fn corrupt(generation_dir: &Path, reason: &str) -> CoreError {
-    crate::index_store::sidecar_corrupt(generation_dir, SOURCE_FILE_COVERAGE_FILE_NAME, reason)
 }
 
 #[cfg(test)]

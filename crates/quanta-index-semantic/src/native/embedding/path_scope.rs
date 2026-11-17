@@ -21,6 +21,7 @@ pub(super) fn validate_path_roots(
 /// Projected members use the same persisted reverse layout as lexical scope.
 pub(super) fn search(
     query: &SearchQuery<'_>,
+    directory: Option<&ann_directory::AnnDirectory>,
     context: &mut ReadContext<'_>,
 ) -> Result<Option<SearchResult>, IndexError> {
     let Some(path) = query.exact_path else {
@@ -37,7 +38,7 @@ pub(super) fn search(
         {
             return Ok(None);
         }
-        return search_projected(query, projection, path, context).map(Some);
+        return search_projected(query, projection, path, directory, context).map(Some);
     }
     let query_norm = validate_search_query(query)?;
     validate_path_roots(query.source_owners, query.source_paths)?;
@@ -56,14 +57,14 @@ pub(super) fn search(
     // The public exact-path request permits a few more bytes than a Native
     // `SourceCut` path key. Such a path has no durable source member; an admitted
     // overlay with that path still participates below.
-    let source_owner = if path.len() > MAX_SOURCE_PATH_BYTES {
+    let source_path = if path.len() > MAX_SOURCE_PATH_BYTES {
         None
     } else {
         let path_key = SourcePathKey::copy(path, context.budget)?;
         let owner = context
             .maps
             .lookup(query.source_paths, path_key.as_slice(), context.budget)?
-            .map(|value| owner_from_path_map_value(value, context.budget))
+            .map(|value| quanta_index_core::index::SourcePathOwners::decode(value, context.budget))
             .transpose()?;
         drop(path_key);
         owner
@@ -82,20 +83,14 @@ pub(super) fn search(
         return Err(IndexError::ResourceLimited);
     }
     let mut scanned_owners = 0;
-    let mut skipped_stale = 0;
+    let mut skipped_stale = 0u32;
     let mut traversal = NativeSemanticTraversal::ExactExhausted;
-    if let Some(source_owner) = source_owner {
+    let mut rank_source = |source_owner: OwnerKey,
+                           source: ObjectRef,
+                           record: SourceRecordOwner,
+                           context: &mut ReadContext<'_>|
+     -> Result<(), IndexError> {
         let key = owner_map_key(source_owner);
-        let source = context
-            .maps
-            .lookup_object(query.source_owners, &key, context.budget)?
-            .ok_or_else(|| IndexError::CorruptObject("source path has no selected owner".into()))?;
-        let record = load_source_record_from_objects(source, context.objects, context.budget)?;
-        if record.path != path {
-            return Err(IndexError::CorruptObject(
-                "source path reverse record differs".into(),
-            ));
-        }
         let coverage = context
             .maps
             .lookup(query.coverage.owners, &key, context.budget)?
@@ -108,27 +103,29 @@ pub(super) fn search(
                 "selected semantic source differs from path owner".into(),
             ));
         }
-        if durable_limit == 0 {
+        if scanned_owners == durable_limit {
             // Authenticate the direct path and coverage links, but do not
             // inspect a vector candidate after the durable owner cap is spent.
             // As in search_exact, authority probes do not count as scanned owners.
             traversal = NativeSemanticTraversal::ExactCapped;
         } else {
-            scanned_owners = 1;
+            scanned_owners = scanned_owners
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?;
             if selected.coverage.covered != Some(selected.coverage.desired)
                 || selected.coverage.searchable.is_none()
             {
-                skipped_stale = 1;
+                skipped_stale = skipped_stale
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
             } else {
                 let member = selected.current_member(query, context)?;
-                if !selected.matches_exact_path(query, context)? {
-                    return Err(IndexError::CorruptObject(
-                        "selected semantic path differs from source path".into(),
-                    ));
-                }
-                rank_member(
+                let _rescored = rank_member(
                     &member,
-                    selected.contribution,
+                    Some(SelectedArtifactInput::Source {
+                        reference: source,
+                        record,
+                    }),
                     None,
                     query,
                     query_norm,
@@ -138,7 +135,60 @@ pub(super) fn search(
                 )?;
             }
         }
+        Ok(())
+    };
+    match source_path {
+        None => {}
+        Some(quanta_index_core::index::SourcePathOwners::LegacyOwner(source_owner)) => {
+            let source = context
+                .maps
+                .lookup_object(
+                    query.source_owners,
+                    &owner_map_key(source_owner),
+                    context.budget,
+                )?
+                .ok_or_else(|| {
+                    IndexError::CorruptObject("source path has no selected owner".into())
+                })?;
+            let record = load_source_record_with_lifetime(
+                source,
+                context.objects,
+                context.budget,
+                if query.source_files && durable_limit > 0 {
+                    MemoryLifetime::Retained
+                } else {
+                    MemoryLifetime::Temporary
+                },
+            )?;
+            if record.path != path {
+                return Err(IndexError::CorruptObject(
+                    "source path reverse record differs".into(),
+                ));
+            }
+            rank_source(source_owner, source, record, context)?;
+        }
+        Some(quanta_index_core::index::SourcePathOwners::Repositories(root)) => {
+            let maps = context.maps;
+            let objects = context.objects;
+            quanta_index_core::index::visit_repository_path_sources(
+                root,
+                path,
+                query.source_owners,
+                maps,
+                objects,
+                context.budget,
+                &mut |owner, source, record, budget| {
+                    let mut read = ReadContext {
+                        objects,
+                        maps,
+                        budget,
+                    };
+                    rank_source(owner, source, record, &mut read)
+                },
+            )?;
+        }
     }
+    drop(rank_source);
     finish_ranked(
         query,
         query_norm,
@@ -156,6 +206,7 @@ fn search_projected(
     query: &SearchQuery<'_>,
     projection: &ProjectionBinding,
     path: &str,
+    directory: Option<&ann_directory::AnnDirectory>,
     context: &mut ReadContext<'_>,
 ) -> Result<SearchResult, IndexError> {
     validate_path_roots(query.source_owners, query.source_paths)?;
@@ -167,59 +218,94 @@ fn search_projected(
     )
     .map_err(|_error| IndexError::ResourceLimited)?;
     if lexical_scope::selected_projected_empty(query.coverage) {
-        return lexical_scope::rank_selected(query, &[], overlay_count, context);
+        return lexical_scope::rank_selected(query, &[], overlay_count, None, context);
     }
-    let directory =
-        lexical_scope::selected_projected_directory(query.coverage, query.recipe, context)?;
-    let limit = query
-        .max_owners
-        .checked_sub(overlay_count)
-        .and_then(|value| value.checked_add(1))
-        .ok_or(IndexError::ResourceLimited)?;
-    let source_owner = if path.len() > MAX_SOURCE_PATH_BYTES {
+    let directory = directory.ok_or(IndexError::RebuildRequired)?;
+    let limit = usize::try_from(
+        query
+            .max_owners
+            .checked_sub(overlay_count)
+            .and_then(|value| value.checked_add(1))
+            .ok_or(IndexError::ResourceLimited)?,
+    )
+    .map_err(|_error| IndexError::ResourceLimited)?;
+    let source_path = if path.len() > MAX_SOURCE_PATH_BYTES {
         None
     } else {
         let key = SourcePathKey::copy(path, context.budget)?;
         context
             .maps
             .lookup(query.source_paths, key.as_slice(), context.budget)?
-            .map(|value| owner_from_path_map_value(value, context.budget))
+            .map(|value| quanta_index_core::index::SourcePathOwners::decode(value, context.budget))
             .transpose()?
     };
-    let Some(source_owner) = source_owner else {
-        return lexical_scope::rank_selected(query, &[], overlay_count, context);
+    let Some(source_path) = source_path else {
+        return lexical_scope::rank_selected(query, &[], overlay_count, None, context);
     };
-    let mut selected = lexical_scope::SelectedLexicalScope::reserve(
-        usize::try_from(limit).map_err(|_error| IndexError::ResourceLimited)?,
-        context,
-    )?;
-    {
-        let source = context
-            .maps
-            .lookup_object(
+    let mut selected = lexical_scope::SelectedLexicalScope::reserve(limit, context)?;
+    let mut scalar_file = None;
+    match source_path {
+        quanta_index_core::index::SourcePathOwners::LegacyOwner(source_owner) => {
+            let source = lexical_scope::SelectedProjectedSource::from_path(
+                source_owner,
+                path,
                 query.source_owners,
-                &owner_map_key(source_owner),
-                context.budget,
-            )?
-            .ok_or_else(|| IndexError::CorruptObject("source path has no selected owner".into()))?;
-        let record = load_source_record_from_objects(source, context.objects, context.budget)?;
-        if record.path != path {
-            return Err(IndexError::CorruptObject(
-                "source path reverse record differs".into(),
-            ));
+                query.source_files,
+                context,
+            )?;
+            lexical_scope::select_projected_source(
+                &source,
+                query.coverage,
+                projection,
+                query.source_owners,
+                directory.source_reverse,
+                &mut selected,
+                query.source_files,
+                context,
+            )?;
+            scalar_file = source.file_record;
         }
-        lexical_scope::select_projected_source(
-            source_owner,
-            source,
-            Some(path),
-            query.coverage,
-            projection,
-            query.source_owners,
-            directory.source_reverse,
-            usize::try_from(limit).map_err(|_error| IndexError::ResourceLimited)?,
-            &mut selected,
-            context,
-        )?;
+        quanta_index_core::index::SourcePathOwners::Repositories(root) => {
+            let maps = context.maps;
+            let objects = context.objects;
+            quanta_index_core::index::visit_repository_path_sources(
+                root,
+                path,
+                query.source_owners,
+                maps,
+                objects,
+                context.budget,
+                &mut |owner, reference, record, budget| {
+                    let mut read = ReadContext {
+                        objects,
+                        maps,
+                        budget,
+                    };
+                    // The common bucket traversal authenticated this record.
+                    // File hits reopen their selected source at ranking so one
+                    // record cannot be incorrectly shared by every projection.
+                    let source = lexical_scope::SelectedProjectedSource::from_authenticated(
+                        owner, reference, record, false, &mut read,
+                    )?;
+                    lexical_scope::select_projected_source(
+                        &source,
+                        query.coverage,
+                        projection,
+                        query.source_owners,
+                        directory.source_reverse,
+                        &mut selected,
+                        query.source_files,
+                        &mut read,
+                    )
+                },
+            )?;
+        }
     }
-    lexical_scope::rank_selected(query, &selected.owners, overlay_count, context)
+    lexical_scope::rank_selected(
+        query,
+        &selected.owners,
+        overlay_count,
+        scalar_file.as_ref(),
+        context,
+    )
 }

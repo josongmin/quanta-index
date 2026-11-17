@@ -1,13 +1,28 @@
 //! One canonical incremental IR shared by native SDKs and the application core.
 //! Live leases and reclaim authority are intentionally absent from this DTO surface.
 pub use quanta_index_contract_base::index_refs::*;
+mod history;
+mod immutable_object_wire;
+pub use immutable_object_wire::{
+    NATIVE_IMMUTABLE_OBJECT_HASH_DOMAIN_V1, NATIVE_IMMUTABLE_OBJECT_HEADER_BYTES_V1,
+    NATIVE_IMMUTABLE_OBJECT_MAGIC_V1, native_immutable_object_header_v1,
+    native_immutable_object_ref_v1,
+};
+pub use history::{
+    AuxiliaryGenerationKeyV1, HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryGenerationInputV1, HistoryReplayFenceV1, HistoryReplayPublicationV1,
+    HistorySnapshotCheckpointV1, HistorySnapshotExportFrameV1, HistorySnapshotPageV1, HistorySnapshotRowV1,
+    HistorySourceCutV1, HistorySourceInputV1, HistoryTransition, SourceHistoryTransitionV1,
+    MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1, MAX_HISTORY_SNAPSHOT_ROWS_PER_PAGE_V1,
+    MAX_HISTORY_SOURCE_INPUT_BYTES_V1,
+};
 
 /// Source path byte limit, leaving five bytes for the canonical path map key
 /// namespace within the native 4096-byte map key format.
 pub const MAX_SOURCE_PATH_BYTES: usize = 4091;
 /// Maximum number of source items in one Native `StageSources` request.
 pub const MAX_NATIVE_STAGE_SOURCES_INPUTS: usize = 128;
-/// Maximum sum of path bytes, source bytes and 256 bytes per staged item.
+/// Maximum sum of path bytes, source bytes, repository ID bytes (if present),
+/// and 256 bytes per staged item.
 /// The IPC frame and encoded object batch apply independent byte limits.
 pub const MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES: usize = 8 * 1024 * 1024;
 
@@ -21,6 +36,63 @@ pub struct SourceCut {
     pub frontiers: MapRoot,
 }
 
+impl SourceCut {
+    /// Canonical source-local input context, preserving the Kernel's framing.
+    /// This fingerprints all three roots; it grants no source or writer authority.
+    /// The fixed-field wire is counted and hashed without allocating a buffer.
+    pub fn input_context_digest(&self) -> Result<Digest, serde_json::Error> {
+        use sha2::{Digest as _, Sha256};
+
+        struct ContextWriter<'a> {
+            bytes: u64,
+            hash: Option<&'a mut Sha256>,
+        }
+
+        impl std::io::Write for ContextWriter<'_> {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                let len = u64::try_from(bytes.len())
+                    .map_err(|_| std::io::Error::other("source context length exceeds u64"))?;
+                self.bytes = self
+                    .bytes
+                    .checked_add(len)
+                    .ok_or_else(|| std::io::Error::other("source context length overflow"))?;
+                if let Some(hash) = self.hash.as_mut() {
+                    hash.update(bytes);
+                }
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        const DOMAIN: &[u8; 14] = b"source-context";
+        let mut count = ContextWriter {
+            bytes: 0,
+            hash: None,
+        };
+        serde_json::to_writer(&mut count, self)?;
+        let mut hash = Sha256::new();
+        hash.update(b"quanta-index-vnext\0");
+        hash.update(14_u64.to_be_bytes());
+        hash.update(DOMAIN);
+        hash.update(count.bytes.to_be_bytes());
+        serde_json::to_writer(
+            ContextWriter {
+                bytes: 0,
+                hash: Some(&mut hash),
+            },
+            self,
+        )?;
+        Ok(Digest(hash.finalize().into()))
+    }
+}
+
+#[cfg(test)]
+#[path = "index/source_context_tests.rs"]
+mod source_context_tests;
+
 /// Explicit producer admission for lexical text. Raw-byte and projection
 /// consumers retain their separate input policies.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,12 +101,16 @@ pub enum SourceTextAdmission {
     Utf8 { policy: Digest },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceRecord {
     pub path: String,
     pub bytes: ObjectRef,
     pub byte_len: u64,
     pub text: SourceTextAdmission,
+    /// Absent on records from the original path-only publication protocol.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_repo_id: Option<crate::RepoId>,
 }
 
 /// One bounded native source intake item. A batch preserves this order in its
@@ -103,8 +179,18 @@ pub struct SourceTransition {
     pub events: Vec<SourceEvent>,
 }
 
-/// Persisted native index state format, shared by the catalog and runtime.
-pub const NATIVE_INDEX_STATE_VERSION: u32 = 19;
+// Keep the persisted catalog epoch and filesystem marker in one declaration.
+macro_rules! native_index_state_format {
+    ($version:literal) => {
+        /// Persisted native index state format, shared by the catalog and runtime.
+        pub const NATIVE_INDEX_STATE_VERSION: u32 = $version;
+        pub const NATIVE_INDEX_STATE_MARKER_NAME: &str =
+            concat!(".native-index-v", stringify!($version));
+        pub const NATIVE_INDEX_STATE_MARKER_CONTENT: &[u8] =
+            concat!("quanta-index-native-state-v", stringify!($version), "\n").as_bytes();
+    };
+}
+native_index_state_format!(20);
 /// Persisted native source-event capture payload format.
 pub const NATIVE_SOURCE_CAPTURE_VERSION: u32 = 2;
 /// Hash domain for logical owner mutation capture, independent of execution base.
@@ -153,7 +239,12 @@ mod source_capture_tests {
             0x40, 0x8b, 0x26, 0xa6, 0xa1, 0xca, 0xa5, 0xab, 0x69, 0xcf, 0xb6, 0xd0, 0x1d, 0xc1,
             0xbe, 0x88, 0x40, 0xe2,
         ];
-        assert_eq!(NATIVE_INDEX_STATE_VERSION, 19);
+        assert_eq!(NATIVE_INDEX_STATE_VERSION, 20);
+        assert_eq!(super::NATIVE_INDEX_STATE_MARKER_NAME, ".native-index-v20");
+        assert_eq!(
+            super::NATIVE_INDEX_STATE_MARKER_CONTENT,
+            b"quanta-index-native-state-v20\n"
+        );
         assert_eq!(NATIVE_SOURCE_CAPTURE_VERSION, 2);
         assert_eq!(
             NATIVE_SOURCE_CAPTURE_HASH_DOMAIN,
@@ -557,6 +648,7 @@ pub struct InstanceSpec {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InputDomain {
     SourceLocal,
+    History,
     Projection {
         projection: ProjectionId,
         producer: ProducerId,
@@ -889,6 +981,7 @@ pub enum SourceOperationMode {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UpdateKind {
     SourceAdvance(SourceTransition),
+    SourceHistoryAdvance(Box<SourceHistoryTransitionV1>),
     /// Complete replacement of the known producer owner prefix. The producer
     /// epoch switches only when the new baseline and original receipt publish.
     SourceResync {
@@ -896,6 +989,8 @@ pub enum UpdateKind {
         transition: SourceTransition,
     },
     ProjectionAdvance(Box<ProjectionTransition>),
+    HistoryAdvance(HistoryTransition),
+    HistoryAppend(HistoryAppendV1),
     Reconfigure {
         profile: ObjectRef,
     },
@@ -908,15 +1003,26 @@ pub enum UpdateKind {
 
 impl UpdateKind {
     #[must_use]
+    pub fn source_transition_v1(&self) -> Option<&SourceTransition> {
+        match self {
+            Self::SourceAdvance(transition) | Self::SourceResync { transition, .. } => Some(transition),
+            Self::SourceHistoryAdvance(transition) => Some(&transition.source),
+            _ => None,
+        }
+    }
+
+    #[must_use]
     pub const fn source_mode(&self) -> SourceOperationMode {
         match self {
-            Self::SourceAdvance(_) => SourceOperationMode::Advance,
+            Self::SourceAdvance(_) | Self::SourceHistoryAdvance(_) => SourceOperationMode::Advance,
             Self::SourceResync { prior_epoch, .. } => SourceOperationMode::Resync {
                 prior_epoch: *prior_epoch,
             },
-            Self::ProjectionAdvance(_) | Self::Reconfigure { .. } | Self::Materialize { .. } => {
-                SourceOperationMode::Unchanged
-            }
+            Self::ProjectionAdvance(_)
+            | Self::HistoryAdvance(_)
+            | Self::HistoryAppend(_)
+            | Self::Reconfigure { .. }
+            | Self::Materialize { .. } => SourceOperationMode::Unchanged,
         }
     }
 }
@@ -1007,12 +1113,6 @@ quanta_index_contract_base::native_serde_struct!(SourceCut {
     owners: MapRoot,
     paths: MapRoot,
     frontiers: MapRoot
-});
-quanta_index_contract_base::native_serde_struct!(SourceRecord {
-    path: String,
-    bytes: ObjectRef,
-    byte_len: u64,
-    text: SourceTextAdmission
 });
 quanta_index_contract_base::native_serde_struct!(SourceInput {
     path: String,
@@ -1106,7 +1206,7 @@ quanta_index_contract_base::native_serde_struct!(InstanceSpec {
     policy: Digest,
     format: StorageFormatId
 });
-quanta_index_contract_base::native_serde_enum!(InputDomain { units { SourceLocal = 0 } newtypes {  } records { Projection = 1 { projection: ProjectionId, producer: ProducerId } } });
+quanta_index_contract_base::native_serde_enum!(InputDomain { units { SourceLocal = 0, History = 2 } newtypes {  } records { Projection = 1 { projection: ProjectionId, producer: ProducerId } } });
 quanta_index_contract_base::native_serde_struct!(IndexProfile { instances: Vec<InstanceSpec> });
 quanta_index_contract_base::native_serde_struct!(CatalogView {
     identity: ViewRef,
@@ -1117,7 +1217,7 @@ quanta_index_contract_base::native_serde_struct!(CatalogView {
     coverage: MapRoot
 });
 quanta_index_contract_base::native_serde_enum!(SourceOperationMode { units { Unchanged = 0, Advance = 1 } newtypes { } records { Resync = 2 { prior_epoch: u64 } } });
-quanta_index_contract_base::native_serde_enum!(UpdateKind { units {  } newtypes { SourceAdvance = 0 => SourceTransition, ProjectionAdvance = 1 => Box<ProjectionTransition> } records { Reconfigure = 2 { profile: ObjectRef }, Materialize = 3 { claim: WorkClaim }, SourceResync = 4 { prior_epoch: u64, transition: SourceTransition } } });
+quanta_index_contract_base::native_serde_enum!(UpdateKind { units {  } newtypes { SourceAdvance = 0 => SourceTransition, ProjectionAdvance = 1 => Box<ProjectionTransition>, HistoryAdvance = 5 => HistoryTransition, HistoryAppend = 6 => HistoryAppendV1, SourceHistoryAdvance = 7 => Box<SourceHistoryTransitionV1> } records { Reconfigure = 2 { profile: ObjectRef }, Materialize = 3 { claim: WorkClaim }, SourceResync = 4 { prior_epoch: u64, transition: SourceTransition } } });
 quanta_index_contract_base::native_serde_struct!(UpdateRequest {
     operation: OperationKey,
     expected_view: ViewRef,

@@ -757,6 +757,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                     observation.finalize_ns = Some(elapsed_ingest_ns(started)?);
                     observation.status = IngestObservationStatus::FinalizeOnly;
                     return Ok(SearchCorpusPublishOutcome {
+                        upload_cleanup: None,
                         publication: quanta_index_contract::SourcePublicationBinding::for_batch(
                             batch,
                         ),
@@ -798,12 +799,15 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                 // mutated, as the all-at-once derivation did. Every source record is
                 // validated before the first window is embedded.
                 if let Some(derived) = derived.as_mut() {
-                    let (semantic_receipt, semantic_report) = self.semantic_ingest.publish_stream(
-                        &derived.header,
-                        &mut derived.source,
-                        Some(owner.output_admission()),
-                        diagnostic,
-                    )?;
+                    let (semantic_receipt, semantic_report) =
+                        timed_ingest_work("ingest_semantic_stream_publish", || {
+                            self.semantic_ingest.publish_stream(
+                                &derived.header,
+                                &mut derived.source,
+                                Some(owner.output_admission()),
+                                diagnostic,
+                            )
+                        })?;
                     observation.semantic = Some(Box::new(semantic_report));
                     validate_semantic_publish_receipt_v1(
                         &derived.header,
@@ -816,30 +820,36 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                 }
                 if build_lexical {
                     let started = std::time::Instant::now();
-                    observation.lexical_stages = self
-                        .builder
-                        .build_batch_with_owner(batch, owner, diagnostic)?;
+                    observation.lexical_stages = timed_ingest_work("ingest_lexical_build", || {
+                        self.builder
+                            .build_batch_with_owner(batch, owner, diagnostic)
+                    })?;
                     observation.lexical_build_ns = Some(elapsed_ingest_ns(started)?);
                 }
                 if batch.seal {
                     let (lexical, semantic) = generation_pair_from_batch_v1(batch);
-                    validate_physical_generation_v1(
-                        self.lexical_generation_validator.as_ref(),
-                        &lexical,
-                        "lexical post-build",
-                        owner,
-                    )?;
-                    validate_physical_generation_v1(
-                        self.semantic_generation_validator.as_ref(),
-                        &semantic,
-                        "semantic post-build",
-                        owner,
-                    )?;
+                    timed_ingest_work("ingest_lexical_postbuild_validation", || {
+                        validate_physical_generation_v1(
+                            self.lexical_generation_validator.as_ref(),
+                            &lexical,
+                            "lexical post-build",
+                            owner,
+                        )
+                    })?;
+                    timed_ingest_work("ingest_semantic_postbuild_validation", || {
+                        validate_physical_generation_v1(
+                            self.semantic_generation_validator.as_ref(),
+                            &semantic,
+                            "semantic post-build",
+                            owner,
+                        )
+                    })?;
                     crash_point::reached(crash_point::BEFORE_AUTHORITY_RECORD);
                     let started = std::time::Instant::now();
                     self.finalize_sealed_generation_v1(batch, diagnostic)?;
                     observation.finalize_ns = Some(elapsed_ingest_ns(started)?);
                     return Ok(SearchCorpusPublishOutcome {
+                        upload_cleanup: None,
                         publication: quanta_index_contract::SourcePublicationBinding::for_batch(
                             batch,
                         ),
@@ -851,6 +861,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                 self.finalize_generation_v1(batch, None, diagnostic)?;
                 observation.finalize_ns = Some(elapsed_ingest_ns(started)?);
                 Ok(SearchCorpusPublishOutcome {
+                    upload_cleanup: None,
                     publication: quanta_index_contract::SourcePublicationBinding::for_batch(batch),
                     receipt: batch_publish_receipt_v1(batch),
                     observation: Some(observation),
@@ -930,8 +941,9 @@ impl DirectSearchCorpusMaterializer {
         &self,
         batch: &SearchCorpusIngestBatch,
     ) -> Result<BatchPublishReceipt, CoreError> {
-        let (_lexical, semantic) = generation_pair_from_batch_v1(batch);
-        let roots = self
+        timed_ingest_work("ingest_sealed_receipt", || {
+            let (_lexical, semantic) = generation_pair_from_batch_v1(batch);
+            let roots = self
             .semantic_content_roots
             .sealed_content_roots(&semantic)
             .map_err(|source| CoreError::Typed {
@@ -941,9 +953,10 @@ impl DirectSearchCorpusMaterializer {
                     semantic.manifest_generation.get()
                 ),
             })?;
-        let mut receipt = batch_publish_receipt_v1(batch);
-        receipt.attest_semantic_content(roots);
-        Ok(receipt)
+            let mut receipt = batch_publish_receipt_v1(batch);
+            receipt.attest_semantic_content(roots);
+            Ok(receipt)
+        })
     }
 
     /// A delta may only build on a base that both tracks hold as the exact
@@ -1086,7 +1099,7 @@ impl DirectSearchCorpusMaterializer {
             // delete may succeed while the following directory fsync fails; in
             // that state the old same-process ledger is not authoritative. Only a
             // reconciled retained-set receipt clears this pair-local fence.
-            self.ledger
+            let installed_fence = self.ledger
             .write()
             .map_err(|err| {
                 CoreError::Storage(format!(
@@ -1108,9 +1121,10 @@ impl DirectSearchCorpusMaterializer {
                 Err(error @ (CoreError::Storage(_) | CoreError::StorageIo { .. })) => {
                     return Err(error);
                 }
+                Err(error) if !installed_fence => return Err(error),
                 Err(error) => {
-                    // Typed/contract rejections are pre-mutation outcomes of this
-                    // port and therefore do not create durability ambiguity.
+                    // This attempt was refused before mutation. It can clear
+                    // only the fence it just installed.
                     self.ledger
                     .write()
                     .map_err(|err| {

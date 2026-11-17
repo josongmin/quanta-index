@@ -13,6 +13,7 @@
 //! reproduce, checked to be strictly increasing in the row key; scores
 //! equal exactly where the texts are equal.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/source_fixture.rs"]

@@ -9,8 +9,9 @@ acceptance. Historical tests, counts and status do not qualify current source.
 | Question | Owner |
 | --- | --- |
 | Remaining code, owners and execution order | [Oct-22 epics](plans/oct-22-finalizing/README.md) |
-| Open November audit follow-ups | [Audit tickets](plans/nov-7-repo-audit-closeout/tickets/README.md) |
+| Installed DELTA follow-up and C0 execution | [B05 current C0/P09 acceptance](plans/nov-12-bugbash-c0-p09/tickets/B05-final-verification.md) |
 | Native indexing performance RCA and new code packets | [Nov-5 bugbash SSOT](plans/nov-5-indexing-bugbash/README.md) |
+| Native-only cutover audit, execution order and acceptance | [Nov-12 cutover plan](plans/nov-12-native-cutover/README.md) |
 | Shared files and handoff | [Single-writer rules](plans/oct-22-finalizing/OWNERSHIP.md) |
 | Original full-product DoD | [R01-R40 and final exit conditions](plans/oct-22-finalizing/DOD.md) |
 | Executed results | [VALIDATION](plans/oct-22-finalizing/VALIDATION.md) |
@@ -25,8 +26,10 @@ VALIDATION keeps source-scoped results. Historical plans and handoff summaries
 do not create another live queue. The Oct-10/13/17 forwarding pages are retired;
 current links go directly to the relevant epic or contract, and historical links
 go to the preserved source and result records.
-The [November closeout](ARCHIVE-INDEX.md#2026-11-07-november-closeout) maps the
-month's implemented decisions, retired packets and remaining acceptance.
+The [November closeout](ARCHIVE-INDEX.md#2026-11-07-november-closeout),
+[publication/Sidecar closeout](ARCHIVE-INDEX.md#2026-11-12-publication-and-sidecar-closeout)
+and [semantic plan consolidation](ARCHIVE-INDEX.md#2026-11-12-semantic-plan-consolidation)
+map implemented decisions, retired packets and remaining acceptance.
 Accepted contracts, current usage, generated capabilities and the reusable
 [purpose audit inventory](reference/purpose-audit-inventory.md)
 are references, not another uncompleted feature queue. Proposed ADRs remain

@@ -964,6 +964,27 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
     return out, runner, calls
 
 
+def test_debug_sdk_proof_binds_explicit_legacy_searchd_features(fake_execution) -> None:
+    out, _, _ = fake_execution
+    receipt = portable_proof.produce("sdk", out)
+    context = portable_proof.validate(receipt)
+    assert context["schema_version"] == 4
+    searchd = next(row for row in context["commands"] if row["name"] == "build-searchd")
+    assert searchd["argv"][3:] == [
+        "build",
+        "-p",
+        "quanta-index-searchd-runtime",
+        "--bin",
+        "quanta-index-searchd",
+        "--all-features",
+        "--locked",
+    ]
+    searchd["argv"].remove("--all-features")
+    receipt.write_text(json.dumps(context))
+    with pytest.raises(ValueError, match="differs from prescribed rail"):
+        portable_proof.validate(receipt)
+
+
 def test_fresh_release_sdk_proof_binds_source_and_binaries(fake_execution) -> None:
     out, _legacy_runner, calls = fake_execution
     receipt = portable_proof.produce("sdk", out, build_profile="release-fresh")

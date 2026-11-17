@@ -145,6 +145,249 @@ def _capture_with_cache_deltas() -> dict:
     return capture
 
 
+def _capture_with_posting_cache_deltas() -> dict:
+    capture = _capture_with_cache_deltas()
+    for span_id, rows in ((9, 7), (10, 5)):
+        span = capture["spans"][span_id]
+        span["stage"] = "native_text_posting_edit"
+        span["lane_id"] = 35
+        span["counters"].update(sqlite_rows=rows, sqlite_batches=1)
+    return capture
+
+
+TEXT_SHAPE = {
+    "text_case_occurrences": 6,
+    "text_unique_canonical_terms": 5,
+    "text_occurrence_key_bytes": 30,
+    "text_unique_key_bytes": 24,
+    "text_cold_sql_owners": 1,
+    "text_shape_complete_owners": 1,
+}
+
+
+def _capture_with_text_shape() -> dict:
+    capture = _capture()
+    capture["schema_version"] = 5
+    capture["spans"][9] = _span(
+        9,
+        4,
+        "native_text_inventory_prepare",
+        48,
+        24,
+        35,
+        counters=TEXT_SHAPE.copy(),
+    )
+    capture["spans"][10] = _span(
+        10,
+        4,
+        "native_text_inventory_prepare",
+        48,
+        40,
+        50,
+        counters={
+            "text_case_occurrences": 0,
+            "text_unique_canonical_terms": 0,
+            "text_occurrence_key_bytes": 0,
+            "text_unique_key_bytes": 0,
+            "text_cold_empty_owners": 1,
+            "text_shape_complete_owners": 1,
+        },
+    )
+    return capture
+
+
+def test_text_shape_owner_tuples_aggregate_without_inventing_workload_proof() -> None:
+    capture = _capture_with_text_shape()
+    index = build_index(capture)
+    group = query_index(
+        json.loads(json.dumps(index)),
+        worker_span_id=3,
+        stage="native_text_inventory_prepare",
+        lane=48,
+    )["workers"]["3"]["groups"][0]
+    assert group["count"] == 2
+    assert group["direct_counters"] == {
+        **TEXT_SHAPE,
+        "text_cold_empty_owners": 1,
+        "text_shape_complete_owners": 2,
+    }
+    assert "observed owner" in index["scope"]["text_shape"]
+    assert index["status"] == "UNBOUND_DIAGNOSTIC_ONLY"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda span: span["counters"].pop("text_unique_key_bytes"),
+        lambda span: span["counters"].update(text_cold_direct_owners=1),
+        lambda span: span["counters"].update(text_cold_sql_owners=2),
+        lambda span: span["counters"].update(text_shape_complete_owners=0),
+        lambda span: span["counters"].update(text_case_occurrences=4),
+        lambda span: span["counters"].update(text_unique_key_bytes=31),
+        lambda span: span["counters"].update(text_case_occurrences=-1),
+        lambda span: span["counters"].update(text_case_occurrences=1 << 64),
+        lambda span: span["counters"].update(text_cold_sql_owners=-1),
+        lambda span: span["counters"].update(text_case_occurences=6),
+        lambda span: span.update(lane_id=47),
+        lambda span: span.update(stage="native_text_inventory_diff"),
+        lambda span: span.update(outcome="error"),
+    ),
+)
+def test_text_shape_refuses_partial_wrong_owner_branch_and_overflow(mutate) -> None:
+    capture = _capture_with_text_shape()
+    mutate(capture["spans"][9])
+    with pytest.raises(ValueError, match="text shape|unknown text counter"):
+        build_index(capture)
+
+
+def test_text_shape_requires_v5_capture() -> None:
+    capture = _capture_with_text_shape()
+    capture["schema_version"] = 4
+    with pytest.raises(ValueError, match="text shape"):
+        build_index(capture)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    (
+        {
+            "text_case_occurrences": 2,
+            "text_unique_canonical_terms": 0,
+            "text_occurrence_key_bytes": 4,
+            "text_unique_key_bytes": 0,
+        },
+        {
+            "text_case_occurrences": 0,
+            "text_unique_canonical_terms": 0,
+            "text_occurrence_key_bytes": 1,
+            "text_unique_key_bytes": 1,
+        },
+    ),
+)
+def test_text_shape_nonempty_branch_requires_all_four_positive(shape: dict[str, int]) -> None:
+    capture = _capture_with_text_shape()
+    capture["spans"][9]["counters"].update(shape)
+    with pytest.raises(ValueError, match="text shape"):
+        build_index(capture)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    (
+        {
+            "text_case_occurrences": 3,
+            "text_unique_canonical_terms": 2,
+            "text_occurrence_key_bytes": 6,
+            "text_unique_key_bytes": 4,
+        },
+        {
+            "text_case_occurrences": 2,
+            "text_unique_canonical_terms": 1,
+            "text_occurrence_key_bytes": 4,
+            "text_unique_key_bytes": 2,
+        },
+        {
+            "text_case_occurrences": 4,
+            "text_unique_canonical_terms": 2,
+            "text_occurrence_key_bytes": 7,
+            "text_unique_key_bytes": 4,
+        },
+        {
+            "text_case_occurrences": 4,
+            "text_unique_canonical_terms": 2,
+            "text_occurrence_key_bytes": 8,
+            "text_unique_key_bytes": 3,
+        },
+    ),
+)
+def test_text_shape_raw_owner_requires_both_case_surfaces_and_key_prefixes(
+    shape: dict[str, int],
+) -> None:
+    capture = _capture_with_text_shape()
+    capture["spans"][9]["counters"].update(shape)
+    with pytest.raises(ValueError, match="text shape"):
+        build_index(capture)
+
+
+@pytest.mark.parametrize(
+    "shape",
+    (
+        {"text_case_occurrences": 7},
+        {"text_unique_canonical_terms": 1},
+        {"text_occurrence_key_bytes": 11, "text_unique_key_bytes": 10},
+        {"text_unique_key_bytes": 9},
+    ),
+)
+def test_text_shape_cached_group_requires_two_sided_key_bounds(shape: dict[str, int]) -> None:
+    index = build_index(_capture_with_text_shape())
+    group = next(
+        row
+        for row in index["workers"]["3"]["groups"]
+        if row["stage"] == "native_text_inventory_prepare" and row["lane_id"] == 48
+    )
+    group["direct_counters"].update(shape)
+    with pytest.raises(ValueError, match="text shape"):
+        query_index(index)
+
+
+def test_text_shape_zero_owner_is_complete_and_missing_lane48_tuple_is_invalid() -> None:
+    capture = _capture_with_text_shape()
+    capture["spans"][9]["counters"].clear()
+    with pytest.raises(ValueError, match="text shape"):
+        build_index(capture)
+    capture["spans"][9]["stage"] = "native_text_inventory_diff"
+    index = build_index(capture)
+    group = query_index(
+        index, worker_span_id=3, stage="native_text_inventory_prepare", lane=48
+    )["workers"]["3"]["groups"][0]
+    assert group["count"] == 1
+    assert group["direct_counters"] == {
+        "text_case_occurrences": 0,
+        "text_unique_canonical_terms": 0,
+        "text_occurrence_key_bytes": 0,
+        "text_unique_key_bytes": 0,
+        "text_cold_empty_owners": 1,
+        "text_shape_complete_owners": 1,
+    }
+
+
+def test_text_shape_cached_group_count_must_equal_completed_owner_count() -> None:
+    index = build_index(_capture_with_text_shape())
+    group = next(
+        row
+        for row in index["workers"]["3"]["groups"]
+        if row["stage"] == "native_text_inventory_prepare" and row["lane_id"] == 48
+    )
+    group["count"] = 1
+    with pytest.raises(ValueError, match="text shape"):
+        query_index(index)
+
+
+def test_text_shape_cached_aggregate_rejects_corruption_without_single_owner_rule() -> None:
+    index = build_index(_capture_with_text_shape())
+    group = next(
+        row
+        for row in index["workers"]["3"]["groups"]
+        if row["stage"] == "native_text_inventory_prepare" and row["lane_id"] == 48
+    )
+    assert group["direct_counters"]["text_shape_complete_owners"] == 2
+    for key, value in (
+        ("text_shape_complete_owners", 1),
+        ("text_unique_key_bytes", 31),
+        ("text_case_occurences", 6),
+        ("text_case_occurrences", 1 << 64),
+    ):
+        corrupt = copy.deepcopy(index)
+        row = next(
+            item
+            for item in corrupt["workers"]["3"]["groups"]
+            if item["stage"] == "native_text_inventory_prepare" and item["lane_id"] == 48
+        )
+        row["direct_counters"][key] = value
+        with pytest.raises(ValueError, match="text shape|unknown text counter"):
+            query_index(corrupt)
+
+
 def _record(*, span_id: int = 3, capture_id: str = CAPTURE_ID) -> dict:
     return {
         "event": "native_owned_work_refusal",
@@ -315,6 +558,125 @@ def test_cache_deltas_are_direct_catalog_hold_counters_with_explicit_validity() 
     assert not query_index(old_index, worker_span_id=3, lane=0)["workers"]["3"]["groups"][0][
         "direct_counters"
     ]
+
+
+def test_sampled_posting_cache_deltas_roundtrip_without_inventing_full_workload_totals() -> None:
+    index = build_index(_capture_with_posting_cache_deltas())
+    assert index["sqlite_cache_validity"] == "OBSERVED"
+    assert "first eight" in index["scope"]["sqlite_cache"]
+    assert "power-of-two" in index["scope"]["sqlite_cache"]
+    restored = json.loads(json.dumps(index))
+    selected = query_index(restored, worker_span_id=3, stage="native_text_posting_edit", lane=35)
+    assert selected["sqlite_cache_validity"] == "OBSERVED"
+    assert selected["workers"]["3"]["groups"][0]["direct_counters"] == {
+        "sqlite_batches": 2,
+        "sqlite_cache_hits": 18,
+        "sqlite_cache_misses": 4,
+        "sqlite_cache_spills": 3,
+        "sqlite_cache_writes": 13,
+        "sqlite_rows": 12,
+    }
+
+
+def test_sampled_posting_cache_allows_failed_execute_without_snapshot() -> None:
+    capture = _capture_with_posting_cache_deltas()
+    capture["spans"][10]["outcome"] = "error"
+    capture["spans"][10]["counters"].clear()
+    index = build_index(capture)
+    assert index["sqlite_cache_validity"] == "OBSERVED"
+    assert "group count and wall include failed execute scopes" in index["scope"]["sqlite_cache"]
+    group = query_index(index, worker_span_id=3, stage="native_text_posting_edit", lane=35)[
+        "workers"
+    ]["3"]["groups"][0]
+    assert group["count"] == 2
+    assert group["sum_ns"] == 27
+    assert group["direct_counters"] == {
+        "sqlite_batches": 1,
+        "sqlite_cache_hits": 13,
+        "sqlite_cache_misses": 3,
+        "sqlite_cache_spills": 2,
+        "sqlite_cache_writes": 9,
+        "sqlite_rows": 7,
+    }
+
+
+def test_sampled_posting_cache_distinguishes_zero_observed_from_legacy_absent() -> None:
+    zero = _capture_with_posting_cache_deltas()
+    for span_id in (9, 10):
+        zero["spans"][span_id]["counters"].update(
+            {
+                key: 0
+                for key in (
+                    "sqlite_cache_hits",
+                    "sqlite_cache_misses",
+                    "sqlite_cache_writes",
+                    "sqlite_cache_spills",
+                )
+            }
+        )
+    observed = build_index(zero)
+    assert observed["sqlite_cache_validity"] == "OBSERVED"
+    group = query_index(observed, worker_span_id=3, lane=35)["workers"]["3"]["groups"][0]
+    assert all(
+        group["direct_counters"][key] == 0
+        for key in (
+            "sqlite_cache_hits",
+            "sqlite_cache_misses",
+            "sqlite_cache_writes",
+            "sqlite_cache_spills",
+        )
+    )
+
+    legacy = _capture_with_posting_cache_deltas()
+    for span_id in (9, 10):
+        for key in (
+            "sqlite_cache_hits",
+            "sqlite_cache_misses",
+            "sqlite_cache_writes",
+            "sqlite_cache_spills",
+        ):
+            legacy["spans"][span_id]["counters"].pop(key)
+    absent = build_index(legacy)
+    assert absent["sqlite_cache_validity"] == "NOT_OBSERVED"
+    group = query_index(absent, worker_span_id=3, lane=35)["workers"]["3"]["groups"][0]
+    assert "sqlite_cache_hits" not in group["direct_counters"]
+
+
+@pytest.mark.parametrize(
+    "fault", ("partial", "success_missing", "failed_partial", "wrong_lane", "wrong_stage")
+)
+def test_sampled_posting_cache_rejects_partial_or_wrong_owner(fault: str) -> None:
+    capture = _capture_with_posting_cache_deltas()
+    if fault == "partial":
+        capture["spans"][9]["counters"].pop("sqlite_cache_hits")
+    elif fault == "success_missing":
+        for key in (
+            "sqlite_cache_hits",
+            "sqlite_cache_misses",
+            "sqlite_cache_writes",
+            "sqlite_cache_spills",
+        ):
+            capture["spans"][10]["counters"].pop(key)
+    elif fault == "failed_partial":
+        capture["spans"][10]["outcome"] = "error"
+        capture["spans"][10]["counters"].pop("sqlite_cache_hits")
+    elif fault == "wrong_lane":
+        capture["spans"][9]["lane_id"] = 34
+    else:
+        capture["spans"][9]["stage"] = "native_text_postings"
+    with pytest.raises(ValueError, match="SQLite cache"):
+        build_index(capture)
+
+
+def test_sampled_posting_cache_keeps_global_write_failure_policy() -> None:
+    capture = _capture_with_posting_cache_deltas()
+    capture["spans"][8]["counters"]["sqlite_write_failures"] = 1
+    index = build_index(capture)
+    assert index["sqlite_cache_validity"] == "PAGER_WRITE_UNDEFINED_AFTER_WRITE_ERROR"
+    corrupted = json.loads(json.dumps(index))
+    corrupted["sqlite_cache_validity"] = "OBSERVED"
+    with pytest.raises(ValueError, match="ignores write failure"):
+        query_index(corrupted)
 
 
 def test_cache_deltas_refuse_partial_mixed_wrong_owner_and_corrupt_cache() -> None:

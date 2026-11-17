@@ -94,12 +94,23 @@ use crate::{
     native_scratch_io::NativeScratchIo,
     native_work_diagnostic::{self, DiscardFailureStage, ReadFailureStage},
     native_worker::{DIRECT_ENRICHMENT_DISPATCH_LIMIT, NativeOperationWorker},
-    publication_file_capacity::{InodeObservation, PublicationFileCapacity},
-    publication_inventory::{PublicationBootInventoryLimits, seed_publication_capacity},
+    publication_file_capacity::{
+        InodeObservation, PublicationFileCapacity, RecoveryReadMemoryV1,
+        RecoveryReadRootRegistrationV1,
+    },
+    publication_inventory::{
+        PublicationBootInventoryLimits, seed_publication_capacity,
+        seed_publication_capacity_admitted_v1,
+    },
+    publication_sqlite_vfs::SqliteCapacityVfs,
 };
 pub use quanta_index_catalog::CatalogWriterCachePolicy;
 
 const PROTECTED_CORE_DISPATCH_SLOTS: usize = 2;
+
+#[cfg(test)]
+#[path = "native/dense_install_tests.rs"]
+mod dense_install_tests;
 
 fn native_server_admission() -> Result<ServerAdmissionPolicy> {
     let dispatch_slots = DIRECT_ENRICHMENT_DISPATCH_LIMIT
@@ -134,10 +145,11 @@ const NATIVE_BOOT_WORK_LIMITS: WorkLimits = WorkLimits {
     bytes: 134_217_728,
     mutations: 2_048,
 };
-/// Distinct from the legacy daemon's current-format root.
-pub const NATIVE_MARKER_NAME: &str = ".native-index-v19";
-pub const NATIVE_MARKER_CONTENT: &[u8] = b"quanta-index-native-state-v19\n";
-const PRIOR_NATIVE_MARKER_NAMES: [&str; 18] = [
+pub use quanta_index_contract::index::{
+    NATIVE_INDEX_STATE_MARKER_CONTENT as NATIVE_MARKER_CONTENT,
+    NATIVE_INDEX_STATE_MARKER_NAME as NATIVE_MARKER_NAME,
+};
+const PRIOR_NATIVE_MARKER_NAMES: [&str; 19] = [
     ".native-index-v1",
     ".native-index-v2",
     ".native-index-v3",
@@ -156,6 +168,7 @@ const PRIOR_NATIVE_MARKER_NAMES: [&str; 18] = [
     ".native-index-v16",
     ".native-index-v17",
     ".native-index-v18",
+    ".native-index-v19",
 ];
 
 fn resolved_socket_entry(socket: &Path) -> Result<PathBuf> {
@@ -209,27 +222,65 @@ fn resolved_socket_entry(socket: &Path) -> Result<PathBuf> {
     }
 }
 
+// One entry policy shared by startup and the existing-root admitted reader.
+fn native_layout_entry_allowed(
+    name: &OsStr,
+    is_directory: bool,
+    is_socket: bool,
+    selected_socket: bool,
+    initialized: bool,
+) -> bool {
+    name == STATE_ROOT_LEASE_FILE_NAME
+        || name == NATIVE_MARKER_NAME
+        || initialized
+            && is_directory
+            && (name == "catalog" || name == "native-objects" || name == "native-scratch-v1")
+        || initialized && selected_socket && is_socket
+}
+
 fn check_native_layout(root: &Path, socket_entry: &Path, initialized: bool) -> Result<()> {
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let name = entry.file_name();
-        if name == STATE_ROOT_LEASE_FILE_NAME || name == NATIVE_MARKER_NAME {
-            continue;
+        let kind = entry.file_type()?;
+        if !native_layout_entry_allowed(
+            &name,
+            kind.is_dir(),
+            kind.is_socket(),
+            entry.path() == socket_entry,
+            initialized,
+        ) {
+            return Err(anyhow::anyhow!(
+                "native index root contains foreign entry: {}",
+                entry.path().display()
+            ));
         }
-        if initialized
-            && (name == "catalog" || name == "native-objects" || name == "native-scratch-v1")
-            && entry.file_type()?.is_dir()
-        {
-            continue;
-        }
-        if initialized && entry.path() == socket_entry && entry.file_type()?.is_socket() {
-            continue;
-        }
-        return Err(anyhow::anyhow!(
-            "native index root contains foreign entry: {}",
-            entry.path().display()
-        ));
     }
+    Ok(())
+}
+
+fn check_native_layout_admitted(
+    root: &Path,
+    socket_entry: &Path,
+    io: &crate::publication_file_capacity::ExistingTreeReadIoV1,
+    budget: &mut WorkBudget,
+) -> Result<()> {
+    use quanta_index_core::{ExistingTreeEntryKindV1 as Kind, ExistingTreeMetadataIoPortV1 as _};
+    io.visit_directory_v1(root, budget, &mut |name, kind, _bytes, budget| {
+        budget.checkpoint()?;
+        let selected_socket =
+            socket_entry.parent() == Some(root) && socket_entry.file_name() == Some(name);
+        if !native_layout_entry_allowed(
+            name,
+            kind == Kind::Directory,
+            kind == Kind::Socket,
+            selected_socket,
+            true,
+        ) {
+            return Err(IndexError::RebuildRequired.into());
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -314,7 +365,15 @@ pub(super) struct NativeDispatcher {
     pub(super) catalog: Arc<SqliteCatalog>,
     pub(super) literal_queries: QueryAdapterRegistry<LiteralReadRequest, LiteralPage>,
     pub(super) path_queries: QueryAdapterRegistry<PathReadRequest, FilePathPage>,
+    pub(super) repository_path_queries: QueryAdapterRegistry<
+        quanta_index_repomap::native::RepositoryPathReadRequest,
+        quanta_index_repomap::native::RepositoryFilePathPage,
+    >,
     pub(super) text_queries: QueryAdapterRegistry<PlannedTextRead, TextReadResult>,
+    pub(super) history_queries: QueryAdapterRegistry<
+        quanta_index_search_plane::native_history::PlannedNativeHistoryReadV1,
+        quanta_index_search_plane::native_history::NativeHistoryQueryResultV1,
+    >,
     pub(super) semantic_queries: QueryAdapterRegistry<SemanticReadRequest, SearchResult>,
     pub(super) objects: Arc<FileObjectStore>,
     pub(super) limits: WorkLimits,
@@ -626,6 +685,47 @@ impl NativeDispatcher {
         })
     }
 
+    fn with_read_view<T>(
+        &self,
+        selection: ViewSelection,
+        budget: &mut WorkBudget,
+        read: impl FnOnce(
+            &quanta_index_contract::index::CatalogView,
+            &mut WorkBudget,
+        ) -> Result<T, IndexError>,
+    ) -> Result<T, IndexError> {
+        let ticket = self.kernel.pin_view(selection, budget)?;
+        let result = ticket
+            .validate_for_request(budget)
+            .and_then(|()| read(ticket.view(), budget));
+        ticket.finish(result, budget)
+    }
+
+    fn current_root_identity_for_view(
+        &self,
+        budget: &mut WorkBudget,
+    ) -> Result<quanta_index_core::publication_capacity::InodeKey, IndexError> {
+        // The lease's canonical check reopens/stats lock and root and closes
+        // those two temporary descriptors. Admit that fixed transcript before
+        // effects; the original root/LOCK OFDs are only borrowed, never unlocked.
+        let scratch = u64::try_from(self.root_lease.state_root_identity_v1().as_os_str().len())
+            .map_err(|_| IndexError::ResourceLimited)?
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(2 * std::mem::size_of::<std::fs::Metadata>() as u64))
+            .ok_or(IndexError::ResourceLimited)?;
+        let _memory = budget
+            .reserve_memory(scratch, quanta_index_core::index::MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        budget.charge(quanta_index_core::index::WorkUsage {
+            reads: 6,
+            bytes: scratch,
+            ..Default::default()
+        })?;
+        self.root_lease
+            .observe_current_root_inode_v1()
+            .map_err(|error| IndexError::Storage(format!("root-scoped view identity: {error}")))
+    }
+
     pub(super) fn execute(
         &self,
         request: NativeIndexRequest,
@@ -642,12 +742,25 @@ impl NativeDispatcher {
             }
         })?;
         // Staged references already own their retained backing grant.
-        if let NativeIndexRequest::StageSources { ingress, inputs } = request {
-            return self
-                .kernel
-                .stage_sources(ingress, &inputs, budget)
-                .map(crate::native_reply::NativeReply::StagedSources);
-        }
+        let request = match request {
+            NativeIndexRequest::StageSources { ingress, inputs } => {
+                return self
+                    .kernel
+                    .stage_sources(ingress, inputs, budget)
+                    .map(crate::native_reply::NativeReply::StagedSources);
+            }
+            NativeIndexRequest::StageRepositorySources {
+                ingress,
+                repository,
+                inputs,
+            } => {
+                return self
+                    .kernel
+                    .stage_repository_sources(ingress, &repository, inputs, budget)
+                    .map(crate::native_reply::NativeReply::StagedSources);
+            }
+            request => request,
+        };
         let reply_slot = crate::native_reply::NativeReply::reserve_canonical(|bytes| {
             budget.reserve_memory(bytes, quanta_index_core::index::MemoryLifetime::Retained)
         })
@@ -811,6 +924,7 @@ impl NativeDispatcher {
                 Ok(NativeIndexResponse::InputDiscarded(ingress))
             }
             NativeIndexRequest::StageSources { .. }
+            | NativeIndexRequest::StageRepositorySources { .. }
             | NativeIndexRequest::Overlay(_)
             | NativeIndexRequest::Stub(_)
             | NativeIndexRequest::BindOverlaySave(_)
@@ -823,6 +937,7 @@ impl NativeDispatcher {
             | NativeIndexRequest::DiffProjectionSourceOwners { .. }
             | NativeIndexRequest::SearchLiteral { .. }
             | NativeIndexRequest::QueryPaths { .. }
+            | NativeIndexRequest::QueryRepositoryPaths { .. }
             | NativeIndexRequest::SearchOverlayText(_)
             | NativeIndexRequest::ReadSession(_)
             | NativeIndexRequest::SearchText { .. }
@@ -833,6 +948,17 @@ impl NativeDispatcher {
             NativeIndexRequest::Submit(_) | NativeIndexRequest::Resume(_) => Err(
                 IndexError::BackendViolation("async native operation routed to sync path".into()),
             ),
+            NativeIndexRequest::PublishedViewMetadata(key) => self
+                .kernel
+                .published_view_metadata(key, budget)
+                .map(|payload| {
+                    NativeIndexResponse::PublishedViewMetadata(
+                        quanta_index_core::index::OperationReply {
+                            operation: key,
+                            payload,
+                        },
+                    )
+                }),
             NativeIndexRequest::Status(key) => self
                 .kernel
                 .status(key, OperationInspectAccess::Request(budget))
@@ -854,14 +980,31 @@ impl NativeDispatcher {
                     binding,
                 }))
             }
-            NativeIndexRequest::ReadView(selection) => {
-                let ticket = self.kernel.pin_view(selection, budget)?;
-                let result = ticket
-                    .validate_for_request(budget)
-                    .map(|()| ticket.view().clone());
-                let view = ticket.finish(result, budget)?;
-                Ok(NativeIndexResponse::View(view))
-            }
+            NativeIndexRequest::ReadView(selection) => self
+                .with_read_view(selection, budget, |view, _budget| Ok(view.clone()))
+                .map(NativeIndexResponse::View),
+            NativeIndexRequest::ObserveRootView(selection) => self
+                .with_read_view(selection, budget, |view, budget| {
+                    let before = self.current_root_identity_for_view(budget)?;
+                    // The live writer's own canonical connection observes its
+                    // immutable stamp. The offline RO verifier intentionally
+                    // excludes live owners and must not be weakened here.
+                    let nonce = self.catalog.observe_native_root_nonce_v1(budget)?;
+                    let after = self.current_root_identity_for_view(budget)?;
+                    if before != after || nonce == [0; 32] {
+                        return Err(IndexError::DigestConflict);
+                    }
+                    budget.checkpoint()?;
+                    Ok(
+                        quanta_index_contract::native_protocol::NativeRootScopedViewV1 {
+                            view: view.clone(),
+                            root_nonce: quanta_index_contract::index::Digest(nonce),
+                            root_device: before.device,
+                            root_inode: before.inode,
+                        },
+                    )
+                })
+                .map(NativeIndexResponse::RootScopedView),
             NativeIndexRequest::ReadyWork {
                 workspace,
                 epoch,
@@ -965,7 +1108,7 @@ pub(super) fn plan_native_text(
         quanta_index_core::index::MemoryLifetime,
     ) -> Result<Option<quanta_index_core::index::MemoryLease>, IndexError>,
 ) -> Result<PlannedTextRead, IndexError> {
-    if query.syntax != TextQuerySyntax::Native
+    if query.syntax == TextQuerySyntax::CodeSearch
         || !query.constraints.language_any_of.is_empty()
         || query.generation.is_some()
         || query.generation_selector.is_some()
@@ -973,7 +1116,7 @@ pub(super) fn plan_native_text(
         || !(1..=MAX_NATIVE_TEXT_TOP_K).contains(&query.top_k)
     {
         return Err(IndexError::InvalidInput(
-            "native text route supports bounded Native queries with exact-path constraints".into(),
+            "native text route requires bounded Native or Sourcegraph queries with exact-path constraints".into(),
         ));
     }
     let (lowered, lowering_memory) =
@@ -1310,6 +1453,105 @@ pub(super) fn prepare_native_boot_authority(
     })
 }
 
+/// Recovery uses the same Native Common and VFS as ordinary boot, but its
+/// initial physical inventory belongs to the caller's Original Control budget.
+pub(super) fn prepare_native_recovery_boot_authority(
+    lease: Arc<StateRootLease>,
+    memory: Arc<RecoveryReadMemoryV1>,
+    socket_path: &Path,
+    resources: &NativeServiceResources,
+    budget: &mut WorkBudget,
+) -> Result<NativeBootAuthority> {
+    use quanta_index_core::index::MemoryLifetime;
+
+    let root = lease.state_root_identity_v1();
+    lease.require_state_root_v1(root)?;
+    let socket_entry = resolved_socket_entry(socket_path)?;
+    if socket_entry
+        .strip_prefix(root)
+        .is_ok_and(|relative| relative.components().count() > 1)
+    {
+        return Err(anyhow::anyhow!(
+            "native socket must not use a nested directory inside the state root"
+        ));
+    }
+    let registration = RecoveryReadRootRegistrationV1::begin(
+        lease.as_ref().clone(),
+        usize::try_from(resources.physical.max_process_roots)?,
+        Arc::clone(&memory),
+    )?;
+    let inventory = seed_publication_capacity_admitted_v1(
+        &registration,
+        resources.physical.inventory,
+        std::slice::from_ref(&socket_entry),
+        usize::try_from(resources.physical.max_reader_handles)?,
+        budget,
+    )?;
+    let entries = inventory
+        .observed_entries
+        .checked_add(1)
+        .ok_or(IndexError::ResourceLimited)?;
+    let handles =
+        usize::try_from(resources.physical.max_reader_handles)?.min(usize::try_from(entries)?);
+    let tracked =
+        usize::try_from(resources.physical.max_tracked_entries)?.min(usize::try_from(entries)?);
+    let common_bytes = PublicationFileCapacity::recovery_binder_allocation_bytes_v1(
+        inventory.observed_files,
+        entries,
+        inventory.max_path_bytes,
+    )?;
+    let vfs_name = "quanta-publication-capacity";
+    let vfs_bytes = SqliteCapacityVfs::initial_recovery_allocation_bytes_v1(
+        entries,
+        inventory.max_path_bytes,
+        vfs_name.len(),
+    )?;
+    let scratch_io_layout =
+        quanta_index_core::index::MemoryLease::shared_allocation_backing_layout(
+            std::alloc::Layout::new::<NativeScratchIo>(),
+        )
+        .map_err(|_| IndexError::ResourceLimited)?;
+    let scratch_io_bytes =
+        u64::try_from(scratch_io_layout.size()).map_err(|_| IndexError::ResourceLimited)?;
+    let maintenance_layout = quanta_index_core::index::MemoryLease::shared_allocation_backing_layout(
+        std::alloc::Layout::new::<quanta_index_core::publication_capacity::PublicationAllowance>(),
+    )
+    .map_err(|_| IndexError::ResourceLimited)?;
+    let maintenance_bytes =
+        u64::try_from(maintenance_layout.size()).map_err(|_| IndexError::ResourceLimited)?;
+    let backing = common_bytes
+        .checked_add(vfs_bytes)
+        .and_then(|bytes| bytes.checked_add(scratch_io_bytes))
+        .and_then(|bytes| bytes.checked_add(maintenance_bytes))
+        .ok_or(IndexError::ResourceLimited)?;
+    let binder = budget
+        .reserve_memory(backing, MemoryLifetime::Retained)?
+        .ok_or(IndexError::ResourceLimited)?;
+    memory.hold_binder(binder)?;
+    memory.hold_inventory(inventory.memory)?;
+    let physical = PublicationFileCapacity::from_recovery_inventory_with_maintenance_v1(
+        registration,
+        inventory.capacity,
+        handles,
+        tracked,
+        usize::try_from(resources.physical.max_process_roots)?,
+        resources.physical.maintenance_reserved_bytes,
+        u64::from(resources.physical.maintenance_reserved_files),
+    )?;
+    budget.checkpoint()?;
+    let io = NativeScratchIo::register_with_maintenance(
+        Arc::clone(&physical),
+        std::ffi::CString::new(vfs_name)?,
+        resources.physical.global_max_sqlite_handles,
+    )?;
+    Ok(NativeBootAuthority {
+        lease,
+        physical,
+        io,
+        request: budget.request().clone(),
+    })
+}
+
 pub(super) fn verify_existing_native_format(
     authority: &NativeBootAuthority,
     socket: &Path,
@@ -1373,10 +1615,29 @@ pub(super) fn verify_existing_native_format(
     }
     drop(owner);
     authority.physical.sweep_retired()?;
-    check_native_layout(root, &resolved_socket_entry(socket)?, true)?;
+    let socket_entry = resolved_socket_entry(socket)?;
+    // Linux offline authentication uses the same inventoried Common and
+    // Original work/memory/close custody as its Catalog and object reads.
+    // Other Unix platforms keep the existing Native layout check; this does
+    // not enable Linux-only installed Legacy recovery there.
+    if cfg!(target_os = "linux") {
+        check_native_layout_admitted(
+            root,
+            &socket_entry,
+            &authority.physical.existing_tree_read_io_v1(),
+            budget,
+        )?;
+    } else {
+        check_native_layout(root, &socket_entry, true)?;
+    }
     authority.lease.require_state_root_v1(root)?;
     budget.checkpoint()?;
     Ok(())
+}
+
+pub(super) struct NativeSocketBinding<'a> {
+    pub path: &'a Path,
+    pub access: SocketAccessPolicy,
 }
 
 pub struct NativeIndexService {
@@ -1608,7 +1869,7 @@ impl NativeServiceCapabilities {
         if let Some(config) = maintenance {
             validate_automatic_reclaim(config, resources.execution, self.pump.is_some())?;
         }
-        let (core_demand, enrichment_demand) = self.builders.resource_demands();
+        let (core_demand, enrichment_demand) = self.builders.resource_demands()?;
         if !core_demand.fits(resources.execution.core)
             || !enrichment_demand.fits(resources.execution.enrichment)
         {
@@ -2008,7 +2269,10 @@ impl NativeIndexService {
         )?;
         Self::bind_with_boot_authority(
             authority,
-            socket_path,
+            NativeSocketBinding {
+                path: socket_path,
+                access: SocketAccessPolicy::Private,
+            },
             limits,
             capabilities,
             resources,
@@ -2019,16 +2283,35 @@ impl NativeIndexService {
 
     pub(super) fn bind_with_boot_authority(
         authority: NativeBootAuthority,
-        socket_path: &Path,
+        socket: NativeSocketBinding<'_>,
         limits: WorkLimits,
         capabilities: NativeServiceCapabilities,
         resources: &NativeServiceResources,
         maintenance: Option<NativeReclaimConfig>,
         retention: Option<NativeRetentionConfig>,
     ) -> Result<Self> {
+        let NativeSocketBinding {
+            path: socket_path,
+            access: socket_access,
+        } = socket;
         authority.request.checkpoint("native service bind")?;
         let (core_demand, enrichment_demand) =
             capabilities.validate_resources(resources, maintenance, retention.as_ref())?;
+        let history_need = ResourceNeed {
+            provider_units: 0,
+            ..resources.execution.interactive
+        };
+        let mut history_queries = QueryAdapterRegistry::new();
+        history_queries.register(
+            AdapterDescriptor {
+                kind: quanta_index_search_plane::native_history::NATIVE_HISTORY_KIND_V1,
+                schema: quanta_index_search_plane::native_history::NATIVE_HISTORY_SCHEMA_V1,
+                format: quanta_index_search_plane::native_history::NATIVE_HISTORY_FORMAT_V1,
+            },
+            history_need,
+            quanta_index_search_plane::native_history::NativeHistoryReaderV1::new(history_need)?,
+        )?;
+        history_queries.validate_reservation(resources.execution.interactive)?;
         let owned_work_enabled = capabilities.pump.is_some();
         let maintenance_enabled = maintenance.is_some();
         let NativeServiceCapabilities {
@@ -2040,6 +2323,9 @@ impl NativeIndexService {
             pump,
             provider_attempt_pool,
         } = capabilities;
+        let repository_path_queries = path_queries.with_query_reader(
+            quanta_index_repomap::native::NativeRepositoryPathReader::new,
+        )?;
         let ledger = NativeResourceLedger::with_maintenance(
             resources.execution,
             pump.is_some(),
@@ -2149,7 +2435,9 @@ impl NativeIndexService {
             catalog,
             literal_queries,
             path_queries,
+            repository_path_queries,
             text_queries: queries,
+            history_queries,
             semantic_queries,
             objects,
             limits,
@@ -2180,7 +2468,7 @@ impl NativeIndexService {
         let server = UdsServer::bind_observed(
             socket_path,
             admission,
-            SocketAccessPolicy::Private,
+            socket_access,
             Arc::new(IpcServerCounters::for_plane("native-index")),
         )?;
         let pump = if pump.is_some() || maintenance.is_some() {
@@ -2474,6 +2762,7 @@ mod native_closeout_tests {
                     bytes,
                     byte_len: 9,
                     text: SourceTextAdmission::Excluded,
+                    source_repo_id: None,
                 },
                 path_memory,
             )];
@@ -2548,7 +2837,11 @@ mod native_closeout_tests {
     fn ordinal_map_position_keeps_only_memory_after_execution_and_final_clone()
     -> Result<(), Box<dyn std::error::Error>> {
         let (ledger, work, guard) = page_ledger()?;
-        let expected = quanta_index_core::index::OrdinalMapEdit::allocation_bytes(7)?;
+        let expected = quanta_index_core::index::OrdinalMapEdit::allocation_bytes(
+            7,
+            None,
+            Some(ObjectRef(Digest([82; 32])).into()),
+        )?;
         let position = quanta_index_core::index::OrdinalMapEdit::copy_object_key_parts(
             2,
             &[b"path\0", b"ab"],
@@ -2567,8 +2860,7 @@ mod native_closeout_tests {
             return Err("owned edit retained an execution slot or lost key custody".into());
         }
         drop(position);
-        if ledger.snapshot()?.live_memory_bytes != expected || continuation.edit.key != b"path\0ab"
-        {
+        if ledger.snapshot()?.live_memory_bytes != expected || continuation.key() != b"path\0ab" {
             return Err("cursor continuation refunded live key backing".into());
         }
         drop(continuation);
@@ -2611,7 +2903,12 @@ mod native_closeout_tests {
                 }
                 NativeReply::Plain(_)
                 | NativeReply::Error(_)
+                | NativeReply::ReadSessionProfile { .. }
+                | NativeReply::ReadSessionHistoryCut { .. }
                 | NativeReply::Text(_)
+                | NativeReply::TextPage(_)
+                | NativeReply::HistoryPage(_)
+                | NativeReply::HybridFile(_)
                 | NativeReply::Semantic(_)
                 | NativeReply::Graph(_)
                 | NativeReply::RepoMapRanked(_)

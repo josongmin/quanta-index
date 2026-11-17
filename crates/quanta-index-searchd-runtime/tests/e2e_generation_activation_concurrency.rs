@@ -77,7 +77,7 @@ impl RunningRuntime {
     }
 
     fn connect(&self) -> Result<QuantaIndex, Box<dyn Error>> {
-        Ok(QuantaIndex::connect(
+        Ok(QuantaIndex::connect_legacy(
             ConnectOptions::from_state_root(self.runtime.state_root())
                 .with_query_socket(&self.query_socket)
                 .with_control_socket(&self.control_socket)

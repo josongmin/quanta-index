@@ -103,6 +103,58 @@ fn compile(bundle: &RepoMapSourceBundle) -> Result<CompiledRepoMapCandidateV1, S
         .map_err(|refusal: quanta_index_contract::RepoMapCompileRefusalV1| refusal.to_string())
 }
 
+#[test]
+fn compiled_payload_rejects_noncanonical_widths() {
+    use quanta_index_repomap::decode_compiled_payload;
+
+    // These fixed wire fixtures vary only the width of one argument.
+    assert!(decode_compiled_payload(&[2, 0, 0, 0]).is_ok());
+    assert!(decode_compiled_payload(&[2, 0x18, 0, 0, 0]).is_err());
+    const CANONICAL_FILE_NODE: &[u8] = b"\x02\x01\x03\x02\x64File\x61x\x00\x00\x00\x00";
+    const WIDE_TEXT: &[u8] = b"\x02\x01\x03\x02\x78\x04File\x61x\x00\x00\x00\x00";
+    assert!(decode_compiled_payload(CANONICAL_FILE_NODE).is_ok());
+    assert!(decode_compiled_payload(WIDE_TEXT).is_err());
+}
+
+#[test]
+fn compiled_payload_round_trips_multibyte_table_counts() {
+    use quanta_index_repomap::decode_compiled_payload;
+
+    // 256 is the first canonical two-byte unsigned argument. A valid table
+    // of this size used to be rejected by the decoder's threshold.
+    let source = (0..256).fold(bundle(), |source, index| {
+        source.with_node(file(&format!("src/region_{index}.rs"), 10))
+    });
+    let compiled = compile(&source).expect("compile 256 distinct files");
+    let (graph, projection) =
+        decode_compiled_payload(compiled.compiled_payload()).expect("canonical 256 nodes");
+    assert_eq!(graph.nodes.len(), 256);
+    assert_eq!(projection.len(), 256);
+}
+
+#[test]
+fn compiled_payload_uses_the_persisted_signed_score_encoding() {
+    use quanta_index_repomap::decode_compiled_payload;
+
+    // One projection with fixed metadata and one already persisted score byte.
+    let mut payload = b"\x02\x00\x00\x01\x05\x02\x64File\x61x\x64File\x61x\x60".to_vec();
+    let mut decode_score = |encoded: &[u8]| {
+        let offset = payload.len();
+        payload.extend_from_slice(encoded);
+        let decoded = decode_compiled_payload(&payload);
+        payload.truncate(offset);
+        decoded.map(|(_graph, projection)| projection.first().map(|entry| entry.final_score_millis))
+    };
+    assert_eq!(decode_score(&[0x21]).expect("score -1"), Some(-1));
+    assert_eq!(decode_score(&[0x38, 24]).expect("score -24"), Some(-24));
+    assert_eq!(
+        decode_score(&[0x3b, 0x80, 0, 0, 0, 0, 0, 0, 0]).expect("minimum score"),
+        Some(i64::MIN)
+    );
+    assert!(decode_score(&[0x20, 0]).is_err());
+    assert!(decode_score(&[0x20]).is_err());
+}
+
 fn assert_refusal(result: Result<CompiledRepoMapCandidateV1, String>, stage: Stage, code: Code) {
     match result {
         Err(message) => assert!(
@@ -238,6 +290,42 @@ fn node_and_edge_caps_are_enforced_before_output() {
     assert_eq!(refusal.code(), Code::NodeLimitExceeded);
     assert_eq!(refusal.limit(), Some(3));
     assert_eq!(refusal.observed(), 4);
+}
+
+#[test]
+fn preview_cap_counts_all_projection_rows() {
+    let source = bundle().with_node(file("a", 10)).with_node(file("b", 10));
+    // Each row has ten bytes ("0:a a file" and "0:b b file").
+    let mut budget = RepoMapCompilerBudgetV1::default_ceiling();
+    budget.max_preview_bytes = 20;
+    let candidate = RepoMapGraphCompiler::new(budget)
+        .compile(&source)
+        .expect("exact combined preview budget");
+    assert_eq!(candidate.resource_receipt().preview_bytes, 20);
+
+    budget.max_preview_bytes = 19;
+    let refusal = RepoMapGraphCompiler::new(budget)
+        .compile(&source)
+        .expect_err("the combined preview budget must refuse");
+    assert_eq!(refusal.code(), Code::PreviewLimitExceeded);
+    assert_eq!(refusal.limit(), Some(19));
+    assert_eq!(refusal.observed(), 20);
+}
+
+#[test]
+fn owner_symbol_cap_counts_distinct_owners() {
+    let source = bundle()
+        .with_node(symbol("a::A", "a", "A"))
+        .with_node(symbol("b::B", "b", "B"));
+    let mut budget = RepoMapCompilerBudgetV1::default_ceiling();
+    budget.max_owner_symbols = 1;
+    let refusal = RepoMapGraphCompiler::new(budget)
+        .compile(&source)
+        .expect_err("the combined symbol budget must refuse");
+    assert_eq!(refusal.stage(), Stage::Projection);
+    assert_eq!(refusal.code(), Code::OwnerSymbolLimitExceeded);
+    assert_eq!(refusal.limit(), Some(1));
+    assert_eq!(refusal.observed(), 2);
 }
 
 #[test]

@@ -18,6 +18,7 @@ path = "tests/native_source_resync.rs"
 workspace = true
 
 [dependencies]
+quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-scratch-sqlite = { version = "0.1.0", path = "../quanta-index-scratch-sqlite" }
 serde.workspace = true
@@ -27,12 +28,11 @@ rusqlite.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]
-quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-semantic = { version = "0.1.0", path = "../quanta-index-semantic" }
 quanta-index-repomap = { version = "0.1.0", path = "../quanta-index-repomap" }
 quanta-index-catalog = { version = "0.1.0", path = "../quanta-index-catalog" }
 quanta-index-storage = { version = "0.1.0", path = "../quanta-index-storage" }
-quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }
+quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical", default-features = false }
 quanta-index-sdk = { version = "0.1.0", path = "../quanta-index-sdk" }
 futures.workspace = true
 tokio.workspace = true

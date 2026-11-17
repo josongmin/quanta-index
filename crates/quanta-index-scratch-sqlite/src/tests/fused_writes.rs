@@ -92,9 +92,9 @@ fn sixty_four_rows_use_one_sql_run_and_keep_original_row_and_query_funding()
             i64::from(*root)
         );
         let actual = read_map_edit(row, 4096, *root, &budget)?;
-        check_eq!(actual.edit.key, expected.key);
-        check_eq!(actual.edit.expected, expected.expected);
-        check_eq!(actual.edit.next, expected.next);
+        check_eq!(actual.key(), expected.key.as_slice());
+        check_eq!(actual.expected()?, expected.expected);
+        check_eq!(actual.next()?, expected.next);
         seen = seen.checked_add(1).ok_or(IndexError::ResourceLimited)?;
     }
     check_eq!(seen, 64);

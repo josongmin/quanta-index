@@ -646,6 +646,7 @@ impl IngestTransport for ObservedIngestTransport {
             request_id: request.request_id,
             payload: SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
                 SearchCorpusPublishOutcome {
+                    upload_cleanup: None,
                     publication,
                     receipt,
                     observation: if self.mutation == Some("missing") {
@@ -1066,6 +1067,7 @@ fn producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation
         let ingest = Arc::new(StubIngestTransport::answering_verbatim(
             SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
                 quanta_index_contract::SearchCorpusPublishOutcome {
+                    upload_cleanup: None,
                     publication: quanta_index_contract::SourcePublicationBinding::for_batch(
                         &ok_or_fail!(batch.to_wire_batch()),
                     ),
@@ -1305,6 +1307,9 @@ impl IngestTransport for MultipartCorpusTransport {
                 }
                 SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
                     quanta_index_contract::SearchCorpusPublishOutcome {
+                        upload_cleanup: Some(
+                            quanta_index_contract::SourcePublicationUploadCleanupV1::Complete,
+                        ),
                         publication: self.publication.clone(),
                         receipt: self.receipt.clone(),
                         observation: None,

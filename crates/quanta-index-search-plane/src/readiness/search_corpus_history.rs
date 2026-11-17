@@ -2,6 +2,10 @@
 //! one retention-bounded record per sealed generation, its admission,
 //! loading, projection validation, and retention receipts.
 
+#[path = "search_corpus_history/recovery_read_only.rs"]
+mod recovery_read_only;
+pub use recovery_read_only::inspect_existing_sealed_search_corpus_v1;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{MutexGuard, TryLockError};
@@ -420,6 +424,15 @@ impl AuxiliaryAuthorityStore {
         )?;
         // Last interruption boundary: GC below can durably remove records.
         pair_checkpoint(budget, "retention-record:before-reconcile-gc")?;
+        if let Some(admission) = &self.durable_control_admission {
+            // A prior unlink can be absent from the scan while its physical
+            // charge is still pending. Settle it before returning a receipt.
+            admission.0.reconcile_deletions().map_err(|error| {
+                CoreError::Storage(format!(
+                    "search-corpus history retention: reconcile pending deletion: {error}"
+                ))
+            })?;
+        }
         let enforced = self.enforce_search_corpus_history_retention_snapshot_v1(
             repo_id,
             revision_id,
@@ -534,7 +547,13 @@ impl AuxiliaryAuthorityStore {
                     AtomicFileWriteOutcomeV1::Durable => Ok(()),
                     AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error)
                     | AtomicFileWriteOutcomeV1::RenamedButAdmissionCommitFailed(error) => {
-                        Err(error)
+                        Err(match error {
+                            error @ (CoreError::Storage(_) | CoreError::StorageIo { .. }) => error,
+                            error => CoreError::Storage(format!(
+                                "search-corpus authority: reconcile published record {}: {error}",
+                                path.display()
+                            )),
+                        })
                     }
                 }
             },
@@ -1088,9 +1107,16 @@ impl AuxiliaryAuthorityStore {
                 .map(|record| record.record.generation)
                 .collect();
             for record in &reaped {
-                fs::remove_file(&record.path).map_err(|err| {
+                let result = match &self.durable_control_admission {
+                    Some(admission) => admission.0.delete_file_and_sync(&record.path),
+                    None => fs::remove_file(&record.path)
+                        .map_err(|error| CoreError::storage_io("unlink retired authority", &error)),
+                };
+                // Once the durable write or first unlink can have executed,
+                // every deletion failure leaves the rollback fence in place.
+                result.map_err(|error| {
                     CoreError::Storage(format!(
-                        "search-corpus history retention: remove reaped authority {}: {err}",
+                        "search-corpus history retention: remove reaped authority {}: {error}",
                         record.path.display()
                     ))
                 })?;
@@ -1098,7 +1124,7 @@ impl AuxiliaryAuthorityStore {
                     removed = removed.saturating_add(1);
                 }
             }
-            if !reaped.is_empty() {
+            if self.durable_control_admission.is_none() && !reaped.is_empty() {
                 self.parent_sync.sync_parent(pair_dir).map_err(|err| {
                     CoreError::Storage(format!(
                         "search-corpus history retention: fsync pair directory {} after GC: {err}",

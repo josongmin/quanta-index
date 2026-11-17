@@ -1109,8 +1109,11 @@ fn await_run(
     match started.grant.assignment.request.kind {
         UpdateKind::Materialize { .. } => {}
         UpdateKind::SourceAdvance(_)
+        | UpdateKind::SourceHistoryAdvance(_)
         | UpdateKind::SourceResync { .. }
         | UpdateKind::ProjectionAdvance(_)
+        | UpdateKind::HistoryAdvance(_)
+        | UpdateKind::HistoryAppend(_)
         | UpdateKind::Reconfigure { .. } => {
             started.cancel.cancel();
             let _finished = finish_rx.recv();

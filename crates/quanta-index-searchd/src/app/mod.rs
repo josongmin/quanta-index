@@ -39,4 +39,5 @@ pub use supervisor::{
     DEFAULT_COOPERATIVE_DRAIN_DEADLINE, HARD_DRAIN_DEADLINE, SearchdSupervisor, SupervisionError,
     SupervisionOutcome,
 };
+pub use trace_recorder::thread_cpu_now_ns;
 pub use umask::{DAEMON_UMASK, harden_umask};

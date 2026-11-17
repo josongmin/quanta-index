@@ -50,6 +50,22 @@ pub struct CancellationCheckpoint {
     pub label: &'static str,
 }
 
+/// A matcher for one file in a repository-existence predicate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RepoFileMatcher {
+    Path(String),
+    Name(String),
+    Language(String),
+    /// Retains the scalar syntax, including regex delimiters.
+    Content(String),
+}
+
+/// A repository matches when one file satisfies every matcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoFileConstraint {
+    pub matchers: Vec<RepoFileMatcher>,
+}
+
 /// Typed leaf in the planner boolean tree.
 ///
 /// One variant per engine route. Variants are deliberately empty payload
@@ -66,6 +82,8 @@ pub enum PlanLeaf {
     /// The planner validates the predicate shape up-front; execution stays on
     /// the adapter's predicate-preparation path (`prepare_predicate_plan`).
     Predicate { name: String },
+    /// Gates all hits in a repository using a correlated single-file match.
+    RepoHasFile { constraint: RepoFileConstraint },
     /// Symbol-name predicate (LXE-06).
     ///
     /// `name` is preserved for diagnostics; `plan` carries the typed
@@ -104,9 +122,10 @@ impl PlanLeaf {
             Self::RawSubstring { .. } => EngineKind::Trigram,
             Self::Phrase { .. } => EngineKind::Positions,
             Self::StructuralRef { .. } => EngineKind::Structural,
-            Self::Content { .. } | Self::Path { .. } | Self::Predicate { .. } => {
-                EngineKind::Tantivy
-            }
+            Self::Content { .. }
+            | Self::Path { .. }
+            | Self::Predicate { .. }
+            | Self::RepoHasFile { .. } => EngineKind::Tantivy,
         }
     }
 }

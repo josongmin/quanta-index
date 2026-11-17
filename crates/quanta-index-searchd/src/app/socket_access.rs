@@ -155,7 +155,7 @@ pub(crate) fn socket_access_policies_from_lookup(
 
 /// Parse one knob's value under the module grammar, resolving names
 /// through `principals`.
-pub(crate) fn parse_socket_access(
+pub fn parse_socket_access(
     knob: &str,
     raw: &str,
     principals: &dyn PrincipalResolver,

@@ -31,8 +31,13 @@ impl EmbedderProfile {
                 model_id: quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_ID,
                 model_revision: quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_REVISION,
             }),
+            "local-code-jina-v2" => Ok(Self {
+                selector: "local-code-jina-v2",
+                model_id: quanta_index_embed::LOCAL_CODE_MODEL_ID,
+                model_revision: quanta_index_embed::LOCAL_CODE_MODEL_REVISION,
+            }),
             other => Err(BenchError::Config(format!(
-                "embedder {other:?} has no verified benchmark provenance; expected potion-code, potion-code-full-v2, or hash-dev"
+                "embedder {other:?} has no verified benchmark provenance; expected potion-code, potion-code-full-v2, local-code-jina-v2, or hash-dev"
             ))),
         }
     }

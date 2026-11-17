@@ -18,6 +18,7 @@
 //! `NOT_READY`, `INVALID_REQUEST`), a full dispatch queue and an oversized
 //! response flow through as an `Error` variant in the response envelope.
 
+use std::borrow::Cow;
 use std::io::{ErrorKind, Read, Write};
 use std::num::NonZeroU64;
 use std::os::fd::OwnedFd;
@@ -69,8 +70,8 @@ use crate::codec::{
     AdmittedClientRequestFrame, AdmittedClientResponseBody, DIAGNOSTIC_ACK_BYTES,
     DIAGNOSTIC_PREFACE_MAGIC, decode_request_guarded, decode_response, diagnostic_ack,
     diagnostic_ack_accepted, diagnostic_preface, encode_request,
-    encode_request_single_frame_admitted, read_response_body_admitted,
-    read_response_body_admitted_with_work_v1,
+    encode_request_multiframe_admitted_v1, encode_request_single_frame_admitted,
+    read_response_body_admitted, read_response_body_admitted_with_work_v1,
 };
 #[cfg(test)]
 use crate::codec::{decode_request, encode_response};
@@ -557,6 +558,10 @@ impl RequestEnvelope<quanta_index_contract::SearchPlaneQueryIpcRequest>
                 bounded.query.generation_selector.as_ref(),
             ),
             Request::Hybrid(hybrid)
+            | Request::HybridFileV1(quanta_index_contract::HybridFileQueryRequestV1 {
+                query: hybrid,
+                ..
+            })
             | Request::GoTestTraceFileV1(quanta_index_contract::GoTestTraceFileQueryRequestV1 {
                 query: hybrid,
                 ..
@@ -773,6 +778,8 @@ pub struct UdsServer {
     listener: UnixListener,
     socket_path: PathBuf,
     socket_path_identity: SocketPathIdentity,
+    #[cfg(target_os = "linux")]
+    pinned_socket: Option<(PathBuf, OwnedFd)>,
     shutdown: Arc<AtomicBool>,
     policy: ServerAdmissionPolicy,
     ingress: Arc<IngressBudget>,
@@ -839,6 +846,68 @@ impl SocketPathIdentity {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error),
         }
+    }
+}
+
+/// Keep the filesystem endpoint and shorten only the address passed to Linux.
+/// The directory descriptor remains open while the procfs path is in use.
+struct SocketEndpoint<'a> {
+    address: Cow<'a, Path>,
+    #[cfg(target_os = "linux")]
+    parent: Option<(&'a Path, OwnedFd)>,
+}
+
+impl<'a> SocketEndpoint<'a> {
+    fn new(path: &'a Path) -> std::io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        if path.as_os_str().as_encoded_bytes().len() >= 108 {
+            use rustix::fs::{Mode, OFlags, open};
+            use std::os::fd::AsRawFd as _;
+            let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+                return Err(std::io::Error::from(Errno::NAMETOOLONG));
+            };
+            let lexical_leaf = path
+                .as_os_str()
+                .as_encoded_bytes()
+                .rsplit(|byte| *byte == b'/')
+                .next();
+            if lexical_leaf != Some(name.as_encoded_bytes()) {
+                return Err(std::io::Error::from(Errno::INVAL));
+            }
+            let directory = open(
+                parent,
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?;
+            let address =
+                PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd())).join(name);
+            let _checked = SocketAddrUnix::new(&address)?;
+            let endpoint = Self {
+                address: Cow::Owned(address),
+                parent: Some((parent, directory)),
+            };
+            endpoint.require_current()?;
+            return Ok(endpoint);
+        }
+        Ok(Self {
+            address: Cow::Borrowed(path),
+            #[cfg(target_os = "linux")]
+            parent: None,
+        })
+    }
+
+    fn require_current(&self) -> std::io::Result<()> {
+        #[cfg(target_os = "linux")]
+        if let Some((parent, directory)) = &self.parent {
+            let opened = rustix::fs::fstat(directory)?;
+            let named = rustix::fs::stat(*parent)?;
+            if (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino) {
+                return Err(std::io::Error::other(
+                    "socket directory changed during endpoint use",
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1086,8 +1155,13 @@ fn apply_socket_file_access(path: &Path, access: &SocketAccessPolicy) -> Result<
 /// is still the one at the path, so a listener that bound between probe
 /// and unlink is not evicted. A socket owned by another user is never
 /// touched. A regular file or directory at the path is refused as before.
-fn reclaim_socket_path(path: &Path, owner: u32) -> Result<(), IpcError> {
-    let before = match std::fs::symlink_metadata(path) {
+fn reclaim_socket_path(
+    path: &Path,
+    endpoint: &SocketEndpoint<'_>,
+    owner: u32,
+) -> Result<(), IpcError> {
+    let address = endpoint.address.as_ref();
+    let before = match std::fs::symlink_metadata(address) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(IpcError::Io(error)),
@@ -1107,7 +1181,7 @@ fn reclaim_socket_path(path: &Path, owner: u32) -> Result<(), IpcError> {
             ),
         ));
     }
-    match UnixStream::connect(path) {
+    match UnixStream::connect(address) {
         Ok(probe) => {
             drop(probe);
             return Err(IpcError::SocketInUse(path.to_path_buf()));
@@ -1115,11 +1189,12 @@ fn reclaim_socket_path(path: &Path, owner: u32) -> Result<(), IpcError> {
         Err(error) if error.kind() == ErrorKind::ConnectionRefused => {}
         Err(error) => return Err(IpcError::Io(error)),
     }
-    let after = std::fs::symlink_metadata(path).map_err(IpcError::Io)?;
+    endpoint.require_current().map_err(IpcError::Io)?;
+    let after = std::fs::symlink_metadata(address).map_err(IpcError::Io)?;
     if after.dev() != before.dev() || after.ino() != before.ino() {
         return Err(IpcError::SocketInUse(path.to_path_buf()));
     }
-    std::fs::remove_file(path).map_err(IpcError::Io)
+    std::fs::remove_file(address).map_err(IpcError::Io)
 }
 
 impl UdsServer {
@@ -1224,15 +1299,48 @@ impl UdsServer {
             ensure_socket_directory(parent, owner, directory_access)?;
             ensure_socket_path_reachable(parent, &access)?;
         }
-        reclaim_socket_path(path, owner)?;
-        let listener = UnixListener::bind(path).map_err(IpcError::Io)?;
-        apply_socket_file_access(path, &access)?;
-        let socket_path_identity = SocketPathIdentity::capture(path).map_err(IpcError::Io)?;
-        listener.set_nonblocking(true).map_err(IpcError::Io)?;
+        let endpoint = SocketEndpoint::new(path).map_err(IpcError::Io)?;
+        let address = endpoint.address.as_ref();
+        #[cfg(target_os = "linux")]
+        if let Some((parent, _)) = &endpoint.parent {
+            let pinned = address
+                .parent()
+                .ok_or_else(|| insecure(path, "socket address has no parent"))?;
+            let metadata = std::fs::metadata(pinned).map_err(IpcError::Io)?;
+            verify_existing_socket_directory(parent, owner, directory_access, &metadata)?;
+            ensure_socket_path_reachable(pinned, &access)?;
+        }
+        reclaim_socket_path(path, &endpoint, owner)?;
+        endpoint.require_current().map_err(IpcError::Io)?;
+        let listener = UnixListener::bind(address).map_err(IpcError::Io)?;
+        let socket_path_identity = SocketPathIdentity::capture(address).map_err(IpcError::Io)?;
+        let setup = (|| {
+            apply_socket_file_access(address, &access)?;
+            endpoint.require_current().map_err(IpcError::Io)?;
+            if !socket_path_identity
+                .still_owns(path)
+                .map_err(IpcError::Io)?
+            {
+                return Err(IpcError::SocketInUse(path.to_path_buf()));
+            }
+            listener.set_nonblocking(true).map_err(IpcError::Io)
+        })();
+        if let Err(error) = setup {
+            if matches!(socket_path_identity.still_owns(address), Ok(true)) {
+                drop(std::fs::remove_file(address));
+            }
+            return Err(error);
+        }
+        #[cfg(target_os = "linux")]
+        let pinned_socket = endpoint
+            .parent
+            .map(|(_, directory)| (endpoint.address.into_owned(), directory));
         Ok(Self {
             listener,
             socket_path: path.to_path_buf(),
             socket_path_identity,
+            #[cfg(target_os = "linux")]
+            pinned_socket,
             shutdown: Arc::new(AtomicBool::new(false)),
             policy,
             ingress: Arc::new(IngressBudget::for_server(policy)),
@@ -1450,8 +1558,15 @@ impl UdsServer {
     }
 
     fn remove_owned_socket_path(&self) -> std::io::Result<()> {
-        if self.socket_path_identity.still_owns(&self.socket_path)? {
-            std::fs::remove_file(&self.socket_path)?;
+        #[cfg(target_os = "linux")]
+        let path = self
+            .pinned_socket
+            .as_ref()
+            .map_or(self.socket_path.as_path(), |(address, _)| address.as_path());
+        #[cfg(not(target_os = "linux"))]
+        let path = &self.socket_path;
+        if self.socket_path_identity.still_owns(path)? {
+            std::fs::remove_file(path)?;
         }
         Ok(())
     }
@@ -1571,6 +1686,7 @@ pub const DEFAULT_CLIENT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct ClientIoPolicy {
     request_timeout: Duration,
     absolute_deadline: Option<Instant>,
+    admitted_multiframe: bool,
 }
 
 impl ClientIoPolicy {
@@ -1581,6 +1697,7 @@ impl ClientIoPolicy {
         Ok(Self {
             request_timeout,
             absolute_deadline: None,
+            admitted_multiframe: false,
         })
     }
 
@@ -1592,6 +1709,7 @@ impl ClientIoPolicy {
         Ok(Self {
             request_timeout,
             absolute_deadline: Some(absolute_deadline),
+            admitted_multiframe: false,
         })
     }
 
@@ -1621,6 +1739,7 @@ impl Default for ClientIoPolicy {
         Self {
             request_timeout: DEFAULT_CLIENT_IO_TIMEOUT,
             absolute_deadline: None,
+            admitted_multiframe: false,
         }
     }
 }
@@ -1899,6 +2018,14 @@ where
             diagnostic_context: event_scope.diagnostic_context().cloned(),
             diagnostic_backend_error: Arc::clone(&event_scope.backend_error),
         };
+        // The peer may have exhausted its own deadline while waiting for a
+        // dispatch slot. Do not start backend work for a socket whose read
+        // side is already gone. The watch below handles closes after this
+        // nonblocking probe; a peer that only half-closed may still receive.
+        if !peer_watch::peer_can_receive(&stream) {
+            event_scope.finish(RequestEventStageV1::PeerCancelled);
+            return ConnectionCloseReason::PeerClosed;
+        }
         if RequestEnvelopeT::streaming(&request_payload) {
             let _in_flight =
                 crate::counters::InFlightDispatchGuard::start(counters, permit.waited());
@@ -2448,11 +2575,17 @@ fn encode_client_request_frame<T: serde::Serialize>(
     request: &T,
     budget: Option<&RequestBudgetV1>,
     memory: Option<&MemoryScope>,
+    admitted_multiframe: bool,
 ) -> Result<ClientRequestFrame, IpcError> {
     match (budget, memory) {
         (Some(budget), Some(memory)) => {
-            encode_request_single_frame_admitted(request, budget, memory)
-                .map(ClientRequestFrame::Admitted)
+            if admitted_multiframe {
+                encode_request_multiframe_admitted_v1(request, budget, memory)
+                    .map(ClientRequestFrame::Admitted)
+            } else {
+                encode_request_single_frame_admitted(request, budget, memory)
+                    .map(ClientRequestFrame::Admitted)
+            }
         }
         (_, None) => encode_request(request).map(ClientRequestFrame::Standalone),
         (None, Some(_)) => Err(IpcError::Encode(
@@ -2464,6 +2597,12 @@ fn encode_client_request_frame<T: serde::Serialize>(
 trait ClientResponseDecode {
     type Output;
 
+    /// The exact connected stream used for this request, before any write.
+    /// Existing decoders preserve their behavior through the default no-op.
+    fn connected(&self, _stream: &UnixStream) -> Result<(), IpcError> {
+        Ok(())
+    }
+
     fn read<R: Read>(&self, reader: &mut R) -> Result<Self::Output, IpcError>;
 }
 
@@ -2474,6 +2613,25 @@ impl<T: serde::de::DeserializeOwned> ClientResponseDecode for TypedClientRespons
 
     fn read<R: Read>(&self, reader: &mut R) -> Result<T, IpcError> {
         decode_response(reader)
+    }
+}
+
+struct BoundPeerTypedClientResponse<'a, T> {
+    expected: &'a crate::KernelConnectedPeerProcessLeaseV1,
+    response: TypedClientResponse<T>,
+}
+
+impl<T: serde::de::DeserializeOwned> ClientResponseDecode for BoundPeerTypedClientResponse<'_, T> {
+    type Output = T;
+
+    fn connected(&self, stream: &UnixStream) -> Result<(), IpcError> {
+        self.expected
+            .validate_connected_stream_v1(stream)
+            .map_err(IpcError::PeerBindingRefused)
+    }
+
+    fn read<R: Read>(&self, reader: &mut R) -> Result<T, IpcError> {
+        self.response.read(reader)
     }
 }
 
@@ -2500,6 +2658,182 @@ impl ClientResponseDecode for AdmittedRawClientResponse<'_> {
             None => read_response_body_admitted(reader, self.budget, self.memory),
         }
     }
+}
+
+struct PeerAdmittedRawClientResponse<'a> {
+    raw: AdmittedRawClientResponse<'a>,
+    peer: std::cell::RefCell<Option<crate::KernelConnectedPeerProcessV1>>,
+}
+
+fn require_observed_peer_pid_v1(
+    peer: crate::PeerCredentials,
+) -> Result<crate::PeerCredentials, IpcError> {
+    match peer.pid {
+        Some(pid) if pid != 0 => Ok(peer),
+        _ => Err(IpcError::Io(std::io::Error::new(
+            ErrorKind::Unsupported,
+            "connected socket kernel peer PID is unavailable",
+        ))),
+    }
+}
+
+impl ClientResponseDecode for PeerAdmittedRawClientResponse<'_> {
+    type Output = (AdmittedClientResponseBody, crate::KernelConnectedPeerProcessV1);
+
+    fn connected(&self, stream: &UnixStream) -> Result<(), IpcError> {
+        let peer = KernelPeerCredentials
+            .peer_credentials(stream)
+            .map_err(IpcError::Io)?;
+        let observed = crate::KernelConnectedPeerProcessV1::try_capture_v1(
+            stream,
+            require_observed_peer_pid_v1(peer)?,
+            self.raw.memory,
+        )?;
+        let mut peer = self.peer.borrow_mut();
+        if peer.is_some() {
+            return Err(IpcError::Io(std::io::Error::new(
+                ErrorKind::AlreadyExists,
+                "peer process was already captured on this request",
+            )));
+        }
+        *peer = Some(observed);
+        Ok(())
+    }
+
+    fn read<R: Read>(&self, reader: &mut R) -> Result<Self::Output, IpcError> {
+        let peer = self.peer.borrow_mut().take().ok_or_else(|| {
+            IpcError::Io(std::io::Error::new(
+                ErrorKind::NotConnected,
+                "kernel peer observation did not run on this connection",
+            ))
+        })?;
+        let body = self.raw.read(reader)?;
+        Ok((body, peer))
+    }
+}
+
+/// Read an admitted response and the OS peer from the same connected socket.
+/// No diagnostic negotiation or reconnect is permitted on this route. Platforms
+/// without same-connection process-instance capture fail before request bytes.
+/// The owned pidfd and its Original grant survive raw-body retirement. The
+/// installed provider still authenticates the executable and expected root.
+pub fn send_request_body_with_budget_admitted_peer_v1<RequestEnvelopeT: serde::Serialize>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    budget: &RequestBudgetV1,
+    memory: &MemoryScope,
+) -> Result<(AdmittedClientResponseBody, crate::KernelConnectedPeerProcessV1), IpcError> {
+    check_stream_budget(budget).map_err(IpcError::Io)?;
+    let io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
+    send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
+        socket,
+        request,
+        None,
+        io_policy,
+        None,
+        Some(budget),
+        Some(memory),
+        &PeerAdmittedRawClientResponse {
+            raw: AdmittedRawClientResponse {
+                budget,
+                memory,
+                work: None,
+            },
+            peer: std::cell::RefCell::new(None),
+        },
+    )
+}
+
+/// Capture the kernel peer on the canonical budgeted connector without
+/// sending a request. A new workspace has no view to observe yet. The caller
+/// must authenticate this process image/root before any bound write RPC.
+pub fn capture_connected_peer_process_with_budget_v1(
+    socket: &Path,
+    budget: &RequestBudgetV1,
+    memory: &MemoryScope,
+) -> Result<crate::KernelConnectedPeerProcessV1, IpcError> {
+    check_stream_budget(budget).map_err(IpcError::Io)?;
+    let policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
+    let stream = connect_stream_before_budget(socket, budget)
+        .map_err(|error| classify_client_io_error(error, IpcIoOperation::Connect, policy))?;
+    let credentials = KernelPeerCredentials
+        .peer_credentials(&stream)
+        .map_err(IpcError::Io)?;
+    let peer = crate::KernelConnectedPeerProcessV1::try_capture_v1(
+        &stream,
+        require_observed_peer_pid_v1(credentials)?,
+        memory,
+    )?;
+    check_stream_budget(budget).map_err(IpcError::Io)?;
+    Ok(peer)
+}
+
+struct BoundPeerAdmittedRawClientResponse<'a> {
+    raw: AdmittedRawClientResponse<'a>,
+    expected: &'a crate::KernelConnectedPeerProcessLeaseV1,
+}
+
+impl ClientResponseDecode for BoundPeerAdmittedRawClientResponse<'_> {
+    type Output = AdmittedClientResponseBody;
+
+    fn connected(&self, stream: &UnixStream) -> Result<(), IpcError> {
+        self.expected.validate_connected_stream_v1(stream)
+            .map_err(IpcError::PeerBindingRefused)
+    }
+
+    fn read<R: Read>(&self, reader: &mut R) -> Result<Self::Output, IpcError> {
+        // Once bytes were sent, do not relabel a read failure as NotSent.
+        self.raw.read(reader)
+    }
+}
+
+/// Use the same admitted request/response path, but bind this connection to
+/// the actual previously captured live process before writing any bytes.
+/// Ordinary unbound callers retain their existing transport and semantics.
+pub fn send_request_body_with_budget_admitted_bound_peer_v1<RequestEnvelopeT: serde::Serialize>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    budget: &RequestBudgetV1,
+    memory: &MemoryScope,
+    expected: &crate::KernelConnectedPeerProcessLeaseV1,
+) -> Result<AdmittedClientResponseBody, IpcError> {
+    send_admitted_bound_peer_request(socket, request, budget, memory, expected, false)
+}
+
+/// Opt in to admitted multiframe request encoding on the same authenticated
+/// peer-bound publication path. Existing senders retain single-frame encoding.
+pub fn send_request_body_with_budget_admitted_multiframe_bound_peer_v1<
+    RequestEnvelopeT: serde::Serialize,
+>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    budget: &RequestBudgetV1,
+    memory: &MemoryScope,
+    expected: &crate::KernelConnectedPeerProcessLeaseV1,
+) -> Result<AdmittedClientResponseBody, IpcError> {
+    send_admitted_bound_peer_request(socket, request, budget, memory, expected, true)
+}
+
+fn send_admitted_bound_peer_request<RequestEnvelopeT: serde::Serialize>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    budget: &RequestBudgetV1,
+    memory: &MemoryScope,
+    expected: &crate::KernelConnectedPeerProcessLeaseV1,
+    admitted_multiframe: bool,
+) -> Result<AdmittedClientResponseBody, IpcError> {
+    check_stream_budget(budget).map_err(IpcError::Io)?;
+    expected
+        .ensure_live_v1()
+        .map_err(IpcError::PeerBindingRefused)?;
+    let mut io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
+    io_policy.admitted_multiframe = admitted_multiframe;
+    send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
+        socket, request, None, io_policy, None, Some(budget), Some(memory),
+        &BoundPeerAdmittedRawClientResponse {
+            raw: AdmittedRawClientResponse { budget, memory, work: None }, expected,
+        },
+    )
 }
 
 /// One-shot client: open a stream, send `request`, read one response.
@@ -2548,6 +2882,39 @@ where
         Some(budget),
         None,
         &TypedClientResponse::<ResponseEnvelopeT>(std::marker::PhantomData),
+    )
+}
+
+/// One-shot request to the exact observed live process. The caller must
+/// restrict the request to read-only operations; this peer observation does
+/// not grant publication, Source, root, or installation authority.
+pub fn send_request_with_budget_bound_peer_v1<RequestEnvelopeT, ResponseEnvelopeT>(
+    socket: &Path,
+    request: &RequestEnvelopeT,
+    budget: &RequestBudgetV1,
+    expected: &crate::KernelConnectedPeerProcessLeaseV1,
+) -> Result<ResponseEnvelopeT, IpcError>
+where
+    RequestEnvelopeT: serde::Serialize,
+    ResponseEnvelopeT: serde::de::DeserializeOwned,
+{
+    check_stream_budget(budget).map_err(IpcError::Io)?;
+    expected
+        .ensure_live_v1()
+        .map_err(IpcError::PeerBindingRefused)?;
+    let io_policy = ClientIoPolicy::try_with_deadline(budget.deadline())?;
+    send_request_inner::<RequestEnvelopeT, RequestEnvelopeT, _>(
+        socket,
+        request,
+        None,
+        io_policy,
+        None,
+        Some(budget),
+        None,
+        &BoundPeerTypedClientResponse::<ResponseEnvelopeT> {
+            expected,
+            response: TypedClientResponse(std::marker::PhantomData),
+        },
     )
 }
 
@@ -2823,7 +3190,8 @@ where
     let total_started = timing.as_ref().map(|_| Instant::now());
     let deadline = io_policy.request_deadline()?;
     let encode_started = timing.as_ref().map(|_| Instant::now());
-    let frame = encode_client_request_frame(request, budget, memory)?;
+    let frame =
+        encode_client_request_frame(request, budget, memory, io_policy.admitted_multiframe)?;
     if let Some(budget) = budget {
         check_stream_budget(budget).map_err(IpcError::Io)?;
     }
@@ -2840,6 +3208,7 @@ where
     if let (Some(timing), Some(started)) = (timing.as_deref_mut(), connect_started) {
         timing.connect = observed_ns(started.elapsed())?;
     }
+    decoder.connected(&stream)?;
     let mut stream = DeadlineStream::new(stream, deadline);
     stream.budget = budget.cloned();
     let selected_request = if let Some((linked, capture_id)) = linked_request {
@@ -2897,7 +3266,7 @@ where
         None
     };
     let frame = if let Some(linked) = selected_request {
-        encode_client_request_frame(linked, budget, memory)?
+        encode_client_request_frame(linked, budget, memory, io_policy.admitted_multiframe)?
     } else {
         frame
     };
@@ -2944,7 +3313,8 @@ where
 
 fn connect_before_deadline(socket_path: &Path, deadline: Instant) -> std::io::Result<UnixStream> {
     ensure_deadline_remaining(deadline)?;
-    let address = SocketAddrUnix::new(socket_path).map_err(std::io::Error::from)?;
+    let endpoint = SocketEndpoint::new(socket_path)?;
+    let address = SocketAddrUnix::new(endpoint.address.as_ref()).map_err(std::io::Error::from)?;
     let socket = create_connect_socket()?;
 
     match connect(&socket, &address) {
@@ -2957,6 +3327,7 @@ fn connect_before_deadline(socket_path: &Path, deadline: Instant) -> std::io::Re
 
     let stream = UnixStream::from(socket);
     stream.set_nonblocking(false)?;
+    endpoint.require_current()?;
     ensure_deadline_remaining(deadline)?;
     Ok(stream)
 }
@@ -2980,7 +3351,8 @@ fn connect_stream_before_budget(
     budget: &RequestBudgetV1,
 ) -> std::io::Result<UnixStream> {
     check_stream_budget(budget)?;
-    let address = SocketAddrUnix::new(socket_path).map_err(std::io::Error::from)?;
+    let endpoint = SocketEndpoint::new(socket_path)?;
+    let address = SocketAddrUnix::new(endpoint.address.as_ref()).map_err(std::io::Error::from)?;
     let socket = create_connect_socket()?;
     check_stream_budget(budget)?;
     match connect(&socket, &address) {
@@ -2996,6 +3368,7 @@ fn connect_stream_before_budget(
     check_stream_budget(budget)?;
     let stream = UnixStream::from(socket);
     stream.set_nonblocking(false)?;
+    endpoint.require_current()?;
     check_stream_budget(budget)?;
     Ok(stream)
 }
@@ -3269,7 +3642,8 @@ fn classify_client_decode_error(
         | IpcError::SocketInUse(_)
         | IpcError::SocketPathInsecure { .. }
         | IpcError::SocketAccessUnsatisfiable { .. }
-        | IpcError::ZeroRequestId) => other,
+        | IpcError::ZeroRequestId
+        | IpcError::PeerBindingRefused(_)) => other,
     }
 }
 
@@ -3330,7 +3704,7 @@ mod admitted_client_tests {
         }
     }
 
-    fn scope(deny: bool) -> (MemoryScope, Arc<AtomicU64>) {
+    pub(super) fn scope(deny: bool) -> (MemoryScope, Arc<AtomicU64>) {
         let active = Arc::new(AtomicU64::new(0));
         (
             MemoryScope::new(Arc::new(Scope {
@@ -3410,3 +3784,7 @@ mod admitted_client_tests {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "server/admitted_peer_tests.rs"]
+mod admitted_peer_tests;

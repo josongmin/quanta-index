@@ -219,6 +219,7 @@ def parse_args(
         if command == "run":
             child.add_argument("--lexical-spec", type=Path)
             child.add_argument("--pair-spec", type=Path)
+            child.add_argument("--native-plan", type=Path)
             child.add_argument("--agent-recording", type=Path)
             child.add_argument("--scan-recording", type=Path)
             child.add_argument(
@@ -656,6 +657,8 @@ def resolve_evidence_root(explicit: Path | None) -> Path | None:
 
 def producer_command(repo_root: Path, registry_entry: dict[str, object], family: str) -> list[str]:
     """Resolve one allowlisted producer invocation; no shell fragments."""
+    if family == "native-file-sdk-capture":
+        raise RuntimeError("Native file capture requires the benchctl owned capture path")
     kind = registry_entry.get("kind")
     if kind == "just-recipe":
         return ["just", str(registry_entry["recipe"])]
@@ -701,6 +704,17 @@ def plan_command(repo_root: Path, profile_name: str) -> int:
             )
             continue
         producer = producers[producer_id]
+        if family == "native-file-sdk-capture":
+            steps.append(
+                {
+                    "family": family,
+                    "kind": producer["kind"],
+                    "runnable": False,
+                    "reason": "owned capture requires benchctl run and frozen external inputs",
+                    "required_options": ["--native-plan", "--evidence-root"],
+                }
+            )
+            continue
         steps.append(
             {
                 "family": family,
@@ -828,6 +842,15 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
             replay_proof(store, evidence)
         except (ValueError, RuntimeError, OSError, UnicodeError, SystemExit) as exc:
             print(f"ERROR: retrieval proof replay refused: {exc}", file=sys.stderr)
+            return 2
+        artifact_oracle = "pass"
+    if evidence["profile"] == "native-file-capture":
+        from native_file_capture import replay_run as replay_native_file
+
+        try:
+            replay_native_file(store, evidence)
+        except (ValueError, RuntimeError, OSError, UnicodeError, SystemExit) as exc:
+            print(f"ERROR: Native file capture replay refused: {exc}", file=sys.stderr)
             return 2
         artifact_oracle = "pass"
     if evidence["profile"] == "recorded":
@@ -1437,6 +1460,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     args = parse_args(argv, profiles, repo_root=repo_root)
     repo_root = args.repo_root.resolve()
+    if (
+        getattr(args, "native_plan", None) is not None
+        and getattr(args, "profile", None) != "native-file-capture"
+    ):
+        print("ERROR: --native-plan applies only to native-file-capture", file=sys.stderr)
+        return 2
     if args.command == "code-search":
         try:
             if repo_root != ROOT:
@@ -1707,6 +1736,64 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print(json.dumps(document, sort_keys=True, indent=2))
             return 0
+    if args.profile == "native-file-capture" and args.command in {
+        "run",
+        "validate",
+        "compare",
+        "summarize",
+    }:
+        from native_file_capture import capture as capture_native_file
+        from native_file_capture import validate as validate_native_file
+
+        if args.command == "compare":
+            print(
+                "ERROR: Native execution custody has no relevance/performance baseline",
+                file=sys.stderr,
+            )
+            return 2
+        root = resolve_evidence_root(args.evidence_root)
+        if root is None:
+            print("ERROR: Native file capture requires --evidence-root", file=sys.stderr)
+            return 2
+        registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
+        try:
+            if args.command == "run":
+                if args.native_plan is None:
+                    raise EvidenceError("Native file capture requires --native-plan")
+                unrelated = (
+                    "lexical_spec",
+                    "pair_spec",
+                    "agent_recording",
+                    "scan_recording",
+                    "recorded_authenticity",
+                    "criterion_samples",
+                    "criterion_warmup",
+                    "criterion_measurement",
+                    "criterion_resamples",
+                    "cold_samples",
+                )
+                if any(getattr(args, key) is not None for key in unrelated) or args.admit_baseline:
+                    raise EvidenceError("Native file capture refuses unrelated producer controls")
+                timeout = args.producer_timeout if args.producer_timeout is not None else 7200
+                if timeout < 1:
+                    raise EvidenceError("Native producer timeout must be positive")
+                document = capture_native_file(repo_root, root, registry, timeout, args.native_plan)
+            else:
+                document = validate_native_file(repo_root, root, registry)
+                if args.command == "summarize":
+                    document = {
+                        "profile": args.profile,
+                        "capture_id": document["capture_id"],
+                        "status": "controlled_capture_validated",
+                        "measurement_count": len(document["runs"]),
+                        "scope": "controlled_execution_only",
+                        "qualification": "not_run",
+                    }
+        except (ValueError, RuntimeError, OSError, UnicodeError, SystemExit) as exc:
+            print(f"ERROR: Native file capture refused: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(document, sort_keys=True, indent=2))
+        return 0
     if args.profile == "retrieval-contract" and args.command == "compare":
         print("ERROR: test proofs have no relevance/performance baseline", file=sys.stderr)
         return 2

@@ -22,10 +22,9 @@ use std::time::{Duration, Instant};
 
 #[path = "harness/owned_cleanup.rs"]
 mod owned_cleanup;
-#[path = "harness/source_publication.rs"]
-mod source_publication;
-use source_publication::CorpusPublicationState;
-pub use source_publication::{SourceCorpusFixture, fixture_source_scope_v1};
+use crate::fixture_support::{private_tempdir, stamped_ingest_request};
+pub use crate::history_fixture::HistoryFixtureSpec as E2eHistoryFixtureSpec;
+use crate::source_publication::{self, CorpusPublicationState};
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::lex::{
@@ -33,15 +32,14 @@ use quanta_index_contract::lex::{
     SymbolRecord, SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    AuxEpochV1, BatchIngestMode, BatchPublishReceipt, CapabilityStatusV1, ChunkId, ChunkRecord,
-    ContinuationTokenV2, EngineTouched, ExplainCandidateV1, FileOwnerProjectionRow, GenerationPin,
-    GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest, HistoryOrderV1,
-    HistoryQueryRequest, HistoryScoreV1, HybridCandidateV1, HybridQueryRequest, LexicalCandidate,
-    ManifestGeneration, MetricsSnapshotRequest, MetricsSnapshotV1, OwnerDocKind,
-    ProcessReadinessRequest, ProcessReadinessV1, ProcessRequestEventPlaneV1,
-    ProcessRequestEventsRequestV1, ProcessRequestEventsV1, QuarantineDiscardAck,
-    QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
-    QuarantineTargetV1, QueryResultWindowV2, RawFallbackReasonV1, RepoId, RepoRelativePath,
+    AuxEpochV1, BatchIngestMode, BatchPublishReceipt, ChunkId, ChunkRecord, ContinuationTokenV2,
+    EngineTouched, ExplainCandidateV1, FileOwnerProjectionRow, GenerationPin, GenerationSnapshot,
+    GenerationStatusReport, GenerationStatusRequest, HistoryOrderV1, HistoryQueryRequest,
+    HistoryScoreV1, HybridCandidateV1, HybridQueryRequest, LexicalCandidate, ManifestGeneration,
+    MetricsSnapshotRequest, MetricsSnapshotV1, ProcessReadinessRequest, ProcessReadinessV1,
+    ProcessRequestEventPlaneV1, ProcessRequestEventsRequestV1, ProcessRequestEventsV1,
+    QuarantineDiscardAck, QuarantineDiscardRequest, QuarantineInventoryRequest,
+    QuarantineInventoryV1, QuarantineTargetV1, QueryResultWindowV2, RepoId, RepoRelativePath,
     RevisionId, RuntimeMetadataQueryRequest, SearchCorpusActiveHeadV1,
     SearchCorpusGenerationIdentityV1, SearchCorpusGenerationReservationRequestV1,
     SearchCorpusIngestBatch, SearchCorpusPublishOutcome, SearchExplanation,
@@ -53,10 +51,10 @@ use quanta_index_contract::{
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
     SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
-    SearchPlaneTrackKind, SemanticCorpusKindV1, SemanticQueryRequest, SemanticSourceRecordV1,
-    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourcePublicationBinding, SourceRoleV1,
-    StructuralCandidate, StructuralIngestBatch, StructuralQueryRequest, StructuralReplaceScope,
-    StructuralTreeRecord, SymbolId, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
+    SearchPlaneTrackKind, SemanticQueryRequest, SemanticSourceReplaceScopeV1,
+    SourcePublicationBinding, StructuralCandidate, StructuralIngestBatch, StructuralQueryRequest,
+    StructuralReplaceScope, StructuralTreeRecord, SymbolId, TextQueryRequest, TextQueryResponse,
+    TextQuerySyntax,
 };
 use quanta_index_core::lexical_maintenance::LexicalMaintenancePolicy;
 use quanta_index_core::pool_write_admission::PoolWriteLimits;
@@ -68,7 +66,6 @@ use quanta_index_core::{
 };
 use quanta_index_ipc::{
     ClientIoPolicy, IpcError, ServerAdmissionPolicy, send_request, send_request_negotiated,
-    stamp_batch_digest_v1,
 };
 use quanta_index_search_plane::{
     BoundedQueryObsStore, MetricSample, ObsError, ResponsePayloadBudget,
@@ -472,22 +469,6 @@ pub struct E2eExplainResult {
     pub presence: Option<quanta_index_contract::CandidatePresenceV1>,
     pub explanation: Option<SearchExplanation>,
     pub typed_error: Option<E2eTypedError>,
-}
-
-pub struct E2eHistoryFixtureSpec<'a> {
-    pub commit_sha: &'a str,
-    pub file_path: &'a str,
-    pub author: &'a str,
-    pub committer: &'a str,
-    pub message: &'a str,
-    pub author_time_ms: u64,
-    pub committer_time_ms: u64,
-    pub applied_at_ms: u64,
-    pub ref_name: &'a str,
-    pub tag_name: &'a str,
-    pub added_text: &'a str,
-    pub removed_text: &'a str,
-    pub touched_text: &'a str,
 }
 
 pub struct E2eTextChunkSpec<'a> {
@@ -1960,71 +1941,8 @@ impl E2eRuntime {
         &mut self,
         spec: &E2eHistoryFixtureSpec<'_>,
     ) -> AnyResult<()> {
-        use quanta_index_contract::lex::{CommitRecord, CommitSha, DiffHunkRecord};
-        use quanta_index_contract::{
-            DiffHunkSide, HistoryDiffHunkUpsert, HistoryIngestBatch, HistoryRefMutation,
-            HistoryRefUpsert,
-        };
-
-        let commit_sha = CommitSha::from_hex(spec.commit_sha).map_err(|err| {
-            anyhow::anyhow!(
-                "e2e-harness: invalid history fixture commit_sha `{}`: {err}",
-                spec.commit_sha
-            )
-        })?;
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishHistoryBatch(
-            HistoryIngestBatch {
-                repo_id: self.repo(),
-                revision_id: self.revision(),
-                generation: self.current_generation(),
-                manifest_digest: Some(format!(
-                    "history:{}:{}",
-                    spec.file_path,
-                    self.current_generation().get()
-                )),
-                batch_digest: String::new(),
-                commits: vec![CommitRecord {
-                    wire_version: 1,
-                    sha: commit_sha,
-                    parents: Vec::new(),
-                    author_time_ms: spec.author_time_ms,
-                    committer_time_ms: spec.committer_time_ms,
-                    applied_at_ms: spec.applied_at_ms,
-                    author: spec.author.to_string().into_boxed_str(),
-                    author_name: None,
-                    author_email: None,
-                    committer: spec.committer.to_string().into_boxed_str(),
-                    committer_name: None,
-                    committer_email: None,
-                    message: spec.message.to_string().into_boxed_str(),
-                    is_merge: false,
-                    tags: vec![spec.tag_name.to_string().into_boxed_str()],
-                }],
-                refs: vec![HistoryRefMutation::Upsert(HistoryRefUpsert {
-                    name: spec.ref_name.to_string().into_boxed_str(),
-                    sha: commit_sha,
-                })],
-                tags: vec![HistoryRefMutation::Upsert(HistoryRefUpsert {
-                    name: spec.tag_name.to_string().into_boxed_str(),
-                    sha: commit_sha,
-                })],
-                diff_hunks: vec![HistoryDiffHunkUpsert {
-                    commit_sha,
-                    file_path: spec.file_path.to_string().into_boxed_str(),
-                    record: DiffHunkRecord {
-                        wire_version: 1,
-                        hunk_header: "@@ -1 +1 @@".to_string().into_boxed_str(),
-                        side: DiffHunkSide::After,
-                        added_text: spec.added_text.to_string().into_boxed_str(),
-                        removed_text: spec.removed_text.to_string().into_boxed_str(),
-                        touched_text: spec.touched_text.to_string().into_boxed_str(),
-                        byte_start: 0,
-                        byte_end: 20,
-                    },
-                }],
-            },
-        ))?;
-        Ok(())
+        let batch = spec.build_batch(self.repo(), self.revision(), self.current_generation())?;
+        self.publish_history_batch(batch)
     }
 
     pub fn publish_history_batch(
@@ -2691,6 +2609,9 @@ impl E2eRuntime {
             }
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_history_response("Hybrid"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_history_response("HybridSeed"),
+            SearchPlaneQueryIpcResponse::HybridFileV1(_) => {
+                unexpected_history_response("HybridFileV1")
+            }
             SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => {
                 unexpected_history_response("GoTestTraceFileV1")
             }
@@ -2771,6 +2692,7 @@ impl E2eRuntime {
                 | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
                 | SearchPlaneQueryIpcResponse::HybridSeed(_)
+                | SearchPlaneQueryIpcResponse::HybridFileV1(_)
                 | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
                 | SearchPlaneQueryIpcResponse::History(_)
                 | SearchPlaneQueryIpcResponse::Structural(_)
@@ -2811,6 +2733,7 @@ impl E2eRuntime {
                 | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
                 | SearchPlaneQueryIpcResponse::HybridSeed(_)
+                | SearchPlaneQueryIpcResponse::HybridFileV1(_)
                 | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
                 | SearchPlaneQueryIpcResponse::History(_)
                 | SearchPlaneQueryIpcResponse::Structural(_)
@@ -2870,6 +2793,7 @@ impl E2eRuntime {
                 | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
                 | SearchPlaneQueryIpcResponse::HybridSeed(_)
+                | SearchPlaneQueryIpcResponse::HybridFileV1(_)
                 | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
                 | SearchPlaneQueryIpcResponse::History(_)
                 | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
@@ -2929,6 +2853,7 @@ impl E2eRuntime {
             | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
+            | SearchPlaneQueryIpcResponse::HybridFileV1(_)
             | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
@@ -3041,6 +2966,7 @@ impl E2eRuntime {
             }
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
+            SearchPlaneQueryIpcResponse::HybridFileV1(_) => unexpected_response("HybridFileV1"),
             SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => {
                 unexpected_response("GoTestTraceFileV1")
             }
@@ -3210,6 +3136,7 @@ impl E2eRuntime {
             }
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
+            SearchPlaneQueryIpcResponse::HybridFileV1(_) => unexpected_response("HybridFileV1"),
             SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => {
                 unexpected_response("GoTestTraceFileV1")
             }
@@ -3329,6 +3256,7 @@ impl E2eRuntime {
             }
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
+            SearchPlaneQueryIpcResponse::HybridFileV1(_) => unexpected_response("HybridFileV1"),
             SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => {
                 unexpected_response("GoTestTraceFileV1")
             }
@@ -3583,6 +3511,9 @@ impl E2eRuntime {
             }
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_explain_response("Hybrid"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_explain_response("HybridSeed"),
+            SearchPlaneQueryIpcResponse::HybridFileV1(_) => {
+                unexpected_explain_response("HybridFileV1")
+            }
             SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => {
                 unexpected_explain_response("GoTestTraceFileV1")
             }
@@ -3955,6 +3886,7 @@ fn query_response_ready(response: &SearchPlaneQueryIpcResponseEnvelope) -> bool 
         | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::HybridFileV1(_)
         | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
@@ -3981,6 +3913,7 @@ fn query_response_ready_allow_structural_not_ready(
         | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::HybridFileV1(_)
         | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::Structural(_)
@@ -4010,6 +3943,7 @@ fn describe_query_response_payload(payload: &SearchPlaneQueryIpcResponse) -> Str
         }
         SearchPlaneQueryIpcResponse::Hybrid(_) => "Hybrid".to_string(),
         SearchPlaneQueryIpcResponse::HybridSeed(_) => "HybridSeed".to_string(),
+        SearchPlaneQueryIpcResponse::HybridFileV1(_) => "HybridFileV1".to_string(),
         SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => "GoTestTraceFileV1".to_string(),
         SearchPlaneQueryIpcResponse::History(_) => "History".to_string(),
         SearchPlaneQueryIpcResponse::Structural(_) => "Structural".to_string(),
@@ -4534,7 +4468,8 @@ fn route_window_probe_from_response(
         SearchPlaneQueryIpcResponse::HybridSeed(seed) => {
             (seed.seed_candidates.len(), Some(seed.window))
         }
-        SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => {
+        SearchPlaneQueryIpcResponse::HybridFileV1(_)
+        | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => {
             return Err(anyhow::anyhow!(
                 "e2e-harness: Go trace file projection has two lane windows and no file window; it cannot be window-probed"
             ));
@@ -4578,6 +4513,7 @@ fn query_response_kind(payload: &SearchPlaneQueryIpcResponse) -> &'static str {
         SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => "SemanticWorkBoundedV1",
         SearchPlaneQueryIpcResponse::Hybrid(_) => "Hybrid",
         SearchPlaneQueryIpcResponse::HybridSeed(_) => "HybridSeed",
+        SearchPlaneQueryIpcResponse::HybridFileV1(_) => "HybridFileV1",
         SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_) => "GoTestTraceFileV1",
         SearchPlaneQueryIpcResponse::History(_) => "History",
         SearchPlaneQueryIpcResponse::RuntimeMetadata(_) => "RuntimeMetadata",
@@ -4670,58 +4606,6 @@ fn language_from_path(path: &str) -> &'static str {
     }
 }
 
-/// Build the typed semantic source scopes that accompany fixture chunks.
-/// Lexical chunks alone are not an implicit semantic ingest request.
-#[must_use]
-pub fn semantic_source_scopes_for_chunk_records(
-    batch_repo_id: &RepoId,
-    records: &[ChunkRecord],
-) -> Vec<SemanticSourceReplaceScopeV1> {
-    records
-        .iter()
-        .map(|record| {
-            let owner_id = record.chunk_id.as_str().to_string();
-            let source_file = quanta_index_contract::SourceFileKey {
-                source_repo_id: record.searchable_repo_id(batch_repo_id).clone(),
-                repo_relative_path: record.repo_relative_path.clone(),
-            };
-            SemanticSourceReplaceScopeV1 {
-                scope: SemanticSourceScopeKeyV1 {
-                    corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
-                    owner_kind: OwnerDocKind::Chunk,
-                    owner_id: owner_id.clone(),
-                    source_file: source_file.clone(),
-                },
-                scope_digest: format!("e2e-harness:semantic-source:scope:{owner_id}"),
-                sources: vec![SemanticSourceRecordV1 {
-                    record_id: owner_id.clone(),
-                    corpus_kind: SemanticCorpusKindV1::RawCodeFallback,
-                    owner_kind: OwnerDocKind::Chunk,
-                    owner_id: owner_id.clone(),
-                    source_doc_id: owner_id.clone(),
-                    parent_owner_id: Some(owner_id),
-                    source_file,
-                    language: Some(record.language.as_str().to_string()),
-                    package: None,
-                    symbol_kind: None,
-                    visibility: None,
-                    source_role: SourceRoleV1::RawFallbackText,
-                    generated: false,
-                    capability_status: CapabilityStatusV1::Degraded,
-                    raw_fallback_reason: Some(
-                        RawFallbackReasonV1::IntentNotRecoverableFromStructure,
-                    ),
-                    authority_digest: "e2e-harness:direct-text-source:v1".to_string(),
-                    render_policy_digest: "e2e-harness:direct-text-source:v1".to_string(),
-                    card_schema_version: 0,
-                    text: record.text.to_string(),
-                }],
-                cluster_memberships: Vec::new(),
-            }
-        })
-        .collect()
-}
-
 fn scope_key(repo_id: RepoId, path: &str) -> quanta_index_contract::SearchScopeKey {
     quanta_index_contract::SearchScopeKey {
         doc_surface: quanta_index_contract::SearchScopeSurface::Chunk,
@@ -4730,73 +4614,6 @@ fn scope_key(repo_id: RepoId, path: &str) -> quanta_index_contract::SearchScopeK
             repo_relative_path: RepoRelativePath::new(path),
         },
     }
-}
-
-/// A temporary directory a daemon will accept as its state root or socket
-/// directory: mode `0700`.
-///
-/// The daemon refuses a state root or socket directory wider than `0700`
-/// (QI-BB-014), and a tempdir is created under the process umask, so every
-/// test that points a daemon at a tempdir narrows it through here.
-pub fn private_tempdir() -> std::io::Result<tempfile::TempDir> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let dir = tempfile::tempdir()?;
-    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
-    Ok(dir)
-}
-
-/// Stamp the canonical batch digest on whichever receipt-bearing batch
-/// `payload` carries (QI-BB-032); a repo-map bundle names none.
-pub fn stamped_ingest_request(
-    payload: SearchPlaneIngestIpcRequest,
-) -> AnyResult<SearchPlaneIngestIpcRequest> {
-    fn stamped<B: quanta_index_core::IngestBatchBodyV1 + serde::Serialize>(
-        mut batch: B,
-    ) -> AnyResult<B> {
-        stamp_batch_digest_v1(&mut batch)?;
-        Ok(batch)
-    }
-    Ok(match payload {
-        request @ (SearchPlaneIngestIpcRequest::StageSourcePublication(_)
-        | SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(_)
-        | SearchPlaneIngestIpcRequest::DiscardSourcePublicationUpload(_)
-        | SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_)) => request,
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => {
-            // A producer event is immutable. Transport stamping must not repair
-            // a stale/tampered source commitment or create new source authority.
-            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(stamped(batch)?)
-        }
-        SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) => {
-            SearchPlaneIngestIpcRequest::PublishHistoryBatch(stamped(batch)?)
-        }
-        SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(batch) => {
-            SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(stamped(batch)?)
-        }
-        SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(batch) => {
-            SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(stamped(batch)?)
-        }
-        SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(batch) => {
-            SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(stamped(batch)?)
-        }
-        SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(batch) => {
-            SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(stamped(batch)?)
-        }
-        SearchPlaneIngestIpcRequest::PublishFileContributorBatch(batch) => {
-            SearchPlaneIngestIpcRequest::PublishFileContributorBatch(stamped(batch)?)
-        }
-        SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(batch) => {
-            SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(stamped(batch)?)
-        }
-        SearchPlaneIngestIpcRequest::PublishDirtyBatch(batch) => {
-            SearchPlaneIngestIpcRequest::PublishDirtyBatch(stamped(batch)?)
-        }
-        SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(batch) => {
-            SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(stamped(batch)?)
-        }
-        SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch) => {
-            SearchPlaneIngestIpcRequest::PublishStructuralBatch(stamped(batch)?)
-        }
-    })
 }
 
 #[cfg(test)]

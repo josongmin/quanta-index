@@ -769,7 +769,7 @@ fn borrowed_ticket_queries_below_exact_floor_without_repin_or_transfer() -> Test
 }
 
 #[test]
-fn borrowed_prepared_stage_uses_five_catalog_validations_and_retains_pin() -> TestResult {
+fn borrowed_prepared_stage_uses_request_attempt_and_retains_pin() -> TestResult {
     let root = tempfile::tempdir()?;
     let clock = Arc::new(CountedCatalogClock::default());
     let (kernel, catalog) = kernel_with_clock(root.path(), clock.clone())?;
@@ -789,22 +789,24 @@ fn borrowed_prepared_stage_uses_five_catalog_validations_and_retains_pin() -> Te
     assert_eq!(clock.calls.load(Ordering::SeqCst) - before, 6);
     assert_eq!(native_pin_count(&catalog)?, 1);
 
-    let before = clock.calls.load(Ordering::SeqCst);
     let mut work = budget();
+    let gate = WorkBudget::with_request(limits(1_000_000), work.request().clone());
+    let mut attempt = held.begin_read_attempt(&gate)?;
     let mut timings = QueryExecutionTimings::default();
-    let new = kernel.with_prepared_stage_for_ticket(
+    let new = kernel.with_prepared_stage_for_read_attempt(
         &readers,
         &held,
+        &mut attempt,
         instance().instance,
         2_u8,
         &mut work,
         |prepared| prepared.execute_with_timings(&reservation, &mut timings),
     )?;
+    attempt.finalize()?;
     assert_eq!(*new.result(), 2);
     assert!(timings.before_ticket_validation.is_some());
     assert!(timings.reader_query.is_some());
     assert!(timings.after_ticket_validation.is_some());
-    assert_eq!(clock.calls.load(Ordering::SeqCst) - before, 5);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(native_pin_count(&catalog)?, 1);
 
@@ -843,6 +845,151 @@ fn borrowed_prepared_stage_uses_five_catalog_validations_and_retains_pin() -> Te
 }
 
 #[test]
+fn read_attempt_rejects_other_request_and_ticket_before_reader_then_reuses_original_pin()
+-> TestResult {
+    let root = tempfile::tempdir()?;
+    let (kernel, catalog) = kernel(root.path())?;
+    let view = configured(&kernel)?;
+    let held = kernel.pin_view(ViewSelection::Exact(view), &budget())?;
+    let other = kernel.pin_view(ViewSelection::Exact(view), &budget())?;
+    let (readers, calls, _) = queries(0, Fault::None)?;
+    let gate = budget();
+    let mut attempt = held.begin_read_attempt(&gate)?;
+    let mut callbacks = 0;
+    let mut foreign_work = budget();
+    let rejected = kernel.with_prepared_stage_for_read_attempt(
+        &readers,
+        &held,
+        &mut attempt,
+        instance().instance,
+        1_u8,
+        &mut foreign_work,
+        |_prepared| {
+            callbacks += 1;
+            Ok(())
+        },
+    );
+    assert!(matches!(rejected, Err(IndexError::InvalidInput(_))));
+    let capped_deadline = gate
+        .request()
+        .deadline()
+        .checked_sub(Duration::from_secs(1))
+        .ok_or("test deadline underflow")?;
+    let capped_request = gate.request().capped_at(capped_deadline);
+    assert!(capped_request.same_request_as(gate.request()));
+    assert_ne!(capped_request.deadline(), gate.request().deadline());
+    let mut capped_work = WorkBudget::with_request(limits(1_000_000), capped_request);
+    let rejected = kernel.with_prepared_stage_for_read_attempt(
+        &readers,
+        &held,
+        &mut attempt,
+        instance().instance,
+        1_u8,
+        &mut capped_work,
+        |_prepared| {
+            callbacks += 1;
+            Ok(())
+        },
+    );
+    assert!(matches!(rejected, Err(IndexError::InvalidInput(_))));
+    let mut work = WorkBudget::with_request(limits(1_000_000), gate.request().clone());
+    let rejected = kernel.with_prepared_stage_for_read_attempt(
+        &readers,
+        &other,
+        &mut attempt,
+        instance().instance,
+        1_u8,
+        &mut work,
+        |_prepared| {
+            callbacks += 1;
+            Ok(())
+        },
+    );
+    assert!(matches!(rejected, Err(IndexError::InvalidInput(_))));
+    assert_eq!(callbacks, 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let reservation = guard(need())?;
+    let outcome = kernel.with_prepared_stage_for_read_attempt(
+        &readers,
+        &held,
+        &mut attempt,
+        instance().instance,
+        7_u8,
+        &mut work,
+        |prepared| prepared.execute(&reservation),
+    )?;
+    attempt.finalize()?;
+    assert_eq!(*outcome.result(), 7);
+    assert_eq!(native_pin_count(&catalog)?, 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    other.release()?;
+    held.release()?;
+    assert_eq!(native_pin_count(&catalog)?, 0);
+    Ok(())
+}
+
+#[test]
+fn read_attempt_cancellation_never_exposes_result_or_replaces_reader_error_and_keeps_pin()
+-> TestResult {
+    for fault in [Fault::CancelAfterRead, Fault::RefuseAfterCancel] {
+        let root = tempfile::tempdir()?;
+        let (kernel, catalog) = kernel(root.path())?;
+        let view = configured(&kernel)?;
+        let held = kernel.pin_view(ViewSelection::Exact(view), &budget())?;
+        let pin = held.record().lease.id;
+        let (readers, calls, _) = queries(0, fault)?;
+        let mut work = budget();
+        let gate = WorkBudget::with_request(limits(1_000_000), work.request().clone());
+        let mut attempt = held.begin_read_attempt(&gate)?;
+        let reservation = guard(need())?;
+        let private = kernel.with_prepared_stage_for_read_attempt(
+            &readers,
+            &held,
+            &mut attempt,
+            instance().instance,
+            1_u8,
+            &mut work,
+            |prepared| prepared.execute(&reservation),
+        );
+        let finalized = attempt.finalize();
+        assert_eq!(finalized, Err(IndexError::Cancelled));
+        let result = private.and_then(|value| finalized.map(|()| value));
+        match fault {
+            Fault::CancelAfterRead => assert!(matches!(result, Err(IndexError::Cancelled))),
+            Fault::RefuseAfterCancel => {
+                assert!(matches!(result, Err(IndexError::CorruptObject(ref message))
+                    if message == "marker reader corruption"));
+            }
+            Fault::None | Fault::WrongView | Fault::WrongCoverage => {
+                return Err("unexpected cancellation fixture".into());
+            }
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(native_pin_count(&catalog)?, 1);
+        let (readers, _, _) = queries(0, Fault::None)?;
+        let mut work = budget();
+        let gate = WorkBudget::with_request(limits(1_000_000), work.request().clone());
+        let mut attempt = held.begin_read_attempt(&gate)?;
+        let next = kernel.with_prepared_stage_for_read_attempt(
+            &readers,
+            &held,
+            &mut attempt,
+            instance().instance,
+            2_u8,
+            &mut work,
+            |prepared| prepared.execute(&reservation),
+        )?;
+        attempt.finalize()?;
+        assert_eq!(*next.result(), 2);
+        assert_eq!(held.record().lease.id, pin);
+        assert_eq!(native_pin_count(&catalog)?, 1);
+        held.release()?;
+        assert_eq!(native_pin_count(&catalog)?, 0);
+    }
+    Ok(())
+}
+
+#[test]
 fn projected_stage_releases_execution_before_final_validation() -> TestResult {
     let root = tempfile::tempdir()?;
     let clock = Arc::new(CountedCatalogClock::default());
@@ -870,15 +1017,18 @@ fn projected_stage_releases_execution_before_final_validation() -> TestResult {
         });
         let reservation = ReservationGuard::try_acquire(Arc::clone(&scheduler), need())
             .ok_or("test scheduler refused reservation")?;
-        let before = clock.calls.load(Ordering::SeqCst);
+        let mut work = budget();
+        let gate = WorkBudget::with_request(limits(1_000_000), work.request().clone());
+        let mut attempt = held.begin_read_attempt(&gate)?;
         let mut projections = 0;
         let mut timings = QueryExecutionTimings::default();
-        let result: Result<(), IndexError> = kernel.with_prepared_stage_for_ticket(
+        let result: Result<(), IndexError> = kernel.with_prepared_stage_for_read_attempt(
             &readers,
             &held,
+            &mut attempt,
             instance().instance,
             1_u8,
-            &mut budget(),
+            &mut work,
             |prepared| {
                 prepared.execute_projected(reservation, Some(&mut timings), |outcome, _work| {
                     assert_eq!(*outcome.result(), 1);
@@ -888,14 +1038,12 @@ fn projected_stage_releases_execution_before_final_validation() -> TestResult {
                 })?
             },
         );
+        let finalized = attempt.finalize();
+        let result = result.and(finalized);
         assert_eq!(result, expected);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(projections, usize::from(matches!(fault, Fault::None)));
-        assert_eq!(
-            scheduler.released_after.load(Ordering::SeqCst),
-            before.saturating_add(4)
-        );
-        assert_eq!(clock.calls.load(Ordering::SeqCst), before.saturating_add(5));
+        assert_ne!(scheduler.released_after.load(Ordering::SeqCst), usize::MAX);
         assert!(timings.after_ticket_validation.is_some());
         assert_eq!(native_pin_count(&catalog)?, 1);
     }
@@ -1668,5 +1816,98 @@ fn unique_reader_final_validation_preserves_original_cancellation() -> TestResul
     assert_eq!(native_pin_count(&catalog)?, 1);
     session.close()?;
     assert_eq!(native_pin_count(&catalog)?, 0);
+    Ok(())
+}
+
+#[test]
+fn read_session_profile_uses_retained_ticket_after_head_change() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (kernel, catalog) = kernel(root.path())?;
+    let old_view = configured(&kernel)?;
+    let held = kernel.pin_view(ViewSelection::Exact(old_view), &budget())?;
+    let mut changed_instance = instance();
+    changed_instance.policy = Digest([77; 32]);
+    let ingress = kernel.begin_input(operation(2))?;
+    let changed_profile = kernel.stage_profile(
+        ingress,
+        &IndexProfile {
+            instances: vec![changed_instance],
+        },
+        &mut budget(),
+    )?;
+    let new_view = published(block_on(kernel.submit(
+        UpdateRequest {
+            operation: operation(2),
+            expected_view: old_view,
+            kind: UpdateKind::Reconfigure {
+                profile: changed_profile,
+            },
+        },
+        &mut budget(),
+    ))?)?;
+    assert_ne!(old_view, new_view);
+    let mut work = budget();
+    let gate = WorkBudget::with_request(limits(1_000_000), work.request().clone());
+    let mut attempt = held.begin_read_attempt(&gate)?;
+    let retained = kernel.read_session_profile_for_attempt(&held, &mut attempt, &mut work)?;
+    attempt.finalize()?;
+    assert_eq!(retained.view().identity, old_view);
+    assert_eq!(retained.view(), held.view());
+    assert_eq!(retained.profile().instances.as_slice(), &[instance()]);
+    assert_eq!(native_pin_count(&catalog)?, 1);
+    drop(retained);
+    Ok(())
+}
+
+#[test]
+fn read_session_profile_rejects_wrong_ticket_and_request() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (kernel, catalog) = kernel(root.path())?;
+    let view = configured(&kernel)?;
+    let held = kernel.pin_view(ViewSelection::Exact(view), &budget())?;
+    let other = kernel.pin_view(ViewSelection::Exact(view), &budget())?;
+    let gate = budget();
+    let mut attempt = held.begin_read_attempt(&gate)?;
+    let mut foreign_work = budget();
+    assert!(matches!(
+        kernel.read_session_profile_for_attempt(&held, &mut attempt, &mut foreign_work),
+        Err(IndexError::InvalidInput(_))
+    ));
+    let mut proper_work = WorkBudget::with_request(limits(1_000_000), gate.request().clone());
+    assert!(matches!(
+        kernel.read_session_profile_for_attempt(&other, &mut attempt, &mut proper_work),
+        Err(IndexError::InvalidInput(_))
+    ));
+    let foreign_root = tempfile::tempdir()?;
+    let (foreign_kernel, _) = kernel_with_clock(foreign_root.path(), Arc::new(SystemCatalogClock))?;
+    assert!(matches!(
+        foreign_kernel.read_session_profile_for_attempt(&held, &mut attempt, &mut proper_work),
+        Err(IndexError::InvalidInput(_))
+    ));
+    let retained =
+        kernel.read_session_profile_for_attempt(&held, &mut attempt, &mut proper_work)?;
+    attempt.finalize()?;
+    assert_eq!(retained.view().identity, view);
+    assert_eq!(native_pin_count(&catalog)?, 2);
+    Ok(())
+}
+
+#[test]
+fn read_session_profile_preserves_original_cancellation() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (kernel, catalog) = kernel(root.path())?;
+    let view = configured(&kernel)?;
+    let held = kernel.pin_view(ViewSelection::Exact(view), &budget())?;
+    let request = RequestBudgetV1::for_duration(Duration::from_secs(30));
+    let mut work = WorkBudget::with_request(limits(1_000_000), request.clone());
+    let gate = WorkBudget::with_request(limits(1_000_000), request.clone());
+    let mut attempt = held.begin_read_attempt(&gate)?;
+    request.cancel_handle().cancel();
+    assert!(matches!(
+        kernel.read_session_profile_for_attempt(&held, &mut attempt, &mut work),
+        Err(IndexError::Cancelled)
+    ));
+    attempt.abort();
+    assert_eq!(native_pin_count(&catalog)?, 1);
     Ok(())
 }

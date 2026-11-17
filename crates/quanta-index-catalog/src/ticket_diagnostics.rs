@@ -19,6 +19,10 @@ pub struct TicketValidationTimings {
     pub elapsed: [Duration; LANE_COUNT],
     pub calls: [u64; LANE_COUNT],
     pub failed: [u64; LANE_COUNT],
+    /// CPU time is present only for valid same-thread, monotonic sample pairs.
+    /// Compare `cpu_calls` with `calls` before interpreting an aggregate.
+    pub cpu_elapsed: [Option<Duration>; LANE_COUNT],
+    pub cpu_calls: [u64; LANE_COUNT],
     pub connection_busy_polls: u64,
     pub connection_retry_sleep: Duration,
 }
@@ -27,6 +31,7 @@ pub struct TicketValidationTimings {
 struct Binding {
     owner: u64,
     catalog_ptr: usize,
+    cpu_sampler: Option<fn() -> Option<u64>>,
     timings: TicketValidationTimings,
 }
 
@@ -53,7 +58,10 @@ pub struct TicketValidationObservation<'a> {
 impl<'a> TicketValidationObservation<'a> {
     /// Starts a zeroed observation for this Catalog, saving any enclosing one.
     /// Refuses a scope if the thread's owner sequence is exhausted.
-    pub fn begin(catalog: &'a SqliteCatalog) -> Option<Self> {
+    pub fn begin(
+        catalog: &'a SqliteCatalog,
+        cpu_sampler: Option<fn() -> Option<u64>>,
+    ) -> Option<Self> {
         STATE.with(|slot| {
             let mut state = slot.get();
             let owner = state.next_owner.checked_add(1)?;
@@ -63,6 +71,7 @@ impl<'a> TicketValidationObservation<'a> {
             state.current = Some(Binding {
                 owner,
                 catalog_ptr,
+                cpu_sampler,
                 timings: TicketValidationTimings::default(),
             });
             slot.set(state);
@@ -117,18 +126,29 @@ pub(crate) fn observe<T, E>(
         return work();
     }
     let catalog_ptr = std::ptr::from_ref(catalog).addr();
-    let owner = STATE.with(|slot| {
+    let binding = STATE.with(|slot| {
         slot.get()
             .current
-            .and_then(|binding| (binding.catalog_ptr == catalog_ptr).then_some(binding.owner))
+            .filter(|binding| binding.catalog_ptr == catalog_ptr)
     });
-    let Some(owner) = owner else {
+    let Some(binding) = binding else {
         return work();
     };
 
+    let owner = binding.owner;
+    let cpu_started = binding.cpu_sampler.and_then(|sample| sample());
     let started = Instant::now();
     let result = work();
     let elapsed = started.elapsed();
+    // A nested observation may still be active after `work`. Never charge its
+    // CPU sample to the enclosing owner or call its sampler in that case.
+    let cpu_finished = STATE.with(|slot| {
+        slot.get().current.and_then(|current| {
+            (current.owner == owner && current.catalog_ptr == catalog_ptr)
+                .then(|| binding.cpu_sampler.and_then(|sample| sample()))
+                .flatten()
+        })
+    });
     STATE.with(|slot| {
         let mut state = slot.get();
         if let Some(mut binding) = state.current {
@@ -144,6 +164,20 @@ pub(crate) fn observe<T, E>(
                 *calls = calls.saturating_add(1);
                 if result.is_err() {
                     *failed = failed.saturating_add(1);
+                }
+                if let (Some(before), Some(after)) = (cpu_started, cpu_finished)
+                    && let Some(delta) = after.checked_sub(before)
+                    && let (Some(cpu_elapsed), Some(cpu_calls)) = (
+                        binding.timings.cpu_elapsed.get_mut(index),
+                        binding.timings.cpu_calls.get_mut(index),
+                    )
+                {
+                    *cpu_elapsed = Some(
+                        (*cpu_elapsed)
+                            .unwrap_or(Duration::ZERO)
+                            .saturating_add(Duration::from_nanos(delta)),
+                    );
+                    *cpu_calls = cpu_calls.saturating_add(1);
                 }
                 state.current = Some(binding);
                 slot.set(state);
@@ -195,7 +229,22 @@ pub(crate) fn retry_sleep(catalog: &SqliteCatalog, duration: Duration) {
 )]
 mod tests {
     use super::*;
-    use std::error::Error;
+    use std::{cell::RefCell, collections::VecDeque, error::Error};
+
+    thread_local! {
+        static CPU_SAMPLES: RefCell<VecDeque<Option<u64>>> = const { RefCell::new(VecDeque::new()) };
+        static CPU_SAMPLE_CALLS: Cell<u64> = const { Cell::new(0) };
+    }
+
+    fn fake_cpu_now() -> Option<u64> {
+        CPU_SAMPLE_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
+        CPU_SAMPLES.with(|samples| samples.borrow_mut().pop_front().flatten())
+    }
+
+    fn reset_cpu_samples(samples: impl IntoIterator<Item = Option<u64>>) {
+        CPU_SAMPLES.with(|queue| *queue.borrow_mut() = samples.into_iter().collect());
+        CPU_SAMPLE_CALLS.with(|calls| calls.set(0));
+    }
 
     type TestResult = Result<(), Box<dyn Error>>;
 
@@ -206,7 +255,7 @@ mod tests {
     }
 
     fn begin(catalog: &SqliteCatalog) -> Result<TicketValidationObservation<'_>, Box<dyn Error>> {
-        TicketValidationObservation::begin(catalog)
+        TicketValidationObservation::begin(catalog, None)
             .ok_or_else(|| std::io::Error::other("ticket observation owner exhausted").into())
     }
 
@@ -219,7 +268,7 @@ mod tests {
         assert_eq!(observe(&catalog_b, 200, || Ok::<_, ()>(9)), Ok(9));
         let before_inner = outer.snapshot();
         assert_eq!(
-            before_inner.and_then(|timings| timings.calls.get(0).copied()),
+            before_inner.and_then(|timings| timings.calls.first().copied()),
             Some(1)
         );
 
@@ -250,7 +299,7 @@ mod tests {
         assert_eq!(
             outer
                 .snapshot()
-                .and_then(|timings| timings.calls.get(0).copied()),
+                .and_then(|timings| timings.calls.first().copied()),
             Some(2)
         );
         Ok(())
@@ -320,9 +369,10 @@ mod tests {
             let other_thread =
                 threads.spawn(|| -> Result<TicketValidationTimings, std::io::Error> {
                     assert_eq!(observe(&catalog, 202, || Ok::<_, ()>(1)), Ok(1));
-                    let local = TicketValidationObservation::begin(&catalog).ok_or_else(|| {
-                        std::io::Error::other("ticket observation owner exhausted")
-                    })?;
+                    let local =
+                        TicketValidationObservation::begin(&catalog, None).ok_or_else(|| {
+                            std::io::Error::other("ticket observation owner exhausted")
+                        })?;
                     assert_eq!(observe(&catalog, 202, || Ok::<_, ()>(2)), Ok(2));
                     assert_eq!(
                         local
@@ -336,7 +386,7 @@ mod tests {
                 });
             other_thread
                 .join()
-                .map_err(|_| std::io::Error::other("thread panicked"))?
+                .map_err(|panic| std::io::Error::other(format!("thread panicked: {panic:?}")))?
         })?;
         assert_eq!(other.calls.get(2), Some(&1));
         assert_eq!(outer.snapshot(), Some(TicketValidationTimings::default()));
@@ -371,6 +421,97 @@ mod tests {
                 .and_then(|timings| timings.calls.get(5).copied()),
             Some(0)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn cpu_pairs_cover_success_and_refusal_without_changing_results() -> TestResult {
+        let (_root, catalog) = catalog()?;
+        reset_cpu_samples([Some(1_000), Some(5_000), Some(7_000), Some(9_000)]);
+        let scope = TicketValidationObservation::begin(&catalog, Some(fake_cpu_now))
+            .ok_or("ticket observation owner exhausted")?;
+        assert_eq!(observe(&catalog, 203, || Ok::<_, &str>(7)), Ok(7));
+        assert_eq!(
+            observe(&catalog, 203, || Err::<(), _>("refused")),
+            Err("refused")
+        );
+        let timings = scope
+            .snapshot()
+            .ok_or("observation scope became inactive")?;
+        assert_eq!(timings.calls.get(3), Some(&2));
+        assert_eq!(timings.failed.get(3), Some(&1));
+        assert_eq!(timings.cpu_calls.get(3), Some(&2));
+        assert_eq!(
+            timings.cpu_elapsed.get(3),
+            Some(&Some(Duration::from_nanos(6_000)))
+        );
+        assert_eq!(CPU_SAMPLE_CALLS.with(Cell::get), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_or_regressing_cpu_samples_are_not_zero_durations() -> TestResult {
+        let (_root, catalog) = catalog()?;
+        reset_cpu_samples([
+            None,
+            Some(8),
+            Some(10),
+            None,
+            Some(15),
+            Some(14),
+            Some(20),
+            Some(30),
+        ]);
+        let scope = TicketValidationObservation::begin(&catalog, Some(fake_cpu_now))
+            .ok_or("ticket observation owner exhausted")?;
+        for _ in 0..4 {
+            assert_eq!(observe(&catalog, 204, || Ok::<_, ()>(())), Ok(()));
+        }
+        let timings = scope
+            .snapshot()
+            .ok_or("observation scope became inactive")?;
+        assert_eq!(timings.calls.get(4), Some(&4));
+        assert_eq!(timings.cpu_calls.get(4), Some(&1));
+        assert_eq!(
+            timings.cpu_elapsed.get(4),
+            Some(&Some(Duration::from_nanos(10)))
+        );
+        assert_eq!(CPU_SAMPLE_CALLS.with(Cell::get), 8);
+        Ok(())
+    }
+
+    #[test]
+    fn cpu_sampling_respects_off_foreign_invalid_and_nested_scopes() -> TestResult {
+        let (_root_a, catalog_a) = catalog()?;
+        let (_root_b, catalog_b) = catalog()?;
+        reset_cpu_samples([Some(100), Some(120), Some(200), Some(230)]);
+        assert_eq!(observe(&catalog_a, 200, || Ok::<_, ()>(())), Ok(()));
+        let outer = TicketValidationObservation::begin(&catalog_a, Some(fake_cpu_now))
+            .ok_or("ticket observation owner exhausted")?;
+        assert_eq!(observe(&catalog_b, 200, || Ok::<_, ()>(())), Ok(()));
+        assert_eq!(observe(&catalog_a, 206, || Ok::<_, ()>(())), Ok(()));
+        assert_eq!(CPU_SAMPLE_CALLS.with(Cell::get), 0);
+        assert_eq!(observe(&catalog_a, 200, || Ok::<_, ()>(())), Ok(()));
+        {
+            let inner = TicketValidationObservation::begin(&catalog_b, Some(fake_cpu_now))
+                .ok_or("ticket observation owner exhausted")?;
+            assert_eq!(observe(&catalog_a, 201, || Ok::<_, ()>(())), Ok(()));
+            assert_eq!(observe(&catalog_b, 201, || Ok::<_, ()>(())), Ok(()));
+            assert_eq!(outer.snapshot(), None);
+            let timings = inner.snapshot().ok_or("inner scope became inactive")?;
+            assert_eq!(timings.cpu_calls.get(1), Some(&1));
+            assert_eq!(
+                timings.cpu_elapsed.get(1),
+                Some(&Some(Duration::from_nanos(30)))
+            );
+        }
+        let timings = outer.snapshot().ok_or("outer scope was not restored")?;
+        assert_eq!(timings.cpu_calls.first(), Some(&1));
+        assert_eq!(
+            timings.cpu_elapsed.first(),
+            Some(&Some(Duration::from_nanos(20)))
+        );
+        assert_eq!(CPU_SAMPLE_CALLS.with(Cell::get), 4);
         Ok(())
     }
 }

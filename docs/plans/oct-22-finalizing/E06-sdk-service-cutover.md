@@ -10,11 +10,21 @@ funded scoped SDK RPC·opaque ACK/NativeInitialFullPublishedV3·Source cut diges
 
 ## Native control request boundary
 
-2026-10-24 정적 감사에서 공개 `Status`와 `ReadView`가 원 요청 budget을 Catalog mutex 획득까지 전달하지 않는 경로를 확인했다. `ReadView::finish`의 최종 deadline 검사만으로 그 앞의 대기·pin 발급을 막을 수 없어 canonical Core→Catalog→Kernel→Runtime 계약을 함께 수정했다. 실행 결과는 [Catalog/control 통합 검증](VALIDATION.md#e04-e06-catalog-control-closure-20261024)에 기록한다.
+완료된 Status/ReadView budget 전달·실패 후 reconciliation·ticket/Open 보존은
+[Native control 계약](../../adr/NOV-12-001-native-query-and-semantic-engine.md#request-budgeted-control-and-ticket-custody),
+UDS accept 대기는 [IPC 계약](../../adr/NOV-07-001-native-index-execution-and-custody.md#decision)을 재사용한다.
+당시 source별 영향176/176·daemon3/3 및 UDS 영향76/76·서비스/daemon17/17은
+[control 검증](VALIDATION.md#e04-e06-catalog-control-closure-20261024)과
+[UDS 검증](VALIDATION.md#e04-control-budget-closure-20261024)에 귀속하며 현재 제품 수용으로 합산하지 않는다.
 
-`inspect(key, OperationInspectAccess)`는 일반 조회의 `Request(&WorkBudget)`와 오류 후 필수 `PostFailureReconcile`을 명시적으로 구분한다. 일반 조회는 기존 `lock_native_budget`과 읽기 후 checkpoint를 사용한다. 오류 후 durable terminal/Unknown 판정은 원 요청 만료 때문에 생략하지 않는다. `pin_view`→`acquire_ticket`는 같은 budget을 전달하고 COMMIT 직전에 검사한다. 거절 시 rollback하며, COMMIT 성공 뒤에는 ticket을 반환해 기존 owner가 보존·해제한다. ReadSession Open은 취소된 응답에서도 ticket을 먼저 소유하고 같은 키의 재조회에 동일 handle을 반환한다. 오래 보관되는 일반 ticket은 최초 요청 trace context를 붙잡지 않는다. 기존 materialization의 짧은 관측 scope와 mandatory release는 유지한다. 기존 E04 `WorkStatus`·수동 `ClaimWork`/`RenewWork`·`ReadyWork` 수리는 재사용하며 재개발하지 않는다.
+## Implemented default routing
 
-공개 one-shot UDS에는 별도의 고정 idle 지연도 있다. 제품 `ACCEPT_IDLE=50ms`를 받은 `UdsServer::run`이 빈 accept queue에서 무조건 sleep하므로, 새 연결은 남은 sleep만큼 지연될 수 있다. 기존 `rustix::poll`의 listener `IN` readiness로 대체했다. source8b63fa2f…에서 IPC strict·서버/admission 영향76/76은 VERIFIED이며 서비스14·daemon3도17/17 VERIFIED다. [원인·범위별 실행](VALIDATION.md#e04-control-budget-closure-20261024)을 따른다. timeout은 기존 shutdown 검사 cadence로 유지하고 admission·peer 인증·connection cap·thread reap/RAII 및 FD 오류 종료를 보존한다. 현재128 trace의 RPC 외부 gap 전부나 원4K 실패를 이 원인으로 단정하지 않는다.
+일반 `QuantaIndex::connect`/query-only와 CLI 명령은 Native로 연결한다.
+명시 Legacy 진입점은 별도 경로다. 완료된 연결부를 새 구현 작업으로 발급하지 않는다.
+[SDK 선택](../../../crates/quanta-index-sdk/src/config.rs)·[SDK 연결](../../../crates/quanta-index-sdk/src/client.rs)·[CLI 분기](../../../crates/quanta-index-searchctl/src/lib.rs)가 소스 권위다.
+실제 Source/조회 호출자·current selected view·설치 FULL/BOOT·rollback 수용은
+[Native 활성 원장](../nov-12-native-cutover/README.md#현재-종료-판정)이 소유한다.
+아래 E08 A→전환→B는 설치 selection과 제품 수용 순서이며 일반 라우팅 구현의 재작업 지시가 아니다.
 
 ## DoD
 

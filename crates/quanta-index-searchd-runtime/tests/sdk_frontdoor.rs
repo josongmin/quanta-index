@@ -109,7 +109,7 @@ impl SdkFrontdoorRuntime {
                     ingest.to_path_buf(),
                 )
             })?;
-        let client = QuantaIndex::connect(
+        let client = QuantaIndex::connect_legacy(
             ConnectOptions::from_state_root(runtime.state_root())
                 .with_query_socket(query)
                 .with_control_socket(control)
@@ -1153,7 +1153,8 @@ fn structural_scope() -> SearchScopeKey {
 fn expect_remote_code(err: SdkError, expected: &str) -> TestResult {
     match err {
         SdkError::Remote { code, .. } if code.as_wire_str() == expected => Ok(()),
-        other @ (SdkError::Usage(_)
+        other @ (SdkError::UnsupportedNativeQuery { .. }
+        | SdkError::Usage(_)
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)

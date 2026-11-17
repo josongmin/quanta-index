@@ -57,7 +57,8 @@ rust-profile-list:
         'test-daemon-all     49 runtime sources plus DSL truth; 4 binaries' \
         'release-cli        optimized release build for quanta-index-searchctl' \
         'release-cli-fresh  clean release-bin lane, then rebuild quanta-index-searchctl' \
-        'release-daemon     optimized release build for quanta-index-searchd daemon' \
+        'release-native-daemon optimized Native daemon without the Tantivy dependencies' \
+        'release-daemon     optimized daemon with Legacy serve for compatibility and proofs' \
         'release-daemon-fresh clean release-daemon lane, then rebuild quanta-index-searchd daemon' \
         'verify-rust         standard merge gate' \
         'verify-rust-heavy   nightly/heavy correctness gate' \
@@ -101,6 +102,7 @@ rust-profile profile:
         test-daemon-all) ./scripts/run-rust-profile.sh "{{profile}}" rust-test-e2e-all ;; \
         release-cli) ./scripts/run-rust-profile.sh "{{profile}}" rust-build-release-cli ;; \
         release-cli-fresh) ./scripts/run-rust-profile.sh "{{profile}}" rust-build-release-cli-fresh ;; \
+        release-native-daemon) ./scripts/run-rust-profile.sh "{{profile}}" rust-build-release-native-daemon ;; \
         release-daemon) ./scripts/run-rust-profile.sh "{{profile}}" rust-build-release-daemon ;; \
         release-daemon-fresh) ./scripts/run-rust-profile.sh "{{profile}}" rust-build-release-daemon-fresh ;; \
         verify-rust) ./scripts/run-rust-profile.sh "{{profile}}" verify-rust ;; \
@@ -165,10 +167,19 @@ rust-build-release-cli-fresh:
     {{cargo}} --lane release-bin-lane clean --quiet
     {{cargo}} --lane release-bin-lane build -p quanta-index-searchctl --bin quanta-index-searchctl --all-features --locked --release
 
-# Canonical deployable daemon artifact. The bin lives in
-# quanta-index-searchd-runtime, not the quanta-index-searchd library crate.
+# Compatibility artifact for Legacy serve and release-bound proofs.
 rust-build-release-daemon:
     {{cargo}} --lane release-daemon-bin-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --all-features --locked --release
+
+# Native deployment candidate. Uses its own output lane so Legacy consumers
+# can still run against their existing release artifact.
+rust-build-release-native-daemon:
+    set -o pipefail; {{cargo}} --lane release-native-daemon-bin-lane tree -p quanta-index-searchd-runtime --no-default-features --locked --edges normal,build --prefix none | awk '$1 ~ /^tantivy([-_]|$)/ { print > "/dev/stderr"; forbidden = 1 } NF { nonempty = 1 } END { exit (!nonempty || forbidden) }'
+    {{cargo}} --lane release-native-daemon-bin-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --no-default-features --locked --release
+
+# Whole-workspace source check for the retirement candidate.
+rust-check-tantivy-retirement:
+    uv run --frozen --offline python tools/ci/check-tantivy-retirement.py
 
 # Fresh daemon release build for stale-fingerprint recovery after source-layout
 # cuts (for example semantic backend module replacement).
@@ -421,12 +432,12 @@ benchmark-replay run:
 # Python capture/custody contracts only: no service, model download or timing
 # producer. Invoke through `uv run --frozen --extra dev just` for locked deps.
 benchmark-control-contract-local:
-    uv run --frozen --extra dev python -m pytest tools/ci/tests/test_live_lexical_external.py tools/ci/tests/test_opengrok_index_scope.py tools/ci/tests/test_opengrok_query_witness.py tools/ci/tests/test_opengrok_query_fixture.py tools/ci/tests/test_code_search_workflow.py tools/ci/tests/test_code_search_matrix.py tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchmark_policy.py tools/ci/tests/test_bench_protocol_conformance.py tools/ci/tests/test_benchmark_evidence_bridge.py tools/ci/tests/test_benchmark_source_closure.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_benchmark_profile_capture.py tools/ci/tests/test_criterion_capture.py tools/ci/tests/test_recorded_capture.py tools/ci/tests/test_retrieval_capture.py tools/ci/tests/test_lexical_capture.py tools/ci/tests/test_pair_capture.py tools/ci/tests/test_lexical_file_comparison.py tools/ci/tests/test_lexical_five_product_oracle.py tools/ci/tests/test_no_answer_evidence.py tools/ci/tests/test_identifier_robustness_report.py tools/ci/tests/test_identifier_robustness_strata.py tools/ci/tests/test_codesearchnet_qrels.py tools/ci/tests/test_codesearchnet_materialize.py tools/ci/tests/test_clarc_adapter.py tools/ci/tests/test_external_snippet_benchmark.py tools/ci/tests/test_holdout_c4_projection.py tools/ci/tests/test_identifier_robustness_fresh_join.py tools/ci/tests/test_identifier_robustness_multiproduct_report.py tools/ci/tests/test_portable_proof.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py tools/ci/tests/test_retrieval_contract_proof.py tools/ci/tests/test_retrieval_sdk_proof.py tools/ci/tests/test_write_verification_receipt.py tools/ci/tests/test_agent_outcome_benchmark.py tools/ci/tests/test_concurrency_sample_contract.py tools/ci/tests/test_corpus_release.py tools/ci/tests/test_tool_custody.py tools/ci/tests/test_portable_tool_execution.py tools/ci/tests/test_conditional_window_operations.py tools/ci/tests/test_conditional_tool_execution.py tools/ci/tests/test_corpus_binding.py tools/ci/tests/test_gold_oracle.py tools/ci/tests/test_nextest_ignored_inventory.py tools/ci/tests/test_producer_notifications.py tools/ci/tests/test_bootstrap_cache.py tools/ci/tests/test_proof_command_timings.py tools/ci/tests/test_resource_admission.py tools/ci/tests/test_cargow_resource_admission.py tools/ci/tests/test_cargo_preparation.py tools/ci/tests/test_pair_replay_workspace.py -q
+    uv run --frozen --extra dev python -m pytest tools/ci/tests/test_live_lexical_external.py tools/ci/tests/test_opengrok_index_scope.py tools/ci/tests/test_opengrok_query_witness.py tools/ci/tests/test_opengrok_query_fixture.py tools/ci/tests/test_code_search_workflow.py tools/ci/tests/test_code_search_matrix.py tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchmark_policy.py tools/ci/tests/test_bench_protocol_conformance.py tools/ci/tests/test_benchmark_evidence_bridge.py tools/ci/tests/test_benchmark_source_closure.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_benchmark_profile_capture.py tools/ci/tests/test_criterion_capture.py tools/ci/tests/test_recorded_capture.py tools/ci/tests/test_retrieval_capture.py tools/ci/tests/test_lexical_capture.py tools/ci/tests/test_pair_capture.py tools/ci/tests/test_lexical_file_comparison.py tools/ci/tests/test_lexical_five_product_oracle.py tools/ci/tests/test_no_answer_evidence.py tools/ci/tests/test_native_file_evidence.py tools/ci/tests/test_native_file_cohort.py tools/ci/tests/test_native_file_decision.py tools/ci/tests/test_native_file_decision_cli.py tools/ci/tests/test_native_file_capture.py tools/ci/tests/test_composite_source_binding.py tools/ci/tests/test_identifier_robustness_report.py tools/ci/tests/test_identifier_robustness_strata.py tools/ci/tests/test_codesearchnet_qrels.py tools/ci/tests/test_codesearchnet_materialize.py tools/ci/tests/test_clarc_adapter.py tools/ci/tests/test_external_snippet_benchmark.py tools/ci/tests/test_holdout_c4_projection.py tools/ci/tests/test_identifier_robustness_fresh_join.py tools/ci/tests/test_identifier_robustness_multiproduct_report.py tools/ci/tests/test_portable_proof.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py tools/ci/tests/test_retrieval_contract_proof.py tools/ci/tests/test_retrieval_sdk_proof.py tools/ci/tests/test_write_verification_receipt.py tools/ci/tests/test_agent_outcome_benchmark.py tools/ci/tests/test_concurrency_sample_contract.py tools/ci/tests/test_corpus_release.py tools/ci/tests/test_tool_custody.py tools/ci/tests/test_portable_tool_execution.py tools/ci/tests/test_conditional_window_operations.py tools/ci/tests/test_conditional_tool_execution.py tools/ci/tests/test_corpus_binding.py tools/ci/tests/test_gold_oracle.py tools/ci/tests/test_nextest_ignored_inventory.py tools/ci/tests/test_producer_notifications.py tools/ci/tests/test_bootstrap_cache.py tools/ci/tests/test_proof_command_timings.py tools/ci/tests/test_resource_admission.py tools/ci/tests/test_cargow_resource_admission.py tools/ci/tests/test_cargo_preparation.py tools/ci/tests/test_pair_replay_workspace.py -q
 
 benchmark-prep-local:
     find crates/quanta-index-searchd-harness/src -name '*.rs' -print0 | xargs -0 rustfmt --check --edition 2024
     uv run --frozen --extra dev just benchmark-control-contract-local
-    uv run --frozen --extra dev python -m py_compile tools/benchmark/benchctl.py tools/benchmark/code_search_workflow.py tools/benchmark/registry.py tools/benchmark/manifest.py tools/benchmark/evidence.py tools/benchmark/evidence_bridge.py tools/benchmark/compare_dsl_bench.py tools/benchmark/quality_integration_summary.py tools/ci/lint/check-bench-artifacts.py tools/ci/lint/check-benchmark-policy.py tools/ci/timing/check_host_contention.py tools/benchmark/retrieval/evaluator.py tools/benchmark/retrieval/holdout_review.py tools/benchmark/retrieval/source_oracle.py tools/benchmark/retrieval/source_oracle_suite.py tools/benchmark/retrieval/identifier_robustness_suite.py tools/benchmark/retrieval/identifier_robustness_report.py tools/benchmark/retrieval/codesearchnet_qrels.py tools/benchmark/retrieval/codesearchnet_materialize.py tools/benchmark/retrieval/clarc_adapter.py tools/benchmark/retrieval/external_snippet_benchmark.py tools/benchmark/retrieval/identifier_robustness_multiproduct_report.py tools/benchmark/retrieval/identifier_robustness_fresh_join.py tools/benchmark/retrieval/arb_adapter.py tools/benchmark/retrieval/query_plan.py tools/benchmark/retrieval/retrieval_contract.py tools/benchmark/retrieval/semble.py tools/benchmark/retrieval/run.py tools/benchmark/retrieval/lexical_file_comparison.py tools/benchmark/retrieval/lexical_external_oracle.py tools/benchmark/retrieval/lexical_five_product_oracle.py tools/benchmark/retrieval/prepare_lexical_pair.py tools/benchmark/retrieval/contract_proof.py tools/benchmark/retrieval/sdk_proof.py tools/ci/source_closure.py tools/ci/write-verification-receipt.py
+    uv run --frozen --extra dev python -m py_compile tools/benchmark/benchctl.py tools/benchmark/code_search_workflow.py tools/benchmark/registry.py tools/benchmark/manifest.py tools/benchmark/evidence.py tools/benchmark/evidence_bridge.py tools/benchmark/compare_dsl_bench.py tools/benchmark/quality_integration_summary.py tools/ci/lint/check-bench-artifacts.py tools/ci/lint/check-benchmark-policy.py tools/ci/timing/check_host_contention.py tools/benchmark/retrieval/evaluator.py tools/benchmark/retrieval/native_file_evidence.py tools/benchmark/retrieval/holdout_review.py tools/benchmark/retrieval/source_oracle.py tools/benchmark/retrieval/source_oracle_suite.py tools/benchmark/retrieval/identifier_robustness_suite.py tools/benchmark/retrieval/identifier_robustness_report.py tools/benchmark/retrieval/codesearchnet_qrels.py tools/benchmark/retrieval/codesearchnet_materialize.py tools/benchmark/retrieval/clarc_adapter.py tools/benchmark/retrieval/external_snippet_benchmark.py tools/benchmark/retrieval/identifier_robustness_multiproduct_report.py tools/benchmark/retrieval/identifier_robustness_fresh_join.py tools/benchmark/retrieval/arb_adapter.py tools/benchmark/retrieval/query_plan.py tools/benchmark/retrieval/retrieval_contract.py tools/benchmark/retrieval/semble.py tools/benchmark/retrieval/run.py tools/benchmark/retrieval/lexical_file_comparison.py tools/benchmark/retrieval/lexical_external_oracle.py tools/benchmark/retrieval/lexical_five_product_oracle.py tools/benchmark/retrieval/prepare_lexical_pair.py tools/benchmark/retrieval/contract_proof.py tools/benchmark/retrieval/sdk_proof.py tools/ci/source_closure.py tools/ci/write-verification-receipt.py
     {{cargo}} --lane bench-lane test -p quanta-index-bench-protocol --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --bins --all-features --locked --no-run
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --all-features --locked
@@ -436,7 +447,7 @@ benchmark-prep-local:
 # Dirty-checkout retrieval edit loop. This is diagnostic only: use the proof
 # rail on a clean source to produce source-bound JUnit/nextest receipts.
 retrieval-contract-local:
-    uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_source_oracle_suite.py tools/ci/tests/test_holdout_review.py tools/ci/tests/test_completed_response_timing.py -q
+    uv run --frozen --extra dev python tools/benchmark/retrieval/proof_inventory.py --run-local
     {{cargo}} --lane test-daemon-lane test -p quanta-index-retrieval-bench --lib --bin quanta-index-retrieval-bench --test chunking_contract --test l5_parser_regressions --all-features --locked
 
 # Retrieval benchmark: real-daemon SDK proof (T05-T07, T10). Builds the
@@ -486,7 +497,7 @@ retrieval-host-probe out="":
 # Warm: in-process criterion + p50/p95/p99 artifact. Cold: fresh-process-per-sample runner.
 rust-bench-dsl-warm:
     mkdir -p artifacts/dsl-bench
-    env CARGO_NET_OFFLINE=true {{cargo}} --lane bench-lane build -p quanta-index-searchd-harness --bin dsl_warm_matrix --profile bench --quiet --locked
+    env CARGO_NET_OFFLINE=true {{cargo}} --lane bench-lane build -p quanta-index-searchd-harness --bin dsl_warm_matrix --features legacy-bench --profile bench --quiet --locked
     env QUANTA_INDEX_BUILD_LANE=bench-lane QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS=1 bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/release/dsl_warm_matrix" && test -x "$BIN" && "$BIN" --out "$(pwd)/artifacts/dsl-bench/warm-matrix.json"'
 
 # Exploratory criterion view for warm scenarios. Not gate authority.
@@ -496,6 +507,10 @@ rust-bench-dsl-warm-criterion $evidence_root:
 rust-bench-dsl-cold samples="20":
     mkdir -p artifacts/dsl-bench
     env QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS=1 python3 tools/benchmark/run_dsl_cold_matrix.py --samples {{samples}} --out artifacts/dsl-bench/cold-matrix.json
+
+# Whole Native Text/History SDK diagnostic using the same reopened History fixture in both modes.
+rust-bench-dsl-native $mode $runner $runner_sha $daemon $daemon_sha $history $history_sha $out *options:
+    {{retrieval_python}} tools/benchmark/run_dsl_cold_matrix.py --bin-mode "$mode" --native-runner "$runner" --bin-sha256 "$runner_sha" --native-daemon "$daemon" --native-daemon-sha256 "$daemon_sha" --native-history-fixture "$history" --native-history-sha256 "$history_sha" --out "$out" {{options}}
 
 # Authority refresh: run warm and cold producers serially, then gate against baselines.
 rust-bench-dsl-refresh samples="20":
@@ -615,9 +630,9 @@ rust-verify-quality-tail:
 # Artifacts: artifacts/search-quality/ann/latest/summary.json
 rust-verify-quality-ann:
     python3 tools/ci/timing/check_host_contention.py
-    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib ann:: --all-features --locked -- --nocapture
+    {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib ann:: --no-default-features --features semantic-bench --locked -- --nocapture
     mkdir -p artifacts/search-quality/ann/latest
-    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin ann_matrix --all-features --locked
+    {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-harness --bin ann_matrix --no-default-features --features semantic-bench --locked
     env QUANTA_INDEX_BUILD_LANE=test-daemon-lane bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/debug/ann_matrix" && test -x "$BIN" && "$BIN" --out-dir "$(pwd)/artifacts/search-quality/ann/latest"'
 
 # Concurrency rail (QI-BB-010 #4). Blocking signal: every request answered,

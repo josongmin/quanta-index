@@ -1155,6 +1155,72 @@ def test_ann_region_identity_is_bound_to_seal_and_query_spans() -> None:
     assert viewer["quantaIndexSummary"]["ann_region_observations"][1]["rows"] == "256"
 
 
+def test_native_hnsw_region_observations_preserve_one_logical_graph_artifact() -> None:
+    rows = _ann_region_rows()
+    for row in rows:
+        if row.get("kind", {}).get("type") == "ann_region_observation":
+            row["kind"].update(index_kind="hnsw", files=1, chunks=1)
+    rows[3]["kind"]["descriptor_ref"] = "de" * 32
+    capture = parse(b"".join(map(_line, rows)))
+    assert [row["index_kind"] for row in capture["ann_region_observations"]] == ["hnsw", "hnsw"]
+    assert [row["descriptor_ref"] for row in capture["ann_region_observations"]] == [
+        "de" * 32,
+        "cd" * 32,
+    ]
+    assert [(row["files"], row["chunks"]) for row in capture["ann_region_observations"]] == [(1, 1), (1, 1)]
+    assert summarize(capture)["ann_region_observations"] == capture["ann_region_observations"]
+
+
+@pytest.mark.parametrize("field", ("files", "chunks"))
+def test_native_hnsw_refuses_more_than_one_logical_graph_artifact(field: str) -> None:
+    rows = _ann_region_rows()
+    for row in rows:
+        if row.get("kind", {}).get("type") == "ann_region_observation":
+            row["kind"].update(index_kind="hnsw", files=1, chunks=1)
+    rows[3]["kind"]["descriptor_ref"] = "de" * 32
+    rows[3]["kind"][field] = 2
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(b"".join(map(_line, rows)))
+
+
+def test_native_hnsw_installed_requires_authenticated_descriptor_reference() -> None:
+    rows = _ann_region_rows()
+    for row in rows:
+        if row.get("kind", {}).get("type") == "ann_region_observation":
+            row["kind"].update(index_kind="hnsw", files=1, chunks=1)
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(b"".join(map(_line, rows)))
+
+
+def test_v5_native_hnsw_installed_descriptor_reference_replays() -> None:
+    rows = _ann_region_rows()
+    rows[0]["schema_version"] = rows[-1]["schema_version"] = 5
+    for index, row in enumerate(rows[1:-1], 1):
+        kind = row["kind"]
+        if kind["type"] == "span_begin":
+            payload = [
+                "b", kind["span_id"], kind.get("parent_span_id"), kind["stage"],
+                kind["lane_id"], kind.get("root_kind"),
+            ]
+        elif kind["type"] == "span_end":
+            payload = ["e", kind["span_id"], kind["outcome"], kind.get("error_code")]
+        else:
+            payload = kind
+            if kind["type"] == "ann_region_observation":
+                payload.update(index_kind="hnsw", files=1, chunks=1)
+                if kind["phase"] == "installed":
+                    payload["descriptor_ref"] = "de" * 32
+        rows[index] = ["e", row["output_seq"], row["capture_id"], row["ts_ns"], payload]
+    capture = parse(_v5_bytes(rows))
+    assert [row["descriptor_ref"] for row in capture["ann_region_observations"]] == [
+        "de" * 32,
+        "cd" * 32,
+    ]
+    rows[3][4]["descriptor_ref"] = None
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(_v5_bytes(rows))
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (
@@ -2785,6 +2851,173 @@ def _v5_bytes(rows: list[dict | list]) -> bytes:
     return b"".join(json.dumps(row, separators=(",", ":")).encode() + b"\n" for row in rows)
 
 
+TEXT_SHAPE_RAW_KEYS = (
+    "text_case_occurrences",
+    "text_unique_canonical_terms",
+    "text_occurrence_key_bytes",
+    "text_unique_key_bytes",
+    "text_cold_alias_owners",
+    "text_cold_direct_owners",
+    "text_cold_sql_owners",
+    "text_cold_empty_owners",
+    "text_shape_complete_owners",
+)
+
+
+def _v5_text_shape_counter_rows(key: str, *, duplicate: bool) -> list[dict | list]:
+    base = _v5_rows()
+    rows: list[dict | list] = [
+        base[0],
+        ["e", 0, CAPTURE, 10, ["b", 1, None, "operation", 0, "operation"]],
+        ["e", 0, CAPTURE, 20, ["b", 2, 1, "native_text_inventory_prepare", 48, None]],
+        ["e", 0, CAPTURE, 25, ["c", 2, key, 0]],
+        ["e", 0, CAPTURE, 26, ["c", 2, key if duplicate else "text_unique_key_bytes", 0]],
+        ["e", 0, CAPTURE, 30, ["e", 2, "ok", None]],
+        ["e", 0, CAPTURE, 32, ["b", 3, 1, "native_text_inventory_prepare", 48, None]],
+        ["e", 0, CAPTURE, 33, ["c", 3, key, 0]],
+        ["e", 0, CAPTURE, 36, ["e", 3, "ok", None]],
+        ["e", 0, CAPTURE, 40, ["e", 1, "ok", None]],
+        base[-1],
+    ]
+    count = len(rows) - 2
+    for sequence, event in enumerate(rows[1:-1], 1):
+        event[1] = sequence
+    rows[-1].update(
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
+    )
+    return rows
+
+
+@pytest.mark.parametrize("key", TEXT_SHAPE_RAW_KEYS)
+def test_v5_text_shape_duplicate_raw_counter_on_one_span_is_invalid(key: str) -> None:
+    with pytest.raises(ValueError, match="text shape counter is duplicated"):
+        parse(_v5_bytes(_v5_text_shape_counter_rows(key, duplicate=True)))
+
+
+def test_v5_text_shape_same_key_on_distinct_spans_and_distinct_keys_on_one_span_remain_valid() -> (
+    None
+):
+    captured = parse(
+        _v5_bytes(_v5_text_shape_counter_rows("text_case_occurrences", duplicate=False))
+    )
+    assert captured["spans"][2]["counters"] == {
+        "text_case_occurrences": 0,
+        "text_unique_key_bytes": 0,
+    }
+    assert captured["spans"][3]["counters"] == {"text_case_occurrences": 0}
+
+
+@pytest.mark.parametrize("stage", ("native_source_apply", "build_prepare"))
+@pytest.mark.parametrize("fault", (None, "wrong_lane", "contradictory", "partial"))
+def test_v5_object_port_read_counters(stage: str, fault: str | None) -> None:
+    rows = _v5_rows()
+    rows[2][4] = ["b", 2, 1, stage, 0 if fault == "wrong_lane" else 3, None]
+    counts = {
+        "object_port_get_calls": 11,
+        "object_port_get_succeeded": 12 if fault == "contradictory" else 10,
+        "object_port_get_wire_bytes": 4096,
+        "object_port_retained_calls": 5,
+        "object_port_retained_succeeded": 5,
+        "object_port_retained_wire_bytes": 1024,
+    }
+    if fault == "partial":
+        del counts["object_port_retained_calls"]
+    rows[3:4] = [["e", 0, CAPTURE, 25, ["c", 2, key, value]] for key, value in counts.items()]
+    count = len(rows) - 2
+    for sequence, event in enumerate(rows[1:-1], 1):
+        event[1] = sequence
+    rows[-1].update(
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
+    )
+    if fault is not None:
+        with pytest.raises(ValueError, match="object port read counter"):
+            parse(_v5_bytes(rows))
+        return
+    capture = parse(_v5_bytes(rows))
+    assert capture["status"] == "complete"
+    assert capture["spans"][2]["counters"] == counts
+
+
+def _v5_posting_cache_rows(
+    gold: tuple[tuple[str, int], ...] = SQLITE_CACHE_GOLD,
+) -> list[dict | list]:
+    base = _v5_rows()
+    rows: list[dict | list] = [
+        base[0],
+        ["e", 0, CAPTURE, 10, ["b", 1, None, "operation", 0, "operation"]],
+        ["e", 0, CAPTURE, 20, ["b", 2, 1, "operation", 1, None]],
+        ["e", 0, CAPTURE, 23, ["b", 3, 2, "native_text_posting_edit", 35, None]],
+        *[
+            ["e", 0, CAPTURE, 25 + ordinal, ["c", 3, key, value]]
+            for ordinal, (key, value) in enumerate(gold)
+        ],
+        ["e", 0, CAPTURE, 35, ["e", 3, "ok", None]],
+        ["e", 0, CAPTURE, 40, ["e", 2, "ok", None]],
+        ["e", 0, CAPTURE, 45, ["e", 1, "ok", None]],
+        base[-1],
+    ]
+    count = len(rows) - 2
+    for sequence, event in enumerate(rows[1:-1], 1):
+        event[1] = sequence
+    rows[-1].update(
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
+    )
+    return rows
+
+
+def test_v5_sampled_posting_cache_reaches_worker_index() -> None:
+    from tools.benchmark.retrieval.causal_cost_diagnostic import build_index, query_index
+
+    captured = parse(_v5_bytes(_v5_posting_cache_rows()))
+    assert captured["status"] == "complete"
+    assert captured["spans"][3]["counters"] == dict(SQLITE_CACHE_GOLD)
+    index = build_index(captured)
+    assert index["sqlite_cache_validity"] == "PAGER_WRITE_OUTCOME_NOT_OBSERVED"
+    selected = query_index(index, worker_span_id=2, stage="native_text_posting_edit", lane=35)
+    assert selected["workers"]["2"]["groups"][0]["direct_counters"] == dict(SQLITE_CACHE_GOLD)
+
+
+@pytest.mark.parametrize("fault", ("wrong_stage", "wrong_lane", "partial", "duplicate"))
+def test_v5_sampled_posting_cache_rejects_wrong_owner_or_incomplete_family(fault: str) -> None:
+    rows = _v5_posting_cache_rows()
+    if fault == "wrong_stage":
+        rows[3][4][3] = "native_text_postings"
+    elif fault == "wrong_lane":
+        rows[3][4][4] = 34
+    elif fault == "partial":
+        del rows[4]
+    else:
+        rows.insert(8, ["e", 0, CAPTURE, 29, ["c", 3, "sqlite_cache_hits", 1]])
+    count = len(rows) - 2
+    for sequence, event in enumerate(rows[1:-1], 1):
+        event[1] = sequence
+    rows[-1].update(
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
+    )
+    with pytest.raises(ValueError, match="SQLite cache"):
+        parse(_v5_bytes(rows))
+
+
+def test_v5_legacy_posting_without_cache_remains_unobserved() -> None:
+    from tools.benchmark.retrieval.causal_cost_diagnostic import build_index
+
+    captured = parse(_v5_bytes(_v5_posting_cache_rows(())))
+    assert captured["spans"][3]["counters"] == {}
+    assert build_index(captured)["sqlite_cache_validity"] == "NOT_OBSERVED"
+
+
 def _v5_map_root_rows(*, outcome: str = "ok") -> list[dict | list]:
     rows = _v5_rows()
     rows[2][4] = ["b", 2, 1, "map_apply", 0, None]
@@ -2953,6 +3186,396 @@ def test_v4_rejects_v5_map_root_stage_and_counters() -> None:
     )
 
 
+MANAGED_EXTERNAL_CHILD_GOLD = (
+    ("managed_object_external_child_references", 5),
+    ("managed_object_unique_external_children", 3),
+    ("managed_object_guarded_repeated_external_children", 1),
+)
+MANAGED_REUSED_EXTERNAL_CHILD_KEY = "managed_object_reused_external_child_validations"
+MANAGED_CROSS_GROUP_CHILD_GOLD = (
+    ("managed_object_cross_group_external_child_overlap", 1),
+    ("managed_object_cross_group_repeated_child_path_checks", 3),
+    ("managed_object_child_path_checks", 4),
+)
+
+
+def _v5_managed_external_child_rows(
+    values: tuple[tuple[str, int], ...] = MANAGED_EXTERNAL_CHILD_GOLD,
+    *,
+    stage: str = "managed_object_install",
+    lane: int = 3,
+) -> list[dict | list]:
+    rows = _v5_rows()
+    rows[2][4][3:5] = [stage, lane]
+    rows[3][4][2] = "managed_object_inputs"
+    for ordinal, (key, value) in enumerate(values):
+        rows.insert(-3, ["e", 0, CAPTURE, 26 + ordinal, ["c", 2, key, value]])
+    count = len(rows) - 2
+    for sequence, event in enumerate(rows[1:-1], 1):
+        event[1] = sequence
+    rows[-1].update(
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
+    )
+    return rows
+
+
+def test_v5_managed_external_child_triple_preserves_counts_and_old_absence() -> None:
+    captured = parse(_v5_bytes(_v5_managed_external_child_rows()))
+    assert captured["status"] == "complete"
+    assert {key: captured["spans"][2]["counters"][key] for key, _ in MANAGED_EXTERNAL_CHILD_GOLD} == dict(
+        MANAGED_EXTERNAL_CHILD_GOLD
+    )
+    old = _v5_managed_external_child_rows(())
+    assert parse(_v5_bytes(old))["spans"][2]["counters"] == {"managed_object_inputs": 3}
+
+
+def test_v5_managed_cross_group_child_tuple_preserves_old_captures_and_realized_prefix() -> None:
+    values = MANAGED_EXTERNAL_CHILD_GOLD + MANAGED_CROSS_GROUP_CHILD_GOLD
+    captured = parse(_v5_bytes(_v5_managed_external_child_rows(values)))
+    assert {key: captured["spans"][2]["counters"][key] for key, _ in MANAGED_CROSS_GROUP_CHILD_GOLD} == dict(
+        MANAGED_CROSS_GROUP_CHILD_GOLD
+    )
+    summary = next(row for row in summarize(captured)["spans"] if row["span_id"] == 2)
+    assert {key: summary["counters"][key] for key, _ in MANAGED_CROSS_GROUP_CHILD_GOLD} == dict(
+        MANAGED_CROSS_GROUP_CHILD_GOLD
+    )
+    only_new = parse(_v5_bytes(_v5_managed_external_child_rows(MANAGED_CROSS_GROUP_CHILD_GOLD)))
+    assert all(key in only_new["spans"][2]["counters"] for key, _ in MANAGED_CROSS_GROUP_CHILD_GOLD)
+    assert not any(key in parse(_v5_bytes(_v5_managed_external_child_rows()))["spans"][2]["counters"] for key, _ in MANAGED_CROSS_GROUP_CHILD_GOLD)
+
+
+@pytest.mark.parametrize(
+    ("fault", "error"),
+    [
+        ("partial", "managed cross-group child counter family is partial"),
+        ("wrong_stage", "managed external child counter targets wrong owner span"),
+        ("wrong_lane", "managed external child counter targets wrong owner span"),
+        ("duplicate", "managed external child counter is duplicated"),
+        ("after_end", "managed external child counter follows span end"),
+        ("orphan", "managed external child counter has no existing owner span"),
+        ("repeated_exceeds", "managed cross-group child counters contradict"),
+        ("zero_overlap", "managed cross-group child counters contradict"),
+        ("overlap_exceeds_unique", "managed cross-group child overlap exceeds unique external children"),
+    ],
+)
+def test_v5_managed_cross_group_child_tuple_rejects_invalid_trace(fault: str, error: str) -> None:
+    values = MANAGED_EXTERNAL_CHILD_GOLD + MANAGED_CROSS_GROUP_CHILD_GOLD
+    if fault == "partial":
+        values = values[:-1]
+    elif fault == "repeated_exceeds":
+        values = values[:-1] + ((MANAGED_CROSS_GROUP_CHILD_GOLD[-1][0], 2),)
+    elif fault == "zero_overlap":
+        values = values[:3] + ((MANAGED_CROSS_GROUP_CHILD_GOLD[0][0], 0),) + values[4:]
+    elif fault == "overlap_exceeds_unique":
+        values = values[:3] + ((MANAGED_CROSS_GROUP_CHILD_GOLD[0][0], 4),) + values[4:]
+    rows = _v5_managed_external_child_rows(
+        values,
+        stage="query_candidate" if fault == "wrong_stage" else "managed_object_install",
+        lane=0 if fault == "wrong_lane" else 3,
+    )
+    if fault == "duplicate":
+        rows[5][4][2] = MANAGED_CROSS_GROUP_CHILD_GOLD[0][0]
+    elif fault == "after_end":
+        rows[-3], rows[-4] = rows[-4], rows[-3]
+        for sequence, event in enumerate(rows[1:-1], 1):
+            event[1] = sequence
+    elif fault == "orphan":
+        rows[7][4][1] = 99
+    with pytest.raises(ValueError, match=error):
+        parse(_v5_bytes(rows))
+
+
+def test_v4_rejects_managed_cross_group_child_counter_keys() -> None:
+    schema = _schema_for_version(json.loads(SCHEMA.read_text()), 4)
+    assert not {key for key, _ in MANAGED_CROSS_GROUP_CHILD_GOLD} & set(schema["$defs"]["counterKey"]["enum"])
+
+
+@pytest.mark.parametrize(
+    ("fault", "error"),
+    [
+        ("partial", "managed external child counter family is partial"),
+        ("wrong_stage", "managed external child counter targets wrong owner span"),
+        ("wrong_lane", "managed external child counter targets wrong owner span"),
+        ("duplicate", "managed external child counter is duplicated"),
+        ("after_end", "managed external child counter follows span end"),
+        ("orphan", "managed external child counter has no existing owner span"),
+        ("unique_exceeds", "managed external child counters contradict"),
+        ("repeated_exceeds", "managed external child counters contradict"),
+    ],
+)
+def test_v5_managed_external_child_rejects_invalid_trace(fault: str, error: str) -> None:
+    values = MANAGED_EXTERNAL_CHILD_GOLD
+    if fault == "partial":
+        values = values[:2]
+    elif fault == "unique_exceeds":
+        values = (values[0], (values[1][0], 6), values[2])
+    elif fault == "repeated_exceeds":
+        values = (values[0], values[1], (values[2][0], 3))
+    rows = _v5_managed_external_child_rows(
+        values,
+        stage="query_candidate" if fault == "wrong_stage" else "managed_object_install",
+        lane=0 if fault == "wrong_lane" else 3,
+    )
+    if fault == "duplicate":
+        rows[5][4][2] = MANAGED_EXTERNAL_CHILD_GOLD[0][0]
+    elif fault == "after_end":
+        rows[6], rows[7] = rows[7], rows[6]
+        rows[7][3] = 36
+        for sequence, event in enumerate(rows[1:-1], 1):
+            event[1] = sequence
+    elif fault == "orphan":
+        rows[4][4][1] = 99
+    with pytest.raises(ValueError, match=error):
+        parse(_v5_bytes(rows))
+
+
+def test_v4_rejects_managed_external_child_counter_keys() -> None:
+    schema = _schema_for_version(json.loads(SCHEMA.read_text()), 4)
+    assert not ({key for key, _ in MANAGED_EXTERNAL_CHILD_GOLD} | {MANAGED_REUSED_EXTERNAL_CHILD_KEY}) & set(
+        schema["$defs"]["counterKey"]["enum"]
+    )
+
+
+def test_v5_managed_reused_external_child_validation_is_optional_and_independent() -> None:
+    only_actual = _v5_managed_external_child_rows(((MANAGED_REUSED_EXTERNAL_CHILD_KEY, 0),))
+    assert parse(_v5_bytes(only_actual))["spans"][2]["counters"][MANAGED_REUSED_EXTERNAL_CHILD_KEY] == 0
+    with_triple = _v5_managed_external_child_rows(
+        MANAGED_EXTERNAL_CHILD_GOLD + ((MANAGED_REUSED_EXTERNAL_CHILD_KEY, 1),)
+    )
+    assert parse(_v5_bytes(with_triple))["spans"][2]["counters"][MANAGED_REUSED_EXTERNAL_CHILD_KEY] == 1
+    without_actual = parse(_v5_bytes(_v5_managed_external_child_rows()))["spans"][2]["counters"]
+    assert MANAGED_REUSED_EXTERNAL_CHILD_KEY not in without_actual
+
+
+def test_v5_managed_reuse_validates_each_physical_group_independently() -> None:
+    first = MANAGED_EXTERNAL_CHILD_GOLD + ((MANAGED_REUSED_EXTERNAL_CHILD_KEY, 1),)
+    rows = _v5_managed_external_child_rows(first)
+    second = (
+        ("managed_object_external_child_references", 5),
+        ("managed_object_unique_external_children", 2),
+        ("managed_object_guarded_repeated_external_children", 2),
+        (MANAGED_REUSED_EXTERNAL_CHILD_KEY, 2),
+    )
+    rows[-2:-2] = [
+        ["e", 0, CAPTURE, 36, ["b", 3, 1, "managed_object_install", 3, None]],
+        *[["e", 0, CAPTURE, 37, ["c", 3, key, value]] for key, value in second],
+        ["e", 0, CAPTURE, 39, ["e", 3, "ok", None]],
+    ]
+    count = len(rows) - 2
+    for sequence, event in enumerate(rows[1:-1], 1):
+        event[1] = sequence
+    rows[-1].update(
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
+    )
+    captured = parse(_v5_bytes(rows))
+    assert captured["spans"][2]["counters"][MANAGED_REUSED_EXTERNAL_CHILD_KEY] == 1
+    assert captured["spans"][3]["counters"][MANAGED_REUSED_EXTERNAL_CHILD_KEY] == 2
+
+
+@pytest.mark.parametrize(
+    ("fault", "error"),
+    [
+        ("exceeds_repeats", "managed reused external child validations exceed guarded repeats"),
+        ("wrong_stage", "managed external child counter targets wrong owner span"),
+        ("wrong_lane", "managed external child counter targets wrong owner span"),
+        ("duplicate", "managed external child counter is duplicated"),
+        ("after_end", "managed external child counter follows span end"),
+        ("orphan", "managed external child counter has no existing owner span"),
+    ],
+)
+def test_v5_managed_reused_external_child_validation_rejects_invalid_trace(
+    fault: str, error: str
+) -> None:
+    values = (
+        MANAGED_EXTERNAL_CHILD_GOLD + ((MANAGED_REUSED_EXTERNAL_CHILD_KEY, 2),)
+        if fault == "exceeds_repeats"
+        else ((MANAGED_REUSED_EXTERNAL_CHILD_KEY, 1),)
+    )
+    if fault == "duplicate":
+        values = values + values
+    rows = _v5_managed_external_child_rows(
+        values,
+        stage="query_candidate" if fault == "wrong_stage" else "managed_object_install",
+        lane=0 if fault == "wrong_lane" else 3,
+    )
+    if fault == "orphan":
+        rows[4][4][1] = 99
+    elif fault == "after_end":
+        rows[4], rows[5] = rows[5], rows[4]
+        rows[5][3] = 36
+        for sequence, event in enumerate(rows[1:-1], 1):
+            event[1] = sequence
+    with pytest.raises(ValueError, match=error):
+        parse(_v5_bytes(rows))
+
+
+MAP_INPUT_NEXT_GOLD = (
+    ("map_input_next_absent_values", 2),
+    ("map_input_next_object_values", 3),
+    ("map_input_next_inline_values", 4),
+    ("map_input_next_inline_data_bytes", 17),
+    ("map_input_next_inline_child_refs", 5),
+    ("map_input_next_wire_bytes", 288),  # 33*3 + 3*4 + 17 + 32*5
+)
+
+
+def _v5_map_input_next_rows(
+    gold: tuple[tuple[str, int], ...] = MAP_INPUT_NEXT_GOLD,
+    *,
+    outcome: str = "ok",
+    stage: str = "map_apply",
+    lane: int = 0,
+) -> list[dict | list]:
+    rows = _v5_map_root_rows(outcome=outcome)
+    if (stage, lane) != ("map_apply", 0):
+        del rows[3:6]  # The old root-reuse family has its own owner contract.
+    rows[2][4][3:5] = [stage, lane]
+    for ordinal, (key, value) in enumerate(gold):
+        rows.insert(-3, ["e", 0, CAPTURE, 26 + ordinal, ["c", 2, key, value]])
+    count = len(rows) - 2
+    for sequence, event in enumerate(rows[1:-1], 1):
+        event[1] = sequence
+    rows[-1].update(
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
+    )
+    return rows
+
+
+@pytest.mark.parametrize("outcome", ("ok", "error"))
+def test_v5_map_input_next_fixed_raw_trace_preserves_yielded_values(outcome: str) -> None:
+    captured = parse(_v5_bytes(_v5_map_input_next_rows(outcome=outcome)))
+    assert captured["status"] == "complete"
+    assert captured["spans"][2]["outcome"] == outcome
+    assert {key: captured["spans"][2]["counters"][key] for key, _ in MAP_INPUT_NEXT_GOLD} == dict(
+        MAP_INPUT_NEXT_GOLD
+    )
+    assert [(row["key"], row["value"]) for row in captured["counters"][-6:]] == list(
+        MAP_INPUT_NEXT_GOLD
+    )
+    summary = next(row for row in summarize(captured)["spans"] if row["span_id"] == 2)
+    assert {key: summary["counters"][key] for key, _ in MAP_INPUT_NEXT_GOLD} == dict(
+        MAP_INPUT_NEXT_GOLD
+    )
+
+
+@pytest.mark.parametrize(
+    "gold",
+    (
+        (
+            ("map_input_next_absent_values", 2),
+            ("map_input_next_object_values", 0),
+            ("map_input_next_inline_values", 0),
+            ("map_input_next_inline_data_bytes", 0),
+            ("map_input_next_inline_child_refs", 0),
+            ("map_input_next_wire_bytes", 0),
+        ),
+        (
+            ("map_input_next_absent_values", 2),
+            ("map_input_next_object_values", 0),
+            ("map_input_next_inline_values", 1),
+            ("map_input_next_inline_data_bytes", 0),
+            ("map_input_next_inline_child_refs", 0),
+            ("map_input_next_wire_bytes", 3),
+        ),
+    ),
+)
+def test_v5_map_input_next_absent_has_no_wire_and_empty_inline_has_three_bytes(
+    gold: tuple[tuple[str, int], ...],
+) -> None:
+    captured = parse(_v5_bytes(_v5_map_input_next_rows(gold)))
+    assert {key: captured["spans"][2]["counters"][key] for key, _ in gold} == dict(gold)
+
+
+def test_v5_map_input_next_large_inline_bound_product_does_not_overflow() -> None:
+    gold = (
+        ("map_input_next_absent_values", 2),
+        ("map_input_next_object_values", 0),
+        ("map_input_next_inline_values", 6_148_914_691_236_517_205),
+        ("map_input_next_inline_data_bytes", 0),
+        ("map_input_next_inline_child_refs", 0),
+        ("map_input_next_wire_bytes", 18_446_744_073_709_551_615),
+    )
+    captured = parse(_v5_bytes(_v5_map_input_next_rows(gold)))
+    assert {key: captured["spans"][2]["counters"][key] for key, _ in gold} == dict(gold)
+
+
+def test_v5_map_input_next_old_complete_trace_may_omit_whole_family() -> None:
+    captured = parse(_v5_bytes(_v5_map_root_rows()))
+    assert captured["status"] == "complete"
+    assert not set(captured["spans"][2]["counters"]) & {key for key, _ in MAP_INPUT_NEXT_GOLD}
+
+
+@pytest.mark.parametrize(
+    ("fault", "error"),
+    (
+        ("partial", "map input next.*partial"),
+        ("duplicate", "map input next.*duplicat"),
+        ("wrong_stage", "map input next.*wrong"),
+        ("wrong_lane", "map input next.*wrong"),
+        ("orphan", "map input next.*owner"),
+        ("after_end", "map input next.*span end"),
+        ("wire_mismatch", "map input next.*wire"),
+        ("inline_data_bound", "map input next.*inline data"),
+        ("child_refs_bound", "map input next.*child refs"),
+        ("wire_overflow", "map input next.*u64"),
+    ),
+)
+def test_v5_map_input_next_rejects_invalid_complete_raw_trace(fault: str, error: str) -> None:
+    rows = _v5_map_input_next_rows()
+    if fault == "partial":
+        del rows[-4]
+    elif fault == "duplicate":
+        rows.insert(-3, copy.deepcopy(rows[-4]))
+    elif fault == "wrong_stage":
+        rows = _v5_map_input_next_rows(stage="query_candidate")
+    elif fault == "wrong_lane":
+        rows = _v5_map_input_next_rows(lane=1)
+    elif fault == "orphan":
+        rows[-4][4][1] = 99
+    elif fault == "after_end":
+        rows[-4], rows[-3] = rows[-3], rows[-4]
+        rows[-3][3] = 36
+    else:
+        values = dict(MAP_INPUT_NEXT_GOLD)
+        if fault == "wire_mismatch":
+            values["map_input_next_wire_bytes"] = 287
+        elif fault == "inline_data_bound":
+            values["map_input_next_inline_data_bytes"] = 129
+        elif fault == "child_refs_bound":
+            values["map_input_next_inline_child_refs"] = 21
+        elif fault == "wire_overflow":
+            values["map_input_next_object_values"] = (1 << 64) - 1
+        rows = _v5_map_input_next_rows(tuple(values.items()))
+    count = len(rows) - 2
+    for sequence, event in enumerate(rows[1:-1], 1):
+        event[1] = sequence
+    rows[-1].update(
+        last_output_seq=count,
+        events_attempted=count,
+        events_accepted=count,
+        events_written=count,
+    )
+    with pytest.raises(ValueError, match=error):
+        parse(_v5_bytes(rows))
+
+
+def test_v4_rejects_map_input_next_counter_key() -> None:
+    rows = [json.loads(line) for line in _capture().splitlines()]
+    rows[0]["schema_version"] = rows[-1]["schema_version"] = 4
+    rows[3]["kind"]["key"] = "map_input_next_wire_bytes"
+    with pytest.raises(ValueError, match="invalid causal timeline row"):
+        parse(b"".join(map(_line, rows)))
+
+
 TEXT_OCCURRENCE_DIFF_GOLD = (
     ("text_occurrence_prior_validation_attempts", 2),
     ("text_occurrence_next_validation_attempts", 3),
@@ -3021,13 +3644,26 @@ def test_v5_text_occurrence_diff_rejects_invalid_owner_or_family(
         for index, row in enumerate(rows[1:-1], 1):
             kind = row[4]
             if kind[0] == "b":
-                payload = {"type": "span_begin", "span_id": kind[1], "stage": kind[3], "lane_id": kind[4]}
-                payload.update({"root_kind": kind[5]} if kind[2] is None else {"parent_span_id": kind[2]})
+                payload = {
+                    "type": "span_begin",
+                    "span_id": kind[1],
+                    "stage": kind[3],
+                    "lane_id": kind[4],
+                }
+                payload.update(
+                    {"root_kind": kind[5]} if kind[2] is None else {"parent_span_id": kind[2]}
+                )
             elif kind[0] == "c":
                 payload = {"type": "counter", "span_id": kind[1], "key": kind[2], "value": kind[3]}
             else:
                 payload = {"type": "span_end", "span_id": kind[1], "outcome": kind[2]}
-            rows[index] = {"record_type": "event", "output_seq": row[1], "capture_id": CAPTURE, "ts_ns": row[3], "kind": payload}
+            rows[index] = {
+                "record_type": "event",
+                "output_seq": row[1],
+                "capture_id": CAPTURE,
+                "ts_ns": row[3],
+                "kind": payload,
+            }
     elif fault == "after_end":
         rows[3], rows[-3] = rows[-3], rows[3]
         rows[-3][3] = rows[3][3]
@@ -3098,7 +3734,8 @@ def test_v5_object_install_phase_replay_summary_and_perfetto() -> None:
     assert captured["status"] == "complete"
     assert captured["event_count"] == 7
     assert [row["phase"] for row in captured["object_install_aggregates"]] == [
-        "file_sync", "settlement"
+        "file_sync",
+        "settlement",
     ]
     packet = next(row for row in summarize(captured)["spans"] if row["span_id"] == 2)
     assert packet["duration_ns"] == 15
@@ -3299,8 +3936,13 @@ def test_v5_inventory_stage_closes_with_thread_cpu_and_exact_parent(stage: str) 
     assert captured["status"] == "complete"
     span = captured["spans"][2]
     assert (
-        span["parent_span_id"], span["stage"], span["lane_id"],
-        span["start_ns"], span["end_ns"], span["outcome"], span["counters"]
+        span["parent_span_id"],
+        span["stage"],
+        span["lane_id"],
+        span["start_ns"],
+        span["end_ns"],
+        span["outcome"],
+        span["counters"],
     ) == (1, stage, 2, 20, 35, "ok", {"thread_cpu_ns": 7})
     assert captured["counters"] == [
         {"span_id": 2, "key": "thread_cpu_ns", "value": 7, "ts_ns": 25}
@@ -3362,9 +4004,13 @@ def test_v5_full_schema_and_fast_dispatch_agree_on_span_end_abi(
     event = rows[4]
     assert full.is_valid(event)
     assert _selected_validator(event, full, dispatch).is_valid(event)
-    for bad in (["e", 2, "ok", 1], ["e", 2, "aborted", 1],
-                ["e", 2, "error", None], ["e", 2, "cancelled", None],
-                ["e", 2, "error", 1 << 32]):
+    for bad in (
+        ["e", 2, "ok", 1],
+        ["e", 2, "aborted", 1],
+        ["e", 2, "error", None],
+        ["e", 2, "cancelled", None],
+        ["e", 2, "error", 1 << 32],
+    ):
         changed = ["e", 4, CAPTURE, 35, bad]
         assert not full.is_valid(changed)
         assert not _selected_validator(changed, full, dispatch).is_valid(changed)
@@ -3390,9 +4036,19 @@ def test_v4_persisted_object_span_end_keeps_legacy_acceptance() -> None:
         ["e", True, CAPTURE, 20, ["b", 2, 1, "query_candidate", 0, None]],
         ["e", 2, "f" * 32, 20, ["b", 2, 1, "query_candidate", 0, None]],
         ["e", 2, CAPTURE, -1, ["b", 2, 1, "query_candidate", 0, None]],
-        {"record_type": "event", "output_seq": 2, "capture_id": CAPTURE, "ts_ns": 20,
-         "kind": {"type": "span_begin", "span_id": 2, "parent_span_id": 1,
-                  "stage": "query_candidate", "lane_id": 0}},
+        {
+            "record_type": "event",
+            "output_seq": 2,
+            "capture_id": CAPTURE,
+            "ts_ns": 20,
+            "kind": {
+                "type": "span_begin",
+                "span_id": 2,
+                "parent_span_id": 1,
+                "stage": "query_candidate",
+                "lane_id": 0,
+            },
+        },
     ],
 )
 def test_v5_rejects_malformed_or_legacy_outer_event(event: object) -> None:
@@ -3424,8 +4080,13 @@ def test_v5_partial_footer_and_original_byte_cap() -> None:
     with pytest.raises(ValueError, match="byte bound"):
         parse(_v5_bytes(rows), max_capture_bytes=100)
     rows[0]["max_record_bytes"] = 256
-    rows[2] = ["e", 2, CAPTURE, 20, {"type": "health", "code": "queue_overflow",
-                                     "detail": "x" * 250}]
+    rows[2] = [
+        "e",
+        2,
+        CAPTURE,
+        20,
+        {"type": "health", "code": "queue_overflow", "detail": "x" * 250},
+    ]
     with pytest.raises(ValueError, match="declared record cap"):
         parse(_v5_bytes(rows))
 
@@ -3497,10 +4158,20 @@ def test_v5_rare_owned_renewal_keeps_object_payload_and_v4_semantics() -> None:
         header,
         ["e", 1, CAPTURE, 10, ["b", 1, None, "operation", 0, "operation"]],
         ["e", 2, CAPTURE, 20, ["b", 2, 1, "sqlite_work", 29, None]],
-        ["e", 3, CAPTURE, 25, {
-            "type": "owned_renewal_refusal", "span_id": 2, "reason": "lease_expired",
-            "now_ms": 500, "lease_until_ms": 500, "deadline_ms": None,
-        }],
+        [
+            "e",
+            3,
+            CAPTURE,
+            25,
+            {
+                "type": "owned_renewal_refusal",
+                "span_id": 2,
+                "reason": "lease_expired",
+                "now_ms": 500,
+                "lease_until_ms": 500,
+                "deadline_ms": None,
+            },
+        ],
         ["e", 4, CAPTURE, 35, ["e", 2, "error", 1]],
         ["e", 5, CAPTURE, 40, ["e", 1, "ok", None]],
         footer,

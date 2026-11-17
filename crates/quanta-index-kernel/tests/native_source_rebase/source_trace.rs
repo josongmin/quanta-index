@@ -30,6 +30,7 @@ struct BoundedEvents {
 enum EventFocus {
     Source,
     Preflight,
+    Build,
 }
 
 impl EventFocus {
@@ -52,6 +53,7 @@ impl EventFocus {
                     | DiagnosticStageV1::CatalogLockHold
                     | DiagnosticStageV1::SqliteWork
             ),
+            Self::Build => stage == DiagnosticStageV1::BuildPrepare,
         }
     }
 }
@@ -168,6 +170,180 @@ fn observed_submit(
 ) {
     let outcome = futures::executor::block_on(fixture.engine.submit(request, &mut work));
     (outcome, work.usage())
+}
+
+fn object_port_counts(
+    rows: &[DiagnosticEmitV1],
+    span: DiagnosticSpanIdV1,
+    begin: usize,
+    end: usize,
+) -> TestResult<[u64; 6]> {
+    let keys = [
+        DiagnosticCounterV1::ObjectPortGetCalls,
+        DiagnosticCounterV1::ObjectPortGetSucceeded,
+        DiagnosticCounterV1::ObjectPortGetWireBytes,
+        DiagnosticCounterV1::ObjectPortRetainedCalls,
+        DiagnosticCounterV1::ObjectPortRetainedSucceeded,
+        DiagnosticCounterV1::ObjectPortRetainedWireBytes,
+    ];
+    let mut counts = [0; 6];
+    for (key, count) in keys.into_iter().zip(&mut counts) {
+        let mut matching = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(at, row)| match row.kind {
+                DiagnosticEventKindV1::Counter {
+                    span_id,
+                    key: counter,
+                    value,
+                } if span_id == span && counter == key => Some((at, value)),
+                _ => None,
+            });
+        let (at, value) = matching.next().ok_or("object port read counter missing")?;
+        check!(
+            begin < at && at < end && matching.next().is_none(),
+            "object port read counter outside the phase or duplicated"
+        );
+        *count = value;
+    }
+    Ok(counts)
+}
+
+#[test]
+fn source_advance_async_build_reports_four_work_axes_without_changing_off_usage() -> TestResult {
+    let clock = Arc::new(StepClock::default());
+    let events = Arc::new(BoundedEvents::new(EventFocus::Build)?);
+    let context = DiagnosticContextV1::new(
+        DiagnosticCaptureIdV1([95; 16]),
+        clock.clone(),
+        events.clone(),
+    );
+    let root = context.enter_root(DiagnosticRootKindV1::Operation, DiagnosticLaneV1(3))?;
+    let root_id = root.span_id();
+    let mut observed = Vec::new();
+    for record in [false, true] {
+        let before_clock = clock.0.load(Ordering::Relaxed);
+        let directory = tempfile::tempdir()?;
+        let fixture = Fixture::open(directory.path())?;
+        let configured = fixture.configure()?;
+        let (_, request, _) = fixture.capture(
+            key(5, 6, 2),
+            configured,
+            owner(5, 1),
+            None,
+            "build.rs",
+            b"alpha build work",
+            1,
+        )?;
+        let (result, usage) = observed_submit(
+            &fixture,
+            request,
+            budget_with_request(traced_request(record.then(|| context.child_context(&root)))),
+        );
+        observed.push((published(result?)?, usage));
+        if !record {
+            check_eq!(
+                clock.0.load(Ordering::Relaxed),
+                before_clock,
+                "Off async build read diagnostic clock"
+            );
+        }
+    }
+    check_eq!(
+        observed.first(),
+        observed.get(1),
+        "async build changed Off/Record result or work"
+    );
+    root.finish(DiagnosticTerminalV1::Ok)?;
+    check_eq!(
+        events.rejected.load(Ordering::Relaxed),
+        0,
+        "async build events rejected"
+    );
+    let state = events.state.lock().map_err(|_error| "events poisoned")?;
+    let rows = &state.rows;
+    check_eq!(
+        state.error_terminals,
+        0,
+        "async build emitted an error terminal"
+    );
+    check_eq!(
+        state.aborted_terminals,
+        0,
+        "async build emitted an aborted terminal"
+    );
+    let builds: Vec<_> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(at, event)| match event.kind {
+            DiagnosticEventKindV1::SpanBegin {
+                span_id,
+                parent_span_id,
+                stage: DiagnosticStageV1::BuildPrepare,
+                lane: DiagnosticLaneV1(3),
+                ..
+            } => Some((at, span_id, parent_span_id)),
+            _ => None,
+        })
+        .collect();
+    let [(begin_at, span_id, parent)] = builds.as_slice() else {
+        return Err(format!(
+            "SourceAdvance must execute exactly one async BuildPrepare, observed {builds:?}"
+        )
+        .into());
+    };
+    check_eq!(*parent, Some(root_id), "async build lost operation parent");
+    let end_at = rows.iter().position(|row| matches!(row.kind,
+        DiagnosticEventKindV1::SpanEnd { span_id: ended, outcome: DiagnosticTerminalV1::Ok } if ended == *span_id
+    )).ok_or("async build success terminal absent")?;
+    let [get, get_ok, _, retained, retained_ok, _] =
+        object_port_counts(rows, *span_id, *begin_at, end_at)?;
+    check_eq!(
+        (get, retained),
+        (get_ok, retained_ok),
+        "successful BuildPrepare reported failed object reads"
+    );
+    let (_, total) = observed.get(1).ok_or("recorded operation usage absent")?;
+    for (key, ceiling) in [
+        (DiagnosticCounterV1::WorkReads, total.reads),
+        (DiagnosticCounterV1::WorkWrites, total.writes),
+        (DiagnosticCounterV1::WorkBytes, total.bytes),
+        (DiagnosticCounterV1::WorkMutations, total.mutations),
+    ] {
+        let values: Vec<_> = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(at, row)| match row.kind {
+                DiagnosticEventKindV1::Counter {
+                    span_id: counter_span,
+                    key: counter_key,
+                    value,
+                } if counter_span == *span_id && counter_key == key => Some((at, value)),
+                _ => None,
+            })
+            .collect();
+        let [(at, value)] = values.as_slice() else {
+            return Err("async BuildPrepare work axis missing or duplicated".into());
+        };
+        check!(
+            *begin_at < *at && *at < end_at,
+            "async build counter outside its span"
+        );
+        check!(
+            *value <= ceiling,
+            "async build delta exceeds original operation usage"
+        );
+        if matches!(
+            key,
+            DiagnosticCounterV1::WorkBytes | DiagnosticCounterV1::WorkWrites
+        ) {
+            check!(
+                *value > 0,
+                "real member build reported zero accepted writes or bytes"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[test]
@@ -400,6 +576,14 @@ fn source_trace_preserves_publication_cost_and_closes_refused_preflight() -> Tes
             DiagnosticTerminalV1::Error { code: 1 }
         };
         check_eq!(outcome, expected_outcome, "SourceApply terminal changed");
+        let [get, get_ok, wire, retained, retained_ok, _] =
+            object_port_counts(rows, span_id, begin_at, end_at)?;
+        check!(get > 0 && wire > 0, "SourceApply read no object DATA");
+        check_eq!(
+            (get, retained),
+            (get_ok, retained_ok),
+            "SourceApply reported failed object reads"
+        );
         let operation_work = if ordinal == 0 {
             success_work
         } else {

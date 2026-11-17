@@ -65,13 +65,47 @@ fn projected_owner_row(
     values: Vec<f32>,
     empty_output: bool,
 ) -> Result<(ObjectRef, ObjectRef), Box<dyn std::error::Error>> {
+    projected_owner_vectors(
+        store,
+        spec,
+        recipe,
+        projection,
+        producer,
+        semantic_owner,
+        Some((source_owner, source)),
+        vec![EmbeddingVector {
+            id: b"whole-file".to_vec(),
+            values,
+        }],
+        empty_output,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "test fixture keeps optional source identity and original vector rows explicit"
+)]
+pub(super) fn projected_owner_vectors(
+    store: &MemoryStore,
+    spec: &InstanceSpec,
+    recipe: &EmbeddingRecipe,
+    projection: ProjectionId,
+    producer: ProducerId,
+    semantic_owner: OwnerKey,
+    source: Option<(OwnerKey, ObjectRef)>,
+    vectors: Vec<EmbeddingVector>,
+    empty_output: bool,
+) -> Result<(ObjectRef, ObjectRef), Box<dyn std::error::Error>> {
+    let (source_owner, source) = source.map_or((None, None), |(owner, reference)| {
+        (Some(owner), Some(reference))
+    });
     let output = store.insert(b"selected projection text".to_vec(), vec![])?;
     let contribution = ProjectionOwnerContribution {
         projection,
         producer,
         owner: semantic_owner,
-        source_owner: Some(source_owner),
-        source: Some(source),
+        source_owner,
+        source,
         dependency_stamp: Digest([34; 32]),
         output: (!empty_output).then_some(output),
     };
@@ -80,7 +114,7 @@ fn projected_owner_row(
         contribution.object_children(),
     )?;
     let input = OwnerInputBinding {
-        source: Some(source),
+        source,
         projection: Some(contribution_ref),
         producer_context: contribution.materialization_context(),
         derivation_policy: recipe.fingerprint(),
@@ -92,10 +126,7 @@ fn projected_owner_row(
         payload_ref: output,
         reuse_identity: None,
         chunks: Vec::new(),
-        vectors: vec![EmbeddingVector {
-            id: b"whole-file".to_vec(),
-            values,
-        }],
+        vectors,
     };
     let artifact_bytes = serde_json::to_vec(&artifact)?;
     let artifact_ref = store.insert(
@@ -112,14 +143,9 @@ fn projected_owner_row(
     };
     let member_ref = store.insert(
         serde_json::to_vec(&member)?,
-        ObjectChildren::from_references([
-            Some(artifact_ref),
-            Some(source),
-            Some(contribution_ref),
-            None,
-        ])
-        .as_slice()
-        .to_vec(),
+        ObjectChildren::from_references([Some(artifact_ref), source, Some(contribution_ref), None])
+            .as_slice()
+            .to_vec(),
     )?;
     let owner_coverage = OwnerCoverage {
         owner: semantic_owner,
@@ -130,7 +156,7 @@ fn projected_owner_row(
     let coverage_ref = store.insert(
         serde_json::to_vec(&owner_coverage)?,
         ObjectChildren::from_references([
-            Some(source),
+            source,
             Some(contribution_ref),
             (!empty_output).then_some(member_ref),
             None,
@@ -165,6 +191,15 @@ fn projected_fixture_with_shared(
     empty_second: bool,
     shared_count: u8,
 ) -> Result<ProjectedFixture, Box<dyn std::error::Error>> {
+    projected_fixture_with_options(bridge, empty_second, shared_count, false)
+}
+
+fn projected_fixture_with_options(
+    bridge: &TextEmbeddingBridge<FixedTextProvider>,
+    empty_second: bool,
+    shared_count: u8,
+    repository_bucket: bool,
+) -> Result<ProjectedFixture, Box<dyn std::error::Error>> {
     let projection = ProjectionId([31; 16]);
     let producer = ProducerId([32; 16]);
     let schema = SchemaId([33; 16]);
@@ -178,8 +213,29 @@ fn projected_fixture_with_shared(
     let store = MemoryStore::default();
     let source_owner_a = owner(51);
     let source_owner_b = owner(52);
-    let (source_a, _) = semantic_source(&store, "src/a.rs", b"selected text")?;
-    let (source_b, _) = semantic_source(&store, "src/b.rs", b"nearest excluded")?;
+    let (source_a, source_b) = if repository_bucket {
+        (
+            super::selected_owner_tests::semantic_repository_source(
+                &store,
+                "src/a.rs",
+                "repo-a",
+                b"selected text",
+            )?
+            .0,
+            super::selected_owner_tests::semantic_repository_source(
+                &store,
+                "src/a.rs",
+                "repo-b",
+                b"nearest included",
+            )?
+            .0,
+        )
+    } else {
+        (
+            semantic_source(&store, "src/a.rs", b"selected text")?.0,
+            semantic_source(&store, "src/b.rs", b"nearest excluded")?.0,
+        )
+    };
     let mut rows = Vec::new();
     for index in 0..shared_count {
         let semantic_owner = owner(41_u8.checked_add(index).ok_or("shared owner overflow")?);
@@ -245,9 +301,18 @@ fn projected_fixture_with_shared(
     let source_owners = MapRoot(Some(
         store.insert(b"selected source owners".to_vec(), vec![source_a, source_b])?,
     ));
-    let source_paths = MapRoot(Some(
-        store.insert(b"selected source paths".to_vec(), vec![source_a, source_b])?,
-    ));
+    let bucket = repository_bucket
+        .then(|| {
+            store.insert(
+                b"selected repository path bucket".to_vec(),
+                vec![source_a, source_b],
+            )
+        })
+        .transpose()?;
+    let source_paths = MapRoot(Some(store.insert(
+        b"selected source paths".to_vec(),
+        bucket.map_or_else(|| vec![source_a, source_b], |root| vec![root]),
+    )?));
     let source_cut = SourceCut {
         owners: source_owners,
         paths: source_paths,
@@ -312,6 +377,44 @@ fn projected_fixture_with_shared(
     ticket.view.identity.digest = ticket.view.identity_digest()?;
     let mut projection_key = b"projection\0".to_vec();
     projection_key.extend_from_slice(&projection.0);
+    let inline_rooted_entries = if let Some(bucket) = bucket {
+        vec![
+            (
+                source_paths,
+                vec![(
+                    b"path\0src/a.rs".to_vec(),
+                    quanta_index_core::index::SourcePathOwners::Repositories(bucket).encode()?,
+                )],
+            ),
+            (
+                MapRoot(Some(bucket)),
+                vec![
+                    (
+                        b"repo\0repo-a".to_vec(),
+                        quanta_index_core::index::path_owner_map_value(source_owner_a)?,
+                    ),
+                    (
+                        b"repo\0repo-b".to_vec(),
+                        quanta_index_core::index::path_owner_map_value(source_owner_b)?,
+                    ),
+                ],
+            ),
+        ]
+    } else {
+        vec![(
+            source_paths,
+            vec![
+                (
+                    b"path\0src/a.rs".to_vec(),
+                    quanta_index_core::index::path_owner_map_value(source_owner_a)?,
+                ),
+                (
+                    b"path\0src/b.rs".to_vec(),
+                    quanta_index_core::index::path_owner_map_value(source_owner_b)?,
+                ),
+            ],
+        )]
+    };
     let maps = TestMap {
         entries: Vec::new(),
         rooted_entries: vec![
@@ -331,19 +434,7 @@ fn projected_fixture_with_shared(
                 vec![(member_map_key(spec.instance).to_vec(), coverage_ref)],
             ),
         ],
-        inline_rooted_entries: vec![(
-            source_paths,
-            vec![
-                (
-                    b"path\0src/a.rs".to_vec(),
-                    quanta_index_core::index::path_owner_map_value(source_owner_a)?,
-                ),
-                (
-                    b"path\0src/b.rs".to_vec(),
-                    quanta_index_core::index::path_owner_map_value(source_owner_b)?,
-                ),
-            ],
-        )],
+        inline_rooted_entries,
         fail: false,
     };
     Ok(ProjectedFixture {
@@ -357,6 +448,178 @@ fn projected_fixture_with_shared(
         reverse_root,
         directory_ref,
     })
+}
+
+#[test]
+fn ann_reader_opens_selected_directory_once_per_query() -> Result<(), Box<dyn std::error::Error>> {
+    let mut work = budget()?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let bridge = Arc::new(TextEmbeddingBridge::new(FixedTextProvider {
+        calls: Arc::clone(&calls),
+        deadline: work.request().deadline(),
+        normalization: EmbeddingNormalization::L2Unit,
+    })?);
+    let fixture = projected_fixture(&bridge, false)?;
+    let reader =
+        NativeSemanticReader::new(bridge, fixture.recipe.clone(), semantic_read_config(16))?
+            .with_ann();
+    let unscoped = SemanticReadRequest::from(semantic_request("query", 2));
+    let mut path = SemanticReadRequest::from(semantic_request("query", 2));
+    path.query.constraints.repo_relative_path_exact = Some(
+        quanta_index_contract::ExactRepoRelativePathV1::new("src/a.rs")?,
+    );
+    let lexical = super::lexical_scope_tests::scoped_request(
+        fixture.ticket.view.identity,
+        vec![SemanticLexicalEligibleSource {
+            owner: fixture.source_owner_a,
+            source: NativeTextHitSource::Durable(fixture.source_a),
+        }],
+        2,
+    )?;
+    let mut failures = Vec::new();
+    for (name, request, expected) in [
+        ("unscoped", &unscoped, owner(200)),
+        ("path", &path, owner(41)),
+        ("lexical", &lexical, owner(41)),
+    ] {
+        let objects = super::ann_product_tests::ReadOnceDescriptor::new(
+            &fixture.store,
+            fixture.directory_ref,
+        );
+        let result = reader.query(
+            request,
+            &mut QueryReadContext {
+                ticket: &fixture.ticket,
+                instance: &fixture.spec,
+                objects: &objects,
+                maps: &fixture.maps,
+                budget: &mut work,
+            },
+        );
+        match result {
+            Ok(result) => {
+                check!(result.exhaustive());
+                check_eq!(
+                    result.result().hits.first().ok_or("expected hit")?.owner,
+                    expected
+                );
+                check_eq!(objects.reads(), 1);
+            }
+            Err(error) => failures.push(format!("{name}: {error}; reads={}", objects.reads())),
+        }
+    }
+    if !failures.is_empty() {
+        return Err(failures.join("; ").into());
+    }
+    check_eq!(calls.load(AtomicOrdering::SeqCst), 3);
+    Ok(())
+}
+
+#[test]
+fn projected_exact_path_opens_selected_source_once() -> Result<(), Box<dyn std::error::Error>> {
+    let mut work = budget()?;
+    let bridge = Arc::new(TextEmbeddingBridge::new(FixedTextProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        deadline: work.request().deadline(),
+        normalization: EmbeddingNormalization::L2Unit,
+    })?);
+    let fixture = projected_fixture(&bridge, false)?;
+    let reader =
+        NativeSemanticReader::new(bridge, fixture.recipe.clone(), semantic_read_config(16))?
+            .with_ann();
+    let mut request = SemanticReadRequest::from(semantic_request("query", 2));
+    request.query.constraints.repo_relative_path_exact = Some(
+        quanta_index_contract::ExactRepoRelativePathV1::new("src/a.rs")?,
+    );
+    let objects =
+        super::ann_product_tests::ReadOnceDescriptor::new(&fixture.store, fixture.source_a);
+    let result = reader.query(
+        &request,
+        &mut QueryReadContext {
+            ticket: &fixture.ticket,
+            instance: &fixture.spec,
+            objects: &objects,
+            maps: &fixture.maps,
+            budget: &mut work,
+        },
+    )?;
+    check_eq!(objects.reads(), 1);
+    check!(result.exhaustive());
+    check_eq!(
+        result
+            .result()
+            .hits
+            .iter()
+            .map(|hit| hit.owner)
+            .collect::<Vec<_>>(),
+        vec![owner(41), owner(42)]
+    );
+    Ok(())
+}
+
+#[test]
+fn projected_exact_path_ranks_both_repository_bucket_sources()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut work = budget()?;
+    let bridge = Arc::new(TextEmbeddingBridge::new(FixedTextProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        deadline: work.request().deadline(),
+        normalization: EmbeddingNormalization::L2Unit,
+    })?);
+    let mut fixture = projected_fixture_with_options(&bridge, false, 2, true)?;
+    let reader =
+        NativeSemanticReader::new(bridge, fixture.recipe.clone(), semantic_read_config(3))?
+            .with_ann();
+    let mut query = semantic_request("query", 1);
+    query.constraints.repo_relative_path_exact = Some(
+        quanta_index_contract::ExactRepoRelativePathV1::new("src/a.rs")?,
+    );
+    for files in [false, true] {
+        let request = if files {
+            SemanticReadRequest::for_source_files(query.clone())?
+        } else {
+            query.clone().into()
+        };
+        let result = reader.query(
+            &request,
+            &mut QueryReadContext {
+                ticket: &fixture.ticket,
+                instance: &fixture.spec,
+                objects: &fixture.store,
+                maps: &fixture.maps,
+                budget: &mut work,
+            },
+        )?;
+        check!(result.exhaustive());
+        check_eq!(result.result().scanned_owners, 3);
+        let hit = result.result().hits.first().ok_or("projected bucket hit")?;
+        check_eq!(hit.owner, owner(200));
+        check_eq!(
+            hit.source_file().map(SemanticSourceFile::path),
+            files.then_some("src/a.rs")
+        );
+    }
+    let (_, bucket_rows) = fixture
+        .maps
+        .inline_rooted_entries
+        .get_mut(1)
+        .ok_or("repository bucket rows")?;
+    bucket_rows.get_mut(1).ok_or("second repository row")?.1 =
+        quanta_index_core::index::path_owner_map_value(fixture.source_owner_a)?;
+    check!(matches!(
+        reader.query(
+            &query.into(),
+            &mut QueryReadContext {
+                ticket: &fixture.ticket,
+                instance: &fixture.spec,
+                objects: &fixture.store,
+                maps: &fixture.maps,
+                budget: &mut work,
+            },
+        ),
+        Err(IndexError::CorruptObject(_))
+    ));
+    Ok(())
 }
 
 #[test]
@@ -375,7 +638,7 @@ fn projected_lexical_reverse_selects_shared_source_members_and_refuses_forgery()
         fixture.recipe.clone(),
         semantic_read_config(2),
     )?
-    .with_ann(Arc::new(test_runtime()?));
+    .with_ann();
     let entry = SemanticLexicalEligibleSource {
         owner: fixture.source_owner_a,
         source: NativeTextHitSource::Durable(fixture.source_a),
@@ -451,7 +714,7 @@ fn projected_lexical_reverse_selects_shared_source_members_and_refuses_forgery()
 
     let capped_reader =
         NativeSemanticReader::new(bridge, fixture.recipe.clone(), semantic_read_config(1))?
-            .with_ann(Arc::new(test_runtime()?));
+            .with_ann();
     let capped = capped_reader.query(
         &scoped,
         &mut QueryReadContext {
@@ -665,7 +928,7 @@ fn projected_empty_coverage_authenticates_text_source_without_embedding()
     ));
     let reader =
         NativeSemanticReader::new(bridge, fixture.recipe.clone(), semantic_read_config(2))?
-            .with_ann(Arc::new(test_runtime()?));
+            .with_ann();
     let entry = SemanticLexicalEligibleSource {
         owner: fixture.source_owner_a,
         source: NativeTextHitSource::Durable(fixture.source_a),
@@ -715,7 +978,7 @@ fn current_empty_projection_output_is_exhaustive_for_lexical_and_direct_path()
     let fixture = projected_fixture(&bridge, true)?;
     let reader =
         NativeSemanticReader::new(bridge, fixture.recipe.clone(), semantic_read_config(3))?
-            .with_ann(Arc::new(test_runtime()?));
+            .with_ann();
     let entry = SemanticLexicalEligibleSource {
         owner: fixture.source_owner_a,
         source: NativeTextHitSource::Durable(fixture.source_a),
@@ -759,7 +1022,41 @@ fn current_empty_projection_output_is_exhaustive_for_lexical_and_direct_path()
     check_eq!(exact.result().skipped_stale, 0);
     check!(exact.exhaustive());
     drop(exact);
-    check_eq!(calls.load(AtomicOrdering::SeqCst), 2);
+
+    let file_reader = NativeSemanticReader::new(
+        Arc::clone(&reader.bridge),
+        fixture.recipe.clone(),
+        semantic_read_config(1),
+    )?
+    .with_ann();
+    let files = SemanticReadRequest::for_source_files(direct.query.clone())?;
+    let objects =
+        super::ann_product_tests::ReadOnceDescriptor::new(&fixture.store, fixture.source_a);
+    let exact_files = file_reader.query(
+        &files,
+        &mut QueryReadContext {
+            ticket: &fixture.ticket,
+            instance: &fixture.spec,
+            objects: &objects,
+            maps: &fixture.maps,
+            budget: &mut work,
+        },
+    )?;
+    let file_hit = exact_files.result().hits.first().ok_or("direct file hit")?;
+    check_eq!(file_hit.owner, owner(41));
+    check_eq!(
+        file_hit.source_file().ok_or("source file")?.path(),
+        "src/a.rs"
+    );
+    check_eq!(exact_files.result().scanned_owners, 1);
+    check_eq!(exact_files.result().skipped_stale, 0);
+    check_eq!(
+        exact_files.result().traversal,
+        NativeSemanticTraversal::ExactExhausted
+    );
+    check!(exact_files.exhaustive());
+    check_eq!(objects.reads(), 1);
+    check_eq!(calls.load(AtomicOrdering::SeqCst), 3);
     Ok(())
 }
 
@@ -787,7 +1084,7 @@ fn projected_small_source_selection_fits_one_mib_with_large_owner_cap()
     let fixture = projected_fixture(&bridge, false)?;
     let reader =
         NativeSemanticReader::new(bridge, fixture.recipe.clone(), semantic_read_config(10_000))?
-            .with_ann(Arc::new(test_runtime()?));
+            .with_ann();
     let entry = SemanticLexicalEligibleSource {
         owner: fixture.source_owner_a,
         source: NativeTextHitSource::Durable(fixture.source_a),
@@ -807,9 +1104,23 @@ fn projected_small_source_selection_fits_one_mib_with_large_owner_cap()
     )?;
     check_eq!(result.result().hits.len(), 2);
     check_eq!(result.result().scanned_owners, 2);
+    check_eq!(
+        result
+            .result()
+            .hits
+            .iter()
+            .map(|hit| hit.owner)
+            .collect::<Vec<_>>(),
+        vec![owner(41), owner(42)]
+    );
+    for hit in &result.result().hits {
+        check_eq!(hit.vector_id.as_slice(), b"whole-file");
+        check_eq!(hit.cosine.total_cmp(&0.0), Ordering::Equal);
+    }
     check!(result.exhaustive());
     drop(result);
     check_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+    check_eq!(work.first_denial(), None);
     check!(!memory.invalid.load(AtomicOrdering::SeqCst));
     check_eq!(memory.live.load(AtomicOrdering::SeqCst), 0);
     check!(memory.peak.load(AtomicOrdering::SeqCst) <= memory.limit);
@@ -838,7 +1149,7 @@ fn projected_reverse_pages_past_sixty_four_members_with_exact_cap_truth()
         fixture.recipe.clone(),
         semantic_read_config(66),
     )?
-    .with_ann(Arc::new(test_runtime()?));
+    .with_ann();
     let full = reader.query(
         &request,
         &mut QueryReadContext {
@@ -873,7 +1184,7 @@ fn projected_reverse_pages_past_sixty_four_members_with_exact_cap_truth()
     );
     let capped_reader =
         NativeSemanticReader::new(bridge, fixture.recipe.clone(), semantic_read_config(64))?
-            .with_ann(Arc::new(test_runtime()?));
+            .with_ann();
     let capped = capped_reader.query(
         &request,
         &mut QueryReadContext {
@@ -897,6 +1208,69 @@ fn projected_reverse_pages_past_sixty_four_members_with_exact_cap_truth()
     );
     drop(capped);
     check_eq!(calls.load(AtomicOrdering::SeqCst), 2);
+    Ok(())
+}
+
+#[test]
+fn projected_reverse_rejects_disordered_page_before_prefix_exit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut work = budget()?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let bridge = Arc::new(TextEmbeddingBridge::new(FixedTextProvider {
+        calls: Arc::clone(&calls),
+        deadline: work.request().deadline(),
+        normalization: EmbeddingNormalization::L2Unit,
+    })?);
+    let mut fixture = projected_fixture(&bridge, false)?;
+    let (_, rows) = fixture
+        .maps
+        .rooted_entries
+        .iter_mut()
+        .find(|(root, _)| *root == fixture.reverse_root)
+        .ok_or("reverse map missing")?;
+    // Put the next source's key before both selected-source entries. The
+    // normal prefix exit would otherwise hide the remaining page's disorder.
+    rows.rotate_right(1);
+    let reader =
+        NativeSemanticReader::new(bridge, fixture.recipe.clone(), semantic_read_config(16))?
+            .with_ann();
+    let mut query = semantic_request("query", 2);
+    query.constraints.repo_relative_path_exact = Some(
+        quanta_index_contract::ExactRepoRelativePathV1::new("src/a.rs")?,
+    );
+    let path_request = query.into();
+    let lexical_request = super::lexical_scope_tests::scoped_request(
+        fixture.ticket.view.identity,
+        vec![SemanticLexicalEligibleSource {
+            owner: fixture.source_owner_a,
+            source: NativeTextHitSource::Durable(fixture.source_a),
+        }],
+        2,
+    )?;
+    // Exercise both callers of the projected prefix scan. Lexical scope
+    // prepares before embedding. Direct path validates during ranking.
+    for request in [&lexical_request, &path_request] {
+        let result = reader.query(
+            request,
+            &mut QueryReadContext {
+                ticket: &fixture.ticket,
+                instance: &fixture.spec,
+                objects: &fixture.store,
+                maps: &fixture.maps,
+                budget: &mut work,
+            },
+        );
+        if let Ok(result) = result {
+            return Err(format!(
+                "disordered reverse page was accepted: hits={}, exhaustive={}",
+                result.result().hits.len(),
+                result.exhaustive()
+            )
+            .into());
+        }
+        check!(matches!(result, Err(IndexError::CorruptObject(_))));
+    }
+    check_eq!(calls.load(AtomicOrdering::SeqCst), 1);
     Ok(())
 }
 
@@ -927,7 +1301,7 @@ fn projected_selection_denied_replacement_backing_refunds_memory()
     let fixture = projected_fixture_with_shared(&bridge, false, 66)?;
     let reader =
         NativeSemanticReader::new(bridge, fixture.recipe.clone(), semantic_read_config(66))?
-            .with_ann(Arc::new(test_runtime()?));
+            .with_ann();
     let entry = SemanticLexicalEligibleSource {
         owner: fixture.source_owner_a,
         source: NativeTextHitSource::Durable(fixture.source_a),
@@ -955,3 +1329,9 @@ fn projected_selection_denied_replacement_backing_refunds_memory()
     check!(memory.peak.load(AtomicOrdering::SeqCst) >= u64::try_from(initial_bytes)?);
     Ok(())
 }
+
+#[path = "source_file_tests.rs"]
+mod source_file_tests;
+
+#[path = "source_file_contract_tests.rs"]
+mod source_file_contract_tests;

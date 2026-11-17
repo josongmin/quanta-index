@@ -15,8 +15,16 @@ mod boot_manifest;
 mod read_only;
 mod read_settlement;
 pub use read_only::{
-    NativeBootCatalogCandidate, NativeBootCatalogSnapshot, verify_native_boot_candidate,
-    verify_native_boot_catalog,
+    LegacyCatalogQuiescenceV1, LegacyHistoryProducerScopeV1, LegacyHistorySnapshotObservationV1, LegacyHistorySourceProofV1, NativeBootCatalogCandidate, NativeBootCatalogSnapshot,
+    NativeBootPublishedOperation, NativeBootQuiescentCatalogV1, TerminalBatchReadError,
+    VerifiedLegacyTerminalBatch, observe_legacy_history_snapshot_v1, verify_legacy_catalog_quiescence_v1,
+    verify_legacy_history_source_inventory_v1, verify_legacy_history_sources_v1,
+    visit_legacy_history_checkpoint_pages_v1, visit_legacy_history_checkpoint_rows_v1, visit_legacy_history_generation_keys_v1, visit_legacy_history_snapshot_rows_v1,
+    verify_legacy_terminal_batch_receipt, verify_native_boot_candidate,
+    verify_native_boot_current_candidate, verify_native_boot_catalog,
+    verify_native_published_operation, verify_native_rollback_catalog,
+    verify_native_legacy_history_recovery_publications_v1, verify_native_rollback_with_source_publications, verify_native_source_root_publications_v1,
+    verify_native_source_root_quiescence_v1,
 };
 mod bootstrap;
 mod capture_format;
@@ -25,6 +33,7 @@ mod lifetime;
 mod managed_install;
 mod object_install;
 mod owned_work;
+mod publication_result;
 mod reclaim;
 mod registration_codec;
 mod renewal_diagnostic;
@@ -1379,12 +1388,14 @@ struct OperationRow {
     events: Vec<SourceEvent>,
     fence: u64,
     status: OperationStatus,
+    published_view: Option<CatalogView>,
 }
 quanta_index_contract::native_serde_struct!(OperationRow {
     immutable: ImmutableOperation,
     events: Vec<SourceEvent>,
     fence: u64,
     status: OperationStatus,
+    published_view: Option<CatalogView>,
 });
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2439,6 +2450,7 @@ fn read_operation(
     {
         return Err(IndexError::Storage("native operation key mismatch".into()));
     }
+    publication_result::validate_operation_result(&operation)?;
     if matches!(operation.status, OperationStatus::Pending(_)) {
         require_object(connection, operation.immutable.request)?;
         let operation_id = operation_key(key)?;
@@ -2455,6 +2467,7 @@ fn write_operation(
     row: &OperationRow,
     insert: bool,
 ) -> Result<(), IndexError> {
+    publication_result::validate_operation_result(row)?;
     let payload = encode(row)?;
     let row_digest = digest(b"qidx.native.operation.v1", &payload);
     if insert {
@@ -3176,6 +3189,7 @@ impl SqliteCatalog {
                 events: events.to_vec(),
                 fence,
                 status: OperationStatus::Pending(attempt),
+                published_view: None,
             },
             true,
         )?;
@@ -3251,6 +3265,14 @@ impl OperationJournalPort for SqliteCatalog {
                 Ok(read_operation(&guard, key)?.map_or(OperationStatus::Unknown, |row| row.status))
             }
         }
+    }
+
+    fn published_view_metadata(
+        &self,
+        key: OperationKey,
+        budget: &mut WorkBudget,
+    ) -> Result<CatalogView, IndexError> {
+        publication_result::read_published_metadata(self, key, budget)
     }
 
     fn operation(&self, key: OperationKey) -> Result<ImmutableOperation, IndexError> {
@@ -4076,6 +4098,7 @@ impl CatalogPublicationPort for SqliteCatalog {
                 .map_err(|error| sql(&error))?;
         }
         row.status = OperationStatus::Published(next.identity);
+        row.published_view = Some(next.clone());
         budget.charge(WorkUsage {
             reads: 1,
             writes: 2,
@@ -4106,6 +4129,13 @@ fn ticket_to_integer(ticket: TicketId) -> Result<i64, IndexError> {
 }
 
 impl ManagedObjectInstallPort for SqliteCatalog {
+    fn managed_install_memory_bound(
+        &self,
+        shape: quanta_index_core::index::ports::ObjectInstallMemoryShape,
+    ) -> Result<Option<quanta_index_core::index::MemoryCreditLimits>, IndexError> {
+        managed_install::memory_bound(shape).map(Some)
+    }
+
     fn reserve_managed(
         &self,
         scope: ObjectInstallScope,
@@ -4377,10 +4407,13 @@ mod tests {
 
     mod checked_registration;
     mod confirmation_shadows;
+    mod offline_rollback;
+    mod offline_source_quiescence;
     mod operation_ref_storage;
     mod payload_storage;
     mod prechecked_children;
     mod protected_queue;
+    mod publication_result_tests;
     mod registration_payload_format;
     mod renewal_diagnostics;
     mod work_read_reuse;
@@ -4703,6 +4736,18 @@ mod tests {
             ])
         );
         let second = publish_plain_next(&catalog, &first, 2, 153)?;
+        // The write transaction must reject the historical candidate on its
+        // own, even if the earlier read-only verification was successful.
+        let mut stale_selection = admission_budget();
+        check_eq!(
+            catalog.select_native_boot_manifest_if_current(original.key, &mut stale_selection),
+            Err(IndexError::Conflict)
+        );
+        check_eq!(stale_selection.usage().mutations, 0);
+        check_eq!(
+            catalog.native_boot_manifest(&mut admission_budget())?,
+            Some(selected.clone())
+        );
         check_eq!(
             catalog.advance_exact_history_floor(workspace(), 7, 2, &mut admission_budget())?,
             2
@@ -4798,6 +4843,16 @@ mod tests {
             catalog.select_native_boot_manifest(first_op.key, &mut admission_budget())?;
         let pending = operation(13003, 155);
         let attempt = admit_new(&catalog, pending)?;
+        let mut unsettled_selection = admission_budget();
+        check_eq!(
+            catalog.select_native_boot_manifest_if_current(first_op.key, &mut unsettled_selection),
+            Err(IndexError::Conflict)
+        );
+        check_eq!(unsettled_selection.usage().mutations, 0);
+        check_eq!(
+            catalog.native_boot_manifest(&mut admission_budget())?,
+            Some(selected.clone())
+        );
         check_eq!(
             catalog.select_native_boot_manifest(pending.key, &mut admission_budget()),
             Err(IndexError::Conflict)
@@ -4805,6 +4860,10 @@ mod tests {
         check_eq!(
             catalog.refuse(attempt, Refusal::InvalidInput)?,
             OperationStatus::Refused(Refusal::InvalidInput)
+        );
+        check_eq!(
+            catalog.select_native_boot_manifest_if_current(first_op.key, &mut admission_budget())?,
+            selected
         );
         check_eq!(
             catalog.select_native_boot_manifest(pending.key, &mut admission_budget()),
@@ -6645,6 +6704,7 @@ mod tests {
             let mut receipt = read_operation(&tx, grant.assignment.request.operation)?
                 .ok_or("missing published receipt")?;
             receipt.status = OperationStatus::Refused(Refusal::Conflict);
+            receipt.published_view = None;
             write_operation(&tx, &receipt, false)?;
             tx.commit()?;
             drop(guard);
@@ -6904,6 +6964,7 @@ mod tests {
                         events: vec![],
                         fence: next_fence(&tx)?,
                         status: OperationStatus::Refused(reason),
+                        published_view: None,
                     },
                     true,
                 )?;
@@ -10234,10 +10295,16 @@ mod tests {
             },
             quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(30)),
         );
+        // A second WAL connection can hold the writer reservation while the
+        // unchanged tail policy reads its last committed head and floor.
+        catalog.lock()?.busy_timeout(Duration::ZERO)?;
+        let mut other = Connection::open(catalog.path())?;
+        let writer = other.transaction_with_behavior(TransactionBehavior::Immediate)?;
         check_eq!(
             catalog.retain_exact_history_tail(workspace(), 7, 10, &mut unchanged_floor_budget)?,
             2
         );
+        writer.rollback()?;
         check_eq!(unchanged_floor_budget.usage().writes, 0);
         check_eq!(unchanged_floor_budget.usage().mutations, 0);
         check!(matches!(
@@ -10897,6 +10964,7 @@ mod tests {
                 events: vec![],
                 fence: next_fence(&tx)?,
                 status: OperationStatus::Refused(reason),
+                published_view: None,
             },
             true,
         )?;
@@ -13396,12 +13464,10 @@ mod tests {
 
         fn count_namespace_reads(event: rusqlite::trace::TraceEvent<'_>) {
             if let rusqlite::trace::TraceEvent::Profile(statement, _duration) = event
-                && (statement
+                && statement
                     .sql()
-                    .starts_with("SELECT COUNT(*) FROM native_gc_namespace_v1")
-                    || statement
-                        .sql()
-                        .starts_with("SELECT length(payload),length(row_digest),"))
+                    .starts_with("SELECT length(payload),length(row_digest),")
+                && statement.sql().trim_end().ends_with("LIMIT 2")
             {
                 let _prior = NAMESPACE_READS.fetch_add(1, Ordering::SeqCst);
             }
@@ -13421,10 +13487,10 @@ mod tests {
             Some(count_namespace_reads),
         );
         check!(reclaim::is_bound(&guard)?);
-        check_eq!(NAMESPACE_READS.load(Ordering::SeqCst), 2);
+        check_eq!(NAMESPACE_READS.load(Ordering::SeqCst), 1);
         reclaim::require_bound(&guard)?;
         guard.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
-        check_eq!(NAMESPACE_READS.load(Ordering::SeqCst), 3);
+        check_eq!(NAMESPACE_READS.load(Ordering::SeqCst), 2);
         check_eq!(reclaim::bound_namespace(&guard)?, binding);
 
         let _changed = guard.execute(
@@ -13507,6 +13573,31 @@ mod tests {
             Err(IndexError::BackendViolation(message)) if message == "managed namespace is unbound"
         ));
         check!(!reclaim::is_bound(&guard)?);
+
+        // The real table constrains singleton to 1. Shadow it on this connection
+        // to verify that the bounded reader rejects corrupt physical row sets.
+        guard.execute_batch(
+            "CREATE TEMP TABLE native_gc_namespace_v1 (
+                singleton INTEGER, payload BLOB, row_digest BLOB
+             )",
+        )?;
+        let _changed = guard.execute(
+            "INSERT INTO temp.native_gc_namespace_v1 VALUES(1, ?1, ?2)",
+            params![&original.0, &original.1],
+        )?;
+        let _changed = guard.execute(
+            "INSERT INTO temp.native_gc_namespace_v1 VALUES(1, ?1, ?2)",
+            params![&original.0, &original.1],
+        )?;
+        check!(matches!(reclaim::is_bound(&guard), Err(IndexError::Storage(_))));
+        check!(matches!(reclaim::require_bound(&guard), Err(IndexError::Storage(_))));
+        let _changed = guard.execute("DELETE FROM temp.native_gc_namespace_v1", [])?;
+        let _changed = guard.execute(
+            "INSERT INTO temp.native_gc_namespace_v1 VALUES(2, ?1, ?2)",
+            params![&original.0, &original.1],
+        )?;
+        check!(matches!(reclaim::is_bound(&guard), Err(IndexError::Storage(_))));
+        check!(matches!(reclaim::require_bound(&guard), Err(IndexError::Storage(_))));
         drop(guard);
         Ok(())
     }
@@ -13981,15 +14072,16 @@ mod tests {
             &mut attempt_work,
         )?;
         let mut expected_attempt = ingress_work.usage();
-        // One earlier child saves four adoption units. Both provisional slots
-        // already exist here, so each pays two fallback units; the Attempt
-        // intents are new. Ingress above created both slots and intents fresh.
+        // One earlier child saves four adoption units. The Attempt-only proof
+        // also omits one authenticated namespace read for the external child.
+        // Both provisional slots already exist here, so each pays two fallback
+        // units; the Attempt intents are new. Ingress created both fresh.
         let fallback_reads = u64::try_from(batch.len())?
             .checked_mul(2)
             .ok_or("fallback read overflow")?;
         expected_attempt.reads = expected_attempt
             .reads
-            .checked_sub(4)
+            .checked_sub(5)
             .and_then(|reads| reads.checked_add(fallback_reads))
             .ok_or("read charge overflow")?;
         check_eq!(attempt_work.usage(), expected_attempt);
@@ -15299,8 +15391,7 @@ mod tests {
     fn read_settlement_requires_the_original_live_session_guard() -> TestResult {
         use quanta_index_core::index::{
             CatalogReadSettlementPort, NativeReadSettlementBlocker, NativeReadSettlementScope,
-            NativeReadSettlementStatus,
-            ReadSessionLease, ReadSessionRef,
+            NativeReadSettlementStatus, ReadSessionLease, ReadSessionRef,
         };
 
         struct ForeignSession(ReadSessionRef);
@@ -15469,24 +15560,45 @@ mod tests {
     fn read_settlement_live_lifecycle_validator_rejects_corrupt_digest() -> TestResult {
         let (_root, catalog, _ingress) = managed_adoption_fixture()?;
         let profile = object(30, vec![]).reference;
+        let mut connection = catalog.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
         check!(reclaim::checked_live_object(
-            &*catalog.lock()?,
+            &transaction,
             profile,
             &mut admission_budget(),
         )?);
-        let changed = catalog.lock()?.execute(
+        check_eq!(
+            read_settlement::find_unsettled_object(&transaction, &mut admission_budget())?,
+            None
+        );
+        let mut limited = WorkBudget::new(
+            WorkLimits {
+                reads: 2,
+                writes: 0,
+                bytes: 4096,
+                mutations: 0,
+            },
+            Instant::now() + Duration::from_secs(30),
+        );
+        check_eq!(
+            read_settlement::find_unsettled_object(&transaction, &mut limited),
+            Err(IndexError::ResourceLimited)
+        );
+        transaction.rollback()?;
+        let changed = connection.execute(
             "UPDATE native_gc_object_v1 SET row_digest=zeroblob(32)
              WHERE object=?1 AND phase=0",
             params![object_key(profile)],
         )?;
         check_eq!(changed, 1);
-        // The settlement scan calls this exact lifecycle validator before its
-        // reference check. This fixture has not advanced the retention floor,
-        // so observing settlement itself would exit Pending before that scan.
+        // The bootstrap fixture does not advance the floor. Test the exact
+        // final scan with the same transaction shape as observe_read_settlement.
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
         check!(matches!(
-            reclaim::checked_live_object(&*catalog.lock()?, profile, &mut admission_budget()),
+            read_settlement::find_unsettled_object(&transaction, &mut admission_budget()),
             Err(IndexError::Storage(_))
         ));
+        transaction.rollback()?;
         Ok(())
     }
 

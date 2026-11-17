@@ -10,6 +10,9 @@
 //! between transport and the core domain ports.
 
 mod auxiliary_authority;
+pub use auxiliary_authority::{
+    HistoryReplayFenceV1, HistorySourceReplayV1, ReplayedHistorySourceV1,
+};
 #[cfg(test)]
 mod content_roots_test_support;
 mod control_dispatcher;
@@ -19,6 +22,7 @@ mod door_findings_test_support;
 mod history_text;
 mod ingest_dispatcher;
 mod lowering;
+pub mod native_history;
 mod observability;
 mod post_durable;
 mod quarantine;

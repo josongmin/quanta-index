@@ -192,6 +192,96 @@ pub fn diagnostic_value(
                 ))
             })?;
             let (candidates, response_kind, response) = match outcome {
+                QueryOutcome::ReturnedFiles {
+                    response,
+                    lane_top_k,
+                    file_top_k,
+                    ..
+                } => {
+                    if *route != "hybrid_file"
+                        || *lane_top_k != top_k
+                        || response.file_top_k != *file_top_k
+                    {
+                        return Err(BenchError::Protocol(
+                            "typed file diagnostic differs from route or lane cap".into(),
+                        ));
+                    }
+                    let evidence = json!({
+                        "schema_version": 1,
+                        "lane_top_k": lane_top_k,
+                        "file_top_k": file_top_k,
+                        "response": response,
+                    });
+                    let record_candidates = record_row
+                        .get("candidates")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| {
+                            BenchError::Protocol("file record candidates are malformed".into())
+                        })?;
+                    if record_row.get("status").and_then(Value::as_str)
+                        != Some(classification.status)
+                        || record_row.get("hybrid_file_evidence") != Some(&evidence)
+                        || record_row
+                            .get("error")
+                            .and_then(|error| error.get("code"))
+                            .and_then(Value::as_str)
+                            != classification.error_code.as_deref()
+                        || (classification.status == "error" && !record_candidates.is_empty())
+                        || (classification.status != "error"
+                            && record_candidates.len() != response.results.len())
+                    {
+                        return Err(BenchError::Protocol(
+                            "file diagnostic outcome differs from scored record".into(),
+                        ));
+                    }
+                    let mut candidates = Vec::with_capacity(record_candidates.len());
+                    for (index, (scored, hit)) in
+                        record_candidates.iter().zip(&response.results).enumerate()
+                    {
+                        let representative = hit.representative().ok_or_else(|| {
+                            BenchError::Protocol("file diagnostic lost representative".into())
+                        })?;
+                        let rank = index.checked_add(1).ok_or_else(|| {
+                            BenchError::Protocol("file diagnostic rank overflow".into())
+                        })?;
+                        let rank_u64 = u64::try_from(rank).map_err(|error| {
+                            BenchError::Protocol(format!("file diagnostic rank overflow: {error}"))
+                        })?;
+                        if scored.get("rank").and_then(Value::as_u64) != Some(rank_u64)
+                            || scored.get("path").and_then(Value::as_str)
+                                != Some(hit.file.repo_relative_path.as_str())
+                            || scored.get("score").and_then(Value::as_f64)
+                                != Some(hit.file_rrf_score)
+                            || scored
+                                .pointer("/span_accounting/unit_id")
+                                .and_then(Value::as_str)
+                                != Some(representative.candidate_id.as_str())
+                        {
+                            return Err(BenchError::Protocol(
+                                "file diagnostic candidate differs from source proof or SDK file"
+                                    .into(),
+                            ));
+                        }
+                        candidates.push(json!({
+                            "rank": rank,
+                            "candidate_id": representative.candidate_id,
+                            "path": hit.file.repo_relative_path,
+                            "start_line": scored["start_line"],
+                            "end_line": scored["end_line"],
+                            "score": hit.file_rrf_score,
+                            "contributions": [],
+                        }));
+                    }
+                    (
+                        candidates,
+                        "returned_files",
+                        json!({
+                            "lane_top_k": lane_top_k,
+                            "file_top_k": file_top_k,
+                            "typed_response": response,
+                        }),
+                    )
+                }
                 QueryOutcome::ReturnedWindow {
                     hits,
                     window,

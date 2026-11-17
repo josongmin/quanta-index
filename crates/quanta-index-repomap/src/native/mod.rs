@@ -3,6 +3,7 @@
 mod file_map;
 pub mod graph;
 mod path_reader;
+mod repository_path_reader;
 mod scratch;
 
 pub use file_map::{
@@ -10,6 +11,9 @@ pub use file_map::{
     FilePathPage, FilePathQuery, NativeFileMap, query_paths,
 };
 pub use path_reader::{NativePathReader, PathReadRequest};
+pub use repository_path_reader::{
+    NativeRepositoryPathReader, RepositoryFilePathPage, RepositoryPathReadRequest,
+};
 
 pub use graph::{
     GraphPage, GraphQuery, NativeGraph, NativeGraphReader, NativeRepoMapRankPage,

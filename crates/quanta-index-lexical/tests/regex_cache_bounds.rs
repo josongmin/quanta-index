@@ -14,6 +14,7 @@
 //! what a query must return; the adapter's stats over real sealed queries
 //! for what was refused, evicted, built and resident.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/source_fixture.rs"]

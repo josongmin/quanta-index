@@ -22,7 +22,8 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         SdkError::Remote { code, message, .. }
             if code.as_wire_str() == "QUERY_TIMEOUT"
                 && (message.contains("timeout") || message.contains("timed out")) => {}
-        other @ (SdkError::Usage(_)
+        other @ (SdkError::UnsupportedNativeQuery { .. }
+        | SdkError::Usage(_)
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
@@ -73,7 +74,8 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         SdkError::Remote { code, message, .. }
             if code.as_wire_str() == "STR_INVALID_REQUEST"
                 && message.contains("timeout option") => {}
-        other @ (SdkError::Usage(_)
+        other @ (SdkError::UnsupportedNativeQuery { .. }
+        | SdkError::Usage(_)
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
@@ -99,7 +101,8 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         SdkError::Remote { code, message, .. }
             if code.as_wire_str() == "STR_HOLE_KIND_UNSUPPORTED"
                 && message.contains("typed hole kind `lambda`") => {}
-        other @ (SdkError::Usage(_)
+        other @ (SdkError::UnsupportedNativeQuery { .. }
+        | SdkError::Usage(_)
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)
@@ -242,7 +245,8 @@ fn sdk_dsl_frontdoor_fail_closed_timeout_and_recovery_truth() -> TestResult {
         SdkError::Remote { code, message, .. }
             if code.as_wire_str() == "BRIDGE_TRANSLATE_FAIL"
                 && message.contains("patterntype:structural") => {}
-        other @ (SdkError::Usage(_)
+        other @ (SdkError::UnsupportedNativeQuery { .. }
+        | SdkError::Usage(_)
         | SdkError::Protocol(_)
         | SdkError::Serialization(_)
         | SdkError::Transport(_)

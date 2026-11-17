@@ -24,6 +24,8 @@ pub struct SemanticOverlayDocument {
 /// Lexical eligibility uses the same selected session and request budget.
 #[derive(Debug)]
 pub struct SemanticReadRequest {
+    /// File aggregation is explicit and cannot be combined with editor/lexical scope.
+    pub source_files: bool,
     pub query: SemanticQueryRequest,
     pub overlay: Vec<SemanticOverlayDocument>,
     pub overlay_memory: Option<MemoryLease>,
@@ -33,6 +35,7 @@ pub struct SemanticReadRequest {
 impl From<SemanticQueryRequest> for SemanticReadRequest {
     fn from(query: SemanticQueryRequest) -> Self {
         Self {
+            source_files: false,
             query,
             overlay: Vec::new(),
             overlay_memory: None,
@@ -42,11 +45,31 @@ impl From<SemanticQueryRequest> for SemanticReadRequest {
 }
 
 impl SemanticReadRequest {
+    pub fn for_source_files(query: SemanticQueryRequest) -> Result<Self, IndexError> {
+        if query.lexical_scope.is_some() {
+            return Err(IndexError::InvalidInput(
+                "file semantic discovery cannot intersect lexical eligibility".into(),
+            ));
+        }
+        let mut request = Self::from(query);
+        request.source_files = true;
+        Ok(request)
+    }
+
     pub(super) fn validate_overlay(
         &self,
         recipe: &EmbeddingRecipe,
         budget: Option<&mut WorkBudget>,
     ) -> Result<(), IndexError> {
+        if self.source_files
+            && (!self.overlay.is_empty()
+                || self.lexical_eligibility.is_some()
+                || self.query.lexical_scope.is_some())
+        {
+            return Err(IndexError::InvalidInput(
+                "file semantic mode cannot use overlay or lexical intersection".into(),
+            ));
+        }
         if self.overlay.len() > MAX_SEMANTIC_OVERLAY_DOCUMENTS {
             return Err(IndexError::ResourceLimited);
         }
@@ -201,7 +224,7 @@ impl<P: TextEmbeddingProvider> OverlayEmbeddingPort for TextEmbeddingBridge<P> {
         // The span measures the provider invocation envelope only. Chunk
         // planning and text admission precede it; the original checkpoint,
         // descriptor and vector validation still follow it.
-        let span = crate::build::begin_build_stage(
+        let span = crate::build_diagnostic::begin_build_stage(
             budget.request().diagnostic_context(),
             quanta_index_core::DiagnosticStageV1::QueryOverlayEmbedding,
         );
@@ -312,6 +335,10 @@ pub(super) fn rank_overlay(
                     "overlay vector identity exceeds retained capacity".into(),
                 ));
             }
+            // The displaced ID no longer counts toward the retained window.
+            if heap.len() == top_k {
+                drop(heap.pop());
+            }
             let memory = context.budget.reserve_memory(
                 u64::try_from(RETAINED_VECTOR_ID_CAPACITY)
                     .map_err(|_error| IndexError::ResourceLimited)?,
@@ -330,9 +357,6 @@ pub(super) fn rank_overlay(
                 revision: document.revision,
                 chunk,
             });
-            if heap.len() == top_k {
-                drop(heap.pop());
-            }
             heap.push(RankedHit(hit));
         }
     }

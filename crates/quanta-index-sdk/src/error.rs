@@ -35,6 +35,14 @@ pub enum SdkError {
     #[error("usage: {0}")]
     Usage(String),
 
+    /// Local typed refusal before any Legacy query dispatch on a Native client.
+    #[error(
+        "Native connection does not implement {capability:?}; use reader().native() for supported Native contracts"
+    )]
+    UnsupportedNativeQuery {
+        capability: crate::LegacyQueryCapabilityV1,
+    },
+
     #[error("protocol: {0}")]
     Protocol(String),
 
@@ -99,7 +107,8 @@ impl SdkError {
             | Self::Transport(_)
             | Self::Binding { .. }
             | Self::PlaneUnavailable { .. }
-            | Self::Remote { .. } => None,
+            | Self::Remote { .. }
+            | Self::UnsupportedNativeQuery { .. } => None,
         }
     }
 
@@ -114,7 +123,8 @@ impl SdkError {
             | Self::Transport(_)
             | Self::Binding { .. }
             | Self::PlaneUnavailable { .. }
-            | Self::Remote { .. } => None,
+            | Self::Remote { .. }
+            | Self::UnsupportedNativeQuery { .. } => None,
         }
     }
 
@@ -179,7 +189,9 @@ pub enum ResponseBindingAxis {
     /// A mutation ACK's durable sequence is not positive.
     Sequence,
     /// Ranked rows violate the response's intrinsic ranking policy:
-    /// order, per-row validity or identity uniqueness.
+    /// order, per-row validity, identity uniqueness, or the bounded file-pool
+    /// evidence that defines the ranking. Request-cap violations use
+    /// [`Cardinality`](Self::Cardinality).
     RankingOrder,
     /// A paired file-owner projection does not pair one to one with
     /// the ranked candidates in order.

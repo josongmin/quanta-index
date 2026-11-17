@@ -100,9 +100,9 @@ impl GenerationContract {
 
     pub(crate) fn encode(&self) -> Result<Vec<u8>, CoreError> {
         let bytes = codec::encode(self, "semantic generation contract")?;
-        crate::control_file::ensure_bounded(
+        crate::legacy::limits::ensure_bounded(
             &bytes,
-            crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
+            crate::legacy::limits::MAX_GENERATION_CONTRACT_BYTES,
             "generation contract",
         )?;
         Ok(bytes)

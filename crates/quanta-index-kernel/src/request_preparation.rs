@@ -24,6 +24,12 @@ pub(crate) fn children(request: &UpdateRequest) -> ObjectChildren {
         UpdateKind::SourceAdvance(transition) | UpdateKind::SourceResync { transition, .. } => {
             [transition.owners.root.0, None, None, None]
         }
+        UpdateKind::SourceHistoryAdvance(transition) => [
+            transition.source.owners.root.0,
+            Some(transition.history.input),
+            Some(transition.history.profile),
+            None,
+        ],
         UpdateKind::ProjectionAdvance(transition) => {
             let certificate = match transition.completeness {
                 ProducerCompleteness::CompleteAffectedDomain { certificate } => Some(certificate),
@@ -32,6 +38,12 @@ pub(crate) fn children(request: &UpdateRequest) -> ObjectChildren {
             [transition.owners.root.0, certificate, None, None]
         }
         UpdateKind::Reconfigure { profile } => [Some(*profile), None, None, None],
+        UpdateKind::HistoryAdvance(transition) => {
+            [Some(transition.input), Some(transition.profile), None, None]
+        }
+        UpdateKind::HistoryAppend(append) => {
+            [Some(append.input), Some(append.profile), None, None]
+        }
         UpdateKind::Materialize { claim } => match claim.intent.scope {
             WorkScope::Owner { expected, .. } => [expected.source, expected.projection, None, None],
             WorkScope::ProjectionDomain { .. } => [None; 4],
@@ -181,7 +193,15 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) fn requests() -> [UpdateRequest; 5] {
+    pub(crate) fn requests() -> [UpdateRequest; 8] {
+        let history_cut: quanta_index_core::index::HistorySourceCutV1 =
+            serde_json::from_value(serde_json::json!({
+                "generation": {"repo_id": "repo-a", "revision_id": "rev-a", "generation": 1},
+                "durable_epoch": 2,
+                "snapshot_digest": vec![7_u8; 32],
+                "replay_start": vec![8_u8; 32]
+            }))
+            .expect("fixed canonical History metadata fixture");
         let transition = SourceTransition {
             expected_source: historical_cut(),
             owners: owner_set(Some(reference(4))),
@@ -191,7 +211,7 @@ pub(crate) mod tests {
             UpdateKind::SourceAdvance(transition.clone()),
             UpdateKind::SourceResync {
                 prior_epoch: u64::MAX,
-                transition,
+                transition: transition.clone(),
             },
             projection(ProducerCompleteness::CompleteAffectedDomain {
                 certificate: reference(1),
@@ -199,6 +219,29 @@ pub(crate) mod tests {
             UpdateKind::Reconfigure {
                 profile: reference(4),
             },
+            UpdateKind::HistoryAdvance(quanta_index_core::index::HistoryTransition {
+                instance: IndexInstanceId([255; 16]),
+                expected: Some(history_cut.clone()),
+                next: history_cut.clone(),
+                input: reference(3),
+                profile: reference(4),
+            }),
+            UpdateKind::HistoryAppend(quanta_index_core::index::HistoryAppendV1 {
+                instance: IndexInstanceId([255; 16]),
+                expected: history_cut.clone(),
+                input: reference(3),
+                profile: reference(4),
+            }),
+            UpdateKind::SourceHistoryAdvance(Box::new(quanta_index_core::index::SourceHistoryTransitionV1 {
+                source: transition,
+                history: quanta_index_core::index::HistoryGenerationAdvanceV1 {
+                    prior_instance: IndexInstanceId([254; 16]),
+                    expected: history_cut,
+                    instance: IndexInstanceId([255; 16]),
+                    input: reference(3),
+                    profile: reference(5),
+                },
+            })),
             materialize(WorkScope::ProjectionDomain {
                 projection: ProjectionId([255; 16]),
                 source: historical_cut(),

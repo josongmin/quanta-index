@@ -1,24 +1,31 @@
 use crate::path_staging::{PathKey, PathPage, PathPageCursor, PathRow};
+use quanta_index_contract::RepoId;
 use quanta_index_scratch_sqlite::ScratchConnection;
 use rusqlite::params;
+use std::cell::Cell;
 
 #[cfg(test)]
 mod coverage_tests;
 mod owner_edits;
+mod repository_claims;
+
+use repository_claims::{RepositoryClaim, RepositoryClaims};
 
 use quanta_index_core::index::{
     AttemptContext, AttemptRef, IndexError, MAX_SOURCE_PATH_BYTES, MapPageCursor, MapPageEntry,
     MapRoot, ObjectRef, OperationKey, OrdinalMapEdit, OwnerKey, OwnerMutation, OwnerMutationCursor,
     ProducerId, ScratchAllocation, ScratchRequest, ScratchSpacePort, SourceChangeCursor, SourceCut,
-    SourceDelta, SourceEvent, SourceOperationMode, SourceRecordOwner, SourceSnapshotCursor,
-    SourceTextAdmission, SourceTransition, ViewRef, WorkBudget, WorkUsage, owner_from_map_key,
-    owner_map_key,
-    ports::{ImmutableObjectPort, MapEditCursor, PersistentMapPort, SourceAuthorityPort},
+    SourceDelta, SourceEvent, SourceOperationMode, SourcePathOwners, SourcePathRepositoryKey,
+    SourceRecordOwner, SourceSnapshotCursor, SourceTextAdmission, SourceTransition, ViewRef,
+    WorkBudget, WorkUsage, owner_from_map_key, owner_map_key,
+    ports::{
+        ImmutableObjectPort, MapEditCursor, PersistentMapPort, SourceAuthorityPort, visit_utf8_leaf,
+    },
     producer_owner_prefix,
 };
 
-/// Record/body validation completed by this attempt's Source application.
-/// Private construction prevents an adapter or caller from asserting validation.
+/// Source application authenticated the changed record identities and paths.
+/// Next text bodies can still owe validation before publication.
 pub(crate) struct AppliedSource {
     delta: SourceDelta,
     attempt: AttemptRef,
@@ -31,7 +38,7 @@ impl AppliedSource {
 }
 
 /// Coverage needs owner/reference identities. A first snapshot still performs
-/// full record validation; an applied patch consumes this attempt's proof.
+/// full record validation; an applied patch consumes this attempt's record proof.
 pub(crate) enum CoverageChanges<'a> {
     Applied(Box<SourceChangeCursor<'a>>),
     Snapshot(Box<SourceSnapshotCursor<'a>>),
@@ -187,11 +194,10 @@ fn read_record(
 ) -> Result<SourceRecordOwner, IndexError> {
     use crate::diagnostic::{SourceOwnerStep, source_owner_step};
 
-    let objects = context.objects;
     let stored = source_owner_step(context.budget, SourceOwnerStep::RecordGet, |budget| {
         reads.get_source_record(reference, budget)
     })?;
-    let record = source_owner_step(
+    source_owner_step(
         context.budget,
         SourceOwnerStep::RecordDecodePathEdges,
         |budget| {
@@ -213,38 +219,43 @@ fn read_record(
             }
             Ok(record)
         },
-    )?;
-    if matches!(record.text, SourceTextAdmission::Utf8 { .. }) {
-        source_owner_step(context.budget, SourceOwnerStep::BodyGetValidate, |budget| {
-            let body = objects.get(record.bytes, budget)?;
-            if body.registration.reference != record.bytes
-                || !body.registration.children.is_empty()
-                || u64::try_from(body.payload.len())
-                    .map_err(|_error| IndexError::ResourceLimited)?
-                    != record.byte_len
-            {
-                return Err(IndexError::CorruptObject(
-                    "text-admitted source body identity, edges or length mismatch".into(),
-                ));
-            }
-            if std::str::from_utf8(&body.payload).is_err() {
-                return Err(IndexError::InvalidInput(
-                    "source text admission requires UTF-8".into(),
-                ));
-            }
-            Ok(())
-        })?;
-    }
-    // Next record byte objects were fully verified and adopted atomically at
-    // admission. Prior record bytes are protected by the exact base ticket.
-    Ok(record)
+    )
 }
 
-fn read_path_owner(
-    value: quanta_index_core::index::MapValue,
-    context: &AttemptContext<'_>,
-) -> Result<OwnerKey, IndexError> {
-    quanta_index_core::index::owner_from_path_map_value(value, context.budget)
+fn validate_source_body(
+    record: &SourceRecordOwner,
+    objects: &dyn ImmutableObjectPort,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    crate::diagnostic::source_owner_step(
+        budget,
+        crate::diagnostic::SourceOwnerStep::BodyGetValidate,
+        |budget| {
+            visit_utf8_leaf(
+                objects,
+                record.bytes,
+                record.byte_len,
+                budget,
+                &mut |_text, _budget| Ok(()),
+            )
+        },
+    )
+}
+
+fn validate_path_claim(
+    leaving: Option<OwnerKey>,
+    current: Option<OwnerKey>,
+) -> Result<(), IndexError> {
+    if let Some(leaver) = leaving {
+        if current != Some(leaver) {
+            return Err(IndexError::CorruptObject(
+                "owner/path reverse entry mismatch".into(),
+            ));
+        }
+    } else if current.is_some() {
+        return Err(IndexError::Conflict);
+    }
+    Ok(())
 }
 
 const SCRATCH_PAGE_SIZE: u32 = 4096;
@@ -295,6 +306,7 @@ fn owner_from_bytes(bytes: &[u8]) -> Result<OwnerKey, IndexError> {
 struct PathScratch {
     connection: ScratchConnection,
     allocation: Box<dyn ScratchAllocation>,
+    repository_claims: Cell<bool>,
 }
 
 const PATH_PAGE_START_SQL: &str =
@@ -362,6 +374,7 @@ impl PathScratch {
         Ok(Self {
             connection: owned_connection,
             allocation,
+            repository_claims: Cell::new(false),
         })
     }
 
@@ -370,22 +383,28 @@ impl PathScratch {
         db: &rusqlite::Connection,
         old_path: Option<&str>,
         new_path: Option<&str>,
+        repository_key: Option<&[u8]>,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
-        // One mutation can claim at most two paths and append one owner edit.
-        // The same private transaction and installed SQLite page cap cover all
-        // three writes. Keep the input on the stack and within the shared
-        // scratch admission batch bound. If B-tree growth exceeds the estimate,
-        // SQLite's hard cap refuses it and the caller discards this attempt.
-        let mut incoming = [160_u64; 3];
+        // The same transaction and SQLite hard cap cover the owner row,
+        // both path rows and, when scoped, their repository claims.
+        let mut incoming = [160_u64; 5];
         let mut count = 1;
         for path in [old_path, new_path].into_iter().flatten() {
-            *incoming.get_mut(count).ok_or(IndexError::ResourceLimited)? =
-                u64::try_from(path.len())
-                    .map_err(|_error| IndexError::ResourceLimited)?
-                    .checked_add(160)
-                    .ok_or(IndexError::ResourceLimited)?;
+            let path_bytes = u64::try_from(path.len())
+                .map_err(|_error| IndexError::ResourceLimited)?
+                .checked_add(160)
+                .ok_or(IndexError::ResourceLimited)?;
+            *incoming.get_mut(count).ok_or(IndexError::ResourceLimited)? = path_bytes;
             count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+            if let Some(repo) = repository_key {
+                let repo_bytes =
+                    u64::try_from(repo.len()).map_err(|_error| IndexError::ResourceLimited)?;
+                *incoming.get_mut(count).ok_or(IndexError::ResourceLimited)? = path_bytes
+                    .checked_add(repo_bytes)
+                    .ok_or(IndexError::ResourceLimited)?;
+                count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+            }
         }
         quanta_index_scratch_sqlite::reserve_for_write_batch(
             db,
@@ -400,6 +419,7 @@ impl PathScratch {
         mutation: &OwnerMutation,
         old_path: Option<&str>,
         new_path: Option<&str>,
+        repository: Option<&RepoId>,
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
         if old_path == new_path {
@@ -413,14 +433,66 @@ impl PathScratch {
                 "owner path transition requires an active spool transaction".into(),
             ));
         }
-        self.reserve_owner_transition(&db, old_path, new_path, budget)?;
+        let repository_key = repository
+            .map(|repository| SourcePathRepositoryKey::new(Some(repository)))
+            .transpose()?;
+        let repository_key = repository_key
+            .as_ref()
+            .map(SourcePathRepositoryKey::as_slice)
+            .transpose()?;
+        if repository_key.is_some() && !self.repository_claims.get() {
+            quanta_index_scratch_sqlite::reserve_for_write(
+                &db,
+                self.allocation.as_ref(),
+                8192,
+                budget,
+            )?;
+            RepositoryClaims::create(&db)?;
+            self.repository_claims.set(true);
+        }
+        self.reserve_owner_transition(&db, old_path, new_path, repository_key, budget)?;
         if let Some(path) = old_path {
-            Self::mark_reserved(&db, path, mutation.owner, true, budget)?;
+            Self::mark_owner_path(&db, path, repository_key, mutation.owner, true, budget)?;
         }
         if let Some(path) = new_path {
-            Self::mark_reserved(&db, path, mutation.owner, false, budget)?;
+            Self::mark_owner_path(&db, path, repository_key, mutation.owner, false, budget)?;
         }
         Self::append_owner_edit_reserved(&db, mutation, budget)
+    }
+
+    fn mark_owner_path(
+        db: &rusqlite::Connection,
+        path: &str,
+        repository: Option<&[u8]>,
+        owner: OwnerKey,
+        leaving: bool,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        let Some(repository) = repository else {
+            return Self::mark_reserved(db, path, owner, leaving, budget);
+        };
+        budget.checkpoint()?;
+        // The outer path is visited once, even when many repository claims
+        // for it arrived on different owner mutation pages.
+        let _inserted_paths = db
+            .prepare_cached("INSERT OR IGNORE INTO path_edits(path) VALUES(?1)")
+            .map_err(|error| scratch_error(&error))?
+            .execute(params![path])
+            .map_err(|error| scratch_error(&error))?;
+        RepositoryClaims::mark_reserved(db, path, repository, owner, leaving, budget)
+    }
+
+    fn next_repository_claim(
+        &self,
+        path: &str,
+        after: Option<&[u8]>,
+        budget: &WorkBudget,
+    ) -> Result<Option<RepositoryClaim>, IndexError> {
+        if !self.repository_claims.get() {
+            return Ok(None);
+        }
+        let db = self.connection.scoped(budget)?;
+        RepositoryClaims::next(&db, path, after, budget)
     }
 
     #[cfg(test)]
@@ -490,7 +562,7 @@ impl PathScratch {
             PATH_PAGE_START_SQL
         };
         let mut statement = io_scope
-            .prepare(query)
+            .prepare_cached(query)
             .map_err(|error| scratch_error(&error))?;
         let mut cursor = match after {
             Some(path) => statement.query(params![path]),
@@ -537,10 +609,9 @@ impl PathScratch {
             .map(quanta_index_scratch_sqlite::map_value)
             .transpose()?;
         let changed = tx
-            .execute(
-                "UPDATE path_edits SET expected=?2,next=?3 WHERE path=?1",
-                params![path, expected, next],
-            )
+            .prepare_cached("UPDATE path_edits SET expected=?2,next=?3 WHERE path=?1")
+            .map_err(|error| scratch_error(&error))?
+            .execute(params![path, expected, next])
             .map_err(|error| scratch_error(&error))?;
         if changed != 1 {
             return Err(IndexError::BackendViolation(
@@ -684,10 +755,139 @@ struct SourceEditCursor<'a> {
     phase: u8,
 }
 
+struct RepositoryEditCursor<'a> {
+    scratch: &'a PathScratch,
+    path: &'a str,
+    legacy: Option<(
+        Option<quanta_index_core::index::MapValue>,
+        Option<quanta_index_core::index::MapValue>,
+    )>,
+    after: Option<RepositoryClaim>,
+}
+
+impl MapEditCursor for RepositoryEditCursor<'_> {
+    fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
+        if let Some((expected, next)) = self.legacy.take()
+            && expected != next
+        {
+            let key = SourcePathRepositoryKey::new(None)?;
+            return Ok(Some(OrdinalMapEdit::copy_key_parts(
+                0,
+                &[key.as_slice()?],
+                expected,
+                next,
+                budget,
+            )?));
+        }
+        while let Some(claim) = self.scratch.next_repository_claim(
+            self.path,
+            self.after.as_ref().map(RepositoryClaim::key).transpose()?,
+            budget,
+        )? {
+            let expected = claim
+                .leaving
+                .map(quanta_index_core::index::path_owner_map_value)
+                .transpose()?;
+            let next = claim
+                .incoming
+                .map(quanta_index_core::index::path_owner_map_value)
+                .transpose()?;
+            self.after = Some(claim);
+            if expected != next {
+                let key = self
+                    .after
+                    .as_ref()
+                    .ok_or_else(|| IndexError::BackendViolation("repository claim lost".into()))?
+                    .key()?;
+                return Ok(Some(OrdinalMapEdit::copy_key_parts(
+                    0,
+                    &[key],
+                    expected,
+                    next,
+                    budget,
+                )?));
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// Child roots are installed only after every base claim and frontier has
+/// been validated. Both child and outer root use the same attempt custody.
+fn install_repository_path_maps(
+    scratch: &PathScratch,
+    context: &mut AttemptContext<'_>,
+) -> Result<(), IndexError> {
+    let mut after: Option<PathRow> = None;
+    loop {
+        let page = scratch.page(after.as_ref().map(|row| row.path.as_str()), context.budget)?;
+        if page.is_empty() {
+            return Ok(());
+        }
+        let scope = scratch.connection.scoped(context.budget)?;
+        let tx = scope
+            .unchecked_transaction()
+            .map_err(|error| scratch_error(&error))?;
+        for row in page {
+            let prior = row
+                .expected
+                .map(|value| SourcePathOwners::decode(value, context.budget))
+                .transpose()?;
+            let root = match prior {
+                Some(SourcePathOwners::Repositories(root)) => Some(root),
+                Some(SourcePathOwners::LegacyOwner(_)) | None => None,
+            };
+            if root.is_some()
+                || scratch
+                    .next_repository_claim(&row.path, None, context.budget)?
+                    .is_some()
+            {
+                let legacy = if root.is_none() {
+                    Some((None, row.next))
+                } else if row.leaving.is_some() || row.incoming.is_some() {
+                    let expected = row
+                        .leaving
+                        .map(quanta_index_core::index::path_owner_map_value)
+                        .transpose()?;
+                    Some((expected, row.next))
+                } else {
+                    None
+                };
+                let mut edits = RepositoryEditCursor {
+                    scratch,
+                    path: &row.path,
+                    legacy,
+                    after: None,
+                };
+                let roots = context.apply_stream(&[MapRoot(root)], &mut edits)?;
+                let [child] = roots.as_slice() else {
+                    return Err(IndexError::BackendViolation(
+                        "repository map stream lost its root".into(),
+                    ));
+                };
+                let next = child
+                    .0
+                    .map(SourcePathOwners::Repositories)
+                    .map(SourcePathOwners::encode)
+                    .transpose()?;
+                scratch.set_refs(&tx, &row.path, row.expected, next, context.budget)?;
+            }
+            after = Some(row);
+        }
+        tx.commit().map_err(|error| scratch_error(&error))?;
+    }
+}
+
 impl MapEditCursor for SourceEditCursor<'_> {
-    fn pack_terminal_subtrees_for_root(&self) -> Option<u32> {
-        // Path values are inline, so packing adds no physical child edges.
-        Some(1)
+    fn subtree_packing(
+        &self,
+    ) -> Result<quanta_index_core::index::ports::RootPackingPlan, IndexError> {
+        // Source owner/path maps use the existing bounded nested layout.
+        // Owner source children remain real authenticated physical edges.
+        let mut packing = quanta_index_core::index::ports::RootPackingPlan::default();
+        packing.select(0, quanta_index_core::index::ports::RootPackingMode::Nested)?;
+        packing.select(1, quanta_index_core::index::ports::RootPackingMode::Nested)?;
+        Ok(packing)
     }
 
     fn next_edit(
@@ -754,11 +954,21 @@ pub(crate) fn apply_source(
     reads: &crate::attempt_reads::AttemptObjectReads<'_>,
     context: &mut AttemptContext<'_>,
 ) -> Result<AppliedSource, IndexError> {
-    crate::diagnostic::WorkStage::begin(
+    let stage = crate::diagnostic::WorkStage::begin(
         context.budget,
         quanta_index_core::DiagnosticStageV1::NativeSourceApply,
-    )
-    .run(context, |phase_context| {
+    );
+    let read_before = reads.read_snapshot();
+    let result = {
+        let mut phase_budget = crate::diagnostic::phase_budget(context.budget, stage.span());
+        let mut phase_context = AttemptContext {
+            attempt: context.attempt,
+            objects: context.objects,
+            maps: context.maps,
+            custody: context.custody,
+            scratch: context.scratch,
+            budget: &mut phase_budget,
+        };
         apply_source_inner(
             base_view,
             base,
@@ -766,13 +976,15 @@ pub(crate) fn apply_source(
             mode,
             authority,
             reads,
-            phase_context,
+            &mut phase_context,
         )
         .map(|delta| AppliedSource {
             delta,
             attempt: phase_context.attempt,
         })
-    })
+    };
+    reads.emit_read_delta(context.budget, stage.span(), read_before);
+    stage.finish(context.budget, result)
 }
 
 fn apply_source_inner(
@@ -904,20 +1116,51 @@ fn apply_source_inner(
                         read_record(reference, reads, context).map(|record| (reference, record))
                     })
                     .transpose()?;
+                if let Some((_, record)) = &prior
+                    && matches!(record.text, SourceTextAdmission::Utf8 { .. })
+                {
+                    // Authenticate prior DATA under the exact pinned base.
+                    validate_source_body(record, context.objects, context.budget)?;
+                }
                 let next = mutation
                     .next
                     .map(|reference| {
                         read_record(reference, reads, context).map(|record| (reference, record))
                     })
                     .transpose()?;
+                if let (Some((_, prior)), Some((_, next))) = (&prior, &next)
+                    && prior.source_repo_id != next.source_repo_id
+                {
+                    return Err(IndexError::InvalidInput(
+                        "source owner cannot change repository identity".into(),
+                    ));
+                }
+                if let Some((_, record)) = &next
+                    && matches!(record.text, SourceTextAdmission::Utf8 { .. })
+                    && !prior.as_ref().is_some_and(|(_, prior)| {
+                        matches!(prior.text, SourceTextAdmission::Utf8 { .. })
+                            && prior.bytes == record.bytes
+                            && prior.byte_len == record.byte_len
+                    })
+                    && !reads.defer_source_text(record.bytes, record.byte_len)?
+                {
+                    validate_source_body(record, context.objects, context.budget)?;
+                }
                 if let Some((_, prior)) = &prior {
                     let key = PathKey::copy(&prior.path, context.budget)?;
                     let marker = context
                         .maps
                         .lookup(base.paths, key.as_slice(), context.budget)?;
                     let recorded_owner = marker
-                        .map(|reference| read_path_owner(reference, context))
-                        .transpose()?;
+                        .map(|value| {
+                            SourcePathOwners::decode(value, context.budget)?.owner_for_record(
+                                prior,
+                                context.maps,
+                                context.budget,
+                            )
+                        })
+                        .transpose()?
+                        .flatten();
                     if recorded_owner != Some(mutation.owner) {
                         return Err(IndexError::CorruptObject(
                             "source owner/path reverse entry mismatch".into(),
@@ -933,6 +1176,10 @@ fn apply_source_inner(
                         &mutation,
                         old_path,
                         new_path,
+                        prior
+                            .as_ref()
+                            .or(next.as_ref())
+                            .and_then(|(_, record)| record.source_repo_id.as_ref()),
                         context.budget,
                     )?;
                 }
@@ -947,6 +1194,7 @@ fn apply_source_inner(
         })()
     };
     let owners = crate::diagnostic::finish(owner_span, owners_result)?;
+    reads.finish_source_text_collection()?;
 
     let path_stage = quanta_index_core::DiagnosticStageV1::NativeSourcePathValidate;
     let path_span = crate::diagnostic::begin(context.budget, path_stage);
@@ -963,6 +1211,7 @@ fn apply_source_inner(
         let context = &mut phase_context;
         (|| {
             let mut after: Option<PathRow> = None;
+            let mut has_repository_maps = false;
             loop {
                 let page =
                     scratch.page(after.as_ref().map(|row| row.path.as_str()), context.budget)?;
@@ -984,23 +1233,59 @@ fn apply_source_inner(
                         context
                             .maps
                             .lookup(base.paths, key.as_slice(), context.budget)?;
-                    let current_owner = expected
-                        .map(|reference| read_path_owner(reference, context))
+                    let parent = expected
+                        .map(|value| SourcePathOwners::decode(value, context.budget))
                         .transpose()?;
-                    if let Some(leaver) = row.leaving {
-                        if current_owner != Some(leaver) {
-                            return Err(IndexError::CorruptObject(
-                                "owner/path reverse entry mismatch".into(),
-                            ));
+                    let has_legacy_claim = row.leaving.is_some() || row.incoming.is_some();
+                    let (legacy_owner, repository_root) = match parent {
+                        Some(SourcePathOwners::LegacyOwner(owner)) => (Some(owner), None),
+                        Some(SourcePathOwners::Repositories(root)) => {
+                            let owner = if has_legacy_claim {
+                                let key = SourcePathRepositoryKey::new(None)?;
+                                SourcePathOwners::repository_owner(
+                                    root,
+                                    key.as_slice()?,
+                                    context.maps,
+                                    context.budget,
+                                )?
+                            } else {
+                                None
+                            };
+                            (owner, Some(root))
                         }
-                    } else if current_owner.is_some() {
-                        return Err(IndexError::Conflict);
+                        None => (None, None),
+                    };
+                    let mut claim =
+                        scratch.next_repository_claim(&row.path, None, context.budget)?;
+                    has_repository_maps |= repository_root.is_some() || claim.is_some();
+                    while let Some(member) = claim {
+                        let current = repository_root
+                            .map(|root| {
+                                SourcePathOwners::repository_owner(
+                                    root,
+                                    member.key()?,
+                                    context.maps,
+                                    context.budget,
+                                )
+                            })
+                            .transpose()?
+                            .flatten();
+                        validate_path_claim(member.leaving, current)?;
+                        claim = scratch.next_repository_claim(
+                            &row.path,
+                            Some(member.key()?),
+                            context.budget,
+                        )?;
                     }
-                    // This is attempt-local scratch, not an installed path marker.
-                    // Once the base path is validated, retain its final inline value
-                    // here so map application needs no second scratch rewrite pass.
-                    let next = row
-                        .incoming
+                    // Keep the unscoped owner in scratch until any required
+                    // repository child map has been installed.
+                    let legacy_next = if has_legacy_claim {
+                        validate_path_claim(row.leaving, legacy_owner)?;
+                        row.incoming
+                    } else {
+                        legacy_owner
+                    };
+                    let next = legacy_next
                         .map(quanta_index_core::index::path_owner_map_value)
                         .transpose()?;
                     scratch.set_refs(&page_tx, &row.path, expected, next, context.budget)?;
@@ -1018,10 +1303,11 @@ fn apply_source_inner(
                 &transition.events,
                 context,
             )?;
-            Ok(frontier_preparation)
+            Ok((frontier_preparation, has_repository_maps))
         })()
     };
-    let frontier_preparation = crate::diagnostic::finish(path_span, path_result)?;
+    let (frontier_preparation, has_repository_maps) =
+        crate::diagnostic::finish(path_span, path_result)?;
 
     let map_span = crate::diagnostic::begin(
         context.budget,
@@ -1039,6 +1325,9 @@ fn apply_source_inner(
         };
         let context = &mut phase_context;
         (|| {
+            if has_repository_maps {
+                install_repository_path_maps(&scratch, context)?;
+            }
             // Next frontier objects share the attempt's custody and are installed
             // only after every immutable-base precondition has passed.
             let frontier_edits = frontier_preparation.stage(context)?;
@@ -1142,7 +1431,9 @@ mod tests {
             let page_tx = page_scope
                 .unchecked_transaction()
                 .map_err(|error| scratch_error(&error))?;
-            paths.set_refs(&page_tx, path, Some(expected), Some(replacement), &mut work)?;
+            let expected = (path == "a").then_some(expected);
+            let replacement = (path == "a").then_some(replacement);
+            paths.set_refs(&page_tx, path, expected, replacement, &mut work)?;
             page_tx.commit().map_err(|error| scratch_error(&error))?;
             paths.mark(
                 path,
@@ -1166,8 +1457,8 @@ mod tests {
         for row in page.as_slice() {
             check_eq!(row.leaving, Some(prior));
             check_eq!(row.incoming, Some(next));
-            check_eq!(row.expected, Some(expected));
-            check_eq!(row.next, Some(replacement));
+            check_eq!(row.expected, (row.path == "a").then_some(expected));
+            check_eq!(row.next, (row.path == "a").then_some(replacement));
         }
         work.request().cancel_handle().cancel();
         check!(matches!(

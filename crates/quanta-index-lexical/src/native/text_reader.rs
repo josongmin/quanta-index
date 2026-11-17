@@ -15,7 +15,7 @@ use super::{
 use crate::plan::LexicalPlan;
 use quanta_index_core::index::{
     FiniteScore, IndexError, IndexQueryPort, MAX_SOURCE_PATH_BYTES, MemoryLease, MemoryLifetime,
-    ObjectRef, OwnerKey, QueryOutcome, QueryReadContext, SourceRecordOwner, WorkUsage,
+    ObjectRef, OwnerKey, QueryOutcome, QueryReadContext, SourcePathOwners, SourceRecordOwner, WorkUsage,
     effort::ResourceNeed, owner_map_key, ports::IndexBuildPort,
 };
 
@@ -27,6 +27,7 @@ use quanta_index_contract::native_protocol::MAX_NATIVE_TEXT_TOP_K;
 pub struct PlannedTextRead {
     pub plan: LexicalPlan,
     pub top_k: u32,
+    rank_after: Option<(FiniteScore, OwnerKey)>,
     constraints: quanta_index_contract::QueryConstraintSetV1,
     // Owned path backing drops before its retained grant. Deep Clone is unavailable.
     _constraint_memory: Option<MemoryLease>,
@@ -47,6 +48,14 @@ pub struct TextOverlayReadDocument {
 }
 
 impl PlannedTextRead {
+    /// Continue the selected ranking after an authenticated same-view anchor.
+    /// The query owner validates score and query binding before execution.
+    #[must_use]
+    pub fn with_rank_after(mut self, rank_after: Option<(FiniteScore, OwnerKey)>) -> Self {
+        self.rank_after = rank_after;
+        self
+    }
+
     /// Keep the caller's before-planning reservation until the owned plan dies.
     #[must_use]
     pub fn with_plan_memory(mut self, memory: [Option<MemoryLease>; 3]) -> Self {
@@ -109,6 +118,7 @@ impl PlannedTextRead {
         Ok(Self {
             plan,
             top_k,
+            rank_after: None,
             constraints: constraints.clone(),
             _constraint_memory: memory,
             plan_memory: [None, None, None],
@@ -163,6 +173,8 @@ impl TextReadHit {
 pub struct TextReadResult {
     pub artifact: ObjectRef,
     pub matched: u64,
+    /// Eligible matches strictly after the anchor, before the bounded page heap.
+    pub remaining: u64,
     pub hits: Vec<TextReadHit>,
     // The hit container dies before this retained capacity charge.
     hit_memory: Option<MemoryLease>,
@@ -170,7 +182,10 @@ pub struct TextReadResult {
 
 impl PartialEq for TextReadResult {
     fn eq(&self, other: &Self) -> bool {
-        self.artifact == other.artifact && self.matched == other.matched && self.hits == other.hits
+        self.artifact == other.artifact
+            && self.matched == other.matched
+            && self.remaining == other.remaining
+            && self.hits == other.hits
     }
 }
 
@@ -318,9 +333,9 @@ impl NativeTextReader {
             .ok_or_else(|| {
                 IndexError::CorruptObject("native text source path lacks reverse owner".into())
             })?;
-        let path_owner =
-            quanta_index_core::index::owner_from_path_map_value(marker_ref, context.budget)?;
-        if path_owner != owner {
+        let path_owner = SourcePathOwners::decode(marker_ref, context.budget)?
+            .owner_for_record(&record, context.maps, context.budget)?;
+        if path_owner != Some(owner) {
             return Err(IndexError::CorruptObject(
                 "native text source path owner differs from selected owner".into(),
             ));
@@ -328,8 +343,7 @@ impl NativeTextReader {
         context.budget.checkpoint()?;
         // The canonical owner transfers its path and retained grant together,
         // while the original decode custody is still live. No path is cloned.
-        let (record, memory) = record.into_retained_parts(context.budget)?;
-        Ok((record.path, memory))
+        record.into_retained_path(context.budget)
     }
 
     fn copy_overlay_path(
@@ -595,6 +609,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
             TextContentExecution {
                 top_k: request.top_k,
                 policy: self.policy,
+                rank_after: request.rank_after,
             },
             overlay_corpus
                 .as_ref()
@@ -627,6 +642,7 @@ impl IndexQueryPort<PlannedTextRead, TextReadResult> for NativeTextReader {
         let mut result = TextReadResult {
             artifact: ranked.artifact,
             matched: ranked.matched,
+            remaining: ranked.remaining,
             hits: Vec::new(),
             hit_memory,
         };
@@ -815,15 +831,29 @@ mod tests {
         )?;
         let port: &dyn IndexQueryPort<PlannedTextRead, TextReadResult> = &reader;
         let valid = spec(recipe);
-        // Fixed digests bind the current entry-map, inline contribution and
-        // packed occurrence layouts and reject retired policies at admission.
+        // Independently computed SHA-256 of the documented recipe bytes binds
+        // the directory inventory, inline contribution, occurrence and Small v2 layouts.
         check!(
             recipe.output_policy()
                 == Digest([
-                    106, 9, 87, 172, 113, 228, 220, 33, 99, 101, 112, 241, 85, 191, 130, 177,
-                    167, 55, 147, 210, 87, 35, 8, 11, 237, 108, 190, 209, 71, 42, 254, 218
+                    11, 34, 232, 218, 194, 139, 191, 146, 78, 100, 117, 64, 140, 141, 169, 115,
+                    202, 243, 45, 220, 179, 43, 208, 223, 133, 230, 168, 17, 185, 192, 175, 197
                 ])
         );
+        let prior_small_layout = InstanceSpec {
+            policy: Digest([
+                136, 124, 165, 228, 60, 19, 159, 52, 121, 219, 144, 171, 182, 45, 138, 119, 129,
+                73, 194, 24, 244, 60, 76, 177, 237, 183, 112, 209, 38, 113, 45, 158,
+            ]),
+            ..valid
+        };
+        let prior_directory_layout = InstanceSpec {
+            policy: Digest([
+                106, 9, 87, 172, 113, 228, 220, 33, 99, 101, 112, 241, 85, 191, 130, 177, 167, 55,
+                147, 210, 87, 35, 8, 11, 237, 108, 190, 209, 71, 42, 254, 218,
+            ]),
+            ..valid
+        };
         let prior_posting_reference_layout = InstanceSpec {
             policy: Digest([
                 20, 198, 213, 49, 209, 48, 78, 164, 215, 224, 199, 81, 144, 50, 36, 228, 164, 219,
@@ -852,6 +882,22 @@ mod tests {
             ]),
             ..valid
         };
+        check!(matches!(
+            port.validate_instance(&prior_small_layout),
+            Err(IndexError::InvalidInput(_))
+        ));
+        check!(matches!(
+            crate::native::NativeTextIndex::new(recipe).validate_instance(&prior_small_layout),
+            Err(IndexError::InvalidInput(_))
+        ));
+        check!(matches!(
+            port.validate_instance(&prior_directory_layout),
+            Err(IndexError::InvalidInput(_))
+        ));
+        check!(matches!(
+            crate::native::NativeTextIndex::new(recipe).validate_instance(&prior_directory_layout),
+            Err(IndexError::InvalidInput(_))
+        ));
         check!(matches!(
             port.validate_instance(&prior_posting_reference_layout),
             Err(IndexError::InvalidInput(_))

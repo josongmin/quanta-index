@@ -18,6 +18,10 @@ use quanta_index_contract::SearchPlaneErrorCodeV2;
 
 use crate::CoreError;
 
+#[path = "publication_capacity/memory_bounds.rs"]
+mod memory_bounds;
+pub use memory_bounds::publication_inventory_map_node_bytes_v1;
+
 static NEXT_AUTHORITY_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Process-local identity. Tokens are not serialized across a restart; boot

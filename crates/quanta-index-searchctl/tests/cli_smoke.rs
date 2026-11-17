@@ -140,6 +140,7 @@ fn lexical_json_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = unique_socket_path();
     let shutdown = start_server(&socket_path, SmokeScenario::LexicalJson)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("lexical")
         .arg("--socket")
         .arg(&socket_path)
@@ -180,6 +181,7 @@ fn explain_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
     fs::write(&candidate_path, serde_json::to_vec_pretty(&candidate)?)?;
     let shutdown = start_server(&socket_path, SmokeScenario::ExplainPretty)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("explain")
         .arg("--socket")
         .arg(&socket_path)
@@ -224,6 +226,7 @@ fn explain_hybrid_candidate_pretty_roundtrip_impl() -> Result<(), Box<dyn std::e
     )?;
     let shutdown = start_server(&socket_path, SmokeScenario::ExplainHybridPretty)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("explain")
         .arg("--socket")
         .arg(&socket_path)
@@ -269,6 +272,7 @@ fn hybrid_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = unique_socket_path();
     let shutdown = start_server(&socket_path, SmokeScenario::HybridPretty)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("hybrid")
         .arg("--socket")
         .arg(&socket_path)
@@ -309,6 +313,7 @@ fn semantic_query_text_json_roundtrip_impl() -> Result<(), Box<dyn std::error::E
     let socket_path = unique_socket_path();
     let shutdown = start_server(&socket_path, SmokeScenario::SemanticJson)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("semantic")
         .arg("--socket")
         .arg(&socket_path)
@@ -349,6 +354,7 @@ fn hybrid_query_text_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::E
     let socket_path = unique_socket_path();
     let shutdown = start_server(&socket_path, SmokeScenario::HybridSeedPretty)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("hybrid-seed")
         .arg("--socket")
         .arg(&socket_path)
@@ -388,6 +394,7 @@ fn repomap_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = unique_socket_path();
     let shutdown = start_server(&socket_path, SmokeScenario::RepoMapPretty)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("repomap")
         .arg("--socket")
         .arg(&socket_path)
@@ -422,6 +429,7 @@ fn repomap_pretty_roundtrip_impl() -> Result<(), Box<dyn std::error::Error>> {
 
 fn control_subcommands_are_not_exposed_impl() -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("repomap-activate")
         .output()?;
     if output.status.code() != Some(2) {
@@ -437,6 +445,7 @@ fn control_subcommands_are_not_exposed_impl() -> Result<(), Box<dyn std::error::
 fn semantic_scope_query_requires_scope_top_k_impl() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = unique_socket_path();
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("semantic")
         .arg("--socket")
         .arg(&socket_path)
@@ -474,6 +483,7 @@ fn semantic_scope_top_k_without_scope_query_is_rejected_impl()
 -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = unique_socket_path();
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("semantic")
         .arg("--socket")
         .arg(&socket_path)
@@ -512,6 +522,7 @@ fn semantic_with_scope_query_and_scope_top_k_parses_successfully_impl()
     // EXIT_USAGE (2). The assertion below distinguishes the two.
     let socket_path = unique_socket_path();
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("semantic")
         .arg("--socket")
         .arg(&socket_path)
@@ -719,6 +730,7 @@ fn run_metrics(mode: &str) -> Result<String, Box<dyn std::error::Error>> {
     let control_socket = dir.path().join("control.sock");
     let shutdown = start_control_server(&control_socket, ControlScenario::EmptyTracks)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("metrics")
         .arg("--socket")
         .arg(&query_socket)
@@ -853,6 +865,7 @@ fn run_quarantine(args: &[&str]) -> Result<std::process::Output, Box<dyn std::er
     let control_socket = dir.path().join("control.sock");
     let shutdown = start_control_server(&control_socket, ControlScenario::EmptyTracks)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("quarantine")
         .args(args)
         .arg("--socket")
@@ -1093,6 +1106,7 @@ fn run_doctor_json(
     let control_socket = dir.path().join("control.sock");
     let shutdown = start_control_server(&control_socket, scenario)?;
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("doctor")
         .arg("--socket")
         .arg(&query_socket)
@@ -1231,6 +1245,7 @@ fn doctor_missing_repo_id_is_usage_error() {
 
 fn doctor_missing_repo_id_is_usage_error_impl() -> Result<(), Box<dyn std::error::Error>> {
     let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .arg("legacy")
         .arg("doctor")
         .arg("--revision-id")
         .arg("rev-doctor")
@@ -1715,4 +1730,16 @@ fn stub_repomap_response() -> RepoMapQueryResponse {
         drop_reason_codes: vec!["token_budget".to_string()],
         degraded_reason_codes: vec!["partial_authority".to_string()],
     }
+}
+
+#[test]
+fn ordinary_cli_does_not_fall_back_to_legacy_generation_commands()
+-> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchctl"))
+        .args(["lexical", "--state-root", "/absent/native-default-no-state"])
+        .output()?;
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8(output.stderr)?.contains("unsupported native command lexical"));
+    Ok(())
 }

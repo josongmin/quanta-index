@@ -489,7 +489,7 @@ fn disk_run_registry_roots(
     disk_map_root(registry.get(2).ok_or("missing run owners map")?, roots)
 }
 
-/// Independently parse the fixed File v20 and Native v8 disk contracts,
+/// Independently parse the fixed File v22 and Native v8 disk contracts,
 /// including run ownership, run postings and optional premerge custody.
 fn disk_root_objects(
     path: &Path,
@@ -504,7 +504,7 @@ fn disk_root_objects(
     }
     let mut roots = Vec::new();
     match (format, width) {
-        (20, 16) => {
+        (22, 16) => {
             for offset in [3, 4, 5, 6, 9, 10, 11] {
                 disk_map_root(row.get(offset).ok_or("missing File map")?, &mut roots)?;
             }
@@ -559,7 +559,7 @@ fn retained_pool_bytes(
         let directory = lexical_pair.join(format!("g{generation}"));
         pending.extend(disk_root_objects(
             &directory.join("file-authority/root.cbor"),
-            20,
+            22,
             16,
         )?);
         pending.extend(disk_root_objects(

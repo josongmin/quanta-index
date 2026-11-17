@@ -772,6 +772,61 @@ fn staged_unsealed_publication_is_refused_before_source_reservation() -> TestRes
     Ok(())
 }
 
+struct ScriptedPublishedCleanupUpload {
+    inner: quanta_index_ipc::SourcePublicationUploadStore,
+    settlements: AtomicUsize,
+}
+
+impl quanta_index_core::SourcePublicationUploadPort for ScriptedPublishedCleanupUpload {
+    fn stage(
+        &self,
+        part: &quanta_index_contract::SourcePublicationUploadPart,
+        budget: &RequestBudgetV1,
+    ) -> Result<quanta_index_contract::SourcePublicationUploadAck, CoreError> {
+        quanta_index_core::SourcePublicationUploadPort::stage(&self.inner, part, budget)
+    }
+
+    fn load(
+        &self,
+        identity: quanta_index_contract::SourcePublicationUploadIdentity,
+        budget: &RequestBudgetV1,
+        reserve_decoded_bytes: &mut dyn FnMut(u64) -> Result<(), CoreError>,
+    ) -> Result<SearchCorpusIngestBatch, CoreError> {
+        quanta_index_core::SourcePublicationUploadPort::load(
+            &self.inner,
+            identity,
+            budget,
+            reserve_decoded_bytes,
+        )
+    }
+
+    fn discard(
+        &self,
+        identity: quanta_index_contract::SourcePublicationUploadIdentity,
+    ) -> Result<(), CoreError> {
+        quanta_index_core::SourcePublicationUploadPort::discard(&self.inner, identity)
+    }
+
+    fn settle_published(
+        &self,
+        identity: quanta_index_contract::SourcePublicationUploadIdentity,
+    ) -> quanta_index_core::SourcePublicationUploadCleanupDisposition {
+        match self.settlements.fetch_add(1, Ordering::SeqCst) {
+            0 => quanta_index_core::SourcePublicationUploadCleanupDisposition::Deferred,
+            1 => quanta_index_core::SourcePublicationUploadCleanupDisposition::Failed(
+                CoreError::storage_io(
+                    "fixture postpublication cleanup",
+                    &std::io::Error::other("fixture unlink failure"),
+                ),
+            ),
+            _ => quanta_index_core::SourcePublicationUploadPort::settle_published(
+                &self.inner,
+                identity,
+            ),
+        }
+    }
+}
+
 #[test]
 fn staged_source_publication_is_inert_until_commit_and_replays_one_original_event() -> TestRes {
     use quanta_index_contract::{
@@ -784,11 +839,15 @@ fn staged_source_publication_is_inert_until_commit_and_replays_one_original_even
     let (materializer, _fakes) = search_corpus_materializer(catalog.clone(), true, false);
     let materializer_port = Arc::new(CountingSearchCorpus::new(materializer));
     let root = tempfile::tempdir()?;
-    let dispatcher = search_corpus_dispatcher_with_port(materializer_port.clone(), catalog.clone())
-        .with_source_upload(Arc::new(SourcePublicationUploadStore::open(
+    let upload = Arc::new(ScriptedPublishedCleanupUpload {
+        inner: SourcePublicationUploadStore::open(
             root.path().join("uploads"),
             quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
-        )?));
+        )?,
+        settlements: AtomicUsize::new(0),
+    });
+    let dispatcher = search_corpus_dispatcher_with_port(materializer_port.clone(), catalog.clone())
+        .with_source_upload(upload.clone());
     let batch = fixture_search_corpus_batch()?;
     let identity = source_publication_upload_identity(&batch)?;
     let bytes = quanta_index_ipc::encode_cbor_payload(&batch)?;
@@ -861,10 +920,33 @@ fn staged_source_publication_is_inert_until_commit_and_replays_one_original_even
         return Err("foreign binding reserved the original source event".into());
     }
 
-    let original = receipt_of(dispatcher.dispatch(
+    let cancelled = RequestBudgetV1::unbounded();
+    cancelled.cancel_handle().cancel();
+    let cancelled_response = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit.clone()),
+        &cancelled,
+    );
+    if !matches!(cancelled_response, SearchPlaneIngestIpcResponse::Error(ref error) if error.code == quanta_index_contract::SearchPlaneErrorCodeV2::RequestCancelled)
+        || materializer_port.applies() != 0
+        || std::fs::read_dir(root.path().join("uploads"))?.count() != 1
+    {
+        return Err("cancelled commit consumed its staged retry body".into());
+    }
+
+    let first_response = dispatcher.dispatch(
         SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit.clone()),
         &budget,
-    ))?;
+    );
+    let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(first_outcome) = first_response else {
+        return Err(format!("deferred cleanup hid durable publication: {first_response:?}").into());
+    };
+    if first_outcome.upload_cleanup
+        != Some(quanta_index_contract::SourcePublicationUploadCleanupV1::Deferred)
+        || std::fs::read_dir(root.path().join("uploads"))?.count() != 1
+    {
+        return Err("deferred cleanup lost its status or staged body".into());
+    }
+    let original = first_outcome.receipt;
     if original.generation != batch.generation || original.batch_digest != batch.batch_digest {
         return Err(
             format!("committed receipt changed the original batch identity: {original:?}").into(),
@@ -890,6 +972,40 @@ fn staged_source_publication_is_inert_until_commit_and_replays_one_original_even
         return Err(format!("committed source binding or phase drifted: {source:?}").into());
     }
 
+    let failed_response = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit.clone()),
+        &budget,
+    );
+    let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(failed_outcome) = failed_response else {
+        return Err(format!("cleanup I/O failure hid durable replay: {failed_response:?}").into());
+    };
+    if !matches!(failed_outcome.upload_cleanup, Some(quanta_index_contract::SourcePublicationUploadCleanupV1::Failed { code: quanta_index_contract::SearchPlaneErrorCodeV2::Internal, ref message }) if message.contains("fixture unlink failure"))
+        || failed_outcome.receipt.applied
+        || failed_outcome.receipt.durable_sequence != original.durable_sequence
+        || materializer_port.applies() != 1
+        || std::fs::read_dir(root.path().join("uploads"))?.count() != 1
+    {
+        return Err("cleanup I/O failure changed replay or body custody".into());
+    }
+
+    let complete_response = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(commit.clone()),
+        &budget,
+    );
+    let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(complete_outcome) = complete_response
+    else {
+        return Err(format!("cleanup retry hid durable replay: {complete_response:?}").into());
+    };
+    if complete_outcome.upload_cleanup
+        != Some(quanta_index_contract::SourcePublicationUploadCleanupV1::Complete)
+        || complete_outcome.receipt.applied
+        || complete_outcome.receipt.durable_sequence != original.durable_sequence
+        || materializer_port.applies() != 1
+        || std::fs::read_dir(root.path().join("uploads"))?.count() != 0
+    {
+        return Err("cleanup retry did not settle one retained replay body".into());
+    }
+
     // A lost commit response can be retried after the staging file was removed.
     let retry_ack = dispatcher.dispatch(upload_request(0, &bytes), &budget);
     if !matches!(
@@ -910,6 +1026,154 @@ fn staged_source_publication_is_inert_until_commit_and_replays_one_original_even
             format!("lost-response retry did not replay the original apply: {replay:?}").into(),
         );
     }
+    Ok(())
+}
+
+struct HeldFirstUpload {
+    inner: quanta_index_ipc::SourcePublicationUploadStore,
+    first: quanta_index_contract::SourcePublicationUploadIdentity,
+    entered: mpsc::Sender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl quanta_index_core::SourcePublicationUploadPort for HeldFirstUpload {
+    fn stage(
+        &self,
+        part: &quanta_index_contract::SourcePublicationUploadPart,
+        budget: &RequestBudgetV1,
+    ) -> Result<quanta_index_contract::SourcePublicationUploadAck, CoreError> {
+        self.inner.stage(part, budget)
+    }
+
+    fn load(
+        &self,
+        identity: quanta_index_contract::SourcePublicationUploadIdentity,
+        budget: &RequestBudgetV1,
+        reserve_decoded_bytes: &mut dyn FnMut(u64) -> Result<(), CoreError>,
+    ) -> Result<SearchCorpusIngestBatch, CoreError> {
+        let batch = self.inner.load(identity, budget, reserve_decoded_bytes)?;
+        if identity == self.first {
+            self.entered
+                .send(())
+                .map_err(|error| CoreError::Storage(error.to_string()))?;
+            self.release
+                .lock()
+                .map_err(|_| CoreError::Storage("fixture release poisoned".into()))?
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| CoreError::Storage(error.to_string()))?;
+        }
+        Ok(batch)
+    }
+
+    fn discard(
+        &self,
+        identity: quanta_index_contract::SourcePublicationUploadIdentity,
+    ) -> Result<(), CoreError> {
+        self.inner.discard(identity)
+    }
+
+    fn settle_published(
+        &self,
+        identity: quanta_index_contract::SourcePublicationUploadIdentity,
+    ) -> quanta_index_core::SourcePublicationUploadCleanupDisposition {
+        quanta_index_core::SourcePublicationUploadPort::settle_published(&self.inner, identity)
+    }
+}
+
+#[test]
+fn staged_commits_overlap_across_repos_and_refuse_same_repo() -> TestRes {
+    use quanta_index_contract::{
+        SearchPlaneErrorCodeV2, SourcePublicationBinding, SourcePublicationUploadCommit,
+        SourcePublicationUploadPart,
+    };
+    use quanta_index_ipc::{SourcePublicationUploadStore, source_publication_upload_identity};
+
+    let catalog = memory_catalog();
+    let (materializer, _fakes) = search_corpus_materializer(catalog.clone(), true, false);
+    let root = tempfile::tempdir()?;
+    let first = fixture_search_corpus_batch()?;
+    let mut second = fixture_search_corpus_batch()?;
+    let other_repo = RepoId::new("other")?;
+    second.repo_id = other_repo.clone();
+    for scope in &mut second.replace_scopes {
+        scope.coverage.source.file.source_repo_id = other_repo.clone();
+    }
+    for scope in &mut second.semantic_replace_scopes {
+        scope.scope.source_file.source_repo_id = other_repo.clone();
+        for source in &mut scope.sources {
+            source.source_file.source_repo_id = other_repo.clone();
+        }
+    }
+    super::support::restamp_search_corpus_fixture(&mut second)?;
+    second.validate_v1()?;
+
+    let first_identity = source_publication_upload_identity(&first)?;
+    let second_identity = source_publication_upload_identity(&second)?;
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let upload = Arc::new(HeldFirstUpload {
+        inner: SourcePublicationUploadStore::open(
+            root.path().join("uploads"),
+            quanta_index_contract::SOURCE_PUBLICATION_UPLOAD_MAX_BYTES,
+        )?,
+        first: first_identity,
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+    });
+    let dispatcher = Arc::new(
+        search_corpus_dispatcher_with_port(Arc::new(materializer), catalog)
+            .with_source_upload(upload),
+    );
+    let budget = RequestBudgetV1::unbounded();
+    for (batch, identity) in [(&first, first_identity), (&second, second_identity)] {
+        let response = dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::StageSourcePublication(SourcePublicationUploadPart {
+                identity,
+                offset: 0,
+                bytes: quanta_index_ipc::encode_cbor_payload(batch)?,
+            }),
+            &budget,
+        );
+        if !matches!(
+            response,
+            SearchPlaneIngestIpcResponse::SourcePublicationUploadAck(_)
+        ) {
+            return Err(format!("staging failed: {response:?}").into());
+        }
+    }
+    let first_commit = SourcePublicationUploadCommit {
+        identity: first_identity,
+        publication: SourcePublicationBinding::for_batch(&first),
+    };
+    let second_commit = SourcePublicationUploadCommit {
+        identity: second_identity,
+        publication: SourcePublicationBinding::for_batch(&second),
+    };
+    let worker_dispatcher = dispatcher.clone();
+    let worker_commit = first_commit.clone();
+    let worker = std::thread::spawn(move || {
+        worker_dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(worker_commit),
+            &RequestBudgetV1::unbounded(),
+        )
+    });
+    entered_rx.recv_timeout(Duration::from_secs(5))?;
+    let duplicate = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(first_commit),
+        &budget,
+    );
+    let other = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishStagedSourcePublication(second_commit),
+        &budget,
+    );
+    release_tx.send(())?;
+    let original = worker.join().map_err(|_| "staged commit worker panicked")?;
+    if !matches!(duplicate, SearchPlaneIngestIpcResponse::Error(ref error) if error.code == SearchPlaneErrorCodeV2::CatalogBusy)
+    {
+        return Err(format!("same repo was not refused: {duplicate:?}").into());
+    }
+    let _other_receipt = receipt_of(other)?;
+    let _original_receipt = receipt_of(original)?;
     Ok(())
 }
 

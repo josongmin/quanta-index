@@ -312,6 +312,7 @@ pub(super) fn validate_chunk_artifact(
     objects: &dyn ImmutableObjectPort,
     artifact: &OwnerArtifact,
     recipe: &EmbeddingRecipe,
+    source_byte_len: Option<u64>,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
     if !recipe.uses_chunks() {
@@ -324,68 +325,16 @@ pub(super) fn validate_chunk_artifact(
         };
     }
     let payload = objects.get(artifact.payload_ref, budget)?;
+    let payload_len =
+        u64::try_from(payload.payload.len()).map_err(|_error| IndexError::ResourceLimited)?;
     if payload.registration.reference != artifact.payload_ref
         || !payload.registration.children.is_empty()
-        || u64::try_from(payload.payload.len()).map_err(|_error| IndexError::ResourceLimited)?
-            > recipe.max_source_bytes
+        || payload_len > recipe.max_source_bytes
+        || source_byte_len.is_some_and(|length| length != payload_len)
     {
         return Err(IndexError::CorruptObject(
             "chunk input payload binding or bounds mismatch".into(),
         ));
-    }
-    // Source and certified projection retain distinct authorities. A member
-    // cannot name a different valid UTF-8 leaf under an unchanged owner stamp.
-    match recipe.input_policy {
-        EmbeddingInputPolicy::SourceUtf8 => {
-            if artifact.input.projection.is_some()
-                || artifact.input.producer_context != Digest([0; 32])
-            {
-                return Err(IndexError::CorruptObject(
-                    "chunk source policy mismatch".into(),
-                ));
-            }
-            let source_ref = artifact
-                .input
-                .source
-                .ok_or_else(|| IndexError::CorruptObject("chunk source record missing".into()))?;
-            let source = load_source_record_from_objects(source_ref, objects, budget)?;
-            if source.bytes != artifact.payload_ref
-                || source.byte_len
-                    != u64::try_from(payload.payload.len())
-                        .map_err(|_error| IndexError::ResourceLimited)?
-            {
-                return Err(IndexError::CorruptObject(
-                    "chunk source payload mismatch".into(),
-                ));
-            }
-        }
-        EmbeddingInputPolicy::ProjectionUtf8 {
-            projection,
-            producer,
-            ..
-        }
-        | EmbeddingInputPolicy::ProjectionChunks {
-            projection,
-            producer,
-            ..
-        } => {
-            let reference = artifact.input.projection.ok_or_else(|| {
-                IndexError::CorruptObject("chunk projection contribution missing".into())
-            })?;
-            let contribution = load_contribution_from_objects(reference, objects, budget)?;
-            if contribution.projection != projection
-                || contribution.producer != producer
-                || contribution.owner != artifact.owner
-                || contribution.source != artifact.input.source
-                || contribution.source_owner.is_some() != contribution.source.is_some()
-                || contribution_context(contribution) != artifact.input.producer_context
-                || contribution.output != Some(artifact.payload_ref)
-            {
-                return Err(IndexError::CorruptObject(
-                    "chunk projection stamp mismatch".into(),
-                ));
-            }
-        }
     }
     let validated = (|| {
         if recipe.is_certified_chunks() {

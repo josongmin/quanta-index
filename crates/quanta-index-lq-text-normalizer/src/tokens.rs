@@ -178,6 +178,12 @@ impl<L> TokenCursor<'_, L> {
         self.text.as_ref()
     }
 
+    /// Scan the same normalized backing again without cloning its memory lease.
+    pub fn rewind(&mut self) {
+        self.offset = 0;
+        self.position = 0;
+    }
+
     /// Return the next run without materializing later runs.
     pub fn next_run(&mut self) -> Option<TokenRun<'_>> {
         let remaining = self.text.get(self.offset..)?;
@@ -386,6 +392,11 @@ pub(crate) fn substring_ranges_in_case_text<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use super::{
         CaseMode, MAX_TOKEN_BYTES, TextQueryError, Token, TokenCursor, TokenRun, contains_phrase,
         contains_substring, query_tokens, tokenize,
@@ -415,6 +426,39 @@ mod tests {
         );
         assert_eq!(cursor.next_run(), None);
         assert_eq!(cursor.into_text(), "café!नमस्ते");
+    }
+
+    #[test]
+    fn funded_cursor_rewinds_same_nfc_backing_and_releases_one_lease() {
+        struct Lease(Arc<AtomicUsize>);
+        impl Drop for Lease {
+            fn drop(&mut self) {
+                let _previous = self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut cursor = TokenCursor::try_new_bounded(
+            "cafe\u{301}!z",
+            32,
+            4096,
+            |_units| Ok::<_, ()>(()),
+            |_bytes| Ok(Lease(Arc::clone(&drops))),
+        )
+        .expect("bounded NFC fixture");
+        let backing = cursor.text().as_ptr();
+        let first = cursor.next_run().expect("first run");
+        assert_eq!((first.text, first.position), ("café", 0));
+        assert_eq!(cursor.next_run().map(|run| run.position), Some(1));
+        assert_eq!(cursor.next_run(), None);
+        cursor.rewind();
+        assert_eq!(cursor.text().as_ptr(), backing);
+        assert_eq!(
+            cursor.next_run().map(|run| (run.text, run.position)),
+            Some(("café", 0))
+        );
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(cursor);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 
     #[test]

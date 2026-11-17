@@ -1,0 +1,418 @@
+use super::*;
+
+fn selected_catalog(root: &Path) -> Result<(SqliteCatalog, NativeBootManifest), Box<dyn Error>> {
+    let (catalog, genesis) = setup(root)?;
+    let original = operation(32_001, 201);
+    let attempt = admit_new(&catalog, original)?;
+    let first = view(1, genesis.profile, None);
+    check_eq!(
+        publish(&catalog, attempt, &genesis, first.clone())?,
+        OperationStatus::Published(first.identity)
+    );
+    let selected = catalog.select_native_boot_manifest(original.key, &mut admission_budget())?;
+    Ok((catalog, selected))
+}
+
+fn visit_quiescent_publications(
+    connection: &Connection,
+    selected: &NativeBootManifest,
+    budget: &mut WorkBudget,
+    mut visit: impl FnMut(&ImmutableOperation, &CatalogView, &mut WorkBudget) -> Result<(), IndexError>,
+) -> Result<CatalogView, IndexError> {
+    let head = read_only::check_source_root_quiescence(connection, selected, workspace(), budget)?;
+    read_only::visit_quiescent_published_rows_v1(connection, workspace(), budget, &mut visit)?;
+    Ok(head)
+}
+
+#[test]
+fn source_root_publication_census_visits_actual_middle_row_and_refuses_orphan() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (catalog, selected) = selected_catalog(root.path())?;
+    let middle = publish_plain_next(&catalog, &selected.publication, 2, 202)?;
+    let latest = publish_plain_next(&catalog, &middle, 3, 203)?;
+    let guard = catalog.lock()?;
+    let mut seen = Vec::new();
+    check_eq!(
+        visit_quiescent_publications(
+            &guard,
+            &selected,
+            &mut admission_budget(),
+            |operation, publication, budget| {
+                budget.checkpoint()?;
+                seen.push((operation.key, publication.identity));
+                Ok(())
+            }
+        )?,
+        latest
+    );
+    check_eq!(seen.len(), 3);
+    check_eq!(
+        seen[0],
+        (selected.operation.key, selected.publication.identity)
+    );
+    check_eq!(seen[1], (operation(922, 202).key, middle.identity));
+    check_eq!(seen[2], (operation(923, 203).key, latest.identity));
+
+    // A Source inventory missing the middle operation must refuse even when
+    // its highest key and the actual Catalog head agree.
+    check!(matches!(
+        visit_quiescent_publications(
+            &guard,
+            &selected,
+            &mut admission_budget(),
+            |published, _, _| {
+                if published.key == operation(922, 202).key {
+                    Err(IndexError::DigestConflict)
+                } else {
+                    Ok(())
+                }
+            }
+        ),
+        Err(IndexError::DigestConflict)
+    ));
+    Ok(())
+}
+
+#[test]
+fn source_root_quiescence_allows_actual_post_selection_publication() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (catalog, selected) = selected_catalog(root.path())?;
+    let later = publish_plain_next(&catalog, &selected.publication, 2, 202)?;
+    let guard = catalog.lock()?;
+    check_eq!(
+        read_only::check_source_root_quiescence(
+            &guard,
+            &selected,
+            workspace(),
+            &mut admission_budget()
+        )?,
+        later
+    );
+    // Forward recovery can observe a later settled head. Backward rollback
+    // still requires the exact selected baseline and must refuse it.
+    check!(matches!(
+        read_only::check_rollback(&guard, &selected, &mut admission_budget()),
+        Err(IndexError::Conflict)
+    ));
+    check_eq!(boot_manifest::read_stored(&guard)?, Some(selected));
+    Ok(())
+}
+
+#[test]
+fn source_root_quiescence_refuses_ingress_pending_operation_and_pending_work() -> TestResult {
+    for kind in 0..3 {
+        let root = tempfile::tempdir()?;
+        let (catalog, selected) = selected_catalog(root.path())?;
+        match kind {
+            0 => {
+                let _ingress = catalog.open_ingress(operation(32_002, 203).key)?;
+            }
+            1 => {
+                let _pending = admit_new(&catalog, operation(32_003, 204))?;
+            }
+            _ => {
+                let work = owner_work(205);
+                let _next =
+                    publish_work_next(&catalog, &selected.publication, 2, &work, 32_004, 206)?;
+            }
+        }
+        let guard = catalog.lock()?;
+        check!(matches!(
+            read_only::check_source_root_quiescence(
+                &guard,
+                &selected,
+                workspace(),
+                &mut admission_budget()
+            ),
+            Err(IndexError::Conflict)
+        ));
+        let mut visited = 0;
+        check!(matches!(
+            visit_quiescent_publications(&guard, &selected, &mut admission_budget(), |_, _, _| {
+                visited += 1;
+                Ok(())
+            }),
+            Err(IndexError::Conflict)
+        ));
+        check_eq!(visited, 0);
+        check_eq!(boot_manifest::read_stored(&guard)?, Some(selected));
+    }
+    Ok(())
+}
+
+#[test]
+fn source_root_quiescence_refuses_foreign_scope_and_preserves_cancellation() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (catalog, selected) = selected_catalog(root.path())?;
+    let guard = catalog.lock()?;
+    let foreign = WorkspaceKey {
+        slot: SlotId(id(207)),
+        ..workspace()
+    };
+    check!(matches!(
+        read_only::check_source_root_quiescence(
+            &guard,
+            &selected,
+            foreign,
+            &mut admission_budget()
+        ),
+        Err(IndexError::DigestConflict)
+    ));
+    let mut cancelled = admission_budget();
+    cancelled.request().cancel_handle().cancel();
+    check!(matches!(
+        read_only::check_source_root_quiescence(&guard, &selected, workspace(), &mut cancelled),
+        Err(IndexError::Cancelled)
+    ));
+    check_eq!(boot_manifest::read_stored(&guard)?, Some(selected));
+    Ok(())
+}
+
+#[test]
+fn source_root_quiescence_refuses_foreign_workspace_even_when_local_head_is_valid() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (catalog, selected) = selected_catalog(root.path())?;
+    let guard = catalog.lock()?;
+    let foreign = WorkspaceKey {
+        slot: SlotId(id(208)),
+        ..workspace()
+    };
+    check_eq!(
+        guard.execute(
+            "INSERT INTO native_workspace_v1(workspace,epoch,sequence,payload,row_digest) \
+         SELECT ?1,epoch,sequence,payload,row_digest FROM native_workspace_v1 WHERE workspace=?2",
+            params![workspace_key(foreign)?, workspace_key(workspace())?]
+        )?,
+        1
+    );
+    check!(matches!(
+        read_only::check_source_root_quiescence(
+            &guard,
+            &selected,
+            workspace(),
+            &mut admission_budget()
+        ),
+        Err(IndexError::Conflict)
+    ));
+    let mut visited = 0;
+    check!(matches!(
+        visit_quiescent_publications(&guard, &selected, &mut admission_budget(), |_, _, _| {
+            visited += 1;
+            Ok(())
+        }),
+        Err(IndexError::Conflict)
+    ));
+    check_eq!(visited, 0);
+    check_eq!(
+        current_view(&guard, workspace())?,
+        Some(selected.publication)
+    );
+    Ok(())
+}
+
+#[test]
+fn offline_head_checks_charge_current_and_history_payloads_before_decode() -> TestResult {
+    for historical in [false, true] {
+        let root = tempfile::tempdir()?;
+        let (catalog, selected) = selected_catalog(root.path())?;
+        let guard = catalog.lock()?;
+        // Corrupt a persisted body beyond the Original byte allowance. The
+        // old direct current_view decoder materialized it before checking the
+        // caller's budget; the admitted view preflight must refuse first.
+        let changed = if historical {
+            guard.execute(
+                "UPDATE native_view_v1 SET payload=zeroblob(1048576)
+                 WHERE workspace=?1 AND epoch=?2 AND sequence=?3",
+                params![
+                    workspace_key(workspace())?,
+                    int(selected.publication.identity.epoch)?,
+                    int(selected.publication.identity.sequence)?
+                ],
+            )?
+        } else {
+            guard.execute(
+                "UPDATE native_workspace_v1 SET payload=zeroblob(1048576) WHERE workspace=?1",
+                params![workspace_key(workspace())?],
+            )?
+        };
+        check_eq!(changed, 1);
+        let tight = || {
+            WorkBudget::with_request(
+                WorkLimits {
+                    reads: 100_000,
+                    writes: 0,
+                    bytes: 256 * 1024,
+                    mutations: 0,
+                },
+                quanta_index_core::RequestBudgetV1::for_duration(Duration::from_secs(30)),
+            )
+        };
+        check!(matches!(
+            read_only::check_source_root_quiescence(&guard, &selected, workspace(), &mut tight()),
+            Err(IndexError::ResourceLimited)
+        ));
+        if historical {
+            check!(matches!(
+                read_only::check_rollback(&guard, &selected, &mut tight()),
+                Err(IndexError::ResourceLimited)
+            ));
+        }
+        let size: i64 = if historical {
+            guard.query_row(
+                "SELECT length(payload) FROM native_view_v1
+                 WHERE workspace=?1 AND epoch=?2 AND sequence=?3",
+                params![
+                    workspace_key(workspace())?,
+                    int(selected.publication.identity.epoch)?,
+                    int(selected.publication.identity.sequence)?
+                ],
+                |row| row.get(0),
+            )?
+        } else {
+            guard.query_row(
+                "SELECT length(payload) FROM native_workspace_v1 WHERE workspace=?1",
+                params![workspace_key(workspace())?],
+                |row| row.get(0),
+            )?
+        };
+        check_eq!(size, 1_048_576);
+    }
+    Ok(())
+}
+
+#[test]
+fn offline_quiescence_refuses_terminal_receipt_for_another_view_at_the_head() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (catalog, selected) = selected_catalog(root.path())?;
+    let operation = operation(32_002, 210);
+    let key = operation.key;
+    let attempt = admit_new(&catalog, operation)?;
+    let actual = view(2, selected.publication.profile, None);
+    check_eq!(
+        publish(&catalog, attempt, &selected.publication, actual.clone())?,
+        OperationStatus::Published(actual.identity)
+    );
+    let guard = catalog.lock()?;
+    let mut terminal = read_operation(&guard, key)?.ok_or("missing fixture publication")?;
+    check_eq!(terminal.status, OperationStatus::Published(actual.identity));
+    let alternate = view(2, actual.profile, Some(ObjectRef(digest_id(211))));
+    check_ne!(actual.identity, alternate.identity);
+    terminal.status = OperationStatus::Published(alternate.identity);
+    terminal.published_view = Some(alternate);
+    write_operation(&guard, &terminal, false)?;
+    check!(matches!(
+        read_only::check_source_root_quiescence(
+            &guard,
+            &selected,
+            workspace(),
+            &mut admission_budget()
+        ),
+        Err(IndexError::Conflict)
+    ));
+    let mut visited = 0;
+    check!(matches!(
+        visit_quiescent_publications(&guard, &selected, &mut admission_budget(), |_, _, _| {
+            visited += 1;
+            Ok(())
+        }),
+        Err(IndexError::Conflict)
+    ));
+    check_eq!(visited, 0);
+    check_eq!(current_view(&guard, workspace())?, Some(actual));
+    Ok(())
+}
+
+#[test]
+fn offline_floor_scan_keeps_valid_old_epoch_and_refuses_corrupt_digest() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (catalog, selected) = selected_catalog(root.path())?;
+    check_eq!(
+        catalog.advance_exact_history_floor(workspace(), 7, 1, &mut admission_budget())?,
+        1
+    );
+    let guard = catalog.lock()?;
+    // A prior epoch may retain an exact-history floor after the current head
+    // advances. Its own historical head, not the current epoch, bounds it.
+    let mut old = view(1, selected.publication.profile, None);
+    old.identity.epoch = 6;
+    old.identity.digest = old.identity_digest()?;
+    write_view(&guard, &old)?;
+    let scope = workspace_key(workspace())?;
+    let old_digest = fields_digest(b"qidx.native.exactfloor.v1", &(&scope, 6_i64, 1_i64))?;
+    check_eq!(
+        guard.execute(
+            "INSERT INTO native_exact_history_floor_v1
+             (workspace,epoch,retain_from_sequence,row_digest) VALUES (?1,?2,?3,?4)",
+            params![&scope, 6_i64, 1_i64, old_digest]
+        )?,
+        1
+    );
+    check_eq!(
+        read_only::check_source_root_quiescence(
+            &guard,
+            &selected,
+            workspace(),
+            &mut admission_budget()
+        )?,
+        selected.publication
+    );
+    read_only::check_rollback(&guard, &selected, &mut admission_budget())?;
+    check_eq!(
+        guard.execute(
+            "UPDATE native_exact_history_floor_v1 SET row_digest=zeroblob(32)
+             WHERE workspace=?1 AND epoch=6",
+            params![&scope]
+        )?,
+        1
+    );
+    check!(matches!(
+        read_only::check_source_root_quiescence(
+            &guard,
+            &selected,
+            workspace(),
+            &mut admission_budget()
+        ),
+        Err(IndexError::Storage(_))
+    ));
+    check!(matches!(
+        read_only::check_rollback(&guard, &selected, &mut admission_budget()),
+        Err(IndexError::Storage(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn offline_floor_scan_refuses_valid_digest_beyond_epoch_head() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let (catalog, selected) = selected_catalog(root.path())?;
+    check_eq!(
+        catalog.advance_exact_history_floor(workspace(), 7, 1, &mut admission_budget())?,
+        1
+    );
+    let guard = catalog.lock()?;
+    let scope = workspace_key(workspace())?;
+    let beyond = int(selected.publication.identity.sequence + 1)?;
+    let checksum = fields_digest(b"qidx.native.exactfloor.v1", &(&scope, 7_i64, beyond))?;
+    check_eq!(
+        guard.execute(
+            "UPDATE native_exact_history_floor_v1
+             SET retain_from_sequence=?1,row_digest=?2 WHERE workspace=?3 AND epoch=7",
+            params![beyond, checksum, &scope]
+        )?,
+        1
+    );
+    check!(matches!(
+        read_only::check_source_root_quiescence(
+            &guard,
+            &selected,
+            workspace(),
+            &mut admission_budget()
+        ),
+        Err(IndexError::Storage(_))
+    ));
+    check!(matches!(
+        read_only::check_rollback(&guard, &selected, &mut admission_budget()),
+        Err(IndexError::Storage(_))
+    ));
+    Ok(())
+}

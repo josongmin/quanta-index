@@ -13,8 +13,7 @@ use std::path::{Path, PathBuf};
 use quanta_index_ipc::IpcError;
 
 use crate::config::{
-    RootSourceV1, SocketKindV1, SocketSourceV1, fill_socket_path_v1, socket_path_capacity_v1,
-    socket_source_v1,
+    SocketKindV1, SocketSourceV1, fill_socket_path_v1, socket_path_capacity_v1, socket_source_v1,
 };
 use crate::{ClientProfile, ConnectOptions, QuantaIndexClientPayloadV1};
 
@@ -85,6 +84,10 @@ pub enum NativeSdkConnectFailureV1<E> {
     ArithmeticOverflow,
     InvalidNativeProducer,
     InvalidNativeCapacity,
+    NativeSelectionRequired,
+    MixedLegacyEndpoints,
+    NativeSocketRequired,
+    NativeSocketNotAbsolute,
 }
 
 /// Allocation-free storage for one construction attempt.
@@ -312,17 +315,25 @@ pub fn try_connect_native_into_v1<P: NativeSdkConnectAdmissionV1 + ?Sized>(
         admission
             .consume_connect_work_v1(1)
             .map_err(NativeSdkConnectFailureV1::Admission)?;
-        let root = match options.root_source_v1() {
-            RootSourceV1::Explicit => options.state_root,
-            RootSourceV1::PinnedSockets => None,
-            RootSourceV1::Environment => {
-                return Err(NativeSdkConnectFailureV1::UnsupportedEnvironmentLookup);
-            }
-        };
+        let selection = options
+            .native_selection
+            .ok_or(NativeSdkConnectFailureV1::NativeSelectionRequired)?;
+        if options.state_root.is_some()
+            || options.control_socket.is_some()
+            || options.ingest_socket.is_some()
+        {
+            return Err(NativeSdkConnectFailureV1::MixedLegacyEndpoints);
+        }
+        let socket = options
+            .query_socket
+            .ok_or(NativeSdkConnectFailureV1::NativeSocketRequired)?;
+        if !socket.is_absolute() {
+            return Err(NativeSdkConnectFailureV1::NativeSocketNotAbsolute);
+        }
         construct_path_v1(
             SocketInputV1 {
-                root,
-                explicit: options.query_socket,
+                root: None,
+                explicit: Some(socket),
                 kind: SocketKindV1::Query,
             },
             &mut data.paths[0],
@@ -330,45 +341,13 @@ pub fn try_connect_native_into_v1<P: NativeSdkConnectAdmissionV1 + ?Sized>(
             &mut data.funding,
             admission,
         )?;
-        if profile == ClientProfile::Full {
-            construct_path_v1(
-                SocketInputV1 {
-                    root,
-                    explicit: options.control_socket,
-                    kind: SocketKindV1::Control,
-                },
-                &mut data.paths[1],
-                &mut data.reserve_failure,
-                &mut data.funding,
-                admission,
-            )?;
-            construct_path_v1(
-                SocketInputV1 {
-                    root,
-                    explicit: options.ingest_socket,
-                    kind: SocketKindV1::Ingest,
-                },
-                &mut data.paths[2],
-                &mut data.reserve_failure,
-                &mut data.funding,
-                admission,
-            )?;
-        }
         admission
             .consume_connect_work_v1(1)
             .map_err(NativeSdkConnectFailureV1::Admission)?;
-        let (control, ingest) = if profile == ClientProfile::Full {
-            (
-                Some(core::mem::take(&mut data.paths[1])),
-                Some(core::mem::take(&mut data.paths[2])),
-            )
-        } else {
-            (None, None)
-        };
-        data.payload = Some(QuantaIndexClientPayloadV1::from_socket_paths_v1(
+        data.payload = Some(QuantaIndexClientPayloadV1::from_native_socket_v1(
             core::mem::take(&mut data.paths[0]),
-            control,
-            ingest,
+            selection,
+            profile,
             io_policy,
         ));
         admission

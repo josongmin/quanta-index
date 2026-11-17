@@ -12,10 +12,15 @@ Current execution and exclusions are recorded in the
 
 Scope: the legacy Tantivy-coupled paged Native/File authorities. "One current
 contract" below means one reader/format in that legacy family; it does not claim
-that the new opt-in native engine is absent. Native authority format 6 below is
+that the separate Native engine is absent or describe SDK constructor routing. Native authority format 6 below is
 not the native service's independently versioned state marker. The new
 NativeLiteral/NativeTextIndex, SQLite Catalog and physical GC follow the
 [Native RFC](../rfc/oct-10-native-incremental-vnext.md#11-reading-order-and-decision-boundaries).
+Ordinary SDK profile resolution defaults to Native; Legacy transport examples
+require explicit connect_legacy. This source routing does not qualify daemon,
+installed-default, shipped dependency removal or full operational acceptance.
+See [SDK profile selection](../../crates/quanta-index-sdk/src/config.rs) and
+[constructors](../../crates/quanta-index-sdk/src/client.rs).
 Legacy GC/XL proofs do not qualify them. R35/R36 retire the legacy authority only
 after the RFC's switch gates; no two writable engines may share one state root.
 

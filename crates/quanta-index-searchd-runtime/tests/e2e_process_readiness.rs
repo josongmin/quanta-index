@@ -1518,7 +1518,7 @@ fn binary_large_scoped_corpus_restart_preserves_every_source_and_ranked_page() -
         }
         let preparation_process = SearchdBinaryProcess::start_with_command(&state_root, command)?;
         let preparation = (|| -> Result<GenerationPin, Box<dyn Error>> {
-            let client = QuantaIndex::connect(
+            let client = QuantaIndex::connect_legacy(
                 ConnectOptions::from_state_root(&state_root)
                     .with_request_io_timeout(Duration::from_secs(300)),
             )?;

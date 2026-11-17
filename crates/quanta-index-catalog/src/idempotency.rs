@@ -42,12 +42,12 @@ use quanta_index_core::{
     OPERATION_REPLAY_FLOOR_CODE, OperationInspectV1, OperationJournalStateV1, PreparedMutationV1,
 };
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
-use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params, types::ValueRef};
 use sha2::{Digest, Sha256};
 
 use crate::connection::{SqliteCatalog, blob32, engine_error, generation_i64};
 use crate::sequence::{
-    SequenceEventKindV1, append_operation_invalidation, append_sequence_event,
+    FixedDigest32, SequenceEventKindV1, append_operation_invalidation, append_sequence_event,
     is_invalidated_for_floor, verify_event_reference,
 };
 
@@ -731,7 +731,7 @@ fn fence_allocator_digest(last_fence: i64) -> [u8; 32] {
 }
 
 fn read_fence_allocator(connection: &Connection, path: &Path) -> Result<i64, CoreError> {
-    let row: Option<(i64, Vec<u8>)> = connection
+    let row: Option<(i64, FixedDigest32)> = connection
         .query_row(
             "SELECT last_fence, row_sha256 FROM catalog_fence_v1 WHERE id = 1",
             [],
@@ -746,7 +746,7 @@ fn read_fence_allocator(connection: &Connection, path: &Path) -> Result<i64, Cor
         ))
     })?;
     if last_fence < 0
-        || blob32("fence allocator digest", &digest)? != fence_allocator_digest(last_fence)
+        || digest.checked("fence allocator digest")? != fence_allocator_digest(last_fence)
     {
         return Err(CoreError::Typed {
             code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
@@ -772,6 +772,10 @@ pub(crate) fn seed_fence_allocator(
             )
             .map_err(|error| engine_error("seed fence allocator", path, &error))?;
     }
+    verify_fence_high_water(connection, path).map(|_last_fence| ())
+}
+
+fn verify_fence_high_water(connection: &Connection, path: &Path) -> Result<i64, CoreError> {
     let last_fence = read_fence_allocator(connection, path)?;
     let journal_maximum: Option<i64> = connection
         .query_row("SELECT MAX(fence_token) FROM idempotency_v2", [], |row| {
@@ -798,7 +802,7 @@ pub(crate) fn seed_fence_allocator(
             });
         }
     }
-    Ok(())
+    Ok(last_fence)
 }
 
 /// Allocate a root-global, never-reused fence in the owning write transaction.
@@ -1015,28 +1019,37 @@ pub(crate) fn verify_terminal_event_pair(
     connection: &Connection,
     path: &Path,
     sequence: i64,
-) -> Result<Option<i64>, CoreError> {
-    let raw: Option<StoredKeyRaw> = connection
-        .query_row(
+    mut budget: Option<&mut quanta_index_core::index::WorkBudget>,
+) -> Result<Option<i64>, crate::integrity::IntegrityCheckError> {
+    let mut statement = connection
+        .prepare(
             "SELECT kind, repo_id, revision_id, generation, batch_digest
              FROM idempotency_v2 WHERE durable_sequence = ?1",
-            params![sequence],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
         )
-        .optional()
-        .map_err(|error| engine_error("read terminal journal event pair", path, &error))?;
-    let Some(raw) = raw else {
+        .map_err(|error| engine_error("prepare terminal event pair", path, &error))?;
+    let mut rows = statement
+        .query(params![sequence])
+        .map_err(|error| engine_error("lookup terminal event pair", path, &error))?;
+    let Some(row) = rows
+        .next()
+        .map_err(|error| engine_error("read terminal event pair", path, &error))?
+    else {
         return Ok(None);
     };
+    let _key_memory = match budget.as_deref_mut() {
+        Some(budget) => Some(admit_journal_key(row, path, budget)?),
+        None => None,
+    };
+    let raw = raw_journal_key(row)
+        .map_err(|error| engine_error("decode terminal event key", path, &error))?;
     let key = stored_key_from_raw(raw)?;
+    let _row_memory = match budget {
+        Some(budget) => Some(
+            preflight_admitted_row(connection, path, &key, budget)?
+                .ok_or_else(|| corrupt_row(&key, "disappeared during terminal event preflight"))?,
+        ),
+        None => None,
+    };
     let stored = read_row(connection, path, &key)?
         .ok_or_else(|| corrupt_row(&key, "disappeared during terminal event pairing"))?;
     Ok(Some(stored.state.as_code()))
@@ -1250,6 +1263,374 @@ fn corrupt_row_wip(what: &str) -> CoreError {
         code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
         message: format!("catalog: {what}"),
     }
+}
+
+/// Distinguish resource refusal from canonical journal corruption/floor.
+pub(crate) enum AdmittedJournalError {
+    Admission(quanta_index_core::index::IndexError),
+    Journal(CoreError),
+}
+
+impl From<AdmittedJournalError> for crate::integrity::IntegrityCheckError {
+    fn from(error: AdmittedJournalError) -> Self {
+        match error {
+            AdmittedJournalError::Admission(error) => Self::Admission(error),
+            AdmittedJournalError::Journal(error) => Self::Integrity(error),
+        }
+    }
+}
+
+fn raw_journal_key(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredKeyRaw> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+    ))
+}
+
+fn admit_journal_key(
+    row: &rusqlite::Row<'_>,
+    path: &Path,
+    budget: &mut quanta_index_core::index::WorkBudget,
+) -> Result<quanta_index_core::index::MemoryLease, AdmittedJournalError> {
+    use quanta_index_core::index::{IndexError, MemoryLifetime, WorkUsage};
+
+    let mut key_bytes = 0_u64;
+    for index in [0_usize, 1, 2, 4] {
+        let cell = row
+            .get_ref(index)
+            .map_err(|error| engine_error("inspect source journal key", path, &error))?;
+        let ValueRef::Text(value) = cell else {
+            return Err(corrupt_row_wip("journal key is not text").into());
+        };
+        key_bytes = key_bytes
+            .checked_add(u64::try_from(value.len()).map_err(|_| IndexError::ResourceLimited)?)
+            .ok_or(IndexError::ResourceLimited)?;
+    }
+    budget.charge(WorkUsage {
+        reads: 1,
+        bytes: key_bytes,
+        ..WorkUsage::default()
+    })?;
+    let memory_bytes = key_bytes
+        .checked_add(1024)
+        .ok_or(IndexError::ResourceLimited)?;
+    Ok(budget
+        .reserve_memory(memory_bytes, MemoryLifetime::Temporary)?
+        .ok_or(IndexError::ResourceLimited)?)
+}
+
+/// Validate every retained journal row without startup aborts or lease cleanup.
+/// The caller owns the Deferred read snapshot and its physical input admission.
+pub(crate) fn verify_admitted_quiescent_journal(
+    connection: &Connection,
+    path: &Path,
+    expected_repo: &RepoId,
+    budget: &mut quanta_index_core::index::WorkBudget,
+) -> Result<(u64, i64, Option<u64>), AdmittedJournalError> {
+    use quanta_index_core::index::WorkUsage;
+
+    budget.charge(WorkUsage {
+        reads: 4,
+        bytes: 1024,
+        ..WorkUsage::default()
+    })?;
+    let last_fence = verify_fence_high_water(connection, path)?;
+    let has_lease: Option<i64> = connection
+        .query_row("SELECT 1 FROM mutation_lease_v1 LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .optional()
+        .map_err(|error| engine_error("read mutation leases", path, &error))?;
+    if has_lease.is_some() {
+        return Err(quanta_index_core::index::IndexError::Conflict.into());
+    }
+
+    let mut statement = connection
+        .prepare(
+            "SELECT kind, repo_id, revision_id, generation, batch_digest
+         FROM idempotency_v2 ORDER BY kind, repo_id, revision_id, generation, batch_digest",
+        )
+        .map_err(|error| engine_error("prepare source journal scan", path, &error))?;
+    let mut rows = statement
+        .query([])
+        .map_err(|error| engine_error("read source journal", path, &error))?;
+    let mut count = 0_u64;
+    let mut latest_search_corpus = None::<u64>;
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| engine_error("read source journal key", path, &error))?
+    {
+        budget.checkpoint()?;
+        let _key_memory = admit_journal_key(row, path, budget)?;
+        let raw = raw_journal_key(row)
+            .map_err(|error| engine_error("decode journal key", path, &error))?;
+        let key = stored_key_from_raw(raw)?;
+        if &key.repo_id != expected_repo {
+            return Err(quanta_index_core::index::IndexError::Conflict.into());
+        }
+        let (state, inspected, allocation) =
+            inspect_admitted_terminal(connection, path, &key, budget)?;
+        match state {
+            Some(
+                OperationJournalStateV1::Committed
+                | OperationJournalStateV1::Refused
+                | OperationJournalStateV1::Aborted,
+            ) => {}
+            _ => return Err(quanta_index_core::index::IndexError::Conflict.into()),
+        }
+        if key.kind == IngestOperationKindV1::SearchCorpus
+            && let OperationInspectV1::Committed {
+                durable_sequence, ..
+            } = &inspected
+        {
+            latest_search_corpus = Some(
+                latest_search_corpus.map_or(*durable_sequence, |head| head.max(*durable_sequence)),
+            );
+        }
+        // The decoded receipt must drop before its admitted backing.
+        drop(inspected);
+        drop(allocation);
+        count = count
+            .checked_add(1)
+            .ok_or(quanta_index_core::index::IndexError::ResourceLimited)?;
+    }
+    Ok((count, last_fence, latest_search_corpus))
+}
+
+impl From<CoreError> for AdmittedJournalError {
+    fn from(error: CoreError) -> Self {
+        Self::Journal(error)
+    }
+}
+
+impl From<quanta_index_core::index::IndexError> for AdmittedJournalError {
+    fn from(error: quanta_index_core::index::IndexError) -> Self {
+        Self::Admission(error)
+    }
+}
+
+/// Preflight every variable journal cell before `read_row` owns it. `CAST AS
+/// BLOB` measures UTF-8 bytes, including embedded NUL, rather than character
+/// count. The complete input and SQLite page cache are separately admitted
+/// by the shared outer read-only connection.
+fn preflight_admitted_row(
+    connection: &Connection,
+    path: &Path,
+    key: &IdempotencyKeyV1,
+    budget: &mut quanta_index_core::index::WorkBudget,
+) -> Result<
+    Option<(
+        quanta_index_core::index::MemoryLease,
+        quanta_index_core::index::MemoryLease,
+    )>,
+    AdmittedJournalError,
+> {
+    use quanta_index_core::index::{IndexError, MemoryLifetime, WorkUsage};
+    let sizes: Option<[Option<i64>; 8]> = connection
+        .query_row(
+            "SELECT length(CAST(body_sha256 AS BLOB)), length(CAST(owner AS BLOB)),
+                    length(CAST(input_commitment AS BLOB)), length(CAST(receipt_cbor AS BLOB)),
+                    length(CAST(receipt_digest AS BLOB)), length(CAST(refusal_code AS BLOB)),
+                    length(CAST(refusal_message AS BLOB)), length(CAST(row_sha256 AS BLOB))
+             FROM idempotency_v2
+             WHERE kind = ?1 AND repo_id = ?2 AND revision_id = ?3
+               AND generation = ?4 AND batch_digest = ?5",
+            params![
+                key.kind.as_code_str(),
+                key.repo_id.as_str(),
+                key.revision_id.as_str(),
+                generation_i64(key.generation)?,
+                key.batch_digest.as_str(),
+            ],
+            |row| {
+                Ok([
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ])
+            },
+        )
+        .optional()
+        .map_err(|error| {
+            AdmittedJournalError::Journal(engine_error("preflight journal record", path, &error))
+        })?;
+    let Some(sizes) = sizes else { return Ok(None) };
+    let mut bytes = 4_096_u64;
+    for size in sizes.into_iter().flatten() {
+        bytes = bytes
+            .checked_add(u64::try_from(size).map_err(|_| IndexError::ResourceLimited)?)
+            .ok_or(IndexError::ResourceLimited)?;
+    }
+    // The temporary allowance spans SQLite-owned cells and CBOR decode.
+    // A second lease is acquired before materialization so any decoded
+    // receipt/owner value that leaves this function stays funded.
+    let temporary_bytes = bytes.checked_mul(3).ok_or(IndexError::ResourceLimited)?;
+    let retained_bytes = bytes.checked_mul(2).ok_or(IndexError::ResourceLimited)?;
+    budget.charge(WorkUsage {
+        reads: 1,
+        bytes,
+        ..WorkUsage::default()
+    })?;
+    let temporary = budget
+        .reserve_memory(temporary_bytes, MemoryLifetime::Temporary)?
+        .ok_or(IndexError::ResourceLimited)?;
+    let retained = budget
+        .reserve_memory(retained_bytes, MemoryLifetime::Retained)?
+        .ok_or(IndexError::ResourceLimited)?;
+    Ok(Some((temporary, retained)))
+}
+
+/// The canonical floor, row self-digest, terminal event and receipt decoder
+/// run on the same Deferred snapshot as the preflight.
+pub(crate) fn inspect_admitted_terminal(
+    connection: &Connection,
+    path: &Path,
+    key: &IdempotencyKeyV1,
+    budget: &mut quanta_index_core::index::WorkBudget,
+) -> Result<
+    (
+        Option<OperationJournalStateV1>,
+        OperationInspectV1,
+        Option<quanta_index_core::index::MemoryLease>,
+    ),
+    AdmittedJournalError,
+> {
+    // Physical SQLite input is admitted by the outer read-only snapshot. The
+    // two GC lookups, row fetch and terminal event lookup consume at most four
+    // logical reads. Fixed event/floor cells are decoded onto the stack;
+    // their 256-byte allowance covers the returned fixed-width values.
+    budget.charge(quanta_index_core::index::WorkUsage {
+        reads: 4,
+        bytes: 256,
+        ..quanta_index_core::index::WorkUsage::default()
+    })?;
+    if is_invalidated_for_floor(connection, path, &key.identity_digest())? {
+        return Err(AdmittedJournalError::Journal(replay_floor(key)));
+    }
+    let memory = preflight_admitted_row(connection, path, key, budget)?;
+    let stored = read_row(connection, path, key)?;
+    match (memory, stored) {
+        (None, None) => Ok((None, OperationInspectV1::Absent, None)),
+        (Some((_temporary, retained)), Some(stored)) => {
+            let state = stored.state;
+            let inspected = inspect_stored(key, &stored)?;
+            Ok((Some(state), inspected, Some(retained)))
+        }
+        _ => Err(AdmittedJournalError::Journal(corrupt_row_wip(
+            "journal row changed within the admitted read snapshot",
+        ))),
+    }
+}
+
+/// Read the latest real applied History ACK for one generation in the caller's
+/// held read snapshot. Authenticated terminal refusals did not apply and are
+/// skipped; pending or otherwise invalid rows refuse the cut. `None` means no
+/// applied History ACK, including a generation with only terminal refusals.
+pub(crate) fn latest_applied_history_receipt_in_snapshot_v1(
+    connection: &Connection,
+    path: &Path,
+    generation: &quanta_index_contract::index::AuxiliaryGenerationKeyV1,
+    budget: &mut quanta_index_core::index::WorkBudget,
+) -> Result<
+    Option<(BatchPublishReceipt, quanta_index_core::index::MemoryLease)>,
+    AdmittedJournalError,
+> {
+    use quanta_index_core::index::{IndexError, WorkUsage};
+
+    budget.charge(WorkUsage {
+        reads: 1,
+        bytes: 256,
+        ..WorkUsage::default()
+    })?;
+    let mut statement = connection
+        .prepare(
+            "SELECT kind, repo_id, revision_id, generation, batch_digest
+             FROM idempotency_v2
+             WHERE kind = ?1 AND repo_id = ?2 AND revision_id = ?3 AND generation = ?4
+             ORDER BY batch_digest",
+        )
+        .map_err(|error| engine_error("prepare History terminal scan", path, &error))?;
+    let mut rows = statement
+        .query(params![
+            IngestOperationKindV1::History.as_code_str(),
+            generation.repo_id.as_str(),
+            generation.revision_id.as_str(),
+            generation_i64(generation.generation)?,
+        ])
+        .map_err(|error| engine_error("read History terminal scan", path, &error))?;
+    let mut latest: Option<(
+        BatchPublishReceipt,
+        u64,
+        quanta_index_core::index::MemoryLease,
+    )> = None;
+    while let Some(row) = rows
+        .next()
+        .map_err(|error| engine_error("read History terminal key", path, &error))?
+    {
+        budget.checkpoint()?;
+        let _key_memory = admit_journal_key(row, path, budget)?;
+        let key = stored_key_from_raw(
+            raw_journal_key(row)
+                .map_err(|error| engine_error("decode History terminal key", path, &error))?,
+        )?;
+        if key.kind != IngestOperationKindV1::History
+            || key.repo_id != generation.repo_id
+            || key.revision_id != generation.revision_id
+            || key.generation != generation.generation
+        {
+            return Err(corrupt_row(&key, "History terminal key differs from generation").into());
+        }
+        let (state, inspected, allocation) =
+            inspect_admitted_terminal(connection, path, &key, budget)?;
+        let (receipt, durable_sequence, allocation) = match (state, inspected, allocation) {
+            (
+                Some(OperationJournalStateV1::Committed),
+                OperationInspectV1::Committed {
+                    receipt,
+                    durable_sequence,
+                },
+                Some(allocation),
+            ) => (receipt, durable_sequence, allocation),
+            (Some(OperationJournalStateV1::Refused), OperationInspectV1::Refused { .. }, _) => {
+                continue;
+            }
+            _ => return Err(IndexError::Conflict.into()),
+        };
+        if durable_sequence == 0
+            || receipt.generation != key.generation
+            || receipt.batch_digest != key.batch_digest
+            || !receipt.applied
+            || receipt.durable_sequence != 0
+            || receipt.sealed
+            || receipt.semantic_content.is_some()
+            || receipt.accepted_semantic_replace_scopes != 0
+            || receipt.accepted_semantic_tombstone_scopes != 0
+        {
+            return Err(
+                corrupt_row(&key, "History receipt differs from applied journal key").into(),
+            );
+        }
+        if latest
+            .as_ref()
+            .is_none_or(|(_, sequence, _)| durable_sequence > *sequence)
+        {
+            latest = Some((receipt, durable_sequence, allocation));
+        }
+    }
+    let Some((receipt, durable_sequence, allocation)) = latest else {
+        return Ok(None);
+    };
+    // The dispatcher returns this same stored receipt stamped with its
+    // independently committed sequence; no ACK is synthesized from a cut.
+    Ok(Some((receipt.recorded_at(durable_sequence), allocation)))
 }
 
 impl IdempotencyCatalogPort for SqliteCatalog {
@@ -2284,6 +2665,457 @@ mod tests {
     };
     use crate::connection::SqliteCatalog;
     use crate::sequence::{SequenceEventKindV1, event_commitment, event_row_digest};
+
+    #[test]
+    fn admitted_terminal_read_uses_original_sequence_and_refuses_retired_floor()
+    -> Result<(), Box<dyn Error>> {
+        use quanta_index_core::index::{
+            IndexError, MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope,
+            MemoryScopePort, WorkBudget, WorkLimits,
+        };
+        use std::{
+            sync::{
+                Arc,
+                atomic::{AtomicU64, Ordering},
+            },
+            time::Instant,
+        };
+
+        struct LiveMemory(AtomicU64);
+        impl MemoryLeaseOwner for LiveMemory {
+            fn release(&self, bytes: u64) {
+                let _prior = self.0.fetch_sub(bytes, Ordering::SeqCst);
+            }
+        }
+        struct Admission(Arc<LiveMemory>);
+        impl MemoryScopePort for Admission {
+            fn reserve(
+                &self,
+                bytes: u64,
+                _lifetime: MemoryLifetime,
+            ) -> Result<MemoryLease, IndexError> {
+                let _prior = self.0.0.fetch_add(bytes, Ordering::SeqCst);
+                Ok(MemoryLease::new(bytes, self.0.clone()))
+            }
+        }
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::ZERO)?;
+        let key = IdempotencyKeyV1 {
+            kind: IngestOperationKindV1::SearchCorpus,
+            repo_id: RepoId::new("repo")?,
+            revision_id: RevisionId::new("revision")?,
+            generation: ManifestGeneration::new(1),
+            batch_digest: "batch-digest".to_string(),
+        };
+        let body = [0x2a_u8; 32];
+        let claim =
+            match catalog.claim_prepared(&key, &body, "owner", i64::MAX.unsigned_abs(), &body)? {
+                ClaimOutcomeV1::Claimed(claim) => claim,
+                _ => return Err("fixture did not create a fresh claim".into()),
+            };
+        catalog.mark_applying(&claim)?;
+        let mut receipt = BatchPublishReceipt::empty_for(
+            key.generation,
+            Some("manifest".into()),
+            key.batch_digest.clone(),
+        );
+        receipt.accept_replace_scope();
+        let sequence = catalog.commit(&claim, &receipt)?;
+        let ledger = Arc::new(LiveMemory(AtomicU64::new(0)));
+        let mut work = WorkBudget::new(
+            WorkLimits {
+                reads: 1_000_000,
+                writes: 1_000_000,
+                bytes: 536_870_912,
+                mutations: 1_000_000,
+            },
+            Instant::now() + Duration::from_secs(60),
+        );
+        {
+            let mut connection = catalog.lock()?;
+            let transaction =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+            // A standalone budget cannot masquerade as an Original memory grant.
+            assert!(matches!(
+                super::inspect_admitted_terminal(&transaction, catalog.path(), &key, &mut work),
+                Err(super::AdmittedJournalError::Admission(
+                    IndexError::ResourceLimited
+                )),
+            ));
+            work.bind_memory_scope(Some(MemoryScope::new(Arc::new(Admission(ledger.clone())))));
+            let (state, inspected, allocation) =
+                super::inspect_admitted_terminal(&transaction, catalog.path(), &key, &mut work)
+                    .map_err(|_| "committed receipt failed canonical admitted read")?;
+            assert_eq!(
+                state,
+                Some(quanta_index_core::OperationJournalStateV1::Committed)
+            );
+            match inspected {
+                quanta_index_core::OperationInspectV1::Committed {
+                    receipt: raw,
+                    durable_sequence,
+                } => {
+                    assert_eq!(raw.durable_sequence, 0);
+                    assert_eq!(durable_sequence, sequence);
+                    assert_eq!(
+                        raw.recorded_at(durable_sequence),
+                        receipt.recorded_at(sequence)
+                    );
+                }
+                _ => return Err("committed row was not a batch receipt".into()),
+            }
+            assert!(allocation.is_some());
+            drop(allocation);
+            transaction.commit()?;
+        }
+        assert_eq!(ledger.0.load(Ordering::SeqCst), 0);
+        // Offline source inspection must accept the fully terminal journal,
+        // then refuse an independently admitted nonterminal attempt.
+        {
+            let connection = catalog.lock()?;
+            let (rows, fence, latest_search_corpus) = super::verify_admitted_quiescent_journal(
+                &connection,
+                catalog.path(),
+                &key.repo_id,
+                &mut work,
+            )
+            .map_err(|_| "terminal source journal was refused")?;
+            assert_eq!(rows, 1);
+            assert!(fence > 0);
+            assert_eq!(latest_search_corpus, Some(sequence));
+        }
+        // A second real terminal row must remain readable within a budget
+        // derived from the small persisted rows, without a page-sized fee for
+        // every key's already verified fixed-width event cells.
+        let second_key = IdempotencyKeyV1 {
+            batch_digest: "second-batch".into(),
+            generation: ManifestGeneration::new(2),
+            ..key.clone()
+        };
+        let second_claim = match catalog.claim_prepared(
+            &second_key,
+            &body,
+            "owner",
+            i64::MAX.unsigned_abs(),
+            &body,
+        )? {
+            ClaimOutcomeV1::Claimed(claim) => claim,
+            _ => return Err("second terminal fixture unexpectedly replayed".into()),
+        };
+        catalog.mark_applying(&second_claim)?;
+        let mut second_receipt = BatchPublishReceipt::empty_for(
+            second_key.generation,
+            Some("manifest-2".into()),
+            second_key.batch_digest.clone(),
+        );
+        second_receipt.accept_replace_scope();
+        let second_sequence = catalog.commit(&second_claim, &second_receipt)?;
+        let mut bounded = WorkBudget::new(
+            WorkLimits {
+                reads: 1_000,
+                writes: 0,
+                bytes: 30_000,
+                mutations: 0,
+            },
+            Instant::now() + Duration::from_secs(60),
+        );
+        bounded.bind_memory_scope(Some(MemoryScope::new(Arc::new(Admission(ledger.clone())))));
+        {
+            let connection = catalog.lock()?;
+            let (count, stored_bytes): (i64, i64) = connection.query_row(
+                "SELECT COUNT(*), SUM(
+                    length(CAST(kind AS BLOB)) + length(CAST(repo_id AS BLOB))
+                    + length(CAST(revision_id AS BLOB)) + length(CAST(batch_digest AS BLOB))
+                    + length(CAST(body_sha256 AS BLOB)) + length(CAST(owner AS BLOB))
+                    + length(CAST(input_commitment AS BLOB))
+                    + COALESCE(length(CAST(receipt_cbor AS BLOB)), 0)
+                    + COALESCE(length(CAST(receipt_digest AS BLOB)), 0)
+                    + COALESCE(length(CAST(refusal_code AS BLOB)), 0)
+                    + COALESCE(length(CAST(refusal_message AS BLOB)), 0)
+                    + length(CAST(row_sha256 AS BLOB)))
+                 FROM idempotency_v2",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(count, 2);
+            assert!(
+                (0..2_048).contains(&stored_bytes),
+                "independent stored-cell bound changed: {stored_bytes} bytes"
+            );
+            let (rows, fence, latest) = super::verify_admitted_quiescent_journal(
+                &connection,
+                catalog.path(),
+                &key.repo_id,
+                &mut bounded,
+            )
+            .map_err(|_| "two small valid journal rows exceeded 30,000 Work bytes")?;
+            assert_eq!(rows, 2);
+            assert!(fence > 0);
+            assert_eq!(latest, Some(second_sequence));
+        }
+        assert_eq!(ledger.0.load(Ordering::SeqCst), 0);
+
+        // Bound malformed digest handling without allocating an owned copy
+        // of an oversized SQLite value or accepting TEXT as a BLOB.
+        {
+            let mut connection = catalog.lock()?;
+            connection.execute_batch("PRAGMA ignore_check_constraints = ON")?;
+            let sequence_cell = i64::try_from(second_sequence)?;
+            for malformed in [
+                rusqlite::types::Value::Text("x".repeat(32)),
+                rusqlite::types::Value::Blob(vec![0x33_u8; 1_048_576]),
+            ] {
+                let transaction = connection
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                assert_eq!(
+                    transaction.execute(
+                        "UPDATE catalog_sequence_event_v2 SET payload_digest = ?1 WHERE sequence = ?2",
+                        params![malformed, sequence_cell],
+                    )?,
+                    1
+                );
+                assert!(matches!(
+                    super::verify_admitted_quiescent_journal(
+                        &transaction,
+                        catalog.path(),
+                        &key.repo_id,
+                        &mut work,
+                    ),
+                    Err(super::AdmittedJournalError::Journal(CoreError::Typed {
+                        code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                        ..
+                    }))
+                ));
+                transaction.rollback()?;
+                assert_eq!(ledger.0.load(Ordering::SeqCst), 0);
+            }
+            connection.execute_batch("PRAGMA ignore_check_constraints = OFF")?;
+        }
+
+        // One held snapshot selects the latest committed History ACK, never
+        // an absent generation or a merely prepared publication.
+        let history_key = IdempotencyKeyV1 {
+            kind: IngestOperationKindV1::History,
+            generation: ManifestGeneration::new(4),
+            batch_digest: "history-z-first".into(),
+            ..key.clone()
+        };
+        let history_generation = quanta_index_contract::index::AuxiliaryGenerationKeyV1 {
+            repo_id: history_key.repo_id.clone(),
+            revision_id: history_key.revision_id.clone(),
+            generation: history_key.generation,
+        };
+        {
+            let connection = catalog.lock()?;
+            assert!(
+                super::latest_applied_history_receipt_in_snapshot_v1(
+                    &connection,
+                    catalog.path(),
+                    &history_generation,
+                    &mut work,
+                )
+                .map_err(|_| "absent History generation was refused")?
+                .is_none()
+            );
+        }
+        let first_history_claim = match catalog.claim_prepared(
+            &history_key,
+            &body,
+            "owner",
+            i64::MAX.unsigned_abs(),
+            &body,
+        )? {
+            ClaimOutcomeV1::Claimed(claim) => claim,
+            _ => return Err("History fixture did not claim first publication".into()),
+        };
+        catalog.mark_applying(&first_history_claim)?;
+        let first_history_receipt = BatchPublishReceipt::empty_for(
+            history_key.generation,
+            Some("history-manifest".into()),
+            history_key.batch_digest.clone(),
+        );
+        let _first_history_sequence =
+            catalog.commit(&first_history_claim, &first_history_receipt)?;
+        let next_history_key = IdempotencyKeyV1 {
+            batch_digest: "history-a-second".into(),
+            ..history_key.clone()
+        };
+        let next_history_claim = match catalog.claim_prepared(
+            &next_history_key,
+            &body,
+            "owner",
+            i64::MAX.unsigned_abs(),
+            &body,
+        )? {
+            ClaimOutcomeV1::Claimed(claim) => claim,
+            _ => return Err("History fixture did not claim second publication".into()),
+        };
+        catalog.mark_applying(&next_history_claim)?;
+        let next_history_receipt = BatchPublishReceipt::empty_for(
+            next_history_key.generation,
+            Some("history-manifest".into()),
+            next_history_key.batch_digest.clone(),
+        );
+        let next_history_sequence = catalog.commit(&next_history_claim, &next_history_receipt)?;
+        let refused_history_key = IdempotencyKeyV1 {
+            batch_digest: "history-refused".into(),
+            ..next_history_key.clone()
+        };
+        let refused_history_claim = match catalog.claim_prepared(
+            &refused_history_key,
+            &body,
+            "owner",
+            i64::MAX.unsigned_abs(),
+            &body,
+        )? {
+            ClaimOutcomeV1::Claimed(claim) => claim,
+            _ => return Err("History fixture did not claim refused publication".into()),
+        };
+        catalog.mark_applying(&refused_history_claim)?;
+        let _refusal_sequence = catalog.record_refused(
+            &refused_history_claim,
+            &CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::InvalidRequest,
+                message: "refused History fixture".into(),
+            },
+        )?;
+        {
+            let connection = catalog.lock()?;
+            let (actual, allocation) = super::latest_applied_history_receipt_in_snapshot_v1(
+                &connection,
+                catalog.path(),
+                &history_generation,
+                &mut work,
+            )
+            .map_err(|_| "latest committed History receipt was refused")?
+            .ok_or("committed History generation appeared absent")?;
+            assert_eq!(
+                actual,
+                next_history_receipt.recorded_at(next_history_sequence)
+            );
+            assert_eq!(actual.durable_sequence, next_history_sequence);
+            drop(actual);
+            drop(allocation);
+        }
+        assert_eq!(ledger.0.load(Ordering::SeqCst), 0);
+        let pending_history_key = IdempotencyKeyV1 {
+            generation: ManifestGeneration::new(5),
+            batch_digest: "history-pending".into(),
+            ..history_key
+        };
+        let _pending_history = catalog.claim_prepared(
+            &pending_history_key,
+            &body,
+            "owner",
+            i64::MAX.unsigned_abs(),
+            &body,
+        )?;
+        let pending_history_generation = quanta_index_contract::index::AuxiliaryGenerationKeyV1 {
+            generation: pending_history_key.generation,
+            ..history_generation
+        };
+        {
+            let connection = catalog.lock()?;
+            assert!(matches!(
+                super::latest_applied_history_receipt_in_snapshot_v1(
+                    &connection,
+                    catalog.path(),
+                    &pending_history_generation,
+                    &mut work,
+                ),
+                Err(super::AdmittedJournalError::Admission(IndexError::Conflict))
+            ));
+        }
+        assert_eq!(ledger.0.load(Ordering::SeqCst), 0);
+
+        let pending_key = IdempotencyKeyV1 {
+            batch_digest: "pending-batch".into(),
+            generation: ManifestGeneration::new(3),
+            ..key.clone()
+        };
+        let _pending =
+            catalog.claim_prepared(&pending_key, &body, "owner", i64::MAX.unsigned_abs(), &body)?;
+        {
+            let connection = catalog.lock()?;
+            assert!(matches!(
+                super::verify_admitted_quiescent_journal(
+                    &connection,
+                    catalog.path(),
+                    &key.repo_id,
+                    &mut work
+                ),
+                Err(super::AdmittedJournalError::Admission(IndexError::Conflict))
+            ));
+        }
+        // An oversized stored text cell must fail Original work admission
+        // before canonical `read_row` allocates it, even with a valid key.
+        {
+            let connection = catalog.lock()?;
+            assert_eq!(
+                connection.execute(
+                    "UPDATE idempotency_v2 SET owner=?1 WHERE batch_digest=?2",
+                    params!["x".repeat(1_048_576), key.batch_digest.as_str()],
+                )?,
+                1
+            );
+        }
+        let mut small = WorkBudget::new(
+            WorkLimits {
+                reads: 1_000_000,
+                writes: 0,
+                bytes: 262_144,
+                mutations: 0,
+            },
+            Instant::now() + Duration::from_secs(60),
+        );
+        small.bind_memory_scope(Some(MemoryScope::new(Arc::new(Admission(ledger.clone())))));
+        {
+            let connection = catalog.lock()?;
+            assert!(matches!(
+                super::inspect_admitted_terminal(&connection, catalog.path(), &key, &mut small),
+                Err(super::AdmittedJournalError::Admission(
+                    IndexError::ResourceLimited
+                )),
+            ));
+            // The ledger's reverse lookup previously materialized that same
+            // unadmitted cell after the journal preflight had retired.
+            assert!(matches!(
+                super::verify_terminal_event_pair(
+                    &connection,
+                    catalog.path(),
+                    i64::try_from(sequence)?,
+                    Some(&mut small),
+                ),
+                Err(crate::integrity::IntegrityCheckError::Admission(
+                    IndexError::ResourceLimited
+                )),
+            ));
+        }
+        {
+            let connection = catalog.lock()?;
+            assert_eq!(
+                connection.execute(
+                    "UPDATE idempotency_v2 SET owner='owner' WHERE batch_digest=?1",
+                    params![key.batch_digest.as_str()],
+                )?,
+                1
+            );
+        }
+        assert_eq!(ledger.0.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            catalog.forget_generation(&key.repo_id, &key.revision_id, key.generation,)?,
+            1
+        );
+        let connection = catalog.lock()?;
+        assert!(matches!(
+            super::inspect_admitted_terminal(&connection, catalog.path(), &key, &mut work),
+            Err(super::AdmittedJournalError::Journal(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::OperationReplayFloor,
+                ..
+            })),
+        ));
+        Ok(())
+    }
 
     #[test]
     fn foreign_receipt_tag_refuses_decode_typed() -> Result<(), Box<dyn Error>> {

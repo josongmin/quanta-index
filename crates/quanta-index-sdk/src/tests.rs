@@ -89,6 +89,9 @@ impl StubQueryTransport {
             SearchPlaneQueryIpcResponse::Symbol(page) => page.selected_active_head = Some(head),
             SearchPlaneQueryIpcResponse::Semantic(page) => page.selected_active_head = Some(head),
             SearchPlaneQueryIpcResponse::Hybrid(page) => page.selected_active_head = Some(head),
+            SearchPlaneQueryIpcResponse::HybridFileV1(page) => {
+                page.selected_active_head = Some(head);
+            }
             SearchPlaneQueryIpcResponse::HybridSeed(page) => page.selected_active_head = Some(head),
             SearchPlaneQueryIpcResponse::GoTestTraceFileV1(page) => {
                 page.selected_active_head = Some(head);
@@ -364,6 +367,7 @@ impl IngestTransport for StubIngestTransport {
             };
             SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
                 quanta_index_contract::SearchCorpusPublishOutcome {
+                    upload_cleanup: None,
                     publication: quanta_index_contract::SourcePublicationBinding::for_batch(batch),
                     receipt,
                     observation: None,
@@ -1056,3 +1060,5 @@ mod query_routes_tests;
 mod query_tests;
 mod replay_tests;
 mod resolution;
+
+mod native_unsupported_tests;

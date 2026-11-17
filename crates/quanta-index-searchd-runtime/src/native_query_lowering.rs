@@ -1,11 +1,9 @@
-//! Native text lowering before the general LQ parser's regex/structural guards.
-//!
-//! The lexer is the canonical LQ lexer. Inspecting its typed tokens lets this
-//! route refuse other engines without parsing or compiling their patterns.
+//! Custodial lowering for the Native Text planner.
 
 use quanta_index_contract::{
     LqQuery, MAX_NATIVE_CONTENT_INPUT_BYTES, TextQueryRequest, TextQuerySyntax,
-    native_content_query_backing_bytes, tokenize_native_content_query,
+    native_content_query_backing_bytes, parse_sourcegraph_content_query,
+    sourcegraph_query_backing_bytes, tokenize_native_content_query,
 };
 use quanta_index_core::index::{IndexError, MemoryLease, MemoryLifetime};
 
@@ -22,31 +20,48 @@ impl LoweredNativeText {
     }
 }
 
-/// Lower only the canonical Native text grammar, with a grant before parsing.
+/// Lower the request's content grammar with a grant before parsing.
 ///
-/// Raw-string, structural and predicate tokens are refused by the Contract
-/// facade. Regex HIR has a separate before-parser retained reservation.
+/// The Native LQ parser pre-reserves regex HIR. The Sourcegraph bridge lowers
+/// regex syntax to an AST leaf and the planner funds its preparation.
 pub(crate) fn lower_native_text_input(
     request: &TextQueryRequest,
     reserve: impl Fn(u64, MemoryLifetime) -> Result<Option<MemoryLease>, IndexError>,
 ) -> Result<LoweredNativeText, IndexError> {
-    if request.syntax != TextQuerySyntax::Native || request.cursor.is_some() {
+    if request.cursor.is_some() {
         return Err(IndexError::InvalidInput(
-            "native text lowering requires a first-page Native query".into(),
+            "native text lowering requires a first-page query".into(),
         ));
     }
     let input = request.query_text.as_str();
     if input.len() > MAX_NATIVE_CONTENT_INPUT_BYTES {
         return Err(IndexError::ResourceLimited);
     }
+    let backing_bytes = match request.syntax {
+        TextQuerySyntax::Native => native_content_query_backing_bytes(input.len()),
+        TextQuerySyntax::Sourcegraph => sourcegraph_query_backing_bytes(input.len()),
+        TextQuerySyntax::CodeSearch => {
+            return Err(IndexError::InvalidInput(
+                "native text lowering requires Native or Sourcegraph syntax".into(),
+            ));
+        }
+    };
     let backing = reserve(
-        native_content_query_backing_bytes(input.len()).ok_or(IndexError::ResourceLimited)?,
+        backing_bytes.ok_or(IndexError::ResourceLimited)?,
         MemoryLifetime::Retained,
     )?;
     if backing.is_none() {
         return Err(IndexError::BackendViolation(
             "native text lowering requires allocation custody".into(),
         ));
+    }
+    if request.syntax == TextQuerySyntax::Sourcegraph {
+        let query = parse_sourcegraph_content_query(input)
+            .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
+        return Ok(LoweredNativeText {
+            query,
+            backing: [backing, None],
+        });
     }
     let tokens = tokenize_native_content_query(input)
         .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
@@ -177,5 +192,28 @@ mod tests {
         });
         assert!(matches!(refused, Err(IndexError::ResourceLimited)));
         assert_eq!(reservation_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn sourcegraph_bridge_runs_after_retained_admission() {
+        let mut request = request("path:^src/lib[.]rs$ needle");
+        request.syntax = TextQuerySyntax::Sourcegraph;
+        assert!(matches!(
+            lower_native_text_input(&request, |_, _| Err(IndexError::ResourceLimited)),
+            Err(IndexError::ResourceLimited)
+        ));
+        let owner = Arc::new(Releases(AtomicU64::new(0)));
+        let lowered = lower_native_text_input(&request, |bytes, lifetime| {
+            assert_eq!(lifetime, MemoryLifetime::Retained);
+            Ok(Some(MemoryLease::new(bytes, owner.clone())))
+        });
+        let lowered = lowered.expect("bounded Sourcegraph request must lower");
+        assert!(matches!(
+            lowered.query.filters.as_slice(),
+            [quanta_index_contract::LqFilter::File { pattern, .. }] if pattern == "^src/lib[.]rs$"
+        ));
+        assert_eq!(owner.0.load(Ordering::SeqCst), 0);
+        drop(lowered);
+        assert!(owner.0.load(Ordering::SeqCst) > 0);
     }
 }

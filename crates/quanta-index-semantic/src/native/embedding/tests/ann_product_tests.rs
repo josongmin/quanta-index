@@ -3,6 +3,9 @@
 //! The map/object fixtures only stand in for persistent ports; product
 //! materialization, descriptor validation and Lance query stay in the path.
 
+#[path = "ann_product_tests/ann4k_tests.rs"]
+mod ann4k_tests;
+
 #[path = "ann_product_tests/consolidation.rs"]
 mod consolidation;
 #[path = "ann_product_tests/maintenance.rs"]
@@ -36,6 +39,7 @@ struct GraphMap<'a> {
     objects: &'a MemoryStore,
     states: Mutex<Vec<GraphSnapshot>>,
     scan_override: Mutex<Option<(MapRoot, MapPage)>>,
+    empty_scan_after: Mutex<Option<(MapRoot, Vec<u8>)>>,
     lookup_calls: AtomicU64,
     scan_calls: AtomicU64,
 }
@@ -46,6 +50,7 @@ impl<'a> GraphMap<'a> {
             objects,
             states: Mutex::new(Vec::new()),
             scan_override: Mutex::new(None),
+            empty_scan_after: Mutex::new(None),
             lookup_calls: AtomicU64::new(0),
             scan_calls: AtomicU64::new(0),
         }
@@ -95,7 +100,18 @@ impl PersistentMapPort for GraphMap<'_> {
             reads: 1,
             ..WorkUsage::default()
         })?;
-        Ok(self.state(root)?.get(key).copied())
+        if root.0.is_none() {
+            return Ok(None);
+        }
+        let states = self
+            .states
+            .lock()
+            .map_err(|_cause| IndexError::Storage("ANN test map lock poisoned".into()))?;
+        let (_, entries) = states
+            .iter()
+            .find(|(held, _)| *held == root)
+            .ok_or_else(|| IndexError::CorruptObject("ANN test map root missing".into()))?;
+        Ok(entries.get(key).copied())
     }
     fn lookup(
         &self,
@@ -132,6 +148,17 @@ impl PersistentMapPort for GraphMap<'_> {
             return Ok(page.clone());
         }
         drop(override_page);
+        if self
+            .empty_scan_after
+            .lock()
+            .map_err(|_| IndexError::Storage("ANN test scan cursor lock poisoned".into()))?
+            .as_ref()
+            .is_some_and(|(selected_root, cursor)| {
+                *selected_root == root && after == Some(cursor.as_slice())
+            })
+        {
+            return Ok(MapPage::new(Vec::new(), false, Vec::new(), None));
+        }
         let entries = self.state(root)?;
         let mut selected: Vec<_> = entries
             .into_iter()
@@ -385,7 +412,6 @@ fn graph_reaches(
 }
 
 fn selected_search(
-    runtime: &tokio::runtime::Runtime,
     store: &dyn ImmutableObjectPort,
     maps: &dyn PersistentMapPort,
     coverage: &CoverageBinding,
@@ -403,35 +429,33 @@ fn selected_search(
         maps,
         budget: &mut work,
     };
-    let result = crate::run_blocking(
-        runtime,
-        ann_query::search(
-            &SearchQuery {
-                lexical_eligibility: None,
-                lexical_owners: None,
-                exact_path: None,
-                coverage,
-                projection: None,
-                source_owners,
-                source_paths: MapRoot(None),
-                instance: spec.instance,
-                format: spec.format,
-                recipe,
-                vector: &[1.0, 0.0],
-                top_k: 1,
-                page_size: 64,
-                max_owners: 80,
-                overlay: None,
-            },
-            &mut read,
-        ),
+    let result = ann_query::search(
+        &SearchQuery {
+            source_files: false,
+            lexical_eligibility: None,
+            lexical_owners: None,
+            exact_path: None,
+            coverage,
+            projection: None,
+            source_owners,
+            source_paths: MapRoot(None),
+            instance: spec.instance,
+            format: spec.format,
+            recipe,
+            vector: &[1.0, 0.0],
+            top_k: 1,
+            page_size: 64,
+            max_owners: 80,
+            overlay: None,
+        },
+        &mut read,
     )?;
     Ok((result, memory))
 }
 
 /// The selected descriptor may be physically opened once under this query.
 /// Every other immutable read still delegates to the independent test store.
-struct ReadOnceDescriptor<'a> {
+pub(super) struct ReadOnceDescriptor<'a> {
     store: &'a MemoryStore,
     reference: ObjectRef,
     reads: AtomicU64,
@@ -439,6 +463,24 @@ struct ReadOnceDescriptor<'a> {
     memory: Option<&'a QueryMemory>,
     descriptor_allowances_at_retained_read: AtomicU64,
     refuse_retained: bool,
+}
+
+impl<'a> ReadOnceDescriptor<'a> {
+    pub(super) fn new(store: &'a MemoryStore, reference: ObjectRef) -> Self {
+        Self {
+            store,
+            reference,
+            reads: AtomicU64::new(0),
+            retained_reads: AtomicU64::new(0),
+            memory: None,
+            descriptor_allowances_at_retained_read: AtomicU64::new(0),
+            refuse_retained: false,
+        }
+    }
+
+    pub(super) fn reads(&self) -> u64 {
+        self.reads.load(AtomicOrdering::SeqCst)
+    }
 }
 
 impl ImmutableObjectPort for ReadOnceDescriptor<'_> {
@@ -488,7 +530,7 @@ impl ImmutableObjectPort for ReadOnceDescriptor<'_> {
             let previous = self.reads.fetch_add(1, AtomicOrdering::SeqCst);
             if previous != 0 {
                 return Err(IndexError::BackendViolation(
-                    "selected ANN descriptor was physically reopened".into(),
+                    "selected ANN object was physically reopened".into(),
                 ));
             }
         }
@@ -648,18 +690,9 @@ fn delta_page_authenticates_scanned_reference_without_second_map_read()
         status: CoverageStatus::Complete,
         owners: MapRoot(None),
     };
-    let runtime = test_runtime()?;
-    let rejected = selected_search(
-        &runtime,
-        &store,
-        &maps,
-        &selected,
-        MapRoot(None),
-        &spec,
-        &recipe,
-    )
-    .err()
-    .ok_or("malformed delta key was accepted")?;
+    let rejected = selected_search(&store, &maps, &selected, MapRoot(None), &spec, &recipe)
+        .err()
+        .ok_or("malformed delta key was accepted")?;
     check!(matches!(
         rejected.downcast_ref::<IndexError>(),
         Some(IndexError::CorruptObject(_))
@@ -693,17 +726,9 @@ fn delta_page_authenticates_scanned_reference_without_second_map_read()
             None,
         ),
     ));
-    let rejected = selected_search(
-        &runtime,
-        &store,
-        &maps,
-        &selected,
-        MapRoot(None),
-        &spec,
-        &recipe,
-    )
-    .err()
-    .ok_or("non-object delta page value was accepted")?;
+    let rejected = selected_search(&store, &maps, &selected, MapRoot(None), &spec, &recipe)
+        .err()
+        .ok_or("non-object delta page value was accepted")?;
     check!(matches!(
         rejected.downcast_ref::<IndexError>(),
         Some(IndexError::CorruptObject(_))
@@ -713,17 +738,9 @@ fn delta_page_authenticates_scanned_reference_without_second_map_read()
         .lock()
         .map_err(|_cause| "ANN test scan override lock poisoned")? =
         Some((delta, MapPage::new(Vec::new(), true, Vec::new(), None)));
-    let rejected = selected_search(
-        &runtime,
-        &store,
-        &maps,
-        &selected,
-        MapRoot(None),
-        &spec,
-        &recipe,
-    )
-    .err()
-    .ok_or("non-progressing delta page was accepted")?;
+    let rejected = selected_search(&store, &maps, &selected, MapRoot(None), &spec, &recipe)
+        .err()
+        .ok_or("non-progressing delta page was accepted")?;
     check!(matches!(
         rejected.downcast_ref::<IndexError>(),
         Some(IndexError::BackendViolation(_))
@@ -734,7 +751,7 @@ fn delta_page_authenticates_scanned_reference_without_second_map_read()
 #[test]
 #[expect(
     clippy::disallowed_methods,
-    reason = "the regression polls publication without a Tokio executor to verify typed refusal before a backend panic"
+    reason = "the regression seals the canonical native layout outside a Tokio context while preserving its build Future interface"
 )]
 fn native_ann_selected_region_survives_replacement_and_deletion()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -832,34 +849,31 @@ fn native_ann_selected_region_survives_replacement_and_deletion()
                 scratch: &NoScratch,
                 budget: &mut work,
             };
-            if number == 64 {
-                let refused = futures::executor::block_on(adapter.prepare_searchable(
+            let prepared = if number == 64 {
+                futures::executor::block_on(adapter.prepare_searchable(
                     &spec,
                     prior.as_ref(),
                     owners,
                     Some((owner(number), member_ref)),
                     None,
                     &mut context,
-                ));
-                check!(matches!(
-                    refused,
-                    Err(IndexError::BackendViolation(message))
-                        if message == "Native ANN publication requires a Tokio runtime"
-                ));
-            }
-            crate::run_blocking(
-                &runtime,
-                adapter.prepare_searchable(
-                    &spec,
-                    prior.as_ref(),
-                    owners,
-                    Some((owner(number), member_ref)),
-                    None,
-                    &mut context,
-                ),
-            )?
-            .install(&mut context)?
-            .ok_or("ANN searchable directory absent")?
+                ))?
+            } else {
+                crate::run_blocking(
+                    &runtime,
+                    adapter.prepare_searchable(
+                        &spec,
+                        prior.as_ref(),
+                        owners,
+                        Some((owner(number), member_ref)),
+                        None,
+                        &mut context,
+                    ),
+                )?
+            };
+            prepared
+                .install(&mut context)?
+                .ok_or("ANN searchable directory absent")?
         };
         let desired = quanta_index_core::index::InputBinding {
             root: source_owners,
@@ -904,19 +918,9 @@ fn native_ann_selected_region_survives_replacement_and_deletion()
             budget: &mut read_work,
         },
     )?;
-    let fileset =
-        crate::native::ann_files::load_fileset(&store, region.descriptor.fileset, &mut read_work)?;
-    check_eq!(fileset.seal.rows, 64);
-    check!(!fileset.files.is_empty());
-    let first_chunk = fileset
-        .files
-        .iter()
-        .flat_map(|file| &file.chunks)
-        .next()
-        .ok_or("ANN selected file chunk absent")?
-        .object
-        .registration
-        .reference;
+    let graph = native_graph::load(&store, region.descriptor.fileset, &mut read_work)?;
+    check_eq!(graph.seal.rows, 64);
+    let first_chunk = region.descriptor.fileset;
     check!(graph_reaches(&store, old_directory_ref, first_chunk)?);
 
     let measured = consolidation::RegionLookupMap::new(&maps);
@@ -930,7 +934,6 @@ fn native_ann_selected_region_survives_replacement_and_deletion()
         refuse_retained: false,
     };
     let (before, before_memory) = selected_search(
-        &runtime,
         &selected_descriptor,
         &measured,
         &old,
@@ -970,32 +973,30 @@ fn native_ann_selected_region_survives_replacement_and_deletion()
     refused_work.bind_memory_scope(Some(MemoryScope::new(Arc::new(QueryMemoryScope(
         Arc::clone(&refused_memory),
     )))));
-    let refused = crate::run_blocking(
-        &runtime,
-        ann_query::search(
-            &SearchQuery {
-                lexical_eligibility: None,
-                lexical_owners: None,
-                exact_path: None,
-                coverage: &old,
-                projection: None,
-                source_owners: old_sources,
-                source_paths: MapRoot(None),
-                instance: spec.instance,
-                format: spec.format,
-                recipe: &recipe,
-                vector: &[1.0, 0.0],
-                top_k: 1,
-                page_size: 64,
-                max_owners: 80,
-                overlay: None,
-            },
-            &mut ReadContext {
-                objects: &refusing_descriptor,
-                maps: &measured,
-                budget: &mut refused_work,
-            },
-        ),
+    let refused = ann_query::search(
+        &SearchQuery {
+            source_files: false,
+            lexical_eligibility: None,
+            lexical_owners: None,
+            exact_path: None,
+            coverage: &old,
+            projection: None,
+            source_owners: old_sources,
+            source_paths: MapRoot(None),
+            instance: spec.instance,
+            format: spec.format,
+            recipe: &recipe,
+            vector: &[1.0, 0.0],
+            top_k: 1,
+            page_size: 64,
+            max_owners: 80,
+            overlay: None,
+        },
+        &mut ReadContext {
+            objects: &refusing_descriptor,
+            maps: &measured,
+            budget: &mut refused_work,
+        },
     );
     check!(matches!(refused, Err(IndexError::ResourceLimited)));
     check_eq!(refusing_descriptor.reads.load(AtomicOrdering::SeqCst), 1);
@@ -1122,19 +1123,12 @@ fn native_ann_selected_region_survives_replacement_and_deletion()
         owners: replaced_owners,
     };
     let (still_old, _still_old_memory) =
-        selected_search(&runtime, &store, &maps, &old, old_sources, &spec, &recipe)?;
+        selected_search(&store, &maps, &old, old_sources, &spec, &recipe)?;
     let still_old_hit = still_old.hits.first().ok_or("old ANN hit absent")?;
     check_eq!(still_old_hit.owner, owner(1));
     check_eq!(still_old_hit.cosine.total_cmp(&1.0), Ordering::Equal);
-    let (now, _now_memory) = selected_search(
-        &runtime,
-        &store,
-        &maps,
-        &replaced,
-        replaced_sources,
-        &spec,
-        &recipe,
-    )?;
+    let (now, _now_memory) =
+        selected_search(&store, &maps, &replaced, replaced_sources, &spec, &recipe)?;
     check_eq!(now.hits.len(), 1);
     let now_hit = now.hits.first().ok_or("replacement ANN hit absent")?;
     check_eq!(now_hit.cosine.total_cmp(&0.0), Ordering::Equal);
@@ -1190,15 +1184,8 @@ fn native_ann_selected_region_survives_replacement_and_deletion()
         status: CoverageStatus::Complete,
         owners: deleted_owners,
     };
-    let (after_delete, _after_delete_memory) = selected_search(
-        &runtime,
-        &store,
-        &maps,
-        &deleted,
-        deleted_sources,
-        &spec,
-        &recipe,
-    )?;
+    let (after_delete, _after_delete_memory) =
+        selected_search(&store, &maps, &deleted, deleted_sources, &spec, &recipe)?;
     check_eq!(after_delete.hits.len(), 1);
     let after_delete_hit = after_delete
         .hits
@@ -1262,7 +1249,6 @@ fn native_ann_selected_region_survives_replacement_and_deletion()
         owners: MapRoot(None),
     };
     let (empty_result, empty_memory) = selected_search(
-        &runtime,
         &store,
         &maps,
         &empty_coverage,
@@ -1407,7 +1393,6 @@ fn empty_source_vectors_across_65_owners_do_not_seal_a_region()
     check_eq!(directory.delta_rows, 0);
     check_eq!(directory.regions, MapRoot(None));
     let (empty_result, memory) = selected_search(
-        &runtime,
         &store,
         &maps,
         &selected,
@@ -1429,7 +1414,6 @@ fn empty_source_vectors_across_65_owners_do_not_seal_a_region()
 #[test]
 fn overlay_filling_owner_limit_needs_no_durable_owner_allocation()
 -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = test_runtime()?;
     let store = MemoryStore::default();
     let maps = GraphMap::new(&store);
     let custody = TestCustody;
@@ -1476,35 +1460,33 @@ fn overlay_filling_owner_limit_needs_no_durable_owner_allocation()
     work.bind_memory_scope(Some(MemoryScope::new(Arc::new(QueryMemoryScope(
         Arc::clone(&memory),
     )))));
-    let result = crate::run_blocking(
-        &runtime,
-        ann_query::search(
-            &SearchQuery {
-                lexical_eligibility: None,
-                lexical_owners: None,
-                exact_path: None,
-                coverage: &coverage,
-                projection: None,
-                source_owners: MapRoot(None),
-                source_paths: MapRoot(None),
-                instance: spec.instance,
-                format: spec.format,
-                recipe: &recipe,
-                vector: &[1.0, 0.0],
-                top_k: 1,
-                page_size: 1,
-                max_owners: 1,
-                overlay: Some(overlay::OverlaySearch {
-                    documents: &documents,
-                    bridge: &bridge,
-                }),
-            },
-            &mut ReadContext {
-                objects: &store,
-                maps: &maps,
-                budget: &mut work,
-            },
-        ),
+    let result = ann_query::search(
+        &SearchQuery {
+            source_files: false,
+            lexical_eligibility: None,
+            lexical_owners: None,
+            exact_path: None,
+            coverage: &coverage,
+            projection: None,
+            source_owners: MapRoot(None),
+            source_paths: MapRoot(None),
+            instance: spec.instance,
+            format: spec.format,
+            recipe: &recipe,
+            vector: &[1.0, 0.0],
+            top_k: 1,
+            page_size: 1,
+            max_owners: 1,
+            overlay: Some(overlay::OverlaySearch {
+                documents: &documents,
+                bridge: &bridge,
+            }),
+        },
+        &mut ReadContext {
+            objects: &store,
+            maps: &maps,
+            budget: &mut work,
+        },
     )?;
     check!(result.hits.is_empty());
     check_eq!(result.scanned_owners, 1);

@@ -5,7 +5,9 @@
     reason = "the module is private to the crate; `pub(crate)` is the visibility its items need across the crate's modules, and the workspace's `unreachable_pub = deny` forbids the bare `pub`"
 )]
 
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_contract::lex::SymbolRecord;
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_contract::{BatchIngestMode, ChunkRecord, ManifestGeneration};
 use quanta_index_core::CoreError;
 use serde::de::value::SeqAccessDeserializer;
@@ -407,11 +409,13 @@ impl<'de, T: Deserialize<'de>, const MAX: usize> Deserialize<'de> for BoundedCbo
     }
 }
 
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn decode_chunk_payload(bytes: &[u8]) -> Result<ChunkRecord, CoreError> {
     decode_cbor_exact::<ChunkRecord>(bytes)
         .map_err(|err| CoreError::InvalidContract(format!("lexical: chunk payload decode: {err}")))
 }
 
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn decode_symbol_payload(bytes: &[u8]) -> Result<SymbolRecord, CoreError> {
     decode_cbor_exact::<SymbolRecord>(bytes)
         .map_err(|err| CoreError::InvalidContract(format!("lexical: symbol payload decode: {err}")))
@@ -419,6 +423,7 @@ pub(crate) fn decode_symbol_payload(bytes: &[u8]) -> Result<SymbolRecord, CoreEr
 
 /// A length or a count as `u64`; a platform where `usize` exceeds `u64`
 /// is refused rather than truncated.
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn count_from_len(value: usize) -> Result<u64, CoreError> {
     u64::try_from(value)
         .map_err(|err| CoreError::InvalidContract(format!("lexical: count overflow: {err}")))
@@ -434,6 +439,7 @@ where
     Ok(payload)
 }
 
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn decode_replace_scope_payload(
     bytes: &[u8],
 ) -> Result<
@@ -454,6 +460,7 @@ pub(crate) fn decode_replace_scope_payload(
     })
 }
 
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn decode_tombstone_scope_payload(
     bytes: &[u8],
 ) -> Result<

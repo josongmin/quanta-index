@@ -125,6 +125,74 @@ fn bounded_object_key(
         .map_err(|_error| IndexError::Storage(invalid.into()))
 }
 
+pub(super) fn find_unsettled_object(
+    transaction: &rusqlite::Transaction<'_>,
+    budget: &mut WorkBudget,
+) -> Result<Option<NativeReadSettlementBlocker>, IndexError> {
+    // The durable queue does not cover an unqueued LIVE orphan. Walk the
+    // object index in bounded pages and use the reclaim owner's complete
+    // reference/selected-boot predicate for each object. The caller's work
+    // budget and deadline bound the total scan; exhaustion cannot report 0.
+    let mut after: Option<[u8; 32]> = None;
+    loop {
+        budget.charge(WorkUsage {
+            reads: 1,
+            ..WorkUsage::default()
+        })?;
+        let query = if after.is_some() {
+            "SELECT CASE WHEN typeof(object)='blob' AND length(object)=32 THEN object END,
+                    phase, generation, kind, direct_children, drained_children,
+                    length(target),
+                    CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32
+                      THEN row_digest END
+             FROM native_gc_object_v1
+             WHERE object>?1 ORDER BY object LIMIT 256"
+        } else {
+            "SELECT CASE WHEN typeof(object)='blob' AND length(object)=32 THEN object END,
+                    phase, generation, kind, direct_children, drained_children,
+                    length(target),
+                    CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32
+                      THEN row_digest END
+             FROM native_gc_object_v1 ORDER BY object LIMIT 256"
+        };
+        let mut statement = transaction
+            .prepare_cached(query)
+            .map_err(|error| sql(&error))?;
+        let mut rows = match after.as_ref() {
+            Some(key) => statement.query(params![&key[..]]),
+            None => statement.query([]),
+        }
+        .map_err(|error| sql(&error))?;
+        let mut found = false;
+        loop {
+            budget.checkpoint()?;
+            let Some(row) = rows.next().map_err(|error| sql(&error))? else {
+                break;
+            };
+            budget.charge(WorkUsage {
+                reads: 1,
+                bytes: 32,
+                ..WorkUsage::default()
+            })?;
+            let key = bounded_object_key(row, "GC object reference shape changed")?;
+            let phase: i64 = row.get(1).map_err(|error| sql(&error))?;
+            if phase != 0 {
+                return Ok(Some(NativeReadSettlementBlocker::ObjectLifecycle));
+            }
+            reclaim::checked_live_scan_row(row, ObjectRef(Digest(key)), budget)?;
+            if !reclaim::reference_exists(transaction, ObjectRef(Digest(key)), budget)? {
+                return Ok(Some(NativeReadSettlementBlocker::UnreferencedObject));
+            }
+            after = Some(key);
+            found = true;
+        }
+        if !found {
+            break;
+        }
+    }
+    Ok(None)
+}
+
 impl CatalogReadSettlementPort for SqliteCatalog {
     fn release_held_ticket(
         &self,
@@ -381,60 +449,8 @@ impl CatalogReadSettlementPort for SqliteCatalog {
 
         verify_object_lifecycle_coverage(&transaction, budget)?;
 
-        // The durable queue does not cover an unqueued LIVE orphan. Walk the
-        // object index in bounded pages and use the reclaim owner's complete
-        // reference/selected-boot predicate for each object. The caller's work
-        // budget and deadline bound the total scan; exhaustion cannot report 0.
-        let mut after: Option<[u8; 32]> = None;
-        loop {
-            budget.charge(WorkUsage {
-                reads: 1,
-                ..WorkUsage::default()
-            })?;
-            let query = if after.is_some() {
-                "SELECT CASE WHEN typeof(object)='blob' AND length(object)=32 THEN object END,
-                        phase FROM native_gc_object_v1
-                 WHERE object>?1 ORDER BY object LIMIT 256"
-            } else {
-                "SELECT CASE WHEN typeof(object)='blob' AND length(object)=32 THEN object END,
-                        phase FROM native_gc_object_v1 ORDER BY object LIMIT 256"
-            };
-            let mut statement = transaction
-                .prepare_cached(query)
-                .map_err(|error| sql(&error))?;
-            let mut rows = match after.as_ref() {
-                Some(key) => statement.query(params![&key[..]]),
-                None => statement.query([]),
-            }
-            .map_err(|error| sql(&error))?;
-            let mut found = false;
-            loop {
-                budget.checkpoint()?;
-                let Some(row) = rows.next().map_err(|error| sql(&error))? else {
-                    break;
-                };
-                budget.charge(WorkUsage {
-                    reads: 1,
-                    bytes: 32,
-                    ..WorkUsage::default()
-                })?;
-                let key = bounded_object_key(row, "GC object reference shape changed")?;
-                let phase: i64 = row.get(1).map_err(|error| sql(&error))?;
-                if phase != 0 {
-                    return pending(NativeReadSettlementBlocker::ObjectLifecycle);
-                }
-                if !reclaim::checked_live_object(&transaction, ObjectRef(Digest(key)), budget)? {
-                    return pending(NativeReadSettlementBlocker::ObjectLifecycle);
-                }
-                if !reclaim::reference_exists(&transaction, ObjectRef(Digest(key)), budget)? {
-                    return pending(NativeReadSettlementBlocker::UnreferencedObject);
-                }
-                after = Some(key);
-                found = true;
-            }
-            if !found {
-                break;
-            }
+        if let Some(blocker) = find_unsettled_object(&transaction, budget)? {
+            return pending(blocker);
         }
         budget.checkpoint()?;
         transaction.commit().map_err(|error| sql(&error))?;

@@ -101,17 +101,28 @@ fn index_error_at(error: &CoreError, budget: &WorkBudget, boundary: &'static str
     index_error(error)
 }
 
+fn read_file_memory_bytes() -> Result<u64, IndexError> {
+    u64::try_from(std::mem::size_of::<ReadFile>()).map_err(|_error| IndexError::ResourceLimited)
+}
+
 impl ObjectReadIoPort for NativeObjectReadIo {
+    fn read_owner_memory_bound(
+        &self,
+    ) -> Result<Option<quanta_index_core::index::MemoryCreditLimits>, IndexError> {
+        Ok(Some(quanta_index_core::index::MemoryCreditLimits {
+            temporary_data_bytes: read_file_memory_bytes()?,
+            retained_data_bytes: 0,
+            max_live_temporary_leases: 1,
+            max_live_retained_leases: 0,
+        }))
+    }
+
     fn open(
         &self,
         path: &Path,
         budget: &mut WorkBudget,
     ) -> Result<Box<dyn ObjectReadFile>, IndexError> {
-        let memory = budget.reserve_memory(
-            u64::try_from(std::mem::size_of::<ReadFile>())
-                .map_err(|_error| IndexError::ResourceLimited)?,
-            MemoryLifetime::Temporary,
-        )?;
+        let memory = budget.reserve_memory(read_file_memory_bytes()?, MemoryLifetime::Temporary)?;
         let mut opening = self
             .common
             .begin_native_reader_open(path)

@@ -3,9 +3,10 @@
 use std::{fmt, ops::Deref};
 
 use quanta_index_core::index::{
-    IndexError, MemoryLease, MemoryLifetime, OperationKey, OwnerMutationSet, ProducerCompleteness,
-    ProducerId, ProjectionBinding, ProjectionId, ProjectionTransition, SchemaId, SourceCut,
-    SourceEvent, SourceTransition, UpdateKind, UpdateRequest, ViewRef, WorkBudget, WorkClaim,
+    HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryTransition, IndexError, MemoryLease, MemoryLifetime, OperationKey, OwnerMutationSet,
+    ProducerCompleteness, ProducerId, ProjectionBinding, ProjectionId, ProjectionTransition,
+    SchemaId, SourceCut, SourceEvent, SourceHistoryTransitionV1, SourceTransition, UpdateKind, UpdateRequest, ViewRef,
+    WorkBudget, WorkClaim,
 };
 use serde::{
     Deserialize,
@@ -39,8 +40,11 @@ struct Header<'a> {
 #[derive(Deserialize)]
 enum KindTag {
     SourceAdvance,
+    SourceHistoryAdvance,
     SourceResync,
     ProjectionAdvance,
+    HistoryAdvance,
+    HistoryAppend,
     Reconfigure,
     Materialize,
 }
@@ -74,8 +78,11 @@ impl<'de: 'a, 'a> Deserialize<'de> for RawKind<'a> {
             "UpdateKind",
             &[
                 "SourceAdvance",
+                "SourceHistoryAdvance",
                 "SourceResync",
                 "ProjectionAdvance",
+                "HistoryAdvance",
+                "HistoryAppend",
                 "Reconfigure",
                 "Materialize",
             ],
@@ -91,6 +98,15 @@ struct SourceParts<'a> {
     owners: OwnerMutationSet,
     #[serde(borrow)]
     events: &'a RawValue,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceHistoryParts<'a> {
+    #[serde(borrow)]
+    source: SourceParts<'a>,
+    #[serde(borrow)]
+    history: &'a RawValue,
 }
 
 #[derive(Deserialize)]
@@ -135,6 +151,48 @@ struct ProjectionParts<'a> {
     owners: OwnerMutationSet,
     #[serde(borrow)]
     events: &'a RawValue,
+}
+
+/// Allocation census only. The canonical HistoryTransition decoder below
+/// still owns required/closed fields, identifiers and digest validation.
+#[derive(Deserialize)]
+struct HistoryNameLayout {
+    expected: Option<HistoryCutNames>,
+    next: HistoryCutNames,
+}
+
+#[derive(Deserialize)]
+struct HistoryAppendNameLayout {
+    expected: HistoryCutNames,
+}
+
+#[derive(Deserialize)]
+struct HistoryCutNames {
+    generation: HistoryGenerationNames,
+}
+
+#[derive(Deserialize)]
+struct HistoryGenerationNames {
+    repo_id: StringBytes,
+    revision_id: StringBytes,
+}
+
+struct StringBytes(usize);
+
+impl<'de> Deserialize<'de> for StringBytes {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        struct CountString;
+        impl serde::de::Visitor<'_> for CountString {
+            type Value = StringBytes;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a History identity string")
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(StringBytes(value.len()))
+            }
+        }
+        decoder.deserialize_str(CountString)
+    }
 }
 
 struct CountEvents<'a>(&'a WorkBudget);
@@ -289,6 +347,28 @@ pub(crate) fn decode(bytes: &[u8], budget: &WorkBudget) -> Result<LoadedRequest,
                 memory,
             )
         }
+        KindTag::SourceHistoryAdvance => {
+            let parts: SourceHistoryParts<'_> = read(raw, budget)?;
+            let history_raw = parts.history.get().as_bytes();
+            let layout: HistoryAppendNameLayout = read(history_raw, budget)?;
+            let backing = std::mem::size_of::<SourceHistoryTransitionV1>()
+                .checked_add(layout.expected.generation.repo_id.0)
+                .and_then(|size| size.checked_add(layout.expected.generation.revision_id.0))
+                .ok_or(IndexError::ResourceLimited)?;
+            let (events, memory) = events(parts.source.events, backing, budget)?;
+            let history: HistoryGenerationAdvanceV1 = read(history_raw, budget)?;
+            (
+                UpdateKind::SourceHistoryAdvance(Box::new(SourceHistoryTransitionV1 {
+                    source: SourceTransition {
+                        expected_source: parts.source.expected_source,
+                        owners: parts.source.owners,
+                        events,
+                    },
+                    history,
+                })),
+                memory,
+            )
+        }
         KindTag::SourceResync => {
             let parts: ResyncParts<'_> = read(raw, budget)?;
             let (events, memory) = events(parts.transition.events, 0, budget)?;
@@ -326,6 +406,40 @@ pub(crate) fn decode(bytes: &[u8], budget: &WorkBudget) -> Result<LoadedRequest,
                 })),
                 memory,
             )
+        }
+        KindTag::HistoryAdvance => {
+            // Census the decoded string lengths without owning them, then
+            // fund their escaping backing before canonical decoding. Parser
+            // scratch is already admitted by the enclosing temporary grant.
+            let layout: HistoryNameLayout = read(raw, budget)?;
+            let retained_bytes = layout
+                .expected
+                .iter()
+                .chain(std::iter::once(&layout.next))
+                .try_fold(0_usize, |bytes, cut| {
+                    bytes
+                        .checked_add(cut.generation.repo_id.0)
+                        .and_then(|bytes| bytes.checked_add(cut.generation.revision_id.0))
+                        .ok_or(IndexError::ResourceLimited)
+                })?;
+            let memory = budget.reserve_memory(
+                u64::try_from(retained_bytes).map_err(|_| IndexError::ResourceLimited)?,
+                MemoryLifetime::Retained,
+            )?;
+            let transition: HistoryTransition = read(raw, budget)?;
+            (UpdateKind::HistoryAdvance(transition), memory)
+        }
+        KindTag::HistoryAppend => {
+            let layout: HistoryAppendNameLayout = read(raw, budget)?;
+            let retained_bytes = layout.expected.generation.repo_id.0
+                .checked_add(layout.expected.generation.revision_id.0)
+                .ok_or(IndexError::ResourceLimited)?;
+            let memory = budget.reserve_memory(
+                u64::try_from(retained_bytes).map_err(|_| IndexError::ResourceLimited)?,
+                MemoryLifetime::Retained,
+            )?;
+            let append: HistoryAppendV1 = read(raw, budget)?;
+            (UpdateKind::HistoryAppend(append), memory)
         }
         KindTag::Reconfigure => {
             let parts: ReconfigureParts = read(raw, budget)?;
@@ -448,6 +562,29 @@ pub(crate) mod tests {
                     .checked_add(std::mem::size_of_val(transition.as_ref()))
                     .ok_or(IndexError::ResourceLimited)?
             }
+            UpdateKind::SourceHistoryAdvance(transition) => {
+                let generation = &transition.history.expected.generation;
+                std::mem::size_of_val(transition.source.events.as_slice())
+                    .checked_add(std::mem::size_of_val(transition.as_ref()))
+                    .and_then(|size| size.checked_add(generation.repo_id.as_str().len()))
+                    .and_then(|size| size.checked_add(generation.revision_id.as_str().len()))
+                    .ok_or(IndexError::ResourceLimited)?
+            }
+            UpdateKind::HistoryAdvance(transition) => transition
+                .expected
+                .iter()
+                .chain(std::iter::once(&transition.next))
+                .try_fold(0_usize, |bytes, cut| {
+                    bytes
+                        .checked_add(cut.generation.repo_id.as_str().len())
+                        .and_then(|bytes| {
+                            bytes.checked_add(cut.generation.revision_id.as_str().len())
+                        })
+                        .ok_or(IndexError::ResourceLimited)
+                })?,
+            UpdateKind::HistoryAppend(append) => append.expected.generation.repo_id.as_str().len()
+                .checked_add(append.expected.generation.revision_id.as_str().len())
+                .ok_or(IndexError::ResourceLimited)?,
             UpdateKind::Reconfigure { .. } | UpdateKind::Materialize { .. } => 0,
         };
         Ok(u64::try_from(bytes)?)

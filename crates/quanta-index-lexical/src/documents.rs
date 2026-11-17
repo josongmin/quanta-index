@@ -222,3 +222,67 @@ pub(crate) fn stored_u32(doc: &TantivyDocument, field: Field) -> Result<Option<u
         .map(Some)
         .map_err(|err| CoreError::Storage(format!("lexical: stored u32 exceeds range: {err}")))
 }
+
+#[cfg(test)]
+mod l3_definition_facts_tests {
+    #![expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions are test failure reporting"
+    )]
+    use quanta_index_contract::lex::{
+        LanguageCode, SymbolKindCode, SymbolRecord, SymbolRelationship, SymbolSpan,
+    };
+    use quanta_index_contract::{RepoRelativePath, SymbolId};
+    use tantivy::schema::{TantivyDocument, Value};
+
+    #[test]
+    fn l3_document_preserves_original_spelling_signature_and_definition_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fields = crate::SchemaFields::build();
+        let symbol = SymbolRecord {
+            symbol_id: SymbolId::new("definition"),
+            repo_relative_path: RepoRelativePath::new("a.rs"),
+            language: LanguageCode::new("rust").map_err(str::to_string)?,
+            symbol_kind: SymbolKindCode::new("function").map_err(str::to_string)?,
+            symbol_kind_family: None,
+            local_name: "Cafe\u{301}".into(),
+            qualified_name: "Outer::Cafe\u{301}".into(),
+            signature: Some("fn Cafe\u{301}(x: u32)".into()),
+            visibility: None,
+            definition_span: SymbolSpan {
+                path: "a.rs".into(),
+                byte_start: 17,
+                byte_end: 43,
+                line_start: 2,
+                line_end: 3,
+            },
+            container_qualified_name: Some("Outer".into()),
+            relationship: SymbolRelationship::Def,
+        };
+        let mut doc = TantivyDocument::default();
+        crate::documents::add_symbol_fields(&fields, &mut doc, &symbol);
+        for (field, expected) in [
+            (fields.symbol_local_name_original, "Cafe\u{301}"),
+            (fields.symbol_qualified_name_original, "Outer::Cafe\u{301}"),
+            (fields.symbol_signature, "fn Cafe\u{301}(x: u32)"),
+            (fields.symbol_local_name, "Café"),
+            (fields.symbol_local_name_folded, "café"),
+        ] {
+            assert_eq!(
+                doc.get_first(field).and_then(|value| value.as_str()),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            doc.get_first(fields.symbol_definition_start_byte)
+                .and_then(|value| value.as_u64()),
+            Some(17)
+        );
+        assert_eq!(
+            doc.get_first(fields.symbol_definition_end_byte)
+                .and_then(|value| value.as_u64()),
+            Some(43)
+        );
+        Ok(())
+    }
+}

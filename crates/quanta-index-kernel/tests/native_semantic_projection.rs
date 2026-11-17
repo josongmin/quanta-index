@@ -207,6 +207,7 @@ fn stage_source(objects: &FileObjectStore) -> TestResult<ObjectRef> {
         bytes,
         byte_len: 8,
         text: quanta_index_core::index::SourceTextAdmission::Excluded,
+        source_repo_id: None,
     };
     Ok(objects
         .put(&serde_json::to_vec(&record)?, &[bytes], &mut budget())?
@@ -334,6 +335,7 @@ fn stage_updated_source(objects: &FileObjectStore) -> TestResult<ObjectRef> {
         bytes,
         byte_len: 9,
         text: quanta_index_core::index::SourceTextAdmission::Excluded,
+        source_repo_id: None,
     };
     Ok(objects
         .put(&serde_json::to_vec(&record)?, &[bytes], &mut budget())?
@@ -557,7 +559,7 @@ fn changed_projection_output_reembeds_and_cold_resume_reuses_committed_receipt()
             },
         },
     )?
-    .with_ann(Arc::clone(&runtime));
+    .with_ann();
     let mut registry = AdapterRegistry::new();
     registry.register_owner(
         AdapterDescriptor {

@@ -40,9 +40,9 @@ schema = 2
 [[artifact]]
 id = "native-index-state"
 owner = "quanta-index-searchd-runtime"
-path = "state_root/{.native-index-v19,catalog/catalog-v1.sqlite,native-objects,native-scratch-v1}"
+path = "state_root/{.native-index-v20,catalog/catalog-v1.sqlite,native-objects,native-scratch-v1}"
 reproduction = "producer-rebuild"
-notes = "Opt-in native service format v19. Bounded map values retain at most 32 inline data bytes and up to five explicit real children; Source path owners, eligible Text contributions and source-only pending coverage, plus singleton/tree posting metadata avoid separate wrapper objects. Bounded Text entry maps inline small inventories and posting memberships in their owning metadata; larger maps use the same COW port. QIMAP004 stores exact value kinds and direct child custody. The Native Text terms and Source path roots can use QIMAP005 to embed one level of terminal-only branching children under the same physical edge and payload bounds. The current object decoder reads both formats and refuses prior QIMAP001/002/003. The v19 root marker and Catalog stamp prevent a v18 binary from serving a namespace with QIMAP005 objects. Persisted operation source intent and producer-wide epoch authority are atomically bound to baseline publication. Source-event capture v2 binds canonical logical mutation count/digest separately from exact execution ViewRef/SourceCut and physical mutation layout. Catalog stores and verifies the shared state/capture version plus hash domain and once-issued 32-byte root nonce plus a bounded selected boot manifest/digest in the existing singleton before any initialization/recovery, including in-process consumers. Prior v1-v18 markers and an unstamped Native Catalog refuse and require explicit rebuild/new incarnation; no old-format relabel, startup backfill or compatibility reader. Existing legacy backup/restore and launcher do not qualify native restore or event-claim migration."
+notes = "Opt-in native service format v20. Bounded map values retain at most 32 inline data bytes and up to five explicit real children; Source path owners, eligible Text contributions and source-only pending coverage, plus singleton/tree posting metadata avoid separate wrapper objects. Bounded Text entry maps inline small inventories and posting memberships in their owning metadata; larger maps use the same COW port. QIMAP004 stores exact value kinds and direct child custody. The Native Text terms and Source path roots can use QIMAP005 to embed one level of terminal-only branching children under the same physical edge and payload bounds. The current object decoder reads both formats and refuses prior QIMAP001/002/003. The v20 root marker and Catalog stamp bind the closed operation row with atomically persisted Published CatalogView metadata. Historical metadata lookup retains no query pin or object custody; pre-v20 roots require rebuild. QIMAP005 nested terminal branches remain unchanged. Persisted operation source intent and producer-wide epoch authority are atomically bound to baseline publication. Source-event capture v2 binds canonical logical mutation count/digest separately from exact execution ViewRef/SourceCut and physical mutation layout. Catalog stores and verifies the shared state/capture version plus hash domain and once-issued 32-byte root nonce plus a bounded selected boot manifest/digest in the existing singleton before any initialization/recovery, including in-process consumers. Prior v1-v19 markers and an unstamped Native Catalog refuse and require explicit rebuild/new incarnation; no old-format relabel, startup backfill or compatibility reader. Existing legacy backup/restore and launcher do not qualify native restore or event-claim migration."
 
 [[tool_artifact]]
 id = "proof-manifest-v1"
@@ -139,6 +139,7 @@ variants = [
   "Semantic",
   "SemanticWorkBoundedV1",
   "Hybrid",
+  "HybridFileV1",
   "GoTestTraceFileV1",
   "HybridSeed",
   "History",
@@ -162,6 +163,7 @@ variants = [
   "Semantic",
   "SemanticWorkBoundedV1",
   "Hybrid",
+  "HybridFileV1",
   "GoTestTraceFileV1",
   "HybridSeed",
   "History",
@@ -276,6 +278,8 @@ variants = [
   "Submit",
   "Resume",
   "ReadView",
+  "ObserveRootView",
+  "PublishedViewMetadata",
   "ReadSession",
   "Status",
   "ReadyWork",
@@ -320,7 +324,12 @@ variants = [
   "Staged",
   "Submitted",
   "View",
+  "PublishedViewMetadata",
+  "RootScopedView",
+  "HistoryPage",
+  "HistoryCut",
   "ReadSession",
+  "ReadSessionProfile",
   "Status",
   "ReadyWork",
   "Claimed",
@@ -335,6 +344,8 @@ variants = [
   "PathPage",
   "StagedSources",
   "TextRanked",
+  "TextRankedPage",
+  "HybridFileRanked",
   "SemanticRanked",
   "EffortDone",
   "InteractionBegun",
@@ -378,7 +389,7 @@ file = "crates/quanta-index-lexical/src/lexical_root_names.rs"
 name = "LEXICAL_UNPACKED_BODY_MANIFEST_FORMAT_VERSION"
 value = 22
 [[artifact.version_constants]]
-file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
+file = "crates/quanta-index-lexical/src/legacy/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION"
 value = 2
 
@@ -422,7 +433,7 @@ path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/so
 reproduction = "producer-rebuild"
 notes = "Optional admitted source-file universe and publication event in a bounded root and immutable hash-routed pages. The decoder checks exact generation identity, canonical entries, page commitments and trailing bytes. When present, the sealed manifest commits the root and pages. Absence is unavailable capability, never complete coverage; other format versions are refused."
 [[artifact.version_constants]]
-file = "crates/quanta-index-lexical/src/sealed_generation/coverage_pages.rs"
+file = "crates/quanta-index-lexical/src/legacy/coverage_root.rs"
 name = "COVERAGE_FORMAT"
 value = 2
 
@@ -462,7 +473,7 @@ path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/te
 reproduction = "producer-rebuild"
 notes = "Format 8 compact Native root binds QLMAP002 current-document, membership, routing, bounded segment objects, compaction debt, and the authenticated run registry in the shared pool. Native bodies persist NFC text once and derive folding on read. Logical document-version IDs are catalog-reserved u64 values. Older roots are refused; there is no legacy reader."
 [[artifact.version_constants]]
-file = "crates/quanta-index-lexical/src/text_authority/paged_manifest.rs"
+file = "crates/quanta-index-lexical/src/legacy/native_root.rs"
 name = "NATIVE_FORMAT"
 value = 8
 
@@ -471,11 +482,11 @@ id = "lexical-file-authority"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/file-authority/root.cbor"
 reproduction = "producer-rebuild"
-notes = "Format 21 compact File root binds QLMAP002 source/document/routing maps, bounded immutable segments, authenticated run registry and posting authority, compaction debt, and the premerge run witness in the shared pool. Raw source blocks remain authoritative for exact verification. Older authority formats require producer rebuild."
+notes = "Format 22 compact File root binds QLMAP002 source/document/routing maps, bounded immutable segments, authenticated run registry and posting authority, compaction debt, and the premerge run witness in the shared pool. Raw source blocks remain authoritative for exact verification. Older authority formats require producer rebuild."
 [[artifact.version_constants]]
-file = "crates/quanta-index-lexical/src/file_authority/paged.rs"
+file = "crates/quanta-index-lexical/src/legacy/file_root.rs"
 name = "FILE_AUTHORITY_FORMAT"
-value = 21
+value = 22
 
 [[artifact]]
 id = "lexical-shared-object-pool"
@@ -484,7 +495,7 @@ path = "state_root/indexes/lexical/lexical-object-pool/{objects,attempts}/"
 reproduction = "producer-rebuild"
 notes = "Object format 1 binds typed kind, dependency references, payload length and SHA-256 in bounded immutable objects. Adoption records protect prepared/retried roots; epoch-fenced GC marks all protected closures before sweeping. Backups must preserve the pool together with referencing generation roots. Missing or corrupt referenced objects cause typed refusal, never partial results."
 [[artifact.version_constants]]
-file = "crates/quanta-index-lexical/src/lexical_store/store.rs"
+file = "crates/quanta-index-lexical/src/legacy/object_binary.rs"
 name = "OBJECT_FORMAT"
 value = 1
 
@@ -568,7 +579,7 @@ path = "state_root/indexes/semantic/generation-v1-<sha256(repo,revision)>/g<N>/{
 reproduction = "producer-rebuild"
 notes = "File-set commitment over manifest, build contract and the whole dataset tree (QI-BB-017); the sealed marker is the promotion point. Doors verify the layout (existence + length) and hash only the two decoded sidecars; the integrity scrub hashes the dataset in bounded resumable steps. A delta seal carries the base's digest for every file it still shares by inode."
 [[artifact.version_constants]]
-file = "crates/quanta-index-semantic/src/sealed_manifest.rs"
+file = "crates/quanta-index-semantic/src/legacy/sealed.rs"
 name = "SEALED_MANIFEST_FORMAT_VERSION"
 value = 1
 
@@ -745,20 +756,27 @@ notes = "Bootstrap artifact verification precedes atomic selection replace and d
 id = "native-semantic-ann-fileset"
 owner = "quanta-index-semantic"
 path = "state_root/native-objects/<object-ref> (ANN file-set manifest and chunk objects)"
-reproduction = "producer-rebuild"
-notes = "Bounded canonical JSON file-set descriptor for an immutable Lance region. Shared RegionSeal and file hashes bind at most 256 relative paths and 32MiB split into managed chunks; exact sorted child references participate in the original attempt/Catalog pin and GC graph. Other formats require an explicit rebuild."
+reproduction = "reject-only"
+notes = "Retired Native Lance file-set layout; helpers remain test-only to exercise old artifact rejection. Current Native directory format 4 rejects the old directory before any file-set hydration and produces native HNSW artifacts instead. This entry is not a supported production reader or a shipped dependency-removal claim."
 [[artifact.version_constants]]
 file = "crates/quanta-index-semantic/src/native/ann_files.rs"
 name = "FILE_SET_FORMAT"
 value = 1
 
 [[artifact]]
+id = "native-semantic-hnsw-region"
+owner = "quanta-index-semantic"
+path = "state_root/native-objects/<object-ref> (one immutable native HNSW graph artifact)"
+reproduction = "producer-rebuild"
+notes = "Exact binary magic QNHNSW02 binds the fixed construction recipe (M16, efConstruction64, at most256 distinct point distances per insertion), region generation, dimensions and sorted full owner/member/vector identities with original f32 vectors and bounded layered edges. Canonical decoder checks the exact recipe, sorted identities, finite vectors, edge bounds, reserved fields and exact end-of-input; prior01 artifacts require rebuild. Original member artifacts remain authoritative for result reranking and source-file custody. Source lives in embedding/native_graph.rs; no Lance file-set or decoder fallback. Graph artifact/payload counts are logical, not physical file/FD/extent counts."
+
+[[artifact]]
 id = "native-semantic-ann-directory"
 owner = "quanta-index-semantic"
 path = "state_root/native-objects/<object-ref> (coverage-selected ANN directory and region descriptors)"
 reproduction = "producer-rebuild"
-notes = "Canonical JSON directory binds recipe and selected owner coverage to COW region and exact-delta member maps. Region descriptors retain file-set and member roots. Source, projection and materialized-member changes adopt the search root in the original coverage publication CAS; owner-map layouts are explicitly rejected in ANN mode."
+notes = "Canonical directory binds recipe and selected owner coverage to immutable native HNSW graph artifacts, COW region and exact-delta member maps. Format 4 rejects the retired Lance-backed directory with RebuildRequired. Source, projection and materialized-member changes adopt the search root in the original coverage publication CAS; owner-map layouts are explicitly rejected in ANN mode."
 [[artifact.version_constants]]
 file = "crates/quanta-index-semantic/src/native/embedding/ann_directory.rs"
 name = "DIRECTORY_FORMAT"
-value = 3
+value = 4

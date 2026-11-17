@@ -2731,7 +2731,9 @@ fn durable_retention_error_fences_same_process_rollback_authority() -> TestRes {
         Arc::new(crate::HashingQueryTextEmbedder::new(
             SEARCH_OWNED_SEMANTIC_DIMENSION,
         )),
-        Arc::new(FailingRetentionAuthority),
+        Arc::new(FailingRetentionAuthority(CoreError::Storage(
+            "injected post-delete retention durability failure".into(),
+        ))),
         always_valid_generation(),
         always_valid_generation(),
         test_incomplete_generation_discard(),
@@ -2749,6 +2751,37 @@ fn durable_retention_error_fences_same_process_rollback_authority() -> TestRes {
             "retention failure",
         );
     assert!(matches!(rollback, Err(CoreError::NotReady(_))));
+    let preflight_error = CoreError::Typed {
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+        message: "injected pre-mutation retry refusal".into(),
+    };
+    let refused = search_corpus_materializer!(
+        Arc::new(FakeSearchCorpusBuilder::default()),
+        Arc::clone(&ledger),
+        Arc::new(DirectSemanticMaterializer::new(Arc::new(
+            FakeSemanticBuilder::default()
+        ))),
+        Arc::new(crate::HashingQueryTextEmbedder::new(
+            SEARCH_OWNED_SEMANTIC_DIMENSION,
+        )),
+        Arc::new(FailingRetentionAuthority(preflight_error.clone())),
+        always_valid_generation(),
+        always_valid_generation(),
+        test_incomplete_generation_discard(),
+        test_incomplete_generation_discard(),
+    );
+    assert!(matches!(
+        refused.publish_batch(&batch, &RequestBudgetV1::unbounded()),
+        Err(error) if error == preflight_error
+    ));
+    let rollback_after_retry = ledger
+        .read()
+        .map_err(|err| format!("ledger poisoned: {err}"))?
+        .validate_historically_sealed_track_identity(
+            &generation_pair_from_batch_v1(&batch).0,
+            "retention retry refusal",
+        );
+    assert!(matches!(rollback_after_retry, Err(CoreError::NotReady(_))));
     // Retention can durably remove a delta's base before reporting an I/O
     // failure. Complete target chunks must already survive that boundary.
     let guard = ledger.read().map_err(|e| e.to_string())?;

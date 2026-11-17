@@ -5,14 +5,16 @@ use std::time::Duration;
 
 use quanta_index_contract::{
     CandidateCountV1, EarlyStopReason, GoTestTraceFileHitV1, GoTestTraceFileLaneWitnessV1,
-    GoTestTraceFileQueryRequestV1, GoTestTraceFileQueryResponseV1, GoTestTraceFrameClassV1,
-    HybridQueryRequest, HybridQueryResponse, LaneTraceV1, LexicalCandidate, QueryStageKindV1,
-    TextQueryRequest,
+    GoTestTraceFilePoolRowV1, GoTestTraceFileQueryRequestV1, GoTestTraceFileQueryResponseV1,
+    GoTestTraceFileRankPoolsV1, GoTestTraceFrameClassV1, HybridFileHitV1, HybridFileQueryRequestV1,
+    HybridFileQueryResponseV1, HybridQueryRequest, HybridQueryResponse, LaneTraceV1,
+    LexicalCandidate, QueryStageKindV1, SourceFileKey, TextQueryRequest,
+    hybrid_file_candidate_pool_sha256_v1,
 };
 use quanta_index_core::{
-    CoreError, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1, HybridOrchestratorPolicy,
-    HybridQueryPort, LexicalPageSpec, QueryRouteV1, RequestBudgetV1, TraceFileEvidenceV1,
-    TraceFileLaneWitnessV1, TraceFileRankPolicyV1, TraceSourceFrameClassV1,
+    CoreError, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1, GenericFileRankPolicyV1,
+    HybridOrchestratorPolicy, HybridQueryPort, LexicalPageSpec, QueryRouteV1, RequestBudgetV1,
+    TraceFileEvidenceV1, TraceFileLaneWitnessV1, TraceFileRankPolicyV1, TraceSourceFrameClassV1,
 };
 
 use crate::query_dispatcher::dense_admission::admit_dense_lane_v1;
@@ -51,6 +53,7 @@ struct HybridLaneCandidates {
 #[derive(Clone, Copy)]
 enum HybridCandidateRoute<'a> {
     Chunk(&'a str),
+    GenericFile,
     GoTraceFile,
 }
 
@@ -91,6 +94,146 @@ fn hybrid_lane_traces(
 }
 
 impl SearchPlaneDispatcher {
+    pub(crate) fn hybrid_file(
+        &self,
+        request: &HybridFileQueryRequestV1,
+        budget: &RequestBudgetV1,
+    ) -> Result<HybridFileQueryResponseV1, CoreError> {
+        request.validate_v1().map_err(CoreError::InvalidContract)?;
+        budget.checkpoint("hybrid-file:entry")?;
+        let selection =
+            resolve_hybrid_request_selection(self.activation_catalog.as_ref(), &request.query)?;
+        let mut lanes = self.execute_hybrid_candidates(
+            &selection,
+            &request.query.text_query,
+            &request.query.semantic_query_text,
+            request.query.top_k,
+            HybridCandidateRoute::GenericFile,
+            budget,
+        )?;
+        let lane_limit = usize::try_from(request.query.top_k).map_err(|error| {
+            CoreError::InvalidContract(format!("hybrid file lane limit exceeds usize: {error}"))
+        })?;
+        let internal_limit = usize::try_from(lanes.internal_top_k).map_err(|error| {
+            CoreError::InvalidContract(format!("hybrid file probe limit exceeds usize: {error}"))
+        })?;
+        // Each window describes its fetched chunk lane, never file exhaustion.
+        let lexical_count = lanes.lexical_rows.len();
+        let dense_count = lanes.dense_rows.len();
+        let lexical_window = fused_window_v2(
+            request.query.top_k,
+            lexical_count.min(lane_limit),
+            lexical_count,
+            lexical_count == internal_limit,
+            None,
+            lanes.internal_top_k,
+            vec![
+                LaneTraceV1::new(
+                    "hybrid_file.lexical",
+                    lanes.execution.lexical_executed(),
+                    lanes.execution.lexical_contributed,
+                )
+                .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(lexical_count)?)),
+            ],
+        )?;
+        let dense_window = fused_window_v2(
+            request.query.top_k,
+            dense_count.min(lane_limit),
+            dense_count,
+            dense_count == internal_limit,
+            Some(lanes.dense_outcome),
+            lanes.internal_top_k,
+            vec![
+                LaneTraceV1::new(
+                    "hybrid_file.dense",
+                    lanes.execution.semantic_executed(),
+                    lanes.execution.semantic_contributed,
+                )
+                .with_candidates(CandidateCountV1::AtLeast(lane_count_u64(dense_count)?))
+                .with_filtered_out(lane_count_u64(
+                    lanes.dense_examined.saturating_sub(lanes.dense_admitted),
+                )?)
+                .with_cost(lane_count_u64(lanes.dense_examined)?),
+            ],
+        )?;
+        order_go_file_lane(&mut lanes.dense_rows);
+        lanes.lexical_rows.truncate(lane_limit);
+        lanes.dense_rows.truncate(lane_limit);
+        let lexical_pool_sha256 =
+            hybrid_file_candidate_pool_sha256_v1(&lanes.pin, &lanes.lexical_rows)
+                .map_err(CoreError::InvalidContract)?;
+        let dense_pool_sha256 = hybrid_file_candidate_pool_sha256_v1(&lanes.pin, &lanes.dense_rows)
+            .map_err(CoreError::InvalidContract)?;
+        let fusion_started = self.query_stage_observation.start();
+        budget.checkpoint("hybrid-file:rank")?;
+        let ranked = GenericFileRankPolicyV1::rank(
+            &lanes.pin,
+            &lanes.lexical_rows,
+            &lanes.dense_rows,
+            request.file_top_k,
+        )?;
+        let bounded_file_count = usize::try_from(ranked.bounded_file_count).map_err(|error| {
+            CoreError::InvalidContract(format!("bounded file union exceeds usize: {error}"))
+        })?;
+        lanes.stage_timings.record_elapsed(
+            QueryStageKindV1::HybridFusion,
+            fusion_started,
+            1,
+            Some(ranked.results.len()),
+        );
+        let mut explanation = build_hybrid_response_explanation(
+            &HybridLaneTallyV1 {
+                lexical_hits: lexical_count,
+                semantic_hits: dense_count,
+                fused_universe: bounded_file_count,
+                fused_hits: ranked.results.len(),
+                execution: lanes.execution,
+            },
+            lanes.internal_top_k,
+            None,
+            &lanes.dense_lane,
+            &lanes.filter_trace,
+            budget.response_request_id(),
+        );
+        for entry in &mut explanation.planner_trace {
+            if let Some(detail) = entry.detail.strip_prefix("hybrid.") {
+                entry.detail = format!("hybrid_file.{detail}");
+            }
+        }
+        explanation.strategy = "hybrid_file_rrf".to_string();
+        explanation.summary = format!(
+            "hybrid file rank used {lexical_count} lexical and {dense_count} semantic chunks and returned {} files",
+            ranked.results.len()
+        );
+        explanation.stage_timings = lanes.stage_timings.finish();
+        attach_read_view_trace(&mut explanation, lanes.view.identity());
+        let response = HybridFileQueryResponseV1 {
+            generation: lanes.pin,
+            selected_active_head: selection.active_head,
+            file_top_k: request.file_top_k,
+            bounded_file_count: ranked.bounded_file_count,
+            lexical_pool_sha256,
+            dense_pool_sha256,
+            results: ranked
+                .results
+                .into_iter()
+                .map(|hit| HybridFileHitV1 {
+                    file: hit.file,
+                    lexical: hit.lexical.map(trace_witness),
+                    dense: hit.dense.map(trace_witness),
+                    file_rrf_score: hit.file_rrf_score,
+                })
+                .collect(),
+            lexical_window,
+            dense_window,
+            explanation,
+        };
+        response
+            .validate_against_v1(request)
+            .map_err(CoreError::InvalidContract)?;
+        Ok(response)
+    }
+
     pub(crate) fn go_test_trace_file(
         &self,
         request: &GoTestTraceFileQueryRequestV1,
@@ -155,6 +298,12 @@ impl SearchPlaneDispatcher {
         )?;
         lanes.lexical_rows.truncate(lane_limit);
         lanes.dense_rows.truncate(lane_limit);
+        let rank_pools = request
+            .include_rank_pools
+            .then(|| GoTestTraceFileRankPoolsV1 {
+                lexical: trace_file_rank_pool(&lanes.lexical_rows),
+                dense: trace_file_rank_pool(&lanes.dense_rows),
+            });
         let evidence = match (
             request.failure_source_repo_id.clone(),
             request.failure_module_context.as_ref(),
@@ -219,6 +368,7 @@ impl SearchPlaneDispatcher {
             lexical_window,
             dense_window,
             frame_class,
+            rank_pools,
             explanation,
         };
         response
@@ -240,6 +390,7 @@ impl SearchPlaneDispatcher {
     ) -> Result<HybridLaneCandidates, CoreError> {
         let plane = match route {
             HybridCandidateRoute::Chunk(plane) => plane,
+            HybridCandidateRoute::GenericFile => "hybrid file",
             HybridCandidateRoute::GoTraceFile => "go test trace file",
         };
         let pin = selection.pin.clone();
@@ -291,7 +442,9 @@ impl SearchPlaneDispatcher {
         }
         match route {
             HybridCandidateRoute::Chunk(_) => stabilize_ranked_candidates(&mut lex_results),
-            HybridCandidateRoute::GoTraceFile => order_go_file_lane(&mut lex_results),
+            HybridCandidateRoute::GenericFile | HybridCandidateRoute::GoTraceFile => {
+                order_go_file_lane(&mut lex_results)
+            }
         }
         budget.checkpoint("hybrid:embed")?;
         let embed_started = self.query_stage_observation.start();
@@ -309,9 +462,11 @@ impl SearchPlaneDispatcher {
         // exact lexical admission filter, keep one bounded ranked prefix for
         // the whole request instead of scanning the generation at every
         // widening admission round.
-        let go_exact_admission = matches!(route, HybridCandidateRoute::GoTraceFile)
-            && filter_plan.admission_query().is_some();
-        let mut go_ranked_candidates: Option<Vec<LexicalCandidate>> = None;
+        let file_exact_admission = matches!(
+            route,
+            HybridCandidateRoute::GenericFile | HybridCandidateRoute::GoTraceFile
+        ) && filter_plan.admission_query().is_some();
+        let mut file_ranked_candidates: Option<Vec<LexicalCandidate>> = None;
         let dense = admit_dense_lane_v1(
             &filter_plan,
             lex_searcher.as_ref(),
@@ -337,8 +492,8 @@ impl SearchPlaneDispatcher {
                             budget,
                         )?
                     }
-                    HybridCandidateRoute::GoTraceFile => {
-                        if !go_exact_admission {
+                    HybridCandidateRoute::GenericFile | HybridCandidateRoute::GoTraceFile => {
+                        if !file_exact_admission {
                             execution.record_semantic_invocation();
                             fetch_started = self.query_stage_observation.start();
                             sem_searcher.search_constrained_canonical_ties(
@@ -348,10 +503,10 @@ impl SearchPlaneDispatcher {
                                 budget,
                             )?
                         } else {
-                            if go_ranked_candidates.is_none() {
+                            if file_ranked_candidates.is_none() {
                                 execution.record_semantic_invocation();
                                 fetch_started = self.query_stage_observation.start();
-                                go_ranked_candidates =
+                                file_ranked_candidates =
                                     Some(sem_searcher.search_constrained_canonical_ties(
                                         &query_vector,
                                         &prepared_language.constraints,
@@ -359,14 +514,14 @@ impl SearchPlaneDispatcher {
                                         budget,
                                     )?);
                             }
-                            let ranked = go_ranked_candidates.as_ref().ok_or_else(|| {
+                            let ranked = file_ranked_candidates.as_ref().ok_or_else(|| {
                                 CoreError::InvalidContract(
-                                    "Go canonical candidates were not fetched".into(),
+                                    "canonical file candidates were not fetched".into(),
                                 )
                             })?;
                             let depth = usize::try_from(fetch_size).map_err(|error| {
                                 CoreError::InvalidContract(format!(
-                                    "Go canonical fetch depth exceeds usize: {error}"
+                                    "file canonical fetch depth exceeds usize: {error}"
                                 ))
                             })?;
                             ranked[..ranked.len().min(depth)].to_vec()
@@ -378,7 +533,7 @@ impl SearchPlaneDispatcher {
                         dense_fetch_duration.saturating_add(fetch_started.elapsed());
                     dense_fetch_calls = dense_fetch_calls.saturating_add(1);
                     dense_fetched_rows = dense_fetched_rows.saturating_add(
-                        go_ranked_candidates
+                        file_ranked_candidates
                             .as_ref()
                             .map_or(fetched.len(), Vec::len),
                     );
@@ -388,7 +543,7 @@ impl SearchPlaneDispatcher {
         )?;
         if dense_fetch_calls > 0 {
             // Count backend output, including repeat reads by ordinary Hybrid
-            // refills. Go exact admission reads its ranked prefix once.
+            // refills. File exact admission reads its ranked prefix once.
             stage_timings.push(Some(measured(
                 QueryStageKindV1::HybridDenseFetch,
                 dense_fetch_duration,
@@ -420,8 +575,10 @@ impl SearchPlaneDispatcher {
         }
         let execution = execution.summary();
         let mut dense_lane = sem_searcher.dense_lane();
-        if matches!(route, HybridCandidateRoute::GoTraceFile)
-            && execution.semantic_executed()
+        if matches!(
+            route,
+            HybridCandidateRoute::GenericFile | HybridCandidateRoute::GoTraceFile
+        ) && execution.semantic_executed()
             && matches!(dense_lane.index, DenseIndexV1::Approximate { .. })
         {
             dense_lane.index = DenseIndexV1::Exact;
@@ -583,6 +740,19 @@ fn trace_witness(witness: TraceFileLaneWitnessV1) -> GoTestTraceFileLaneWitnessV
         chunk_rank: witness.chunk_rank,
         candidate: witness.candidate,
     }
+}
+
+fn trace_file_rank_pool(rows: &[LexicalCandidate]) -> Vec<GoTestTraceFilePoolRowV1> {
+    rows.iter()
+        .map(|candidate| GoTestTraceFilePoolRowV1 {
+            file: SourceFileKey {
+                source_repo_id: candidate.source_repo_id.clone(),
+                repo_relative_path: candidate.repo_relative_path.clone(),
+            },
+            candidate_id: candidate.candidate_id.clone(),
+            score_bits: candidate.score.to_bits(),
+        })
+        .collect()
 }
 
 impl HybridQueryPort for SearchPlaneDispatcher {

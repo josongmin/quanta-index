@@ -2,12 +2,14 @@ mod cluster_membership;
 mod commit_candidate;
 mod explanation;
 mod go_test_trace_file;
+mod hybrid_file;
 mod query_responses;
 
 pub use cluster_membership::*;
 pub use commit_candidate::*;
 pub use explanation::*;
 pub use go_test_trace_file::*;
+pub use hybrid_file::*;
 pub use quanta_index_contract_base::results::{
     DiffCandidate, DiffHunkSide, HighlightSpan, HistoryScoreError, HistoryScoreV1,
     LexicalCandidate, StructuralBinding, StructuralCandidate,

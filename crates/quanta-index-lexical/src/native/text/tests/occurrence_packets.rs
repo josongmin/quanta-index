@@ -1,12 +1,98 @@
 use super::*;
 
+#[test]
+fn cold_sql_replay_matches_canonical_unicode_and_repeated_positions() -> Result<(), IndexError> {
+    let mut body = "A İ ΟΔΟΣ ß CAFÉ a A abc ".repeat(9);
+    let wide = "X".repeat(300);
+    for _ in 0..8 {
+        body.push_str(&"z ".repeat(31));
+        body.push_str(&wide);
+        body.push(' ');
+    }
+    let mut observed = Vec::new();
+    for replay in [false, true] {
+        let scratch = TestScratch::default();
+        let memory = Arc::new(TokenMemory {
+            ceiling: 16 * 1024 * 1024,
+            ..TokenMemory::default()
+        });
+        let mut work = WorkBudget::new(
+            WorkLimits {
+                reads: 100_000,
+                writes: 100_000,
+                bytes: 100_000_000,
+                mutations: 100_000,
+            },
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        work.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+            TokenMemoryScope(Arc::clone(&memory)),
+        ))));
+        let spool = TextSpool::new(&scratch, &mut work)?;
+        if replay {
+            let (mut cursor, mut source_packet) = prepare_indexed_token_input(&body, &mut work)?;
+            let census = super::super::cold_tokens::CanonicalTokenCensus::count(
+                &mut cursor,
+                body.len(),
+                &mut work,
+            )?
+            .ok_or(IndexError::ResourceLimited)?;
+            check!(source_packet.try_prepare_cold_keys(census.packet_key_bytes(), &work)?);
+            let mut cold = super::super::cold_tokens::ColdTokens::try_new(census, &work)?
+                .ok_or(IndexError::ResourceLimited)?;
+            let _indexed = visit_prepared_token_batches(
+                &mut cursor,
+                &mut source_packet,
+                &mut work,
+                |batch, budget| cold.push_batch(batch, budget),
+            )?;
+            cold.sort_and_validate(&work)?;
+            let mut cancelled = budget()?;
+            cancelled.request().cancel_handle().cancel();
+            check!(matches!(
+                cold.replay_borrowed_pages(&mut cancelled, |_rows, _budget| {
+                    Err(IndexError::BackendViolation(
+                        "cancelled replay reached SQL consumer".into(),
+                    ))
+                }),
+                Err(IndexError::Cancelled)
+            ));
+            check!(spool.token_term_page(None, &mut work)?.is_empty());
+            spool.reset_tokens(&mut work)?;
+            cold.replay_borrowed_pages(&mut work, |rows, budget| {
+                spool.token_batch_borrowed(rows, budget)
+            })?;
+            drop((cold, source_packet));
+        } else {
+            spool.reset_tokens(&mut work)?;
+            let _indexed = visit_indexed_token_batches(&body, &mut work, |batch, budget| {
+                spool.token_batch(batch, budget)
+            })?;
+        }
+        let mut groups = BTreeMap::new();
+        spool.visit_token_groups(8192, &mut work, |key, positions, _budget| {
+            let _prior = groups.insert(key.as_slice().to_vec(), positions.as_slice().to_vec());
+            Ok(())
+        })?;
+        observed.push(groups);
+        drop(spool);
+        check_eq!(memory.live.load(Ordering::Relaxed), 0);
+    }
+    check_eq!(observed[0], observed[1]);
+    check_eq!(observed[0].get(b"\0A".as_slice()).map(Vec::len), Some(18));
+    check_eq!(observed[0].get(b"\x01a".as_slice()).map(Vec::len), Some(27));
+    Ok(())
+}
+
 #[derive(serde::Serialize)]
 struct FixedOccurrence {
     positions: [u32; 1],
 }
 
 fn push_fixed(
-    writes: &mut OccurrenceWrites,
+    writes: &mut OccurrenceWrites<'_>,
     ordinal: u32,
     key: &[u8],
     identified: ObjectRef,
@@ -128,9 +214,9 @@ fn packed_alias_accepts_cold_ordinals_beyond_sql_page_and_refuses_window_end()
             let edit = cursor
                 .next_edit(context.budget)?
                 .ok_or_else(|| IndexError::BackendViolation("packed alias edit missing".into()))?;
-            check_eq!(edit.root, ordinal);
-            check_eq!(edit.edit.key.as_slice(), key);
-            check_eq!(edit.edit.next, Some(identified.into()));
+            check_eq!(edit.root(), ordinal);
+            check_eq!(edit.key(), key);
+            check_eq!(edit.next()?, Some(identified.into()));
         }
     }
     check!(cursor.next_edit(context.budget)?.is_none());
@@ -203,10 +289,10 @@ fn mixed_owner_packet_installs_once_and_keeps_each_inventory_ordinal() -> Result
         let row = cursor
             .next_edit(context.budget)?
             .ok_or_else(|| IndexError::BackendViolation("missing mixed-owner edit".into()))?;
-        check_eq!(row.root, ordinal);
-        check_eq!(row.edit.key.as_slice(), key);
-        check_eq!(row.edit.expected, None);
-        check_eq!(row.edit.next, Some(identified.into()));
+        check_eq!(row.root(), ordinal);
+        check_eq!(row.key(), key);
+        check_eq!(row.expected()?, None);
+        check_eq!(row.next()?, Some(identified.into()));
     }
     check!(cursor.next_edit(context.budget)?.is_none());
     Ok(())
@@ -256,9 +342,9 @@ fn same_leaf_across_owners_has_one_install_and_two_edits() -> Result<(), IndexEr
         let row = cursor
             .next_edit(context.budget)?
             .ok_or_else(|| IndexError::BackendViolation("missing duplicate-leaf edit".into()))?;
-        check_eq!(row.root, ordinal);
-        check_eq!(row.edit.key.as_slice(), b"\0a");
-        check_eq!(row.edit.next, Some(reference(90).into()));
+        check_eq!(row.root(), ordinal);
+        check_eq!(row.key(), b"\0a");
+        check_eq!(row.next()?, Some(reference(90).into()));
     }
     check!(cursor.next_edit(context.budget)?.is_none());
     Ok(())
@@ -684,28 +770,28 @@ fn physical_65_packet_preserves_191_aliases_and_starts_next_packet_after_explici
     let mut cursor = spool.inventory_cursor(2)?;
     let mut count = 0_u16;
     while let Some(row) = cursor.next_edit(&mut work)? {
-        let key = std::str::from_utf8(&row.edit.key)
+        let key = std::str::from_utf8(&row.key())
             .map_err(|_error| IndexError::CorruptObject("fixture key is not UTF-8".into()))?;
         let slot = if let Some(alias) = key.strip_prefix("\0alias-") {
             let alias = alias
                 .parse::<u16>()
                 .map_err(|_error| IndexError::CorruptObject("fixture alias invalid".into()))?;
             let slot = u8::try_from(alias % 2).map_err(|_error| IndexError::ResourceLimited)?;
-            check_eq!(row.root, u32::from(slot));
+            check_eq!(row.root(), u32::from(slot));
             slot
         } else if key == "\0next" {
-            check_eq!(row.root, 1);
+            check_eq!(row.root(), 1);
             64
         } else {
-            check_eq!(row.root, 0);
+            check_eq!(row.root(), 0);
             key.strip_prefix("\0unique-")
                 .ok_or(IndexError::ResourceLimited)?
                 .parse::<u8>()
                 .map_err(|_error| IndexError::CorruptObject("fixture unique key invalid".into()))?
         };
-        check_eq!(row.edit.expected, None);
+        check_eq!(row.expected()?, None);
         check_eq!(
-            row.edit.next,
+            row.next()?,
             Some(reference(90_u8.checked_add(slot).ok_or(IndexError::ResourceLimited)?).into())
         );
         count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;

@@ -197,7 +197,7 @@ fn corpus(pin: &GenerationPin) -> Result<SearchCorpusBatch, Box<dyn Error>> {
 fn l1_real_daemon_sdk_domain_primitives_and_symbol_windows() -> TestResult {
     let root = std::env::var_os("QUANTA_INDEX_L1_TEST_STATE_ROOT")
         .ok_or("QUANTA_INDEX_L1_TEST_STATE_ROOT is required")?;
-    let client = QuantaIndex::connect(ConnectOptions::from_state_root(root))?;
+    let client = QuantaIndex::connect_legacy(ConnectOptions::from_state_root(root))?;
     let pin = GenerationPin::new(
         RepoId::new("l1-public")?,
         RevisionId::new("v1")?,

@@ -1,10 +1,141 @@
+#[path = "native_boot/offline_semantic.rs"]
+mod offline_semantic;
+
 use super::*;
 use std::{collections::BTreeMap, os::unix::fs::MetadataExt as _, path::PathBuf, process::Output};
 
 use sha2::{Digest as _, Sha256};
 
+#[cfg(feature = "legacy-tantivy")]
 #[path = "../common/searchd_fixture_env.rs"]
 mod searchd_fixture_env;
+
+#[test]
+fn recovery_helper_returns_a_bound_startup_refusal_over_inherited_fd() -> TestResult {
+    recovery_helper_startup_refusal_with_history_fd(false)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn recovery_helper_rejects_malformed_history_fd_with_bound_terminal() -> TestResult {
+    recovery_helper_startup_refusal_with_history_fd(true)
+}
+
+fn recovery_helper_startup_refusal_with_history_fd(malformed_history_fd: bool) -> TestResult {
+    use quanta_explicit_fd_process::{ExplicitFdSpawnRequestV1, PinnedExecutableV1};
+    use quanta_index_contract::native_cutover_evidence_v1 as wire;
+    use std::os::{fd::AsFd, unix::net::UnixDatagram};
+
+    let temp = tempfile::tempdir()?;
+    let config = temp.path().join("config.json");
+    let selection = temp.path().join("selection.json");
+    let candidate = temp.path().join("candidate.json");
+    fs::write(&config, b"{}")?;
+    fs::write(&selection, b"active selection must stay untouched")?;
+    let binary = Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
+    let mut executable = fs::File::open(binary)?;
+    let mut hash = Sha256::new();
+    let _hashed = std::io::copy(&mut executable, &mut hash)?;
+    let binary_sha256 = hex(&hash.finalize())?;
+    let pinned = PinnedExecutableV1::try_pin_v1(&executable, &binary_sha256)?;
+    let current = hex(&[1; 32])?;
+    let proposed = hex(&[2; 32])?;
+    let incorrect_config = hex(&[3; 32])?;
+    let begin = wire::NativeCutoverControlBeginV1 {
+        format_version: wire::NativeCutoverControlBeginV1::FORMAT_VERSION_V1,
+        operation_id: "actual-helper-startup-refusal".to_owned(),
+        mode: wire::NativeCutoverRecoveryModeV1::RestoreForward,
+        current_selection_sha256: Digest([1; 32]),
+        candidate_selection_sha256: Digest([2; 32]),
+        deadline_ns: u64::MAX,
+        evidence_length: 1,
+        evidence_sha256: Digest([4; 32]),
+        nonce: Digest([5; 32]),
+    };
+    let mut frame = Vec::new();
+    ciborium::ser::into_writer(&begin, &mut frame)?;
+    let (resident, helper) = UnixDatagram::pair()?;
+    // Exercise the no-History layout with FD4-6 mapped. A second case maps a
+    // connected datagram to FD7 and requires a bound refusal before config IO.
+    let inherited = (0..3)
+        .map(|index| {
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(temp.path().join(format!("inherited-{index}")))
+        })
+        .collect::<std::io::Result<Vec<_>>>()?;
+    resident.set_read_timeout(Some(NATIVE_STARTUP_LIMIT))?;
+    let (malformed, _peer) = UnixDatagram::pair()?;
+    let spawn = ExplicitFdSpawnRequestV1::try_new_v1(
+        &pinned,
+        [
+            binary.as_os_str(),
+            "recover-native".as_ref(),
+            "--selection-path".as_ref(),
+            selection.as_os_str(),
+            "--expected-current-sha256".as_ref(),
+            current.as_ref(),
+            "--candidate-path".as_ref(),
+            candidate.as_os_str(),
+            "--expected-candidate-sha256".as_ref(),
+            proposed.as_ref(),
+            "--mode".as_ref(),
+            "restore-forward".as_ref(),
+            "--config".as_ref(),
+            config.as_os_str(),
+            "--config-digest".as_ref(),
+            incorrect_config.as_ref(),
+            "--parent-executable".as_ref(),
+            binary.as_os_str(),
+            "--parent-executable-sha256".as_ref(),
+            binary_sha256.as_ref(),
+        ],
+        std::iter::empty::<(&str, &str)>(),
+    )?
+    .with_child_unix_datagram_v1(helper.as_fd(), 3)?
+    .with_child_retained_regular_file_v1(inherited[0].as_fd(), 4)?
+    .with_child_retained_regular_file_v1(inherited[1].as_fd(), 5)?
+    .with_child_retained_regular_file_v1(inherited[2].as_fd(), 6)?;
+    let spawn = if malformed_history_fd {
+        spawn.with_child_unix_datagram_v1(malformed.as_fd(), 7)?
+    } else {
+        spawn
+    };
+    let mut child = spawn.spawn_v1()?;
+    drop(helper);
+    require_equal(&resident.send(&frame)?, &frame.len(), "Begin length")?;
+    let mut response = [0; wire::MAX_NATIVE_CUTOVER_CONTROL_BYTES_V1 + 1];
+    let len = resident.recv(&mut response)?;
+    let observed = wire::decode_native_cutover_control_terminal_v1(
+        response.get(..len).ok_or("oversized helper terminal")?,
+    )?;
+    let refusal = if malformed_history_fd {
+        quanta_explicit_fd_process::ExplicitFdProcessErrorV1::InvalidInheritedRegularFileDescriptor
+            .to_string()
+    } else if cfg!(target_os = "linux") {
+        quanta_index_core::index::IndexError::DigestConflict.to_string()
+    } else {
+        "recovery requires the original shared Linux monotonic deadline".to_owned()
+    };
+    require_equal(
+        &observed,
+        &wire::NativeCutoverControlTerminalV1::RefusedBeforeRename {
+            operation_id: begin.operation_id,
+            nonce: begin.nonce,
+            code: "REFUSED_BEFORE_RENAME".to_owned(),
+            message: refusal,
+        },
+        "bound startup terminal",
+    )?;
+    require_equal(&child.wait_v1()?.code(), &Some(2), "helper exit status")?;
+    require_equal(
+        &fs::read(&selection)?.as_slice(),
+        &b"active selection must stay untouched".as_slice(),
+        "selection bytes",
+    )
+}
 
 fn owned_launcher_group(parent: u32) -> TestResult<Option<u32>> {
     let output = Command::new("ps")
@@ -130,6 +261,29 @@ fn run_one_shot(args: &[String]) -> TestResult<Output> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
     let _args = command.args(args);
     bounded_output(command, args, false)
+}
+
+#[cfg(feature = "legacy-tantivy")]
+fn run_private_pipe_one_shot(args: &[&str]) -> TestResult<Output> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"))
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let deadline = Instant::now()
+        .checked_add(NATIVE_STARTUP_LIMIT)
+        .ok_or("History exporter process deadline overflow")?;
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(child.wait_with_output()?);
+        }
+        if Instant::now() >= deadline {
+            let _killed = child.kill();
+            let _waited = child.wait();
+            return Err("History exporter process exceeded startup deadline".into());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn launcher_script() -> TestResult<PathBuf> {
@@ -261,7 +415,7 @@ fn identity_args(
         "--config-digest".into(),
         config_digest.into(),
     ];
-    if mode == "verify-native-state" {
+    if matches!(mode, "verify-native-state" | "verify-native-candidate") {
         args.extend([
             "--catalog-content-digest".into(),
             field("install_catalog_digest_hex")?,
@@ -367,6 +521,112 @@ fn launcher_daemon(selection: &Path, socket: &Path) -> TestResult<LauncherDaemon
 }
 
 #[test]
+fn native_candidate_retains_predecessors_under_installed_retention_config() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let base = temp.path().canonicalize()?;
+    let root = base.join("state");
+    let socket = base.join("native.sock");
+    let config_path = base.join("native-config.json");
+    let mut configuration = config_with_reclaim(&root, &socket)?;
+    let _prior = configuration.as_object_mut().ok_or("candidate fixture config")?.insert(
+        "retention".into(),
+        serde_json::json!({
+            "scopes": [{ "workspace": workspace(), "epoch": 1 }],
+            "sequence_window": 1, "page_limit": 1,
+            "interval_ms": 20, "round_timeout_ms": 2000, "head_probe_every": 2,
+            "work_limits": {"reads": 1_000_000, "writes": 1_000_000, "bytes": 536_870_912, "mutations": 1_000_000}
+        }),
+    );
+    let config_bytes = serde_json::to_vec(&configuration)?;
+    fs::write(&config_path, &config_bytes)?;
+    fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
+    let digest = hex(&Sha256::digest(&config_bytes))?;
+    let args = vec![
+        "serve-native-candidate".into(),
+        "--config".into(),
+        config_path.to_string_lossy().into_owned(),
+        "--config-digest".into(),
+        digest,
+    ];
+    let candidate = selected_daemon(&args, &socket)?;
+    let client = NativeUdsClient::new(socket.clone());
+    let NativeIndexResponse::Created(genesis) = client.request(
+        NativeIndexRequest::CreateWorkspace {
+            workspace: workspace(),
+            epoch: 1,
+        },
+        &budget(),
+    )?
+    else {
+        return Err("candidate workspace creation failed".into());
+    };
+    let ingress = client.begin_input(operation(1), &budget())?;
+    let profile = client.stage_profile(
+        ingress,
+        IndexProfile {
+            instances: vec![text_spec()],
+        },
+        &budget(),
+    )?;
+    let head = published(&client.submit(
+        UpdateRequest {
+            operation: operation(1),
+            expected_view: genesis,
+            kind: UpdateKind::Reconfigure { profile },
+        },
+        &budget(),
+    )?)?;
+    // Give the installed retention schedule multiple rounds before restarting
+    // the unselected candidate with the same configuration.
+    thread::sleep(Duration::from_millis(300));
+    candidate.stop()?;
+    let restarted = selected_daemon(&args, &socket)?;
+    require_equal(
+        &client
+            .read_view(ViewSelection::Exact(genesis), &budget())?
+            .identity,
+        &genesis,
+        "candidate retired its predecessor before BOOT",
+    )?;
+    require_equal(
+        &client
+            .read_view(
+                ViewSelection::Latest {
+                    workspace: workspace(),
+                    epoch: 1,
+                },
+                &budget(),
+            )?
+            .identity,
+        &head,
+        "candidate restart changed the latest publication",
+    )?;
+    restarted.stop()?;
+
+    // The same configuration still retires old views in regular serving mode.
+    let active = Daemon::start(&config_path, &socket)?;
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        match client.read_view(ViewSelection::Exact(genesis), &budget()) {
+            Err(NativeUdsError::Refused(error))
+                if error.code == NativeIndexErrorCode::SnapshotUnavailable =>
+            {
+                break;
+            }
+            Ok(_) if Instant::now() < until => thread::sleep(Duration::from_millis(20)),
+            other => {
+                return Err(
+                    format!("active retention did not retire the predecessor: {other:?}").into(),
+                );
+            }
+        }
+    }
+    active.stop()?;
+    Ok(())
+}
+
+#[test]
 fn native_boot_selection_verification_and_selected_serve_preserve_real_publication() -> TestResult {
     let temp = tempfile::tempdir()?;
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
@@ -381,7 +641,14 @@ fn native_boot_selection_verification_and_selected_serve_preserve_real_publicati
     fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
     let config_digest = hex(&Sha256::digest(&config_bytes))?;
 
-    let daemon = Daemon::start(&config_path, &socket)?;
+    let serve_candidate_args = vec![
+        "serve-native-candidate".into(),
+        "--config".into(),
+        config_path.to_string_lossy().into_owned(),
+        "--config-digest".into(),
+        config_digest.clone(),
+    ];
+    let daemon = selected_daemon(&serve_candidate_args, &socket)?;
     let client = NativeUdsClient::new(socket.clone());
     let NativeIndexResponse::Created(genesis) = client.request(
         NativeIndexRequest::CreateWorkspace {
@@ -483,8 +750,95 @@ fn native_boot_selection_verification_and_selected_serve_preserve_real_publicati
         "boot receipt is not private",
     )?;
 
+    let candidate_receipt_path = base.join("candidate-native-boot-receipt.json");
+    let candidate_args = vec![
+        "select-native-candidate".into(),
+        "--config".into(),
+        config_path.to_string_lossy().into_owned(),
+        "--manifest-operation".into(),
+        serde_json::to_string(&operation(1))?,
+        "--receipt".into(),
+        candidate_receipt_path.to_string_lossy().into_owned(),
+        "--config-digest".into(),
+        config_digest.clone(),
+        "--root-nonce".into(),
+        receipt["root_nonce_hex"]
+            .as_str()
+            .ok_or("missing receipt root nonce")?
+            .into(),
+        "--source-cut-digest".into(),
+        receipt["source_cut_digest_hex"]
+            .as_str()
+            .ok_or("missing receipt SourceCut digest")?
+            .into(),
+    ];
+    let mut wrong_source_cut = receipt["source_cut_digest_hex"]
+        .as_str()
+        .ok_or("missing receipt SourceCut digest")?
+        .to_owned();
+    wrong_source_cut.replace_range(
+        0..1,
+        if wrong_source_cut.starts_with('1') {
+            "2"
+        } else {
+            "1"
+        },
+    );
+    let wrong_candidate_args = with_flag(&candidate_args, "--source-cut-digest", wrong_source_cut)?;
+    let before_wrong_candidate = root_files(&root)?;
+    refused(&wrong_candidate_args)?;
+    require_equal(
+        &root_files(&root)?,
+        &before_wrong_candidate,
+        "wrong candidate SourceCut changed root",
+    )?;
+    require(
+        !candidate_receipt_path.exists(),
+        "wrong candidate SourceCut wrote receipt",
+    )?;
+    let mut wrong_root_nonce = receipt["root_nonce_hex"]
+        .as_str()
+        .ok_or("missing receipt root nonce")?
+        .to_owned();
+    wrong_root_nonce.replace_range(
+        0..1,
+        if wrong_root_nonce.starts_with('1') {
+            "2"
+        } else {
+            "1"
+        },
+    );
+    let wrong_nonce_args = with_flag(&candidate_args, "--root-nonce", wrong_root_nonce)?;
+    refused(&wrong_nonce_args)?;
+    require_equal(
+        &root_files(&root)?,
+        &before_wrong_candidate,
+        "wrong candidate root nonce changed root",
+    )?;
+    require(
+        !candidate_receipt_path.exists(),
+        "wrong candidate root nonce wrote receipt",
+    )?;
+    let _selected = successful(&candidate_args)?;
+    let candidate_receipt: serde_json::Value =
+        serde_json::from_slice(&fs::read(&candidate_receipt_path)?)?;
+    require_equal(&candidate_receipt, &receipt, "same candidate retry receipt")?;
+    let before_candidate_restart = root_files(&root)?;
+    refused(&serve_candidate_args)?;
+    require_equal(
+        &root_files(&root)?,
+        &before_candidate_restart,
+        "candidate serve must not reopen a selected BOOT as writable",
+    )?;
+
     let verify_args = identity_args(
         "verify-native-state",
+        &config_path,
+        &receipt,
+        &config_digest,
+    )?;
+    let verify_candidate_args = identity_args(
+        "verify-native-candidate",
         &config_path,
         &receipt,
         &config_digest,
@@ -492,6 +846,7 @@ fn native_boot_selection_verification_and_selected_serve_preserve_real_publicati
     let serve_args = identity_args("serve-native", &config_path, &receipt, &config_digest)?;
     let before_verify = root_files(&root)?;
     let _verified = successful(&verify_args)?;
+    let _verified_candidate = successful(&verify_candidate_args)?;
     require_equal(
         &root_files(&root)?,
         &before_verify,
@@ -804,7 +1159,93 @@ fn native_boot_selection_verification_and_selected_serve_preserve_real_publicati
         },
         &budget(),
     )?)?;
+    let updated_source_cut = quanta_index_contract::native_boot_source_cut_digest_v1(
+        &client
+            .read_view(ViewSelection::Exact(updated), &budget())?
+            .source,
+    )?;
     active.stop()?;
+
+    // An exact candidate retry loses authority when the Catalog head moves.
+    // Reject before reopening a writer or rewriting the original receipt.
+    let before_stale_candidate = root_files(&root)?;
+    let candidate_receipt_bytes = fs::read(&candidate_receipt_path)?;
+    let candidate_receipt_metadata = fs::metadata(&candidate_receipt_path)?;
+    // Use an absent receipt name so target admission cannot mask a missing
+    // current-head check with its existing-file refusal.
+    let stale_candidate_receipt_path = base.join("stale-candidate-native-boot-receipt.json");
+    require(
+        !stale_candidate_receipt_path.exists(),
+        "stale candidate fixture requires an absent receipt",
+    )?;
+    let stale_candidate_args = with_flag(
+        &candidate_args,
+        "--receipt",
+        stale_candidate_receipt_path.to_string_lossy().into_owned(),
+    )?;
+    refused(&stale_candidate_args)?;
+    require(
+        !stale_candidate_receipt_path.exists(),
+        "stale candidate wrote a fresh receipt",
+    )?;
+    require_equal(
+        &root_files(&root)?,
+        &before_stale_candidate,
+        "stale candidate with a fresh receipt changed root",
+    )?;
+    refused(&candidate_args)?;
+    require_equal(
+        &root_files(&root)?,
+        &before_stale_candidate,
+        "stale candidate retry changed root",
+    )?;
+    require_equal(
+        &fs::read(&candidate_receipt_path)?,
+        &candidate_receipt_bytes,
+        "stale candidate retry changed receipt bytes",
+    )?;
+    let after_stale_candidate_receipt = fs::metadata(&candidate_receipt_path)?;
+    require_equal(
+        &(
+            after_stale_candidate_receipt.dev(),
+            after_stale_candidate_receipt.ino(),
+        ),
+        &(
+            candidate_receipt_metadata.dev(),
+            candidate_receipt_metadata.ino(),
+        ),
+        "stale candidate retry changed receipt identity",
+    )?;
+
+    let different_candidate_receipt_path = base.join("different-native-boot-receipt.json");
+    let mut different_candidate_args = with_flag(
+        &candidate_args,
+        "--manifest-operation",
+        serde_json::to_string(&operation(2))?,
+    )?;
+    different_candidate_args = with_flag(
+        &different_candidate_args,
+        "--source-cut-digest",
+        hex(&updated_source_cut.0)?,
+    )?;
+    different_candidate_args = with_flag(
+        &different_candidate_args,
+        "--receipt",
+        different_candidate_receipt_path
+            .to_string_lossy()
+            .into_owned(),
+    )?;
+    let before_different_candidate = root_files(&root)?;
+    refused(&different_candidate_args)?;
+    require_equal(
+        &root_files(&root)?,
+        &before_different_candidate,
+        "different candidate replaced selected BOOT",
+    )?;
+    require(
+        !different_candidate_receipt_path.exists(),
+        "different candidate wrote receipt",
+    )?;
 
     require(!socket.exists(), "selected native stop retained its socket")?;
     let before_stale_verify = root_files(&root)?;
@@ -857,26 +1298,44 @@ fn native_boot_selection_verification_and_selected_serve_preserve_real_publicati
     let _renewed = successful(&renewed_select)?;
     let renewed_receipt: serde_json::Value =
         serde_json::from_slice(&fs::read(&renewed_receipt_path)?)?;
+    let renewed_verify = identity_args(
+        "verify-native-state", &config_path, &renewed_receipt, &config_digest,
+    )?;
+    let renewed_candidate_verify = identity_args(
+        "verify-native-candidate", &config_path, &renewed_receipt, &config_digest,
+    )?;
+    let before_renewed_verification = root_files(&root)?;
+    let _verified_historical_boot = successful(&renewed_verify)?;
+    refused(&renewed_candidate_verify)?;
+    require_equal(
+        &root_files(&root)?,
+        &before_renewed_verification,
+        "candidate verification of a historical BOOT changed root",
+    )?;
     let renewed_install = with_flag(
         &install_args,
         "--receipt",
         renewed_receipt_path.to_string_lossy().into_owned(),
     )?;
-    launcher_succeeded(&renewed_install)?;
+    launcher_refused(&renewed_install)?;
     let updated_selection: serde_json::Value = serde_json::from_slice(&fs::read(&selection_path)?)?;
     require_equal(
         updated_selection
             .get("native_boot_receipt")
             .ok_or("missing updated selection field native_boot_receipt")?,
-        &renewed_receipt,
-        "renewed installation receipt",
+        &receipt,
+        "same-root reinstall preserved installed BOOT receipt",
     )?;
     require_equal(
         updated_selection
             .get("native_config_sha256")
             .ok_or("missing updated selection field native_config_sha256")?,
         &serde_json::json!(config_digest),
-        "renewed installation config digest",
+        "same-root reinstall preserved installed config digest",
+    )?;
+    require(
+        renewed_receipt != receipt,
+        "fixture did not change install digest",
     )?;
 
     let reopened = launcher_daemon(&selection_path, &socket)?;
@@ -915,23 +1374,13 @@ struct RebuiltNativeRoot {
     socket: PathBuf,
     config: PathBuf,
     receipt: PathBuf,
+    #[cfg(feature = "legacy-tantivy")]
+    published_operation_json: String,
+    #[cfg(feature = "legacy-tantivy")]
+    published_source_cut_digest_hex: String,
 }
 
 impl RebuiltNativeRoot {
-    fn renew_receipt(&mut self, receipt: PathBuf) -> TestResult {
-        let _selected = successful(&[
-            "select-native-state".into(),
-            "--config".into(),
-            self.config.to_string_lossy().into_owned(),
-            "--manifest-operation".into(),
-            serde_json::to_string(&operation(2))?,
-            "--receipt".into(),
-            receipt.to_string_lossy().into_owned(),
-        ])?;
-        self.receipt = receipt;
-        Ok(())
-    }
-
     fn launcher_args(&self, mode: &str, selection: &Path) -> TestResult<Vec<String>> {
         let binary = Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")).canonicalize()?;
         Ok(vec![
@@ -1028,9 +1477,12 @@ fn rebuild_fixed_native_source(base: &Path, name: &str) -> TestResult<RebuiltNat
         sequence: 1,
         payload: transition.owner_digest()?,
     });
+    let producer_operation = operation(2);
+    #[cfg(feature = "legacy-tantivy")]
+    let published_operation_json = serde_json::to_string(&producer_operation)?;
     let rebuilt = published(&client.submit(
         UpdateRequest {
-            operation: operation(2),
+            operation: producer_operation,
             expected_view: configured,
             kind: UpdateKind::SourceAdvance(transition),
         },
@@ -1061,6 +1513,14 @@ fn rebuild_fixed_native_source(base: &Path, name: &str) -> TestResult<RebuiltNat
         &"rebuild.rs",
         "fresh SDK rebuild fixed path",
     )?;
+    #[cfg(feature = "legacy-tantivy")]
+    let published_source_cut_digest_hex =
+        hex(&quanta_index_contract::native_boot_source_cut_digest_v1(
+            &client
+                .read_view(ViewSelection::Exact(rebuilt), &budget())?
+                .source,
+        )?
+        .0)?;
     daemon.stop()?;
     let _selected = successful(&[
         "select-native-state".into(),
@@ -1076,6 +1536,10 @@ fn rebuild_fixed_native_source(base: &Path, name: &str) -> TestResult<RebuiltNat
         socket,
         config: config_path,
         receipt: receipt_path,
+        #[cfg(feature = "legacy-tantivy")]
+        published_operation_json,
+        #[cfg(feature = "legacy-tantivy")]
+        published_source_cut_digest_hex,
     })
 }
 
@@ -1126,16 +1590,22 @@ fn require_rebuilt_query(socket: &Path) -> TestResult {
     Ok(())
 }
 
+#[cfg(feature = "legacy-tantivy")]
 const LEGACY_BOOT_PATH: &str = "src/legacy-cutover.rs";
+#[cfg(feature = "legacy-tantivy")]
 const LEGACY_BOOT_TOKEN: &str = "legacy_boot_needle_47";
+#[cfg(feature = "legacy-tantivy")]
 const LEGACY_BOOT_BODY: &str = "pub fn legacy_boot_needle_47() -> bool { true }";
 // SHA-256 of the public CodeSearch file framing for repo-e2e and the fixed path.
+#[cfg(feature = "legacy-tantivy")]
 const LEGACY_BOOT_FILE_ID: &str =
     "file:98f1a21b71fc15f0456e9b0ac28176f1c4261e2eb0788b61d7ee4c0adbd922b1";
 // SHA-256 of the fixed seed body followed by the harness's framing newline.
+#[cfg(feature = "legacy-tantivy")]
 const LEGACY_BOOT_SOURCE_SHA256: &str =
     "c11c4b4ecb8ae5a07425bf8531bbd61bb31f69f54275640474b215fce1adef46";
 
+#[cfg(feature = "legacy-tantivy")]
 fn legacy_boot_environment(base: &Path) -> TestResult<Vec<(String, String)>> {
     let home = base.join("legacy-home");
     let temporary = base.join("legacy-tmp");
@@ -1166,6 +1636,7 @@ fn legacy_boot_environment(base: &Path) -> TestResult<Vec<(String, String)>> {
     Ok(environment)
 }
 
+#[cfg(feature = "legacy-tantivy")]
 fn successful_legacy_state_command(
     args: &[String],
     environment: &[(String, String)],
@@ -1185,8 +1656,9 @@ fn successful_legacy_state_command(
     )
 }
 
+#[cfg(feature = "legacy-tantivy")]
 fn require_legacy_boot_query(root: &Path) -> TestResult {
-    let client = quanta_index_sdk::QuantaIndex::connect_query_only(
+    let client = quanta_index_sdk::QuantaIndex::connect_legacy_query_only(
         quanta_index_sdk::ConnectOptions::from_state_root(root),
     )?;
     let repo = quanta_index_contract::RepoId::new("repo-e2e")?;
@@ -1242,9 +1714,414 @@ fn require_legacy_boot_query(root: &Path) -> TestResult {
 }
 
 #[test]
-fn legacy_to_fresh_native_and_rollback_serves_fixed_old_root_query_twice() -> TestResult {
+#[cfg(all(feature = "legacy-tantivy", target_os = "linux"))]
+fn offline_legacy_history_export_streams_real_rows_and_terminal_ack() -> TestResult {
+    use quanta_index_contract::HistoryIngestBatch;
+    use quanta_index_contract::index::AuxiliaryGenerationKeyV1;
+    use quanta_index_contract::lex::{CommitRecord, CommitSha};
+    use quanta_index_sdk::{ConnectOptions, QuantaIndex};
+
+    let temp = tempfile::Builder::new()
+        .prefix("q-history-export-")
+        .tempdir_in("/tmp")?;
+    fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+    let base = temp.path().canonicalize()?;
+    let environment = legacy_boot_environment(&base)?;
+    let seed = base.join("legacy-seed");
+    fs::create_dir(&seed)?;
+    fs::set_permissions(&seed, fs::Permissions::from_mode(0o700))?;
+    let mut bootstrap = quanta_index_searchd_harness::E2eRuntime::boot_in(&seed)?;
+    bootstrap.start()?;
+    bootstrap.stop()?;
+
+    // Install the manifest-backed root before ordinary Legacy writes. The
+    // exporter must read the selected live root, including its internal
+    // hardlinks, without asking the backup tool to rewrite its data.
+    let backup = base.join("legacy-backup");
+    let old_root = base.join("legacy-current");
+    for (operation, source, destination) in [
+        ("backup-state", seed.as_path(), backup.as_path()),
+        ("restore-state", backup.as_path(), old_root.as_path()),
+    ] {
+        successful_legacy_state_command(
+            &[
+                operation.into(),
+                "--source".into(),
+                source.to_string_lossy().into_owned(),
+                "--destination".into(),
+                destination.to_string_lossy().into_owned(),
+            ],
+            &environment,
+        )?;
+    }
+    let binary = Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")).canonicalize()?;
+    let selection = base.join("selection.json");
+    let mut install = vec![
+        "install".into(),
+        "--selection".into(),
+        selection.to_string_lossy().into_owned(),
+        "--binary".into(),
+        binary.to_string_lossy().into_owned(),
+        "--state-root".into(),
+        old_root.to_string_lossy().into_owned(),
+    ];
+    for (name, value) in &environment {
+        install.extend(["--env".into(), format!("{name}={value}")]);
+    }
+    launcher_succeeded(&install)?;
+    let selected_bytes = fs::read(&selection)?;
+    let selected_sha = inspected_selection_digest(&selection)?;
+
+    let mut runtime = quanta_index_searchd_harness::E2eRuntime::boot_in(&old_root)?;
+    runtime.ingest_text(
+        "repo-e2e",
+        "src/history_export.rs",
+        "fn history_export() {}",
+    )?;
+    let sealed = runtime.seal()?;
+    require_equal(
+        &sealed,
+        &quanta_index_contract::ManifestGeneration::new(1),
+        "Legacy History fixture generation",
+    )?;
+    runtime.activate_last_sealed_generation()?;
+    runtime.start()?;
+    let (query, control, ingest) = runtime.socket_paths().ok_or("Legacy sockets absent")?;
+    let publisher = QuantaIndex::connect_legacy(
+        ConnectOptions::from_state_root(runtime.state_root())
+            .with_query_socket(query)
+            .with_control_socket(control)
+            .with_ingest_socket(ingest),
+    )?;
+    let commit = CommitRecord {
+        wire_version: 1,
+        sha: CommitSha::from_bytes([42; 20]),
+        parents: Vec::new(),
+        author_time_ms: 10_000,
+        committer_time_ms: 10_000,
+        applied_at_ms: 10_000,
+        author: "legacy-author".into(),
+        author_name: Some("Legacy Author".into()),
+        author_email: None,
+        committer: "legacy-author".into(),
+        committer_name: Some("Legacy Author".into()),
+        committer_email: None,
+        message: "exported original commit".into(),
+        is_merge: false,
+        tags: Vec::new(),
+    };
+    let generation = AuxiliaryGenerationKeyV1 {
+        repo_id: runtime.repo(),
+        revision_id: runtime.revision(),
+        generation: sealed,
+    };
+    let manifest = runtime
+        .last_sealed_search_corpus_identity()
+        .ok_or("first sealed Legacy Source identity absent")?;
+    let mut batch = HistoryIngestBatch {
+        repo_id: generation.repo_id.clone(),
+        revision_id: generation.revision_id.clone(),
+        generation: generation.generation,
+        manifest_digest: Some(manifest.lexical.manifest_digest),
+        batch_digest: String::new(),
+        commits: vec![commit.clone()],
+        refs: Vec::new(),
+        tags: Vec::new(),
+        diff_hunks: Vec::new(),
+    };
+    quanta_index_ipc::stamp_batch_digest_v1(&mut batch)?;
+    let ack = publisher.history().publish_history_borrowed_v1(&batch)?;
+    require(
+        ack.applied && ack.durable_sequence > 0,
+        "Legacy History ACK was not durable",
+    )?;
+    runtime.ingest_text(
+        "repo-e2e",
+        "src/history_export.rs",
+        "fn history_export() { let _next = 2; }",
+    )?;
+    let next_sealed = runtime.seal()?;
+    require_equal(
+        &next_sealed,
+        &quanta_index_contract::ManifestGeneration::new(2),
+        "second Legacy History fixture generation",
+    )?;
+    runtime.activate_last_sealed_generation()?;
+    let next_generation = AuxiliaryGenerationKeyV1 {
+        generation: next_sealed,
+        ..generation.clone()
+    };
+    let next_manifest = runtime
+        .last_sealed_search_corpus_identity()
+        .ok_or("second sealed Legacy Source identity absent")?;
+    let next_commit = CommitRecord {
+        sha: CommitSha::from_bytes([43; 20]),
+        message: "exported second-generation commit".into(),
+        ..commit.clone()
+    };
+    let mut next_batch = HistoryIngestBatch {
+        generation: next_generation.generation,
+        manifest_digest: Some(next_manifest.lexical.manifest_digest),
+        commits: vec![next_commit.clone()],
+        batch_digest: String::new(),
+        ..batch
+    };
+    quanta_index_ipc::stamp_batch_digest_v1(&mut next_batch)?;
+    let next_ack = publisher.history().publish_history_borrowed_v1(&next_batch)?;
+    require(
+        next_ack.applied && next_ack.durable_sequence > ack.durable_sequence,
+        "second Legacy History ACK must follow the first",
+    )?;
+    drop(publisher);
+    runtime.stop()?;
+
+    require_equal(&fs::read(&selection)?, &selected_bytes, "Legacy publication selection")?;
+    let old_files = root_files(&old_root)?;
+
+    let native_root = base.join("candidate-state");
+    fs::create_dir(&native_root)?;
+    fs::set_permissions(&native_root, fs::Permissions::from_mode(0o700))?;
+    let native_config = base.join("candidate.json");
+    fs::write(
+        &native_config,
+        serde_json::to_vec(&config(&native_root, &base.join("candidate.sock")))?,
+    )?;
+    fs::set_permissions(&native_config, fs::Permissions::from_mode(0o600))?;
+    let config_sha = hex(&Sha256::digest(fs::read(&native_config)?))?;
+    let inventory = run_private_pipe_one_shot(&[
+        "export-native-history-checkpoint",
+        "--selection-path",
+        selection.to_str().ok_or("selection is not UTF-8")?,
+        "--expected-current-sha256",
+        &selected_sha,
+        "--inventory-repo-id",
+        generation.repo_id.as_str(),
+        "--config",
+        native_config.to_str().ok_or("config is not UTF-8")?,
+        "--config-digest",
+        &config_sha,
+    ])?;
+    require(
+        inventory.status.success(),
+        format!(
+            "real History inventory refused: {}",
+            String::from_utf8_lossy(&inventory.stderr)
+        ),
+    )?;
+    assert_legacy_history_inventory_v1(
+        &inventory.stdout,
+        &generation.repo_id,
+        &[generation.clone(), next_generation.clone()],
+    )?;
+    for (generation, commit, ack) in [
+        (&generation, &commit, &ack),
+        (&next_generation, &next_commit, &next_ack),
+    ] {
+        let generation_json = serde_json::to_string(generation)?;
+        let output = run_private_pipe_one_shot(&[
+            "export-native-history-checkpoint",
+            "--selection-path",
+            selection.to_str().ok_or("selection is not UTF-8")?,
+            "--expected-current-sha256",
+            &selected_sha,
+            "--generation-json",
+            &generation_json,
+            "--config",
+            native_config.to_str().ok_or("config is not UTF-8")?,
+            "--config-digest",
+            &config_sha,
+        ])?;
+        require(
+            output.status.success(),
+            format!(
+                "real History export refused for generation {:?}: {}",
+                generation.generation,
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )?;
+        assert_legacy_history_export_v1(&output.stdout, generation, commit, ack, &old_root)?;
+        require_equal(
+            &fs::read(&selection)?,
+            &selected_bytes,
+            "History export selection",
+        )?;
+        require_equal(
+            &root_files(&old_root)?,
+            &old_files,
+            "History export Legacy root",
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "legacy-tantivy", target_os = "linux"))]
+fn assert_legacy_history_inventory_v1(
+    mut bytes: &[u8],
+    repo: &quanta_index_contract::RepoId,
+    expected: &[quanta_index_contract::index::AuxiliaryGenerationKeyV1],
+) -> TestResult {
+    use quanta_index_contract::index::{
+        HistorySnapshotExportFrameV1, MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1,
+    };
+
+    let mut count = 0_usize;
+    let mut completed = false;
+    while !bytes.is_empty() {
+        require(
+            !completed && bytes.len() >= 4,
+            "History inventory has trailing or truncated frame",
+        )?;
+        let length = usize::try_from(u32::from_le_bytes(bytes[..4].try_into()?))?;
+        require(
+            length <= MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1 + 4096 && bytes.len() >= length + 4,
+            "History inventory frame exceeds bound or is truncated",
+        )?;
+        let frame: HistorySnapshotExportFrameV1 = serde_json::from_slice(&bytes[4..4 + length])?;
+        bytes = &bytes[4 + length..];
+        match frame {
+            HistorySnapshotExportFrameV1::InventoryKey { generation } => {
+                require_equal(
+                    &Some(&generation),
+                    &expected.get(count),
+                    "History inventory key",
+                )?;
+                count += 1;
+            }
+            HistorySnapshotExportFrameV1::InventoryComplete {
+                repo_id,
+                count: observed,
+            } => {
+                require_equal(&repo_id, repo, "History inventory repository")?;
+                require_equal(
+                    &observed,
+                    &u64::try_from(expected.len())?,
+                    "History inventory count",
+                )?;
+                require_equal(&count, &expected.len(), "History inventory key count")?;
+                completed = true;
+            }
+            HistorySnapshotExportFrameV1::Page(_)
+            | HistorySnapshotExportFrameV1::Complete { .. } => {
+                return Err("History inventory emitted a checkpoint frame".into());
+            }
+        }
+    }
+    require(completed, "History inventory completion absent")?;
+    Ok(())
+}
+
+#[cfg(all(feature = "legacy-tantivy", target_os = "linux"))]
+fn assert_legacy_history_export_v1(
+    mut bytes: &[u8],
+    generation: &quanta_index_contract::index::AuxiliaryGenerationKeyV1,
+    commit: &quanta_index_contract::lex::CommitRecord,
+    ack: &quanta_index_contract::BatchPublishReceipt,
+    old_root: &Path,
+) -> TestResult {
+    use quanta_index_contract::AuxEpochV1;
+    use quanta_index_contract::index::{
+        HistorySnapshotExportFrameV1, MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1,
+    };
+    use quanta_index_core::{AuxiliaryRowFamilyV1, domains::auxiliary::HistorySnapshotDigestV1};
+
+    let mut next_ordinal = 1_u32;
+    let mut rows = 0_u64;
+    let mut digest = HistorySnapshotDigestV1::new(generation);
+    let expected_commit = quanta_index_ipc::encode_cbor_payload(commit)?;
+    let mut saw_commit = false;
+    let mut completion = None;
+    while !bytes.is_empty() {
+        require(
+            completion.is_none() && bytes.len() >= 4,
+            "History export has trailing or truncated frame",
+        )?;
+        let length = u32::from_le_bytes(bytes[..4].try_into()?);
+        let length = usize::try_from(length)?;
+        require(
+            length <= MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1 + 4096 && bytes.len() >= length + 4,
+            "History export frame exceeds bound or is truncated",
+        )?;
+        let frame: HistorySnapshotExportFrameV1 = serde_json::from_slice(&bytes[4..4 + length])?;
+        bytes = &bytes[4 + length..];
+        match frame {
+            HistorySnapshotExportFrameV1::Page(page) => {
+                page.validate_shape()?;
+                require_equal(
+                    &page.generation,
+                    generation,
+                    "History export page generation",
+                )?;
+                require_equal(&page.ordinal, &next_ordinal, "History export page ordinal")?;
+                next_ordinal += 1;
+                for row in page.rows {
+                    let family = AuxiliaryRowFamilyV1::from_code_str(&row.family)
+                        .ok_or("History export family is unknown")?;
+                    if family == AuxiliaryRowFamilyV1::Commit {
+                        require_equal(
+                            &row.row_key,
+                            &commit.sha.as_bytes().to_vec(),
+                            "History commit key",
+                        )?;
+                        require_equal(&row.value, &expected_commit, "History commit bytes")?;
+                        saw_commit = true;
+                    }
+                    digest.push_row(family, &row.row_key, &row.value);
+                    rows += 1;
+                }
+            }
+            frame @ HistorySnapshotExportFrameV1::Complete { .. } => completion = Some(frame),
+            HistorySnapshotExportFrameV1::InventoryKey { .. }
+            | HistorySnapshotExportFrameV1::InventoryComplete { .. } => {
+                return Err("History checkpoint emitted an inventory frame".into());
+            }
+        }
+    }
+    let Some(HistorySnapshotExportFrameV1::Complete {
+        generation: observed_generation,
+        legacy_root,
+        durable_epoch,
+        snapshot_digest,
+        row_count,
+        terminal_ack,
+    }) = completion
+    else {
+        return Err("History export completion absent".into());
+    };
+    require(
+        saw_commit && next_ordinal > 1,
+        "History export omitted page or commit",
+    )?;
+    require_equal(
+        &observed_generation,
+        generation,
+        "History completion generation",
+    )?;
+    require_equal(
+        &legacy_root,
+        &old_root.to_string_lossy().into_owned(),
+        "History completion root",
+    )?;
+    require_equal(
+        &durable_epoch,
+        &AuxEpochV1::new(1),
+        "History completion epoch",
+    )?;
+    require_equal(&row_count, &rows, "History completion row count")?;
+    require_equal(
+        &snapshot_digest,
+        &digest.finish(),
+        "History reconstructed digest",
+    )?;
+    require_equal(&terminal_ack, ack, "History original terminal ACK")?;
+    Ok(())
+}
+
+#[test]
+#[cfg(feature = "legacy-tantivy")]
+fn legacy_to_fresh_native_preserves_old_root_and_refuses_unverified_rollback() -> TestResult {
     // Q-only fixture: the actual external producer's S publication tuple is a
-    // separate handoff qualification, not an assertion of this test.
+    // separate handoff qualification. This test keeps the unsupported reverse
+    // transition closed after proving the selected Native root serves.
     let temp = tempfile::Builder::new().prefix("qbl-").tempdir_in("/tmp")?;
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
     let base = temp.path().canonicalize()?;
@@ -1294,7 +2171,7 @@ fn legacy_to_fresh_native_and_rollback_serves_fixed_old_root_query_twice() -> Te
         &environment,
     )?;
 
-    let mut candidate = rebuild_fixed_native_source(&base, "candidate")?;
+    let candidate = rebuild_fixed_native_source(&base, "candidate")?;
     let selection = base.join("selection.json");
     let binary = Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")).canonicalize()?;
     let mut install = vec![
@@ -1317,6 +2194,58 @@ fn legacy_to_fresh_native_and_rollback_serves_fixed_old_root_query_twice() -> Te
     ])?;
     let old_wire = fs::read(&selection)?;
     let old_digest = inspected_selection_digest(&selection)?;
+    let before_export = root_files(&old_root)?;
+    // The real child must refuse a stale active-selection binding before it
+    // emits any provisional History page. Use a pipe, as the exporter requires.
+    let config_digest = hex(&Sha256::digest(fs::read(&candidate.config)?))?;
+    let history_generation =
+        serde_json::to_string(&quanta_index_contract::index::AuxiliaryGenerationKeyV1 {
+            repo_id: quanta_index_contract::RepoId::new("repo-e2e")?,
+            revision_id: quanta_index_contract::RevisionId::new("rev-e2e")?,
+            generation: quanta_index_contract::ManifestGeneration::new(1),
+        })?;
+    let wrong_digest = "00".repeat(32);
+    require(
+        wrong_digest != old_digest,
+        "fixture selected SHA unexpectedly zero",
+    )?;
+    let export_refusal = run_private_pipe_one_shot(&[
+        "export-native-history-checkpoint",
+        "--selection-path",
+        selection.to_str().ok_or("selection is not UTF-8")?,
+        "--expected-current-sha256",
+        &wrong_digest,
+        "--generation-json",
+        &history_generation,
+        "--config",
+        candidate.config.to_str().ok_or("config is not UTF-8")?,
+        "--config-digest",
+        &config_digest,
+    ])?;
+    require_equal(
+        &export_refusal.status.code(),
+        &Some(70),
+        "stale History export exit",
+    )?;
+    require(
+        export_refusal.stdout.is_empty(),
+        "stale History export emitted a page",
+    )?;
+    require(
+        String::from_utf8_lossy(&export_refusal.stderr)
+            .contains("active selection fingerprint changed"),
+        "History export refusal did not reach active selection CAS",
+    )?;
+    require_equal(
+        &fs::read(&selection)?,
+        &old_wire,
+        "stale History export selection",
+    )?;
+    require_equal(
+        &root_files(&old_root)?,
+        &before_export,
+        "stale History export root",
+    )?;
     let legacy_socket = old_root.join("search-plane/query.sock");
     let daemon = launcher_daemon(&selection, &legacy_socket)?;
     require_legacy_boot_query(&old_root)?;
@@ -1363,6 +2292,12 @@ fn legacy_to_fresh_native_and_rollback_serves_fixed_old_root_query_twice() -> Te
         previous.to_string_lossy().into_owned(),
         "--expected-previous-selection-sha256".into(),
         old_digest.clone(),
+        "--target-operation".into(),
+        serde_json::to_string(&operation(2))?,
+        "--published-operation".into(),
+        candidate.published_operation_json.clone(),
+        "--published-source-cut-digest".into(),
+        candidate.published_source_cut_digest_hex.clone(),
     ]);
     launcher_succeeded(&switch)?;
     require(
@@ -1383,12 +2318,9 @@ fn legacy_to_fresh_native_and_rollback_serves_fixed_old_root_query_twice() -> Te
         &old_quiescent_files,
         "Native serve changed inactive Legacy root",
     )?;
-    // A read-only Native serve can still change Catalog bytes. Reissue the
-    // canonical current-root receipt before rollback's Native verification.
-    candidate.renew_receipt(base.join("candidate-renewed-receipt.json"))?;
-    launcher_succeeded(&candidate.launcher_args("install-native", &selection)?)?;
     let native_quiescent_files = root_files(&candidate.root)?;
-    launcher_succeeded(&[
+    let selected_native = fs::read(&selection)?;
+    let rollback = run_launcher(&[
         "rollback-legacy".into(),
         "--selection".into(),
         selection.to_string_lossy().into_owned(),
@@ -1400,29 +2332,33 @@ fn legacy_to_fresh_native_and_rollback_serves_fixed_old_root_query_twice() -> Te
         old_digest,
     ])?;
     require_equal(
+        &rollback.status.code(),
+        &Some(1),
+        "unverified rollback exit",
+    )?;
+    require(
+        rollback.stdout.is_empty(),
+        "unverified rollback emitted a receipt",
+    )?;
+    require(
+        String::from_utf8_lossy(&rollback.stderr)
+            .contains("Legacy rollback requires offline Catalog publication baseline and fenced producer outbox verification"),
+        "rollback refused for a reason other than missing offline authorities",
+    )?;
+    require_equal(
         &fs::read(&selection)?,
-        &old_wire,
-        "rolled-back Legacy selection",
+        &selected_native,
+        "refused rollback changed Native selection",
     )?;
     require_equal(
         &fs::read(&previous)?,
         &old_wire,
-        "rollback changed saved selection",
+        "refused rollback changed saved Legacy selection",
     )?;
-    for _ in 0..2 {
-        let daemon = launcher_daemon(&selection, &legacy_socket)?;
-        require_legacy_boot_query(&old_root)?;
-        daemon.stop()?;
-        require(
-            UnixStream::connect(&legacy_socket).is_err(),
-            "rolled-back Legacy serve did not drain",
-        )?;
-        require_equal(
-            &fs::read(&selection)?,
-            &old_wire,
-            "rolled-back Legacy selection drift",
-        )?;
-    }
+    require(
+        UnixStream::connect(&legacy_socket).is_err(),
+        "refused rollback reopened inactive Legacy serve",
+    )?;
     require_equal(
         &root_files(&candidate.root)?,
         &native_quiescent_files,
@@ -1432,11 +2368,11 @@ fn legacy_to_fresh_native_and_rollback_serves_fixed_old_root_query_twice() -> Te
 }
 
 #[test]
-fn native_cross_root_sdk_rebuild_switch_and_rollback_preserve_fixed_query() -> TestResult {
+fn native_cross_root_sdk_rebuild_refuses_unverified_switch() -> TestResult {
     let temp = tempfile::tempdir()?;
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
     let base = temp.path().canonicalize()?;
-    let mut old = rebuild_fixed_native_source(&base, "old")?;
+    let old = rebuild_fixed_native_source(&base, "old")?;
     let new = rebuild_fixed_native_source(&base, "new")?;
     let selection = base.join("selection.json");
     launcher_succeeded(&old.launcher_args("install-native", &selection)?)?;
@@ -1453,59 +2389,43 @@ fn native_cross_root_sdk_rebuild_switch_and_rollback_preserve_fixed_query() -> T
         &old_wire,
         "refused install selection",
     )?;
-    launcher_succeeded(&switch)?;
+    let refused = run_launcher(&switch)?;
     require_equal(
-        &root_files(&old.root)?,
-        &old_files,
-        "switch old root bytes/inodes",
+        &refused.status.code(),
+        &Some(1),
+        "unverified Native switch exit",
     )?;
-    require_equal(
-        &root_files(&new.root)?,
-        &new_files,
-        "switch candidate root bytes/inodes",
+    require(
+        refused.stdout.is_empty(),
+        "unverified Native switch emitted a receipt",
     )?;
-    let new_wire = fs::read(&selection)?;
-    launcher_refused(&switch)?;
-    require_equal(&fs::read(&selection)?, &new_wire, "stale CAS selection")?;
-    // Rollback uses the exact same verified switch with the newly inspected CAS.
-    let mut rollback = old.launcher_args("switch-native", &selection)?;
-    rollback.extend([
-        "--expected-selection-sha256".into(),
-        inspected_selection_digest(&selection)?,
-    ]);
-    launcher_succeeded(&rollback)?;
+    require(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("Native cross-root switching requires offline Catalog publication baseline and fenced producer outbox verification"),
+        "Native switch refused for a reason other than missing offline authorities",
+    )?;
     require_equal(
         &fs::read(&selection)?,
         &old_wire,
-        "explicit rollback selection",
+        "refused Native switch selection",
     )?;
-    for _ in 0..2 {
-        let daemon = launcher_daemon(&selection, &old.socket)?;
-        require_rebuilt_query(&old.socket)?;
-        daemon.stop()?;
-        require_equal(
-            &fs::read(&selection)?,
-            &old_wire,
-            "rollback serve/restart changed deployment selection",
-        )?;
-    }
+    require_equal(
+        &root_files(&old.root)?,
+        &old_files,
+        "refused Native switch old root bytes/inodes",
+    )?;
     require_equal(
         &root_files(&new.root)?,
         &new_files,
-        "rollback serve changed inactive candidate root",
+        "refused Native switch candidate root bytes/inodes",
     )?;
-    // Serve may legitimately change Catalog bytes. Reissue its install receipt
-    // through the existing offline path before verifying the current root again.
-    old.renew_receipt(base.join("old-renewed-receipt.json"))?;
-    launcher_succeeded(&old.launcher_args("install-native", &selection)?)?;
-    let mut forward = new.launcher_args("switch-native", &selection)?;
-    forward.extend([
-        "--expected-selection-sha256".into(),
-        inspected_selection_digest(&selection)?,
-    ]);
-    launcher_succeeded(&forward)?;
-    let daemon = launcher_daemon(&selection, &new.socket)?;
-    require_rebuilt_query(&new.socket)?;
+    let daemon = launcher_daemon(&selection, &old.socket)?;
+    require_rebuilt_query(&old.socket)?;
     daemon.stop()?;
+    require_equal(
+        &fs::read(&selection)?,
+        &old_wire,
+        "selected Native serve selection",
+    )?;
     Ok(())
 }

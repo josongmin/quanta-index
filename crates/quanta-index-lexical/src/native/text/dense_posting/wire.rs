@@ -94,6 +94,19 @@ fn read32(bytes: &[u8], start: usize) -> Result<[u8; 32], IndexError> {
         .map_err(|_error| corrupt("row width differs"))
 }
 
+pub(in crate::native::text) fn page_payload_bytes(rows: usize) -> Result<usize, IndexError> {
+    rows.checked_mul(ROW_BYTES)
+        .and_then(|body| PAGE_HEADER.checked_add(body))
+        .ok_or(IndexError::ResourceLimited)
+}
+
+pub(in crate::native::text) fn directory_payload_bytes(pages: usize) -> Result<usize, IndexError> {
+    pages
+        .checked_mul(FENCE_BYTES)
+        .and_then(|body| DIRECTORY_HEADER.checked_add(body))
+        .ok_or(IndexError::ResourceLimited)
+}
+
 pub(in crate::native::text) fn page_payload(
     rows: &[PostingRow],
     budget: &WorkBudget,
@@ -108,11 +121,7 @@ pub(in crate::native::text) fn page_payload(
         }
     }
     let count = u16::try_from(rows.len()).map_err(|_error| IndexError::ResourceLimited)?;
-    let length = rows
-        .len()
-        .checked_mul(ROW_BYTES)
-        .and_then(|body| PAGE_HEADER.checked_add(body))
-        .ok_or(IndexError::ResourceLimited)?;
+    let length = page_payload_bytes(rows.len())?;
     let mut payload = staged(length, budget)?;
     payload.bytes.extend_from_slice(PAGE_MAGIC);
     payload.bytes.extend_from_slice(&count.to_be_bytes());
@@ -154,11 +163,7 @@ pub(in crate::native::text) fn directory_payload(
     if !(MIN_ROWS..=MAX_ROWS).contains(&total) {
         return Err(invalid("directory row count exceeds bound"));
     }
-    let length = fences
-        .len()
-        .checked_mul(FENCE_BYTES)
-        .and_then(|body| DIRECTORY_HEADER.checked_add(body))
-        .ok_or(IndexError::ResourceLimited)?;
+    let length = directory_payload_bytes(fences.len())?;
     let mut payload = staged(length, budget)?;
     payload.bytes.extend_from_slice(DIRECTORY_MAGIC);
     payload.bytes.extend_from_slice(

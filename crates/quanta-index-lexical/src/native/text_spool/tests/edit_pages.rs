@@ -51,7 +51,6 @@ fn mixed_owner_edits_use_one_real_insert_per_64_row_packet() -> Result<(), Index
         .collect::<Vec<_>>()
         .join(",");
     let inventory_sql = format!("INSERT INTO inventory(root,k,p,n) VALUES {suffix}");
-    let posting_sql = format!("INSERT INTO posting(term,k,p,n) VALUES {suffix}");
     let run_count = |statement_sql: &str, budget: &WorkBudget| -> Result<i32, IndexError> {
         let db = spool.db.scoped(budget)?;
         let statement = db
@@ -60,36 +59,51 @@ fn mixed_owner_edits_use_one_real_insert_per_64_row_packet() -> Result<(), Index
         Ok(statement.get_status(rusqlite::StatementStatus::Run))
     };
     check_eq!(run_count(&inventory_sql, &work)?, 0);
-    check_eq!(run_count(&posting_sql, &work)?, 0);
     spool.inventory_batch(&inventories, &mut work)?;
     spool.posting_batch(&postings, &mut work)?;
     check_eq!(run_count(&inventory_sql, &work)?, 1);
-    check_eq!(run_count(&posting_sql, &work)?, 1);
+    let terms = spool.posting_term_page(None, &mut work)?;
+    let packets: i64 = spool
+        .db
+        .scoped(&work)?
+        .query_row(
+            "SELECT COUNT(*) FROM posting_packet WHERE phase=0 AND run=0",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| sql(&error))?;
+    check_eq!(packets, 1);
     let mut inventory = spool.inventory_cursor(32)?;
     for root in 0..32_u32 {
         for surface in [0_u8, 1_u8] {
             let row = inventory
                 .next_edit(&mut work)?
                 .ok_or(IndexError::ResourceLimited)?;
-            check_eq!(row.root, root);
-            check_eq!(row.edit.key.as_slice(), &[surface, b'a']);
-            check_eq!(row.edit.expected, None);
-            check_eq!(row.edit.next, Some(reference.into()));
+            check_eq!(row.root(), root);
+            check_eq!(row.key(), &[surface, b'a']);
+            check_eq!(row.expected()?, None);
+            check_eq!(row.next()?, Some(reference.into()));
         }
     }
     check!(inventory.next_edit(&mut work)?.is_none());
-    for surface in [0_u8, 1_u8] {
-        let term = [surface, b'a'];
-        let mut rows = spool.posting_root_cursor(&term);
+    let mut roots = spool.posting_root_cursors(&terms, &[false, false], &mut work)?;
+    for (slot, surface) in [0_u8, 1_u8].into_iter().enumerate() {
+        let term = terms
+            .get(slot)
+            .ok_or(IndexError::ResourceLimited)?
+            .as_slice();
+        let expected_term = [surface, b'a'];
+        check_eq!(term, expected_term.as_slice());
+        let mut rows = roots.cursor(slot, term)?;
         for root in 0..32_u32 {
             let row = rows
                 .next_edit(&mut work)?
                 .ok_or(IndexError::ResourceLimited)?;
             check_eq!(
-                row.edit.key.as_slice(),
+                row.key(),
                 owner_key(u16::try_from(root).map_err(|_error| IndexError::ResourceLimited)?)
             );
-            check_eq!(row.edit.next, Some(reference.into()));
+            check_eq!(row.next()?, Some(reference.into()));
         }
         check!(rows.next_edit(&mut work)?.is_none());
     }
@@ -141,12 +155,12 @@ fn all_edit_cursors_keep_129_row_oracle_with_bounded_read_bytes() -> Result<(), 
         owner_rows.push((0, owner.clone(), None, Some(reference.into())));
         owner_top.push((1, owner, None, Some(value)));
     }
+    let _sealed = spool.posting_term_page(None, &mut setup)?;
     for kind in 0..5 {
         let queries: &[&str] = match kind {
             0 => &[INVENTORY_FIRST_SQL, INVENTORY_NEXT_SQL],
             1 => &[INVENTORY_ROOT_FIRST_SQL, INVENTORY_ROOT_NEXT_SQL],
-            2 => &[POSTING_RANGE_FIRST_SQL, POSTING_RANGE_NEXT_SQL],
-            3 => &[POSTING_ROOT_FIRST_SQL, POSTING_ROOT_NEXT_SQL],
+            2 | 3 => &[],
             _ => &[TOP_NEXT_SQL],
         };
         let before_executions = executions(&spool, queries, &setup)?;
@@ -161,21 +175,30 @@ fn all_edit_cursors_keep_129_row_oracle_with_bounded_read_bytes() -> Result<(), 
                 .checked_add(Duration::from_secs(10))
                 .ok_or(IndexError::ResourceLimited)?,
         );
+        let root_terms = if kind == 3 {
+            Some(spool.posting_term_page(None, &mut scan)?)
+        } else {
+            None
+        };
+        let mut roots = root_terms
+            .as_ref()
+            .map(|terms| spool.posting_root_cursors(terms, &[false], &mut scan))
+            .transpose()?;
         let mut cursor: Box<dyn MapEditCursor + '_> = match kind {
             0 => Box::new(spool.inventory_cursor(1)?),
             1 => Box::new(spool.inventory_root_cursor(0)?),
             2 => Box::new(spool.posting_cursor(spool.posting_term_page(None, &mut scan)?)),
-            3 => Box::new(spool.posting_root_cursor(b"\0bulk")),
+            3 => Box::new(
+                roots
+                    .as_mut()
+                    .ok_or(IndexError::ResourceLimited)?
+                    .cursor(0, b"\0bulk")?,
+            ),
             _ => Box::new(spool.top_cursor()),
         };
         let mut observed = Vec::new();
         while let Some(row) = cursor.next_edit(&mut scan)? {
-            observed.push((
-                row.root,
-                row.edit.key.clone(),
-                row.edit.expected,
-                row.edit.next,
-            ));
+            observed.push((row.root(), row.key().to_vec(), row.expected()?, row.next()?));
         }
         let expected = match kind {
             0 | 1 => term_rows.clone(),
@@ -190,16 +213,21 @@ fn all_edit_cursors_keep_129_row_oracle_with_bounded_read_bytes() -> Result<(), 
         let calls = executions(&spool, queries, &setup)?
             .checked_sub(before_executions)
             .ok_or(IndexError::ResourceLimited)?;
-        // Independent SQLite execution counters prove fewer real seeks, not
-        // merely a change in the WorkUsage fee calculation.
-        check!(
-            if kind == 4 {
-                (4..=8).contains(&calls)
-            } else {
-                (2..=4).contains(&calls)
-            },
-            "kind={kind},calls={calls}"
-        );
+        // The old SQL seek count applies only to inventory and top. Posting
+        // rows now share checked packet pages; the fixed owner oracle above
+        // still exercises both posting cursors under the original read cap.
+        if kind == 2 || kind == 3 {
+            check_eq!(calls, 0);
+        } else {
+            check!(
+                if kind == 4 {
+                    (4..=8).contains(&calls)
+                } else {
+                    (2..=4).contains(&calls)
+                },
+                "kind={kind},calls={calls}"
+            );
+        }
         let finished = scan.usage();
         check!(cursor.next_edit(&mut scan)?.is_none());
         check!(cursor.next_edit(&mut scan)?.is_none());

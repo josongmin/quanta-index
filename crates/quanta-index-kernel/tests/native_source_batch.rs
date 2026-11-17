@@ -142,6 +142,25 @@ struct SourceMemory(Arc<LiveMemory>);
 
 struct DenyRetainedMemory(Arc<LiveMemory>);
 
+struct CappedTemporaryMemory(Arc<LiveMemory>, u64);
+
+impl quanta_index_core::index::MemoryScopePort for CappedTemporaryMemory {
+    fn reserve(
+        &self,
+        bytes: u64,
+        lifetime: quanta_index_core::index::MemoryLifetime,
+    ) -> Result<quanta_index_core::index::MemoryLease, IndexError> {
+        if lifetime == quanta_index_core::index::MemoryLifetime::Temporary && bytes > self.1 {
+            return Err(IndexError::ResourceLimited);
+        }
+        quanta_index_core::index::MemoryScopePort::reserve(
+            &SourceMemory(self.0.clone()),
+            bytes,
+            lifetime,
+        )
+    }
+}
+
 impl quanta_index_core::index::MemoryScopePort for DenyRetainedMemory {
     fn reserve(
         &self,
@@ -245,7 +264,7 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
             ))?;
         } else {
             check!(matches!(
-                kernel.stage_sources(ingress, std::slice::from_ref(&denied), &mut denied_budget),
+                kernel.stage_sources(ingress, vec![denied.clone()], &mut denied_budget),
                 Err(IndexError::ResourceLimited)
             ))?;
         }
@@ -261,12 +280,37 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
         DenyRetainedMemory(future_memory.clone()),
     ))));
     check!(matches!(
-        kernel.stage_sources(ingress, std::slice::from_ref(&denied), &mut future_budget),
+        kernel.stage_sources(ingress, vec![denied.clone()], &mut future_budget),
         Err(IndexError::ResourceLimited)
     ))?;
     check!(future_memory.peak.load(Ordering::Relaxed) > 0)?;
     check_eq!(future_memory.bytes.load(Ordering::Relaxed), 0)?;
     check!(!future_memory.invalid_refund.load(Ordering::Relaxed))?;
+    check!(matches!(
+        objects.get(denied_ref, &mut budget(16 * 1024 * 1024)?),
+        Err(IndexError::CorruptObject(_))
+    ))?;
+
+    // A tiny logical source with a large caller-owned backing must not enter
+    // the install packet on a grant that only covers its logical length.
+    let capped_memory = Arc::new(LiveMemory::default());
+    let mut capped_budget = budget(16 * 1024 * 1024)?;
+    capped_budget.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
+        CappedTemporaryMemory(capped_memory.clone(), 1024 * 1024),
+    ))));
+    let mut wide_bytes = Vec::with_capacity(2 * 1024 * 1024);
+    wide_bytes.extend_from_slice(&denied.bytes);
+    let wide = SourceInput {
+        path: denied.path.clone(),
+        bytes: wide_bytes,
+        text: denied.text,
+    };
+    check!(matches!(
+        kernel.stage_sources(ingress, vec![wide], &mut capped_budget),
+        Err(IndexError::ResourceLimited)
+    ))?;
+    check_eq!(capped_memory.bytes.load(Ordering::Relaxed), 0)?;
+    check!(!capped_memory.invalid_refund.load(Ordering::Relaxed))?;
     check!(matches!(
         objects.get(denied_ref, &mut budget(16 * 1024 * 1024)?),
         Err(IndexError::CorruptObject(_))
@@ -284,8 +328,7 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
     empty_budget.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(Arc::new(
         SourceMemory(empty_memory.clone()),
     ))));
-    let empty_refs =
-        kernel.stage_sources(ingress, std::slice::from_ref(&empty), &mut empty_budget)?;
+    let empty_refs = kernel.stage_sources(ingress, vec![empty.clone()], &mut empty_budget)?;
     let empty_ref = *empty_refs.first().ok_or("empty source reference missing")?;
     check_eq!(
         kernel.stage_source_text(
@@ -320,7 +363,8 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
             .is_empty()
     )?;
 
-    let references = kernel.stage_sources(ingress, &inputs, &mut budget(64 * 1024 * 1024)?)?;
+    let references =
+        kernel.stage_sources(ingress, inputs.clone(), &mut budget(64 * 1024 * 1024)?)?;
     check_eq!(references.len(), inputs.len())?;
     let first_ref = *references.first().ok_or("missing first staged source")?;
     let second_ref = *references.get(1).ok_or("missing second staged source")?;
@@ -364,7 +408,7 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
         },
     ];
     check!(matches!(
-        kernel.stage_sources(ingress, &invalid, &mut budget(16 * 1024 * 1024)?),
+        kernel.stage_sources(ingress, invalid.to_vec(), &mut budget(16 * 1024 * 1024)?),
         Err(IndexError::InvalidInput(_))
     ))?;
     check!(matches!(
@@ -382,7 +426,7 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
     };
     let admitted_refs = kernel.stage_sources(
         ingress,
-        std::slice::from_ref(&admitted),
+        vec![admitted.clone()],
         &mut budget(16 * 1024 * 1024)?,
     )?;
     check_eq!(admitted_refs.len(), 1)?;
@@ -408,7 +452,7 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
         },
     ];
     check!(matches!(
-        kernel.stage_sources(ingress, &mixed, &mut budget(16 * 1024 * 1024)?),
+        kernel.stage_sources(ingress, mixed.into(), &mut budget(16 * 1024 * 1024)?),
         Err(IndexError::InvalidInput(_))
     ))?;
     check!(matches!(
@@ -426,7 +470,7 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
         Err(IndexError::InvalidInput(_))
     ))?;
     check!(matches!(
-        kernel.stage_sources(ingress, &invalid[..1], &mut budget(0)?),
+        kernel.stage_sources(ingress, invalid[..1].to_vec(), &mut budget(0)?),
         Err(IndexError::ResourceLimited)
     ))?;
     check!(matches!(

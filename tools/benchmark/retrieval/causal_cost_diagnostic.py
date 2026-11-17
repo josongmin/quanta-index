@@ -1,4 +1,4 @@
-"""Reusable, unqualified worker RCA index over one canonical Native capture.
+"""Offline RCA over Native daemon captures and staging progress.
 
 Build once from ``causal_cost_timeline.parse_stream`` output, then query the
 small JSON projection without decoding the qtrace again. Independent daemon
@@ -17,8 +17,16 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from tools.benchmark.retrieval.causal_cost_native_ingest import build_native_ingest_report
+from tools.benchmark.retrieval.causal_cost_native_staging import build_native_staging_report
+from tools.benchmark.retrieval.causal_cost_native_triage import (
+    build_native_triage_report,
+    format_native_triage,
+)
 from tools.benchmark.retrieval.causal_cost_timeline import (
     MAX_CAPTURE_BYTES,
+    SQLITE_CACHE_OWNER_SPANS,
+    TEXT_OCCURRENCE_DIFF_COUNTERS,
     _union_ns,
     parse_stream,
 )
@@ -57,6 +65,24 @@ CACHE_KEYS = (
     "sqlite_cache_writes",
     "sqlite_cache_spills",
 )
+TEXT_SHAPE_VALUES = frozenset(
+    {
+        "text_case_occurrences",
+        "text_unique_canonical_terms",
+        "text_occurrence_key_bytes",
+        "text_unique_key_bytes",
+    }
+)
+TEXT_SHAPE_BRANCHES = frozenset(
+    {
+        "text_cold_alias_owners",
+        "text_cold_direct_owners",
+        "text_cold_sql_owners",
+        "text_cold_empty_owners",
+    }
+)
+TEXT_SHAPE_KEYS = TEXT_SHAPE_VALUES | TEXT_SHAPE_BRANCHES | {"text_shape_complete_owners"}
+U64_MAX = (1 << 64) - 1
 WRITE_ERROR_KEYS = (
     "sqlite_write_failures",
     "sqlite_write_admission_refusals",
@@ -86,7 +112,8 @@ SCOPE = {
     "phase": "nearest daemon worker descendant phase, not cross-process harness phase",
     "sqlite": "lane11/12 sync includes VFS witness; lane22 bytes are requested, not successful or device bytes",
     "sqlite_write_callbacks": "lane22 callback timing is OBSERVED only when all six callback counters are present; their absence is NOT_OBSERVED, never zero. Lazy top-level Catalog and Scratch scopes open lane22 at the first attempted write or sync; read-only work may have no lane22. Admission, lower envelope, and post callback are exact observed wall intervals, not CPU or device service time; do not add them to lane22 span wall or other overlapping lanes. The lower envelope includes Rust/C glue, xWrite, size and FD witness, but excludes the C witness before BeforeWrite",
-    "sqlite_cache": "CatalogLockHold/lane0 carries all four pager cache deltas when OBSERVED; their absence is NOT_OBSERVED, never zero. Any recorded lower write failure, admission refusal or post-callback refusal makes all cache deltas PAGER_WRITE_UNDEFINED_AFTER_WRITE_ERROR for this capture. Missing callback timing is PAGER_WRITE_OUTCOME_NOT_OBSERVED. OBSERVED describes raw snapshots with no recorded write error; it does not prove callback-preceding C refusals were impossible. Hits, misses, dirty-page writes and mid-transaction spill pages are not xWrite calls, bytes, CPU, COMMIT duration, or additive with parent/child spans",
+    "sqlite_cache": "CatalogLockHold/lane0 and sampled NativeTextPostingEdit/lane35 carry all four pager cache deltas when observed; their absence is NOT_OBSERVED, never zero. Posting edit traces select the first eight batches and later power-of-two ordinals per capture/build thread: direct cache and row counters sum successful sampled execute scopes only, while group count and wall include failed execute scopes with no cache snapshot. These are not overall totals, workload performance, or a proven cause. Any recorded lower write failure, admission refusal or post-callback refusal makes all cache deltas PAGER_WRITE_UNDEFINED_AFTER_WRITE_ERROR for this capture. Missing callback timing is PAGER_WRITE_OUTCOME_NOT_OBSERVED. OBSERVED describes emitted raw snapshots with no recorded write error; it does not assert every sampled execute succeeded or prove callback-preceding C refusals were impossible. Hits, misses, dirty-page writes and mid-transaction spill pages are not xWrite calls, bytes, CPU, COMMIT duration, or additive with parent/child spans",
+    "text_shape": "native_text_inventory_prepare/lane48 records an observed owner only when all four case-prefixed shape counters, exactly one selected output branch, and the completion witness agree. Every v5 lane48 span needs a complete tuple; absent counters on other stages are unobserved, not zero. Cached worker groups sum validated owner tuples and their count equals completed owners. These are diagnostic source-shape observations, not source/binary custody, source count proof, or workload performance proof",
     "backfill": "lane25 is an observed VFS CKPT_START-to-CKPT_DONE window; aborted spans stop at scope end, not DONE; descendant lane22 writes are requested, not device bytes or checkpoint success",
     "commit_overlap": "lane3 COMMIT and lane25 overlap is temporal only; unions are nonadditive and do not identify automatic or explicit checkpoint origin",
     "outcome": "worker trace terminal is not public WorkStatus Completed",
@@ -161,12 +188,90 @@ def _cache_counters(counters: dict[str, Any], stage: str, lane: int, label: str)
     observed = set(counters) & set(CACHE_KEYS)
     if not observed:
         return False
-    if stage != "catalog_lock_hold" or lane != 0:
+    if (stage, lane) not in SQLITE_CACHE_OWNER_SPANS:
         raise ValueError(f"{label} has SQLite cache counters on wrong stage or lane")
     if observed != set(CACHE_KEYS):
         raise ValueError(f"{label} has partial SQLite cache counters")
     for key in CACHE_KEYS:
         _natural(counters[key], f"{label} {key}")
+    return True
+
+
+def _text_shape_counters(
+    counters: dict[str, Any],
+    version: int,
+    stage: str,
+    lane: int,
+    outcome: str | None,
+    label: str,
+    *,
+    aggregate: bool = False,
+    expected_count: int | None = None,
+) -> bool:
+    """Validate a completed owner tuple or the sum of such tuples, not an inferred plan."""
+    unknown = {
+        key
+        for key in counters
+        if isinstance(key, str)
+        and key.startswith("text_")
+        and key not in TEXT_SHAPE_KEYS | TEXT_OCCURRENCE_DIFF_COUNTERS
+    }
+    if unknown:
+        raise ValueError(f"{label} has unknown text counter: {sorted(unknown)[0]}")
+    observed = set(counters) & TEXT_SHAPE_KEYS
+    if not observed:
+        if version == 5 and (stage, lane) == ("native_text_inventory_prepare", 48):
+            raise ValueError(f"{label} has missing text shape tuple")
+        return False
+    if (
+        version != 5
+        or (stage, lane) != ("native_text_inventory_prepare", 48)
+        or (not aggregate and outcome != "ok")
+    ):
+        raise ValueError(f"{label} has text shape on wrong or incomplete owner span")
+    if not TEXT_SHAPE_VALUES <= observed or "text_shape_complete_owners" not in observed:
+        raise ValueError(f"{label} has partial text shape tuple")
+    values = {}
+    for key in observed:
+        value = _natural(counters[key], f"{label} text shape {key}")
+        if value > U64_MAX:
+            raise ValueError(f"{label} text shape exceeds u64")
+        values[key] = value
+    complete = values["text_shape_complete_owners"]
+    branches = {key: values.get(key, 0) for key in TEXT_SHAPE_BRANCHES}
+    branch_sum = sum(branches.values())
+    if (
+        complete == 0
+        or complete > U64_MAX
+        or branch_sum != complete
+        or (expected_count is not None and complete != expected_count)
+        or (
+            not aggregate and (complete != 1 or sum(value == 1 for value in branches.values()) != 1)
+        )
+    ):
+        raise ValueError(f"{label} text shape branch or completion differs")
+    occurrences = values["text_case_occurrences"]
+    unique = values["text_unique_canonical_terms"]
+    all_bytes = values["text_occurrence_key_bytes"]
+    unique_bytes = values["text_unique_key_bytes"]
+    nonempty_owners = sum(
+        value for key, value in branches.items() if key != "text_cold_empty_owners"
+    )
+    shape_values = (occurrences, unique, all_bytes, unique_bytes)
+    if (
+        unique > occurrences
+        or unique_bytes > all_bytes
+        or all_bytes < occurrences
+        or unique_bytes < unique
+        or (nonempty_owners == 0 and any(shape_values))
+        or (nonempty_owners > 0 and not all(shape_values))
+        or occurrences % 2 != 0
+        or occurrences < 2 * nonempty_owners
+        or unique < 2 * nonempty_owners
+        or all_bytes < 2 * occurrences
+        or unique_bytes < 2 * unique
+    ):
+        raise ValueError(f"{label} has inconsistent text shape cardinality or bytes")
     return True
 
 
@@ -448,6 +553,14 @@ def build_index(capture: dict[str, Any], *, refusal_log: str | None = None) -> d
             _cache_counters(
                 span["counters"], span.get("stage"), span.get("lane_id"), f"span {span_id}"
             )
+            _text_shape_counters(
+                span["counters"],
+                capture["schema_version"],
+                span.get("stage"),
+                span.get("lane_id"),
+                span.get("outcome"),
+                f"span {span_id}",
+            )
         worker_id = owner(span_id)
         if worker_id is None or worker_id == span_id:
             continue
@@ -498,11 +611,18 @@ def build_index(capture: dict[str, Any], *, refusal_log: str | None = None) -> d
                     if callback_observed is not None and callback_observed != observed:
                         raise ValueError("SQLite callback timing is partial within one group")
                     callback_observed = observed
-                if stage == "catalog_lock_hold" and lane == 0:
-                    observed = _cache_counters(row["counters"], stage, lane, "Catalog lock hold")
-                    if cache_observed is not None and cache_observed != observed:
-                        raise ValueError("SQLite cache counters are partial within one group")
-                    cache_observed = observed
+                if (stage, lane) in SQLITE_CACHE_OWNER_SPANS:
+                    observed = _cache_counters(row["counters"], stage, lane, "SQLite cache span")
+                    failed_posting_without_snapshot = (
+                        stage == "native_text_posting_edit"
+                        and lane == 35
+                        and row["outcome"] != "ok"
+                        and not observed
+                    )
+                    if not failed_posting_without_snapshot:
+                        if cache_observed is not None and cache_observed != observed:
+                            raise ValueError("SQLite cache counters are partial within one group")
+                        cache_observed = observed
                 for key, value in row["counters"].items():
                     if not isinstance(key, str):
                         raise ValueError("counter key is not a string")
@@ -512,6 +632,16 @@ def build_index(capture: dict[str, Any], *, refusal_log: str | None = None) -> d
             if stage == "sqlite_work" and lane == 22:
                 _write_counters(counters, "SQLite write group")
             _cache_counters(counters, stage, lane, "SQLite cache group")
+            _text_shape_counters(
+                counters,
+                capture["schema_version"],
+                stage,
+                lane,
+                None,
+                "text shape group",
+                aggregate=True,
+                expected_count=len(rows),
+            )
             groups.append(
                 {
                     "stage": stage,
@@ -738,6 +868,16 @@ def _validate_index(index: dict[str, Any]) -> None:
                 raise ValueError("cached worker group carries a per-span CPU counter")
             if stage == "sqlite_work" and lane == 22:
                 _write_counters(counters, "cached SQLite write group")
+            _text_shape_counters(
+                counters,
+                capture["schema_version"],
+                stage,
+                lane,
+                None,
+                "cached text shape group",
+                aggregate=True,
+                expected_count=count,
+            )
             if (
                 _cache_counters(counters, stage, lane, "cached SQLite cache group")
                 and cache_validity == "NOT_OBSERVED"
@@ -978,6 +1118,35 @@ def main(argv: list[str] | None = None) -> int:
     maintenance.add_argument("--input", type=Path, required=True)
     maintenance.add_argument("--out", type=Path, required=True)
     maintenance.add_argument("--max-capture-bytes", type=int, default=MAX_CAPTURE_BYTES)
+    ingest = commands.add_parser(
+        "native-ingest", help="report Native publication request costs from a daemon qtrace"
+    )
+    ingest.add_argument(
+        "--input", type=Path, required=True, help="daemon child trace, not harness trace"
+    )
+    ingest.add_argument("--out", type=Path, help="new output file; defaults to stdout")
+    ingest.add_argument("--max-capture-bytes", type=int, default=MAX_CAPTURE_BYTES)
+    ingest.add_argument("--limit", type=int, default=32, help="maximum request rows")
+    staging = commands.add_parser(
+        "native-staging", help="report source staging page progress from the harness stderr"
+    )
+    staging.add_argument(
+        "--input", type=Path, required=True, help="harness stderr, not daemon stderr"
+    )
+    staging.add_argument("--out", type=Path, help="new output file; defaults to stdout")
+    corpus_record = commands.add_parser(
+        "native-corpus-record", help="verify both Native corpus SDK Record traces"
+    )
+    corpus_record.add_argument("--run-dir", type=Path, required=True)
+    corpus_record.add_argument("--out", type=Path, help="new output file; defaults to stdout")
+    triage = commands.add_parser("native-triage", help="diagnose a saved Native run directory")
+    triage.add_argument(
+        "--run-dir", type=Path, required=True, help="capture or product control directory"
+    )
+    triage.add_argument("--trace", action="store_true", help="replay the first daemon trace")
+    triage.add_argument("--max-capture-bytes", type=int, default=MAX_CAPTURE_BYTES)
+    triage.add_argument("--json", action="store_true", help="write JSON to stdout")
+    triage.add_argument("--out", type=Path, help="write JSON to a new file")
     query = commands.add_parser("query", help="query a cached diagnostic index")
     query.add_argument("--index", type=Path, required=True)
     query.add_argument("--worker-span-id", type=int)
@@ -985,7 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
     query.add_argument("--lane", type=int)
     query.add_argument("--refusals-only", action="store_true")
     args = parser.parse_args(argv)
-    if args.command in ("build", "closed-workers", "closed-maintenance"):
+    if args.command in ("build", "closed-workers", "closed-maintenance", "native-ingest"):
         with args.input.open("rb") as stream:
             if os.fstat(stream.fileno()).st_size > args.max_capture_bytes:
                 raise ValueError("capture exceeds configured offline replay bound")
@@ -996,7 +1165,9 @@ def main(argv: list[str] | None = None) -> int:
                 if os.fstat(stream.fileno()).st_size > MAX_STDERR_BYTES:
                     raise ValueError("stderr exceeds diagnostic input bound")
                 raw_log = stream.read().decode("utf-8")
-        if args.command in ("closed-workers", "closed-maintenance"):
+        if args.command == "native-ingest":
+            result = build_native_ingest_report(capture, limit=args.limit)
+        elif args.command in ("closed-workers", "closed-maintenance"):
             from tools.benchmark.retrieval.causal_cost_worker_scopes import (
                 build_closed_maintenance_report,
                 build_closed_worker_report,
@@ -1009,10 +1180,28 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             result = build_index(capture, refusal_log=raw_log)
-        descriptor = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(result, stream, separators=(",", ":"), sort_keys=True, allow_nan=False)
-            stream.write("\n")
+    elif args.command == "native-staging":
+        with args.input.open("rb") as stream:
+            raw = stream.read(MAX_STDERR_BYTES + 1)
+        if len(raw) > MAX_STDERR_BYTES:
+            raise ValueError("stderr exceeds diagnostic input bound")
+        result = build_native_staging_report(raw.decode("utf-8", errors="replace"))
+    elif args.command == "native-corpus-record":
+        from tools.benchmark.evidence import parse_json, read_control
+        from tools.benchmark.retrieval.causal_cost_profile import validate_native_corpus_record
+
+        run_dir = args.run_dir.resolve(strict=True)
+        captured = parse_json(read_control(run_dir / "result.json").decode("utf-8"))
+        if not isinstance(captured, dict):
+            raise ValueError("Native corpus result must be a JSON object")
+        result = validate_native_corpus_record(run_dir, captured)
+    elif args.command == "native-triage":
+        result = build_native_triage_report(
+            args.run_dir, include_trace=args.trace, max_capture_bytes=args.max_capture_bytes
+        )
+        if args.out is None and not args.json:
+            print(format_native_triage(result))
+            return 0
     else:
         with args.index.open("rb") as stream:
             if os.fstat(stream.fileno()).st_size > MAX_INDEX_BYTES:
@@ -1035,8 +1224,23 @@ def main(argv: list[str] | None = None) -> int:
             lane=args.lane,
             refusals_only=args.refusals_only,
         )
-        json.dump(result, sys.stdout, separators=(",", ":"), sort_keys=True, allow_nan=False)
+    out = getattr(args, "out", None)
+    if out is None:
+        pretty = args.command.startswith("native-")
+        json.dump(
+            result,
+            sys.stdout,
+            indent=2 if pretty else None,
+            separators=None if pretty else (",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
         sys.stdout.write("\n")
+    else:
+        descriptor = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(result, stream, separators=(",", ":"), sort_keys=True, allow_nan=False)
+            stream.write("\n")
     return 0
 
 

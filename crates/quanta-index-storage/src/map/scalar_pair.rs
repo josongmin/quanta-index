@@ -2,11 +2,30 @@
 //! stream and both original-base CAS checks precede any immutable installation.
 
 use super::{
-    FileObjectStore, IndexError, MapEdit, MapEditCursor, MapRoot, ObjectWriteSink, OrdinalMapEdit,
+    FileObjectStore, IndexError, MapEdit, MapEditCursor, MapRoot, MapValue, ObjectWriteSink, OrdinalMapEdit,
     ResidentStage, StagedMapRoots, WorkBudget, WorkUsage, charge_key_allocation, key_nibbles,
     resident,
 };
 use quanta_index_core::index::MapRootBuilder;
+use quanta_index_core::index::ports::RootPackingPlan;
+
+pub(super) trait ResidentEditRef {
+    fn key(&self) -> &[u8];
+    fn expected_value(&self) -> Result<Option<MapValue>, IndexError>;
+    fn next_value(&self) -> Result<Option<MapValue>, IndexError>;
+}
+
+impl ResidentEditRef for MapEdit {
+    fn key(&self) -> &[u8] { &self.key }
+    fn expected_value(&self) -> Result<Option<MapValue>, IndexError> { Ok(self.expected) }
+    fn next_value(&self) -> Result<Option<MapValue>, IndexError> { Ok(self.next) }
+}
+
+impl ResidentEditRef for OrdinalMapEdit {
+    fn key(&self) -> &[u8] { OrdinalMapEdit::key(self) }
+    fn expected_value(&self) -> Result<Option<MapValue>, IndexError> { self.expected() }
+    fn next_value(&self) -> Result<Option<MapValue>, IndexError> { self.next() }
+}
 
 pub(super) struct Input<'a> {
     inner: &'a mut dyn MapEditCursor,
@@ -45,16 +64,16 @@ impl<'a> Input<'a> {
         Ok(input)
     }
 
-    pub(super) fn pair(&self) -> Option<[&MapEdit; 2]> {
+    pub(super) fn pair(&self) -> Result<Option<[&OrdinalMapEdit; 2]>, IndexError> {
         let [Some(first), Some(second), None] = &self.prefix else {
-            return None;
+            return Ok(None);
         };
-        (self.finished
-            && first.root == 0
-            && second.root == 1
-            && first.edit.key.len() <= resident::MAX_SINGLE_KEY_BYTES
-            && second.edit.key.len() <= resident::MAX_SINGLE_KEY_BYTES)
-            .then_some([&first.edit, &second.edit])
+        Ok((self.finished
+            && first.root() == 0
+            && second.root() == 1
+            && first.key().len() <= resident::MAX_SINGLE_KEY_BYTES
+            && second.key().len() <= resident::MAX_SINGLE_KEY_BYTES)
+            .then_some([first, second]))
     }
 }
 
@@ -82,23 +101,23 @@ impl FileObjectStore {
     pub(super) fn apply_resident_pair(
         &self,
         bases: &[MapRoot],
-        edits: [&MapEdit; 2],
+        edits: [&OrdinalMapEdit; 2],
         roots: MapRootBuilder,
-        packed_root: Option<usize>,
+        packing: RootPackingPlan,
         sink: &dyn ObjectWriteSink,
         budget: &mut WorkBudget,
     ) -> Result<StagedMapRoots, IndexError> {
-        let staged = ResidentStage::pair(packed_root);
+        let staged = ResidentStage::pair(packing);
         let roots = self.prepare_resident_roots(bases, &edits, roots, &staged, budget)?;
         self.install_reachable_map_nodes(roots.as_slice(), &staged, sink, budget)?;
         budget.checkpoint()?;
         Ok(roots)
     }
 
-    pub(super) fn prepare_resident_roots(
+    pub(super) fn prepare_resident_roots<E: ResidentEditRef>(
         &self,
         bases: &[MapRoot],
-        edits: &[&MapEdit],
+        edits: &[&E],
         mut roots: MapRootBuilder,
         staged: &ResidentStage,
         budget: &mut WorkBudget,
@@ -108,7 +127,7 @@ impl FileObjectStore {
             || bases.len() != edits.len()
             || edits
                 .iter()
-                .any(|edit| edit.key.len() > resident::MAX_SINGLE_KEY_BYTES)
+                .any(|edit| edit.key().len() > resident::MAX_SINGLE_KEY_BYTES)
         {
             return Err(IndexError::ResourceLimited);
         }
@@ -117,18 +136,25 @@ impl FileObjectStore {
             budget.checkpoint()?;
             budget.charge(WorkUsage {
                 mutations: 1,
-                bytes: u64::try_from(edit.key.len())
+                bytes: u64::try_from(edit.key().len())
                     .map_err(|_error| IndexError::ResourceLimited)?,
                 ..WorkUsage::default()
             })?;
-            charge_key_allocation(&edit.key, budget)?;
-            let key = key_nibbles(&edit.key, budget)?;
+            charge_key_allocation(edit.key(), budget)?;
+            let key = key_nibbles(edit.key(), budget)?;
             *keys.get_mut(slot).ok_or(IndexError::ResourceLimited)? = Some(key);
         }
         let mut built = [MapRoot(None); 2];
-        let shared = staged.shares_pair_layout()
-            && bases.first() == bases.get(1)
-            && edits.first() == edits.get(1);
+        let shared = if staged.shares_pair_layout() && bases.first() == bases.get(1) {
+            match (edits.first(), edits.get(1)) {
+                (Some(first), Some(second)) => first.key() == second.key()
+                    && first.expected_value()? == second.expected_value()?
+                    && first.next_value()? == second.next_value()?,
+                _ => false,
+            }
+        } else {
+            false
+        };
         // Finish both bounded DAGs before the first physical reservation. A
         // failure in the second build cannot install a successful first prefix.
         for (slot, (base, edit)) in bases.iter().zip(edits.iter().copied()).enumerate() {
@@ -136,11 +162,11 @@ impl FileObjectStore {
             staged.select_root(slot);
             let root = if slot == 1 && shared {
                 *built.first().ok_or(IndexError::ResourceLimited)?
-            } else if edit.expected == edit.next {
+            } else if edit.expected_value()? == edit.next_value()? {
                 let key = keys.get(slot).and_then(Option::as_ref).ok_or_else(|| {
                     IndexError::BackendViolation("scalar pair lost a checked key".into())
                 })?;
-                if self.lookup_inner(*base, key, budget)? != edit.expected {
+                if self.lookup_inner(*base, key, budget)? != edit.expected_value()? {
                     return Err(IndexError::Conflict);
                 }
                 *base
@@ -148,7 +174,7 @@ impl FileObjectStore {
                 let key = keys.get(slot).and_then(Option::as_ref).ok_or_else(|| {
                     IndexError::BackendViolation("scalar pair lost a checked key".into())
                 })?;
-                self.update_one_checked(*base, key, edit, staged, budget)?
+                self.update_one_checked(*base, key, edit.expected_value()?, edit.next_value()?, staged, budget)?
             };
             *built.get_mut(slot).ok_or(IndexError::ResourceLimited)? = root;
             roots.push(root)?;

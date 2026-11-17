@@ -7,6 +7,7 @@ use super::*;
 use quanta_index_contract::index::{OwnerInputBinding, WorkIntent, WorkScope, WorkStatus};
 
 const COMPLETION_STATUS_PAGE: usize = 64;
+const MAX_UNREADY_STATUS_PROBES: usize = 2;
 const MAX_COMPLETION_SOURCES: usize = 4_096;
 const INITIAL_READINESS_PAUSE: Duration = Duration::from_millis(500);
 const MAX_READINESS_PAUSE: Duration = Duration::from_secs(1);
@@ -122,7 +123,7 @@ impl Drop for ReadinessCost {
     }
 }
 
-fn owner_intent(
+pub(super) fn owner_intent(
     workspace: WorkspaceKey,
     epoch: u64,
     spec: &InstanceSpec,
@@ -157,6 +158,8 @@ pub(crate) struct CompletionProgress<'a> {
     next: usize,
     completed: Vec<bool>,
     completed_count: usize,
+    completed_sequences: BTreeMap<u64, OwnerKey>,
+    highest_completed_view: Option<ViewRef>,
 }
 
 impl<'a> CompletionProgress<'a> {
@@ -179,11 +182,39 @@ impl<'a> CompletionProgress<'a> {
             next: 0,
             completed,
             completed_count: 0,
+            completed_sequences: BTreeMap::new(),
+            highest_completed_view: None,
         })
     }
 
     pub(crate) fn completed(&self) -> usize {
         self.completed_count
+    }
+
+    fn highest_completed_view(&self) -> Option<ViewRef> {
+        self.highest_completed_view
+    }
+
+    pub(crate) fn verify_latest_publication(&self, latest: ViewRef) -> TestResult {
+        let completed = self.highest_completed_view().unwrap_or(self.source_view);
+        require_equal(
+            &latest.workspace,
+            &completed.workspace,
+            "ANN latest workspace",
+        )?;
+        require_equal(&latest.epoch, &completed.epoch, "ANN latest epoch")?;
+        require(
+            latest.sequence >= completed.sequence,
+            format!("ANN latest view {latest:?} precedes completed work view {completed:?}"),
+        )?;
+        if latest.sequence == completed.sequence {
+            require_equal(
+                &latest,
+                &completed,
+                "ANN latest identity at completed sequence",
+            )?;
+        }
+        Ok(())
     }
 
     pub(crate) fn total(&self) -> usize {
@@ -200,7 +231,11 @@ impl<'a> CompletionProgress<'a> {
     ) -> TestResult<bool> {
         let mut visited = 0_usize;
         let mut reads = 0_usize;
-        while visited < self.sources.len() && reads < COMPLETION_STATUS_PAGE {
+        let mut unready = 0_usize;
+        while visited < self.sources.len()
+            && reads < COMPLETION_STATUS_PAGE
+            && unready < MAX_UNREADY_STATUS_PROBES
+        {
             if self
                 .completed
                 .get(self.next)
@@ -230,14 +265,29 @@ impl<'a> CompletionProgress<'a> {
                         && view.epoch == self.source_view.epoch
                         && view.sequence > self.source_view.sequence =>
                 {
+                    if let Some(prior_owner) = self.completed_sequences.get(&view.sequence) {
+                        return Err(format!(
+                            "ANN work for owners {prior_owner:?} and {owner:?} completed at the same view sequence {}",
+                            view.sequence,
+                        )
+                        .into());
+                    }
+                    let next_count = self
+                        .completed_count
+                        .checked_add(1)
+                        .ok_or("ANN completed count overflow")?;
                     *self
                         .completed
                         .get_mut(self.next)
                         .ok_or("ANN status cursor outside bitmap")? = true;
-                    self.completed_count = self
-                        .completed_count
-                        .checked_add(1)
-                        .ok_or("ANN completed count overflow")?;
+                    let _previous = self.completed_sequences.insert(view.sequence, owner);
+                    self.completed_count = next_count;
+                    if self
+                        .highest_completed_view
+                        .is_none_or(|highest| view.sequence > highest.sequence)
+                    {
+                        self.highest_completed_view = Some(view);
+                    }
                 }
                 WorkStatus::Completed(view) => {
                     return Err(format!(
@@ -246,7 +296,18 @@ impl<'a> CompletionProgress<'a> {
                     )
                     .into());
                 }
-                WorkStatus::Unknown | WorkStatus::Pending | WorkStatus::Claimed(_) => {}
+                WorkStatus::Claimed(claim) => {
+                    if claim.intent != intent || claim.fence == 0 || claim.lease_until_ms == 0 {
+                        return Err(format!(
+                            "ANN work claim for owner {owner:?} has invalid intent or lease"
+                        )
+                        .into());
+                    }
+                    unready = unready.checked_add(1).ok_or("ANN pending probe overflow")?;
+                }
+                WorkStatus::Unknown | WorkStatus::Pending => {
+                    unready = unready.checked_add(1).ok_or("ANN pending probe overflow")?;
+                }
                 WorkStatus::Superseded => {
                     return Err(format!("ANN work for owner {owner:?} was superseded").into());
                 }
@@ -425,6 +486,15 @@ mod tests {
             .collect()
     }
 
+    fn completed_for(intent: WorkIntent) -> TestResult<WorkStatus> {
+        let WorkScope::Owner { owner, .. } = intent.scope else {
+            return Err("completion observed a non-owner scope".into());
+        };
+        Ok(WorkStatus::Completed(view(
+            6 + u64::from(owner.stable_id.0[0]),
+        )))
+    }
+
     #[test]
     fn out_of_order_completion_never_hides_pending_input() -> TestResult {
         let sources = sources(2);
@@ -487,6 +557,11 @@ mod tests {
             "second exact intent",
         )?;
         require_equal(&progress.completed(), &1_usize, "later completed count")?;
+        require_equal(
+            &progress.highest_completed_view(),
+            &Some(view(6)),
+            "later completion view",
+        )?;
 
         let mut retried = Vec::new();
         require(
@@ -530,7 +605,100 @@ mod tests {
             &sources.len(),
             "completed input count",
         )?;
+        require_equal(
+            &progress.highest_completed_view(),
+            &Some(view(7)),
+            "highest out-of-order completion view",
+        )?;
         Ok(())
+    }
+
+    #[test]
+    fn duplicate_completion_sequence_cannot_complete_distinct_intents() -> TestResult {
+        let sources = sources(2);
+        let spec = text_spec();
+        let mut progress = CompletionProgress::new(&sources, view(5), &spec)?;
+        let rejected = progress
+            .poll_next(|_| Ok(WorkStatus::Completed(view(6))))
+            .expect_err("one published view cannot complete two owner intents");
+        require(
+            rejected.to_string().contains("same view sequence"),
+            "duplicate completion must fail for the sequence collision",
+        )?;
+        require_equal(&progress.completed(), &1, "unique completed receipt count")?;
+        require_equal(
+            &progress.highest_completed_view(),
+            &Some(view(6)),
+            "highest accepted completion view",
+        )?;
+        let (second_owner, second_source) = sources.get(1).copied().ok_or("second source")?;
+        require(
+            progress.poll_next(|intent| {
+                require_equal(
+                    &intent,
+                    &owner_intent(workspace(), 1, &spec, second_owner, second_source),
+                    "duplicate completion preserves pending cursor",
+                )?;
+                Ok(WorkStatus::Completed(view(7)))
+            })?,
+            "distinct completion publications must finish both owners",
+        )?;
+        require_equal(
+            &progress.completed(),
+            &2,
+            "distinct completed receipt count",
+        )?;
+        require_equal(
+            &progress.highest_completed_view(),
+            &Some(view(7)),
+            "highest completion after recovery",
+        )
+    }
+
+    #[test]
+    fn claimed_status_rejects_foreign_intent_and_invalid_lease() -> TestResult {
+        let foreign_sources = sources(2);
+        let sources = sources(1);
+        let spec = text_spec();
+        let mut progress = CompletionProgress::new(&sources, view(5), &spec)?;
+        let (first_owner, first_source) = sources.first().copied().ok_or("first source")?;
+        let (second_owner, second_source) =
+            foreign_sources.get(1).copied().ok_or("foreign source")?;
+        let first = owner_intent(workspace(), 1, &spec, first_owner, first_source);
+        let second = owner_intent(workspace(), 1, &spec, second_owner, second_source);
+        let valid = quanta_index_contract::index::WorkClaim {
+            intent: first,
+            fence: 1,
+            lease_until_ms: 1,
+        };
+        for invalid in [
+            quanta_index_contract::index::WorkClaim {
+                intent: second,
+                ..valid
+            },
+            quanta_index_contract::index::WorkClaim { fence: 0, ..valid },
+            quanta_index_contract::index::WorkClaim {
+                lease_until_ms: 0,
+                ..valid
+            },
+        ] {
+            let rejected = progress
+                .poll_next(|_| Ok(WorkStatus::Claimed(invalid)))
+                .expect_err("malformed claim must fail instead of appearing pending");
+            require(
+                rejected.to_string().contains("invalid intent or lease"),
+                "malformed claim must fail for its identity or lease",
+            )?;
+            require_equal(&progress.completed(), &0, "rejected claim completion count")?;
+        }
+        require(
+            !progress.poll_next(|intent| {
+                require_equal(&intent, &first, "rejected claim preserves cursor")?;
+                Ok(WorkStatus::Claimed(valid))
+            })?,
+            "valid claim remains pending",
+        )?;
+        require_equal(&progress.completed(), &0, "valid claim completion count")
     }
 
     #[test]
@@ -570,15 +738,100 @@ mod tests {
     }
 
     #[test]
+    fn latest_view_must_include_the_observed_completion_publication() -> TestResult {
+        let sources = sources(1);
+        let spec = text_spec();
+        let mut progress = CompletionProgress::new(&sources, view(5), &spec)?;
+        require(
+            progress.poll_next(|_| Ok(WorkStatus::Completed(view(8))))?,
+            "one receipt must complete",
+        )?;
+        progress.verify_latest_publication(view(8))?;
+        progress.verify_latest_publication(view(9))?;
+        for invalid in [
+            view(7),
+            ViewRef {
+                digest: Digest([10; 32]),
+                ..view(8)
+            },
+            ViewRef {
+                epoch: 2,
+                ..view(9)
+            },
+        ] {
+            require(
+                progress.verify_latest_publication(invalid).is_err(),
+                "latest view failed to bind observed publication",
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pending_status_probe_budget_yields_fairly_and_preserves_all_completion_receipts()
+    -> TestResult {
+        let sources = sources(66);
+        let spec = text_spec();
+        let mut progress = CompletionProgress::new(&sources, view(5), &spec)?;
+        let mut pending = Vec::new();
+        for _ in 0..2 {
+            let before = pending.len();
+            require(
+                !progress.poll_next(|intent| {
+                    pending.push(intent);
+                    Ok(WorkStatus::Pending)
+                })?,
+                "pending work must never become completion",
+            )?;
+            require_equal(&(pending.len() - before), &2, "pending RPC probe bound")?;
+        }
+        for (intent, (owner, source)) in pending.iter().zip(&sources) {
+            require_equal(
+                intent,
+                &owner_intent(workspace(), 1, &spec, *owner, *source),
+                "pending cursor must advance fairly",
+            )?;
+        }
+        require_equal(&progress.completed(), &0, "pending receipt count")?;
+        let mut completed = std::collections::BTreeSet::new();
+        for expected_ready in [false, true] {
+            let ready = progress.poll_next(|intent| {
+                let owner = match intent.scope {
+                    WorkScope::Owner { owner, .. } => owner,
+                    _ => return Err("completion observed a non-owner scope".into()),
+                };
+                require(completed.insert(owner), "completed receipt reread")?;
+                completed_for(intent)
+            })?;
+            require_equal(&ready, &expected_ready, "all original receipts required")?;
+        }
+        require_equal(
+            &completed.len(),
+            &sources.len(),
+            "exact completed source count",
+        )?;
+        require_equal(
+            &progress.completed(),
+            &sources.len(),
+            "complete bitmap count",
+        )?;
+        require_equal(
+            &progress.highest_completed_view(),
+            &Some(view(71)),
+            "highest completed status view",
+        )
+    }
+
+    #[test]
     fn status_reads_are_bounded_and_errors_preserve_the_cursor() -> TestResult {
         let sources = sources(66);
         let spec = text_spec();
         let mut progress = CompletionProgress::new(&sources, view(5), &spec)?;
         let mut reads = 0_usize;
         require(
-            !progress.poll_next(|_| {
+            !progress.poll_next(|intent| {
                 reads = reads.checked_add(1).ok_or("status read count overflow")?;
-                Ok(WorkStatus::Completed(view(6)))
+                completed_for(intent)
             })?,
             "64 reads must yield before the last two inputs",
         )?;
@@ -587,12 +840,12 @@ mod tests {
         let mut second_reads = 0_usize;
         require(
             progress
-                .poll_next(|_| {
+                .poll_next(|intent| {
                     second_reads = second_reads
                         .checked_add(1)
                         .ok_or("second status read count overflow")?;
                     if second_reads == 1 {
-                        Ok(WorkStatus::Completed(view(6)))
+                        completed_for(intent)
                     } else {
                         Err("transport refused".into())
                     }
@@ -632,7 +885,7 @@ mod tests {
                     },
                     "last status read after errors",
                 )?;
-                Ok(WorkStatus::Completed(view(6)))
+                completed_for(intent)
             })?,
             "last completed input must finish the cursor",
         )?;

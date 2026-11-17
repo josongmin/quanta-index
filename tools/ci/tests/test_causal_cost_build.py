@@ -130,6 +130,8 @@ def test_index_native_build_binds_two_fresh_bench_binaries_from_one_cargo_run(bu
     state["backend"] = "index-native"
     result = build.build_scale(repo, out, backend="index-native")
     assert result["command"] == [str(repo / "scripts/cargow"), *build.NATIVE_BUILD_ARGS]
+    assert "--no-default-features" in result["command"]
+    assert "--all-features" not in result["command"]
     assert result["backend"] == "index-native"
     assert result["build_profile"] == "bench"
     assert result["binary"] == str(out / "scale_matrix")

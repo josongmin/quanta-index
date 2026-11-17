@@ -163,15 +163,151 @@ fn open_catalog(path: &Path) -> Result<ActivationCatalog, CoreError> {
 }
 
 #[test]
+fn offline_activation_reader_refuses_another_active_revision() -> TestResult {
+    use quanta_index_core::index::{
+        IndexError, MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope, MemoryScopePort,
+        ObjectReadFile, ObjectReadIoPort, WorkBudget, WorkLimits,
+    };
+    use quanta_index_core::{ExistingTreeEntryKindV1, ExistingTreeMetadataIoPortV1};
+
+    #[derive(Debug)]
+    struct ReadFile(std::fs::File);
+    impl ObjectReadFile for ReadFile {
+        fn file(&self) -> Result<&std::fs::File, IndexError> {
+            Ok(&self.0)
+        }
+    }
+    #[derive(Debug)]
+    struct TestReadIo;
+    impl ObjectReadIoPort for TestReadIo {
+        fn open(
+            &self,
+            path: &Path,
+            _budget: &mut WorkBudget,
+        ) -> Result<Box<dyn ObjectReadFile>, IndexError> {
+            Ok(Box::new(ReadFile(std::fs::File::open(path).map_err(
+                |error| IndexError::Storage(error.to_string()),
+            )?)))
+        }
+    }
+    #[derive(Debug)]
+    struct TestMetadata;
+    impl ExistingTreeMetadataIoPortV1 for TestMetadata {
+        fn visit_directory_v1(
+            &self,
+            path: &Path,
+            budget: &mut WorkBudget,
+            visit: &mut dyn FnMut(
+                &std::ffi::OsStr,
+                ExistingTreeEntryKindV1,
+                u64,
+                &mut WorkBudget,
+            ) -> Result<
+                (),
+                quanta_index_core::index::existing_file::ExistingFileReadFailureV1,
+            >,
+        ) -> Result<(), quanta_index_core::index::existing_file::ExistingFileReadFailureV1>
+        {
+            for entry in std::fs::read_dir(path)? {
+                let entry = entry?;
+                let metadata = std::fs::symlink_metadata(entry.path())?;
+                let kind = if metadata.is_file() {
+                    ExistingTreeEntryKindV1::File
+                } else if metadata.is_dir() {
+                    ExistingTreeEntryKindV1::Directory
+                } else {
+                    ExistingTreeEntryKindV1::Other
+                };
+                visit(&entry.file_name(), kind, metadata.len(), budget)?;
+            }
+            Ok(())
+        }
+    }
+    struct TestMemory;
+    impl MemoryLeaseOwner for TestMemory {
+        fn release(&self, _bytes: u64) {}
+    }
+    impl MemoryScopePort for TestMemory {
+        fn reserve(
+            &self,
+            bytes: u64,
+            _lifetime: MemoryLifetime,
+        ) -> Result<MemoryLease, IndexError> {
+            Ok(MemoryLease::new(bytes, Arc::new(Self)))
+        }
+    }
+    fn budget() -> WorkBudget {
+        let mut budget = WorkBudget::new(
+            WorkLimits {
+                reads: 10_000,
+                writes: 0,
+                bytes: 64 * 1024 * 1024,
+                mutations: 0,
+            },
+            std::time::Instant::now() + std::time::Duration::from_secs(30),
+        );
+        budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(TestMemory))));
+        budget
+    }
+
+    let dir = tempfile::tempdir()?;
+    let catalog = open_catalog(dir.path())?;
+    let first = binding("selected", "stream-1", "event-1", None, 1);
+    let sibling = binding("sibling", "stream-2", "event-2", None, 1);
+    let _reserved = catalog.reserve_source_event(&first)?;
+    let _staged =
+        catalog.reconcile_source_event(&first.target.repo_id, &first.event, &journal(&first))?;
+    activate(&catalog, &first)?;
+    let expected = catalog
+        .active_search_corpus_v1(&first.target.repo_id, &first.target.revision_id)?
+        .ok_or("selected activation absent")?
+        .to_contract_v1();
+    let read = super::recovery_read_only::inspect_existing_activation_repository_v1;
+    let selected = read(
+        dir.path(),
+        &first.target.repo_id,
+        &first.target.revision_id,
+        &TestReadIo,
+        &TestMetadata,
+        &mut budget(),
+    )?;
+    assert_eq!(
+        selected.head_v1().map(|head| &head.generation),
+        Some(&expected)
+    );
+    drop(selected);
+    let _reserved = catalog.reserve_source_event(&sibling)?;
+    let _staged = catalog.reconcile_source_event(
+        &sibling.target.repo_id,
+        &sibling.event,
+        &journal(&sibling),
+    )?;
+    activate(&catalog, &sibling)?;
+    assert!(
+        read(
+            dir.path(),
+            &first.target.repo_id,
+            &first.target.revision_id,
+            &TestReadIo,
+            &TestMetadata,
+            &mut budget(),
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn retention_pin_reads_refuse_catalog_writer_contention_and_retry() -> TestResult {
     let directory = tempfile::tempdir()?;
     let catalog = open_catalog(directory.path())?;
     let repo = RepoId::new("retention-pins")?;
     let revision = RevisionId::new("revision")?;
     let pair = catalog.lifecycle_coordinator.lock_pair(&repo, &revision)?;
-    let writer = catalog.entries.write().map_err(|error| {
-        CoreError::Storage(format!("fixture catalog writer poisoned: {error}"))
-    })?;
+    let writer = catalog
+        .entries
+        .write()
+        .map_err(|error| CoreError::Storage(format!("fixture catalog writer poisoned: {error}")))?;
     for result in [
         catalog
             .active_search_corpus_under_guard_v1(&pair, &repo, &revision)

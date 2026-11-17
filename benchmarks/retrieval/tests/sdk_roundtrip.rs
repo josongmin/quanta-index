@@ -31,14 +31,26 @@ use quanta_index_retrieval_bench::record::{
     pack_universe_digest, result_value, runner_record,
 };
 use quanta_index_retrieval_bench::sdk::{
-    DaemonConfig, DaemonSession, QueryOutcome, RouteQuery, publish_and_activate, query_route,
-    query_route_with_policy, resolve_searchd_binary,
+    DaemonConfig, DaemonSession, LocalCodeDaemonBinding, QueryOutcome, RouteQuery,
+    publish_and_activate, query_route, query_route_with_policy,
+    query_route_with_policy_timed_file_cap, resolve_searchd_binary,
 };
 use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
 use quanta_index_retrieval_bench::{BenchError, sha256_hex};
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 
+#[path = "../../../crates/quanta-index-searchd-runtime/tests/common/legacy_physical_fixture.rs"]
+mod legacy_physical_fixture;
+
+use legacy_physical_fixture::legacy_physical_env;
+
 const EMBEDDER: &str = "hash-dev";
+
+fn fixture_runner(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    let _configured = command.envs(legacy_physical_env());
+    command
+}
 
 /// Only the owned child receives budget overrides; concurrently running SDK
 /// tests keep their process environment unchanged. The guard also reaps on panic.
@@ -73,6 +85,7 @@ fn boot_budget_fixture(
     let log = state.with_extension("stderr.log");
     let mut command = Command::new(resolve_searchd_binary(None).expect("pinned daemon"));
     let _configured = command
+        .envs(legacy_physical_env())
         .arg("serve")
         .arg("--state-root")
         .arg(state)
@@ -421,6 +434,7 @@ fn boot_session_with_policies(
         searchd_binary: None,
         embedder: EMBEDDER,
         model_dir: None,
+        local_code: None,
         query_stage_observation: policy,
         hybrid_fetch_floor: floor,
         repo_id: &identity.repo_id,
@@ -429,7 +443,7 @@ fn boot_session_with_policies(
         io_timeout: Duration::from_secs(30),
         history_max_generations: 8,
     };
-    DaemonSession::boot(&config).expect("daemon boots")
+    DaemonSession::boot_with_daemon_env(&config, legacy_physical_env()).expect("daemon boots")
 }
 
 #[test]
@@ -1886,6 +1900,7 @@ fn stale_state_root_is_refused() {
         searchd_binary: None,
         embedder: EMBEDDER,
         model_dir: None,
+        local_code: None,
         query_stage_observation: QueryStageObservationPolicy::Enabled,
         hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
         repo_id: &identity.repo_id,
@@ -1898,6 +1913,46 @@ fn stale_state_root_is_refused() {
         .err()
         .expect("stale root must fail");
     assert!(err.to_string().contains("not fresh"), "{err}");
+}
+
+#[test]
+fn local_code_boot_requires_one_explicit_binding_only_for_local_profile() {
+    let root = tempfile::tempdir().expect("temp root");
+    let identity = BatchIdentity::new("bench-repo", "bench-rev", 7, "manifest:local".to_string())
+        .expect("identity");
+    let digest = "0".repeat(64);
+    let mut config = DaemonConfig {
+        state_root: root.path(),
+        searchd_binary: None,
+        embedder: "local-code-jina-v2",
+        model_dir: None,
+        local_code: None,
+        query_stage_observation: QueryStageObservationPolicy::Enabled,
+        hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        ready_timeout: Duration::from_secs(5),
+        io_timeout: Duration::from_secs(5),
+        history_max_generations: 8,
+    };
+    let missing = DaemonSession::boot(&config)
+        .err()
+        .expect("missing binding refused");
+    assert!(missing.to_string().contains("requires an explicit binding"));
+    config.embedder = EMBEDDER;
+    config.local_code = Some(LocalCodeDaemonBinding {
+        origin: "http://127.0.0.1:12345",
+        manifest_path: root.path(),
+        manifest_sha256: &digest,
+    });
+    let stray = DaemonSession::boot(&config)
+        .err()
+        .expect("stray binding refused");
+    assert!(
+        stray
+            .to_string()
+            .contains("only valid for local-code-jina-v2")
+    );
 }
 
 #[cfg(unix)]
@@ -1915,6 +1970,7 @@ fn symlink_state_root_is_refused() {
         searchd_binary: None,
         embedder: EMBEDDER,
         model_dir: None,
+        local_code: None,
         query_stage_observation: QueryStageObservationPolicy::Enabled,
         hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
         repo_id: &identity.repo_id,
@@ -1947,6 +2003,7 @@ fn boot_times_out_when_daemon_never_opens_sockets() {
         searchd_binary: Some(&script),
         embedder: EMBEDDER,
         model_dir: None,
+        local_code: None,
         query_stage_observation: QueryStageObservationPolicy::Enabled,
         hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
         repo_id: &identity.repo_id,
@@ -1983,6 +2040,7 @@ fn missing_pinned_model_fails_boot_without_a_scored_record() {
         searchd_binary: None,
         embedder: "potion-code",
         model_dir: Some(&missing_model),
+        local_code: None,
         query_stage_observation: QueryStageObservationPolicy::Enabled,
         hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
         repo_id: &identity.repo_id,
@@ -2026,6 +2084,7 @@ fn unavailable_provider_is_typed_and_never_returns_hits() {
         searchd_binary: None,
         embedder: "unavailable",
         model_dir: None,
+        local_code: None,
         query_stage_observation: QueryStageObservationPolicy::Enabled,
         hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
         repo_id: &identity.repo_id,
@@ -2034,7 +2093,8 @@ fn unavailable_provider_is_typed_and_never_returns_hits() {
         io_timeout: Duration::from_secs(30),
         history_max_generations: 8,
     };
-    let session = DaemonSession::boot(&config).expect("daemon boots");
+    let session =
+        DaemonSession::boot_with_daemon_env(&config, legacy_physical_env()).expect("daemon boots");
     let (_receipt, _ack, _observation, _sdk_timings) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
     match query_route(&RouteQuery {
@@ -2051,7 +2111,9 @@ fn unavailable_provider_is_typed_and_never_returns_hits() {
             assert_eq!(status, "unavailable");
             assert_eq!(code, "SEM_PROVIDER_UNAVAILABLE");
         }
-        other @ (QueryOutcome::ReturnedWindow { .. } | QueryOutcome::RejectedResponse { .. }) => {
+        other @ (QueryOutcome::ReturnedWindow { .. }
+        | QueryOutcome::ReturnedFiles { .. }
+        | QueryOutcome::RejectedResponse { .. }) => {
             panic!("unavailable provider must be an SDK failure: {other:?}")
         }
     }
@@ -2086,7 +2148,9 @@ fn terminated_daemon_is_typed_and_never_returns_hits() {
         QueryOutcome::SdkFailure { status, .. } => {
             assert!(matches!(status, "error" | "timeout" | "unavailable"));
         }
-        other @ (QueryOutcome::ReturnedWindow { .. } | QueryOutcome::RejectedResponse { .. }) => {
+        other @ (QueryOutcome::ReturnedWindow { .. }
+        | QueryOutcome::ReturnedFiles { .. }
+        | QueryOutcome::RejectedResponse { .. }) => {
             panic!("terminated daemon must be an SDK failure: {other:?}")
         }
     }
@@ -2226,7 +2290,9 @@ fn real_daemon_roundtrip_publishes_and_queries() {
             );
             assert_ne!(expected_pin, observed_pin);
         }
-        QueryOutcome::ReturnedWindow { .. } | QueryOutcome::SdkFailure { .. } => {
+        QueryOutcome::ReturnedWindow { .. }
+        | QueryOutcome::ReturnedFiles { .. }
+        | QueryOutcome::SdkFailure { .. } => {
             panic!("stale generation must fail, got {stale_result:?}")
         }
     }
@@ -2315,7 +2381,9 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         QueryOutcome::ReturnedWindow {
             explanation: None, ..
         } => panic!("lexical query omitted explanation"),
-        other @ (QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. }) => {
+        other @ (QueryOutcome::RejectedResponse { .. }
+        | QueryOutcome::SdkFailure { .. }
+        | QueryOutcome::ReturnedFiles { .. }) => {
             panic!("lexical query failed: {other:?}");
         }
     }
@@ -2377,7 +2445,9 @@ fn real_daemon_roundtrip_publishes_and_queries() {
             } => {
                 panic!("{route} query omitted explanation");
             }
-            other @ (QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. }) => {
+            other @ (QueryOutcome::RejectedResponse { .. }
+            | QueryOutcome::SdkFailure { .. }
+            | QueryOutcome::ReturnedFiles { .. }) => {
                 panic!("{route} query failed: {other:?}");
             }
         }
@@ -2412,7 +2482,9 @@ fn real_daemon_roundtrip_publishes_and_queries() {
                 "unmatched hits must be exhausted, not capped"
             );
         }
-        QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. } => {}
+        QueryOutcome::RejectedResponse { .. }
+        | QueryOutcome::SdkFailure { .. }
+        | QueryOutcome::ReturnedFiles { .. } => {}
     }
 
     // Unknown routes fail typed.
@@ -2427,7 +2499,9 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         top_k: 10,
     }) {
         QueryOutcome::SdkFailure { code, .. } => assert_eq!(code, "unknown_route"),
-        other @ (QueryOutcome::ReturnedWindow { .. } | QueryOutcome::RejectedResponse { .. }) => {
+        other @ (QueryOutcome::ReturnedWindow { .. }
+        | QueryOutcome::ReturnedFiles { .. }
+        | QueryOutcome::RejectedResponse { .. }) => {
             panic!("unknown route must not hit: {other:?}")
         }
     }
@@ -2573,6 +2647,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         plans: &plans,
         nl_config: &nl_config,
         top_k: 10,
+        file_top_k: None,
     })
     .expect("live v3 record assembles");
     // Pilot-debugging hook: dump the exact record bytes for out-of-band
@@ -2977,7 +3052,7 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
     let metrics_out = evidence.join("phase-metrics.json");
     let refusal_out = evidence.join("query-plan-refusal.json");
     let state = evidence.join("state");
-    let mut command = Command::new(&runner);
+    let mut command = fixture_runner(&runner);
     let _command = command.args([
         "run",
         "--repo",
@@ -3418,7 +3493,7 @@ fn verify_serial_request_events_runner(
             );
         }
     }
-    let output = Command::new(original_command.get_program())
+    let output = fixture_runner(original_command.get_program())
         .args(&args)
         .arg("--request-events-out")
         .arg(&artifact_path)
@@ -3605,7 +3680,7 @@ fn verify_rank_study_runner(original_command: &Command, original_pack: &Path, ev
             );
         }
         let artifact_path = root.join("rank-study.json");
-        let output = Command::new(original_command.get_program())
+        let output = fixture_runner(original_command.get_program())
             .args(args)
             .arg("--rank-study-out")
             .arg(&artifact_path)
@@ -3724,6 +3799,7 @@ fn second_boot_over_used_root_is_refused_without_cleanup() {
         searchd_binary: None,
         embedder: EMBEDDER,
         model_dir: None,
+        local_code: None,
         query_stage_observation: QueryStageObservationPolicy::Enabled,
         hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
         repo_id: &identity.repo_id,
@@ -3843,7 +3919,9 @@ fn exact_symbol_name_public_route_preserves_case_homonyms_and_source_spans() {
         });
         let hits = match &outcome {
             QueryOutcome::ReturnedWindow { hits, .. } => hits,
-            other @ (QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. }) => {
+            other @ (QueryOutcome::RejectedResponse { .. }
+            | QueryOutcome::SdkFailure { .. }
+            | QueryOutcome::ReturnedFiles { .. }) => {
                 panic!("exact symbol query {name} failed: {other:?}")
             }
         };
@@ -3970,7 +4048,9 @@ fn symbol_route_answers_from_published_units_and_proves_spans() {
     session.stop().expect("bounded shutdown");
     let hits = match outcome {
         QueryOutcome::ReturnedWindow { hits, .. } => hits,
-        other @ (QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. }) => {
+        other @ (QueryOutcome::RejectedResponse { .. }
+        | QueryOutcome::SdkFailure { .. }
+        | QueryOutcome::ReturnedFiles { .. }) => {
             panic!("symbol route failed: {other:?}")
         }
     };
@@ -3982,7 +4062,9 @@ fn symbol_route_answers_from_published_units_and_proves_spans() {
                 "unsupported symbol text needs a reason"
             );
         }
-        other @ (QueryOutcome::ReturnedWindow { .. } | QueryOutcome::RejectedResponse { .. }) => {
+        other @ (QueryOutcome::ReturnedWindow { .. }
+        | QueryOutcome::ReturnedFiles { .. }
+        | QueryOutcome::RejectedResponse { .. }) => {
             panic!("unsupported literal symbol must refuse, not exhaust: {other:?}");
         }
     }
@@ -4110,6 +4192,7 @@ fn symbol_route_no_answer_is_typed_never_fake_success() {
                 "no-answer must not surface as {status}/{code}"
             );
         }
+        QueryOutcome::ReturnedFiles { .. } => panic!("symbol query returned file results"),
     }
 }
 
@@ -4210,6 +4293,7 @@ fn sentence_and_identifier_queries_anchor_the_same_definition_over_distractors()
             | QueryOutcome::SdkFailure { code, message, .. } => {
                 panic!("lexical query failed: {code} {message}")
             }
+            QueryOutcome::ReturnedFiles { .. } => panic!("lexical query returned file results"),
         };
         assert!(
             hits.iter().any(|hit| hit.path == "src/registry.rs"),
@@ -4304,6 +4388,7 @@ fn homonymous_symbols_stay_distinct_units_on_the_symbol_route() {
         | QueryOutcome::SdkFailure { code, message, .. } => {
             panic!("symbol query failed: {code} {message}")
         }
+        QueryOutcome::ReturnedFiles { .. } => panic!("symbol query returned file results"),
     };
     let mut seen_ids = std::collections::BTreeSet::new();
     for hit in hits {
@@ -4330,7 +4415,10 @@ fn homonymous_symbols_stay_distinct_units_on_the_symbol_route() {
 
 #[test]
 fn real_daemon_go_trace_preserves_source_file_owners() {
-    use quanta_index_contract::{GoTestTraceFrameClassV1, RepoId, SourcePublicationEvent};
+    use quanta_index_contract::{
+        GoTestTraceFrameClassV1, QueryConstraintSetV1, RepoId, SEMANTIC_WORK_OPERATIONAL_CAP_V1,
+        SemanticQueryRequest, SemanticWorkBoundedQueryRequestV1, SourcePublicationEvent,
+    };
     use quanta_index_sdk::SearchCorpusBatch;
 
     let fixture = tempfile::tempdir().expect("federated source fixture");
@@ -4420,6 +4508,7 @@ fn real_daemon_go_trace_preserves_source_file_owners() {
     let result = query()
         .go_test_trace_file("src/main.go:2: panic", 2)
         .expect("Go file SDK");
+    assert!(result.rank_pools.is_none(), "default SDK omits rank pools");
     assert_eq!(result.frame_class, GoTestTraceFrameClassV1::Exact);
     assert_eq!(result.results.len(), 2);
     assert!(result.results.iter().all(|hit| !hit.source_frame));
@@ -4463,6 +4552,461 @@ fn real_daemon_go_trace_preserves_source_file_owners() {
             .results
             .iter()
             .any(|hit| hit.source_frame && hit.file.source_repo_id.as_str() == "source-a")
+    );
+
+    // Independent SDK lane calls supply the ordered chunk oracle. The opt-in
+    // file route must return the same bounded inputs, including exact f32 bits.
+    let mut lexical = session
+        .client()
+        .lexical()
+        .query()
+        .native("needle")
+        .pinned(pin.clone())
+        .top_k(20)
+        .execute()
+        .expect("independent lexical SDK");
+    lexical
+        .results
+        .sort_by(|left, right| left.order_key().order(&right.order_key()));
+    let dense = session
+        .client()
+        .semantic()
+        .query_work_bounded_v1(SemanticWorkBoundedQueryRequestV1 {
+            query: SemanticQueryRequest {
+                query_text: "needle".to_string(),
+                constraints: QueryConstraintSetV1::unconstrained(),
+                generation: Some(pin.clone()),
+                generation_selector: None,
+                lexical_scope: None,
+                top_k: 20,
+            },
+            max_work_units: SEMANTIC_WORK_OPERATIONAL_CAP_V1,
+            canonical_ties: true,
+        })
+        .expect("independent exact dense SDK")
+        .query;
+    let with_pools = query()
+        .go_test_trace_file_with_rank_pools(
+            Some(RepoId::new("source-a").expect("source owner")),
+            None,
+            "src/main.go:2: panic",
+            2,
+        )
+        .expect("rank-pool Go file SDK");
+    let pools = with_pools
+        .rank_pools
+        .as_ref()
+        .expect("requested rank pools");
+    assert_eq!(pools.lexical.len(), lexical.results.len());
+    assert_eq!(pools.dense.len(), dense.results.len());
+    assert_eq!(
+        pools.lexical.len(),
+        usize::try_from(with_pools.lexical_window.returned()).expect("lexical count fits")
+    );
+    assert_eq!(
+        pools.dense.len(),
+        usize::try_from(with_pools.dense_window.returned()).expect("dense count fits")
+    );
+    for (actual, expected) in pools.lexical.iter().zip(&lexical.results) {
+        assert_eq!(actual.candidate_id, expected.candidate_id);
+        assert_eq!(actual.file.source_repo_id, expected.source_repo_id);
+        assert_eq!(actual.file.repo_relative_path, expected.repo_relative_path);
+        assert_eq!(actual.score_bits, expected.score.to_bits());
+    }
+    for (actual, expected) in pools.dense.iter().zip(&dense.results) {
+        assert_eq!(actual.candidate_id, expected.candidate_id);
+        assert_eq!(actual.file.source_repo_id, expected.source_repo_id);
+        assert_eq!(actual.file.repo_relative_path, expected.repo_relative_path);
+        assert_eq!(actual.score_bits, expected.score.to_bits());
+    }
+    for pool in [&pools.lexical, &pools.dense] {
+        assert_eq!(pool.len(), 2, "each lane returned both source owners");
+        assert_eq!(
+            pool.iter()
+                .map(|row| row.candidate_id.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["source-a-chunk", "source-b-chunk"])
+        );
+        assert_eq!(
+            pool.iter()
+                .map(|row| row.file.source_repo_id.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["source-a", "source-b"])
+        );
+        assert!(
+            pool.iter()
+                .all(|row| row.file.repo_relative_path.as_str() == "src/main.go")
+        );
+    }
+    assert_eq!(
+        with_pools
+            .results
+            .iter()
+            .map(|hit| (&hit.file, hit.source_frame))
+            .collect::<Vec<_>>(),
+        scoped
+            .results
+            .iter()
+            .map(|hit| (&hit.file, hit.source_frame))
+            .collect::<Vec<_>>()
+    );
+    session.stop().expect("owned daemon stop");
+}
+
+#[test]
+fn real_daemon_standard_hybrid_file_route_matches_independent_file_rrf_and_refuses_bad_caps() {
+    use quanta_index_contract::{GenerationPin, SourceFileKey};
+
+    let fixture = tempfile::tempdir().expect("file route fixture");
+    write_repo(
+        fixture.path(),
+        &[
+            (
+                "src/alpha.rs",
+                "pub fn alpha() -> &'static str { \"needle alpha\" }\n",
+            ),
+            (
+                "src/beta.rs",
+                "pub fn beta() -> &'static str { \"needle beta\" }\n",
+            ),
+        ],
+    );
+    let manifest = load_manifest(&fixture.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(fixture.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunks");
+    let files_by_path = files
+        .iter()
+        .map(|file| (file.path.clone(), file.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let units =
+        quanta_index_retrieval_bench::published_units::PublishedUnitRegistry::from_chunks_and_symbols(
+            &chunks,
+            &symbols_for(&files),
+            &files_by_path,
+        )
+        .expect("published units");
+    let identity = BatchIdentity::new(
+        "bench-repo",
+        "bench-rev",
+        7,
+        "manifest:hybrid-file-route".to_string(),
+    )
+    .expect("identity");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
+    let state = fixture.path().join("state");
+    let session = boot_session(&state, &identity);
+    let _published = publish_and_activate(&session, &batch, &identity, None).expect("publish");
+    let pin = GenerationPin::new(
+        identity.repo_id.clone(),
+        identity.revision_id.clone(),
+        identity.generation,
+    );
+    let plan = plan_query(
+        QueryInputPolicy::NaturalLanguage,
+        "needle",
+        &NlPlanConfig::default(),
+    )
+    .expect("natural-language plan");
+    let lexical = session
+        .client()
+        .lexical()
+        .query()
+        .native(&plan.lexical_request)
+        .pinned(pin.clone())
+        .top_k(8)
+        .execute()
+        .expect("lexical SDK");
+    let dense = session
+        .client()
+        .semantic()
+        .query()
+        .text(&plan.semantic_text)
+        .pinned(pin)
+        .top_k(8)
+        .execute()
+        .expect("semantic SDK");
+    let (outcome, _) = query_route_with_policy_timed_file_cap(
+        &RouteQuery {
+            client: session.client(),
+            route: "hybrid_file",
+            lexical_request: &plan.lexical_request,
+            semantic_text: &plan.semantic_text,
+            repo_id: &identity.repo_id,
+            revision_id: &identity.revision_id,
+            generation: identity.generation,
+            top_k: 8,
+        },
+        QueryInputPolicy::NaturalLanguage,
+        Some(3),
+    );
+    assert_eq!(
+        outcome
+            .classification()
+            .expect("file classification")
+            .status,
+        "success"
+    );
+    let QueryOutcome::ReturnedFiles { response, .. } = &outcome else {
+        panic!("expected typed file outcome, got {outcome:?}");
+    };
+    assert_eq!(response.results.len(), 2);
+
+    // Oracle derives ranks from the two independently observed SDK chunk
+    // lanes. It never calls the production file-rank policy or uses labels.
+    type Witness = (u32, u32, String);
+    let mut oracle = BTreeMap::<SourceFileKey, (Option<Witness>, Option<Witness>)>::new();
+    for (lane_index, rows) in [lexical.results.as_slice(), dense.results.as_slice()]
+        .into_iter()
+        .enumerate()
+    {
+        let mut seen = BTreeSet::<SourceFileKey>::new();
+        for (chunk_index, row) in rows.iter().enumerate() {
+            let file = SourceFileKey {
+                source_repo_id: row.source_repo_id.clone(),
+                repo_relative_path: row.repo_relative_path.clone(),
+            };
+            if !seen.insert(file.clone()) {
+                continue;
+            }
+            let witness = (
+                u32::try_from(seen.len()).expect("file rank"),
+                u32::try_from(chunk_index + 1).expect("chunk rank"),
+                row.candidate_id.clone(),
+            );
+            let entry = oracle.entry(file).or_insert((None, None));
+            if lane_index == 0 {
+                entry.0 = Some(witness);
+            } else {
+                entry.1 = Some(witness);
+            }
+        }
+    }
+    let mut ranked = oracle.into_iter().collect::<Vec<_>>();
+    let score = |witnesses: &(Option<Witness>, Option<Witness>)| {
+        witnesses
+            .0
+            .iter()
+            .chain(witnesses.1.iter())
+            .map(|witness| 1.0_f64 / (60.0 + f64::from(witness.0)))
+            .sum::<f64>()
+    };
+    ranked.sort_by(|left, right| {
+        score(&right.1)
+            .total_cmp(&score(&left.1))
+            .then(right.1.0.is_some().cmp(&left.1.0.is_some()))
+            .then(left.0.cmp(&right.0))
+    });
+    for (actual, (file, witnesses)) in response.results.iter().zip(&ranked) {
+        assert_eq!(&actual.file, file);
+        assert_eq!(actual.file_rrf_score.to_bits(), score(witnesses).to_bits());
+        for (observed, expected) in [
+            (actual.lexical.as_ref(), witnesses.0.as_ref()),
+            (actual.dense.as_ref(), witnesses.1.as_ref()),
+        ] {
+            assert_eq!(
+                observed.map(|row| (
+                    row.file_rank,
+                    row.chunk_rank,
+                    row.candidate.candidate_id.as_str()
+                )),
+                expected.map(|row| (row.0, row.1, row.2.as_str()))
+            );
+        }
+    }
+    let record = result_value(
+        "T1",
+        "hybrid_file",
+        &outcome,
+        &plan,
+        8,
+        &files_by_path,
+        &units,
+    )
+    .expect("source-proved file record");
+    assert_eq!(record["rank_unit"], "distinct_file");
+    assert_eq!(record["status"], "success");
+    assert_eq!(
+        record["candidates"].as_array().expect("scored files").len(),
+        2
+    );
+    assert_eq!(record["hybrid_file_evidence"]["file_top_k"], 3);
+    assert!(
+        record["candidates"]
+            .as_array()
+            .expect("scored files")
+            .iter()
+            .all(|row| {
+                row["span_accounting"]["unit_kind"] == "chunk" && row["score"].as_f64().is_some()
+            })
+    );
+    assert!(response.results.iter().any(|hit| {
+        hit.lexical.as_ref().is_some_and(|witness| {
+            let candidate = &witness.candidate;
+            candidate.source.is_some()
+                && candidate.preview.is_some()
+                && !candidate.highlights.is_empty()
+        })
+    }));
+    let evidence = fixture.path().join("hybrid-file-evidence.json");
+    let input = serde_json::json!({
+        "result": record,
+        "capture": {
+            "system": "quanta",
+            "execution_profile": { "policy": "natural_language" },
+            "source_repo_id": identity.repo_id,
+            "source_revision_id": identity.revision_id,
+            "generation": identity.generation,
+        },
+    });
+    std::fs::write(
+        &evidence,
+        serde_json::to_vec(&input).expect("serialize evidence"),
+    )
+    .expect("write evidence");
+    let validated = Command::new("python3")
+        .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .args([
+            "-B",
+            "-c",
+            concat!(
+                "import json, sys\n",
+                "from tools.benchmark.retrieval.hybrid_file_evidence import validate_result\n",
+                "with open(sys.argv[1], encoding='utf-8') as evidence:\n",
+                "    case = json.load(evidence)\n",
+                "validate_result(case['result'], case['capture'], 8, declared_file_top_k=3)\n",
+            ),
+        ])
+        .arg(&evidence)
+        .output()
+        .expect("run the Python HybridFile evidence validator");
+    assert!(
+        validated.status.success(),
+        "Python rejected the daemon's HybridFile evidence: {}",
+        String::from_utf8_lossy(&validated.stderr),
+    );
+
+    let universe = files
+        .iter()
+        .map(|file| (file.path.clone(), file.sha256.clone()))
+        .collect::<Vec<_>>();
+    let pack = fixture.path().join("file-profile-pack.json");
+    std::fs::write(
+        &pack,
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 3,
+            "suite_id": "file-comparators",
+            "suite_commitment_sha256": "c".repeat(64),
+            "repository_commit": identity.revision_id.as_str(),
+            "tokenizer": "qi-regex-v1",
+            "tokenizer_budget_version": "qb-v1",
+            "routes": ["lexical", "semantic", "hybrid"],
+            "file_universe": universe.iter().map(|(path, digest)| {
+                serde_json::json!({"path": path, "file_sha256": digest})
+            }).collect::<Vec<_>>(),
+            "file_universe_digest": pack_universe_digest(&universe).expect("universe digest"),
+            "comparison_contract": {
+                "top_k": 8,
+                "tokenizer": "qi-regex-v1",
+                "tokenizer_budget_version": "qb-v1",
+                "output_unit_policy": "rank_prefix",
+                "span_unit": "byte_span_with_line_projection_v1"
+            },
+            "tasks": [{"task_id": "T1", "query": "needle",
+                       "query_sha256": sha256_hex(b"needle")}],
+        }))
+        .expect("serialize file-profile pack"),
+    )
+    .expect("write file-profile pack");
+    let profile = fixture.path().join("file-profile.json");
+    let captured = fixture_runner(env!("CARGO_BIN_EXE_quanta-index-retrieval-bench"))
+        .args(["file-profile", "--query-pack"])
+        .arg(&pack)
+        .arg("--state-root")
+        .arg(&state)
+        .args([
+            "--repo-id",
+            identity.repo_id.as_str(),
+            "--generation",
+            "7",
+            "--lane-top-k",
+            "8",
+            "--file-top-k",
+            "3",
+            "--nl-max-tokens",
+            "7",
+            "--out",
+        ])
+        .arg(&profile)
+        .output()
+        .expect("run real file-profile SDK capture");
+    assert!(
+        captured.status.success(),
+        "{}",
+        String::from_utf8_lossy(&captured.stderr)
+    );
+    let profile: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(profile).expect("read file-profile output"))
+            .expect("parse file-profile output");
+    assert_eq!(profile["nl_max_tokens"], 7);
+    let task = &profile["tasks"][0];
+    assert_eq!(
+        task["files"]["lexical_pool_sha256"],
+        serde_json::json!(response.lexical_pool_sha256)
+    );
+    assert_eq!(
+        task["files"]["dense_pool_sha256"],
+        serde_json::json!(response.dense_pool_sha256)
+    );
+    let chunk_control = &task["lexical"];
+    let file_control = &task["lexical_file_baseline"];
+    assert_eq!(chunk_control["rank_unit"], "chunk");
+    assert_eq!(chunk_control["top_k"], 8);
+    assert_eq!(file_control["rank_unit"], "file");
+    assert_eq!(file_control["top_k"], 3);
+    assert_ne!(
+        chunk_control["effective_lexical_request_sha256"],
+        file_control["effective_lexical_request_sha256"]
+    );
+    let paths = file_control["candidates"]
+        .as_array()
+        .expect("native file candidates")
+        .iter()
+        .map(|row| row["path"].as_str().expect("candidate path"))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(paths, BTreeSet::from(["src/alpha.rs", "src/beta.rs"]));
+
+    let refused = session
+        .client()
+        .search()
+        .hybrid()
+        .native(&plan.lexical_request)
+        .semantic_text(&plan.semantic_text)
+        .pinned(GenerationPin::new(
+            identity.repo_id.clone(),
+            identity.revision_id.clone(),
+            identity.generation,
+        ))
+        .top_k(8)
+        .files(9);
+    assert!(matches!(refused, Err(quanta_index_sdk::SdkError::Usage(_))));
+    let mut corrupted = response.clone();
+    corrupted.results[0].file_rrf_score += 0.01;
+    assert!(
+        result_value(
+            "T1",
+            "hybrid_file",
+            &QueryOutcome::ReturnedFiles {
+                response: corrupted,
+                lane_top_k: 8,
+                file_top_k: 3,
+                latency: Duration::from_millis(1),
+            },
+            &plan,
+            8,
+            &files_by_path,
+            &units,
+        )
+        .is_err()
     );
     session.stop().expect("owned daemon stop");
 }

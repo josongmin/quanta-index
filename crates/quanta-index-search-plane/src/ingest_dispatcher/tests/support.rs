@@ -930,7 +930,7 @@ pub(super) fn recording_search_corpus_authority()
     Arc::new(RecordingSearchCorpusAuthority::default())
 }
 
-pub(super) struct FailingRetentionAuthority;
+pub(super) struct FailingRetentionAuthority(pub(super) CoreError);
 
 impl SearchCorpusAuthorityInspectPort for FailingRetentionAuthority {
     fn inspect_sealed_search_corpus(
@@ -953,9 +953,7 @@ impl SearchCorpusAuthorityWritePort for FailingRetentionAuthority {
         _manifest_digest: &str,
         _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
     ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
-        Err(CoreError::Storage(
-            "injected post-delete retention durability failure".to_string(),
-        ))
+        Err(self.0.clone())
     }
 }
 

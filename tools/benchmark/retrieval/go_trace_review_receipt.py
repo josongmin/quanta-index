@@ -8,6 +8,7 @@ structure and source binding; reviewer identity remains self-reported.
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path, PurePosixPath
 
 from tools.benchmark.evidence import _read_control_file, parse_json
@@ -15,6 +16,46 @@ from tools.benchmark.evidence import _read_control_file, parse_json
 
 class ReviewError(ValueError):
     """A Go trace review receipt cannot support complete-corpus scoring."""
+
+
+_RUST_WHITE_SPACE = re.compile(
+    r"[\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+"
+)
+
+
+def relative_frame_paths(excerpt: str) -> set[str]:
+    """Replay GoTestTraceSourceFramesV1's simple relative-path hints."""
+    paths: set[str] = set()
+    for token in _RUST_WHITE_SPACE.split(excerpt):
+        token = token.strip("()[],\"'`")
+        raw_path, separator, line_and_rest = token.partition(".go:")
+        if not separator or not line_and_rest or not "0" <= line_and_rest[0] <= "9":
+            continue
+        if raw_path.startswith("./"):
+            raw_path = raw_path[2:]
+        path = f"{raw_path}.go"
+        if path.endswith("_test.go"):
+            continue
+        try:
+            path_bytes = path.encode("utf-8")
+        except UnicodeEncodeError:
+            continue
+        if (
+            not path
+            or len(path_bytes) > 4096
+            or path.startswith("/")
+            or "\\" in path
+            or any(ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F for ch in path)
+            or (
+                len(path) >= 2
+                and path[1] == ":"
+                and path[0] in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+            )
+            or any(segment in ("", ".", "..") for segment in path.split("/"))
+        ):
+            continue
+        paths.add(path)
+    return paths
 
 
 def _require(condition: bool, reason: str) -> None:

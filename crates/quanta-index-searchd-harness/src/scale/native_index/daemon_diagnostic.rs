@@ -11,6 +11,8 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
 const MAX_STDERR_BYTES: u64 = 16 * 1024;
+const TAIL_STDERR_BYTES: u64 = 8 * 1024;
+const PREFIX_STDERR_BYTES: u64 = 8 * 1024;
 const OBJECT_IO_PREFIX: &str = "native-object-io ";
 const OBJECT_IO_NUMERIC_FIELDS: [&str; 24] = [
     "write_calls",
@@ -78,6 +80,9 @@ struct StderrTail {
     offset: u64,
     bytes: Vec<u8>,
     sha256: String,
+    // Disjoint prefix and tail share the original total 16KiB payload budget.
+    prefix: Vec<u8>,
+    prefix_sha256: String,
 }
 
 fn stderr_tail(path: &Path) -> Result<StderrTail> {
@@ -104,7 +109,7 @@ fn stderr_tail(path: &Path) -> Result<StderrTail> {
         descriptor_before.permissions().mode() & 0o777 == 0o600 && epoch.links == 1,
         "native daemon stderr must be private and singly linked"
     );
-    let offset = epoch.size.saturating_sub(MAX_STDERR_BYTES);
+    let offset = epoch.size.saturating_sub(TAIL_STDERR_BYTES);
     let tail_len = epoch
         .size
         .checked_sub(offset)
@@ -114,6 +119,11 @@ fn stderr_tail(path: &Path) -> Result<StderrTail> {
     let mut bytes = vec![0_u8; count];
     file.read_exact(&mut bytes)
         .context("read native daemon stderr tail")?;
+    let prefix_count = usize::try_from(offset.min(PREFIX_STDERR_BYTES))?;
+    let _position = file.seek(SeekFrom::Start(0))?;
+    let mut prefix = vec![0_u8; prefix_count];
+    file.read_exact(&mut prefix)
+        .context("read native daemon stderr prefix")?;
     let descriptor_after = file
         .metadata()
         .context("restat opened native daemon stderr")?;
@@ -130,6 +140,8 @@ fn stderr_tail(path: &Path) -> Result<StderrTail> {
         offset,
         bytes,
         sha256,
+        prefix_sha256: format!("{:x}", Sha256::digest(&prefix)),
+        prefix,
     })
 }
 
@@ -161,7 +173,13 @@ impl VerifiedDiagnostic {
         );
         Ok(json!({
             "path": path,
-            "scope": "bounded last 16KiB of stderr only; full file content not hashed",
+            "scope": "bounded disjoint prefix and tail within 16KiB total; full file content not hashed",
+            "retained_budget_bytes": MAX_STDERR_BYTES,
+            "prefix": {
+                "offset": 0,
+                "bytes": u64::try_from(self.tail.prefix.len())?,
+                "sha256": self.tail.prefix_sha256,
+            },
             "whole_file_bytes_at_drain": self.tail.file.size,
             "tail_offset": self.tail.offset,
             "tail_bytes": u64::try_from(self.tail.bytes.len())?,
@@ -323,9 +341,17 @@ pub(super) fn attach(error: anyhow::Error, path: &Path) -> anyhow::Error {
     match stderr_tail(path) {
         Ok(tail) if tail.bytes.is_empty() => error,
         Ok(tail) => error.context(format!(
-            "native daemon stderr tail (byte_offset={}, truncated={}): {}",
+            concat!(
+                "native daemon stderr prefix (byte_offset=0, bytes={}, sha256={}): {}\n",
+                "native daemon stderr tail (byte_offset={}, truncated={}, bytes={}, sha256={}): {}"
+            ),
+            tail.prefix.len(),
+            tail.prefix_sha256,
+            String::from_utf8_lossy(&tail.prefix),
             tail.offset,
-            tail.offset != 0,
+            tail.file.size > MAX_STDERR_BYTES,
+            tail.bytes.len(),
+            tail.sha256,
             String::from_utf8_lossy(&tail.bytes)
         )),
         Err(read) => error.context(format!("native daemon stderr unavailable: {read:#}")),
@@ -498,11 +524,118 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         let tail = stderr_tail(&path)?;
         anyhow::ensure!(tail.offset > 0, "oversize output was not truncated");
-        anyhow::ensure!(tail.bytes.len() == 16 * 1024, "tail bound changed");
+        anyhow::ensure!(tail.bytes.len() == 8 * 1024, "tail bound changed");
         anyhow::ensure!(tail.bytes.ends_with(b"native_work_refusal: bytes\n"));
         let error = attach(anyhow::anyhow!("original-refusal"), &path);
         anyhow::ensure!(error.root_cause().to_string() == "original-refusal");
         anyhow::ensure!(error.to_string().contains("truncated=true"));
+        Ok(())
+    }
+
+    #[test]
+    fn prefix_and_tail_partition_the_fixed_budget_at_boundaries() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("child.stderr");
+        for size in [0_usize, 1, 8191, 8192, 8193, 16383, 16384, 16385, 32768] {
+            let contents = vec![b'x'; size];
+            fs::write(&path, &contents)?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            let captured = stderr_tail(&path)?;
+            let offset = size.saturating_sub(8192);
+            ensure!(captured.offset == u64::try_from(offset)?);
+            ensure!(captured.prefix == contents.get(..offset.min(8192)).context("prefix absent")?);
+            ensure!(captured.bytes == contents.get(offset..).context("tail absent")?);
+            ensure!(
+                captured.prefix.len().checked_add(captured.bytes.len()) == Some(size.min(16384))
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn initial_samples_and_final_error_survive_without_duplicating_tail() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("child.stderr");
+        let samples = b"success sample 1\nsuccess sample 2\nsuccess sample 3\n";
+        let mut contents = samples.to_vec();
+        contents.resize(32768, b'x');
+        contents.extend_from_slice(b"\nlast error\n");
+        fs::write(&path, &contents)?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        let captured = stderr_tail(&path)?;
+        ensure!(captured.prefix.starts_with(samples));
+        ensure!(captured.bytes.ends_with(b"\nlast error\n"));
+        ensure!(captured.prefix.len() == 8192 && captured.bytes.len() == 8192);
+        let error = attach(anyhow!("primary"), &path);
+        ensure!(error.root_cause().to_string() == "primary");
+        ensure!(error.to_string().contains("success sample 3"));
+        ensure!(error.to_string().contains("last error"));
+        Ok(())
+    }
+
+    #[test]
+    fn initial_object_io_summary_cannot_replace_missing_final_summary() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("child.stderr");
+        let capture = json!({"capture_id":"00112233445566778899aabbccddeeff",
+            "sync_calls":3,"sync_failures":0,"sync_elapsed_ns":27});
+        write_balanced_stderr_fixture(&path, &capture)?;
+        let mut contents = fs::read(&path)?;
+        contents.resize(32768, b'x');
+        contents.push(b'\n');
+        fs::write(&path, contents)?;
+        ensure!(verified_object_io(&path, &capture).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn verified_prefix_rejects_tamper_truncation_links_modes_and_replacement() -> Result<()> {
+        use std::io::Write as _;
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("child.stderr");
+        let capture = json!({"capture_id":"00112233445566778899aabbccddeeff",
+            "sync_calls":3,"sync_failures":0,"sync_elapsed_ns":27});
+        write_balanced_stderr_fixture(&path, &capture)?;
+        let summary = fs::read(&path)?;
+        let mut contents = b"initial sample\n".to_vec();
+        contents.resize(32768, b'x');
+        contents.push(b'\n');
+        contents.extend_from_slice(&summary);
+        fs::write(&path, &contents)?;
+        let verified = verified_object_io(&path, &capture)?;
+        let detail = verified.verify(&path)?;
+        ensure!(detail.pointer("/prefix/offset") == Some(&json!(0)));
+        ensure!(detail.pointer("/prefix/bytes") == Some(&json!(8192)));
+        ensure!(detail.get("retained_budget_bytes") == Some(&json!(16384)));
+
+        let mut changed = contents.clone();
+        *changed.first_mut().context("prefix fixture absent")? = b'I';
+        fs::write(&path, changed)?;
+        ensure!(verified.verify(&path).is_err(), "prefix tamper accepted");
+        fs::write(&path, &contents)?;
+        let verified = verified_object_io(&path, &capture)?;
+        let mut file = OpenOptions::new().write(true).open(&path)?;
+        file.set_len(12)?;
+        ensure!(verified.verify(&path).is_err(), "truncation accepted");
+        file.write_all(b"late")?;
+        drop(file);
+        fs::write(&path, &contents)?;
+        let verified = verified_object_io(&path, &capture)?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640))?;
+        ensure!(verified.verify(&path).is_err(), "mode change accepted");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        let alias = directory.path().join("alias");
+        fs::hard_link(&path, &alias)?;
+        ensure!(stderr_tail(&path).is_err(), "multiple links accepted");
+        fs::remove_file(&alias)?;
+        let verified = verified_object_io(&path, &capture)?;
+        fs::rename(&path, &alias)?;
+        symlink(&alias, &path)?;
+        ensure!(
+            verified.verify(&path).is_err(),
+            "symlink replacement accepted"
+        );
         Ok(())
     }
 
@@ -546,7 +679,7 @@ mod tests {
                 .and_then(Value::as_u64)
                 .is_some_and(|v| v > 0)
         );
-        ensure!(detail.get("tail_bytes") == Some(&Value::from(MAX_STDERR_BYTES)));
+        ensure!(detail.get("tail_bytes") == Some(&Value::from(TAIL_STDERR_BYTES)));
         ensure!(
             detail
                 .get("whole_file_bytes_at_drain")

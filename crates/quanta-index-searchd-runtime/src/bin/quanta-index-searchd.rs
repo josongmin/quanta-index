@@ -14,7 +14,9 @@
 use std::process::ExitCode;
 
 use quanta_index_searchd::SearchdCommand;
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_searchd_runtime::run_supervised;
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_searchd_runtime::state_migration::{
     render_offline_outcome_v1, run_offline_state_command_v1,
 };
@@ -35,6 +37,7 @@ fn log(line: &str) {
     clippy::print_stdout,
     reason = "the process entry is the one place the offline workflow's receipt line is written"
 )]
+#[cfg(feature = "legacy-tantivy")]
 fn report(line: &str) {
     println!("{line}");
 }
@@ -79,6 +82,38 @@ fn main() -> ExitCode {
             return ExitCode::from(70);
         }
     };
+    #[cfg(unix)]
+    if let Some(export) = command.history_export_command() {
+        let request =
+            quanta_index_core::RequestBudgetV1::for_duration(std::time::Duration::from_secs(600));
+        return match quanta_index_searchd_runtime::native_product::history_checkpoint_export::run(
+            export, request,
+        ) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                log(&format!("History checkpoint export failed: {error}"));
+                ExitCode::from(70)
+            }
+        };
+    }
+    #[cfg(unix)]
+    if let Some(recovery) = command.recovery_command() {
+        let request =
+            quanta_index_core::RequestBudgetV1::for_duration(std::time::Duration::from_secs(60));
+        return match quanta_index_searchd_runtime::native_recovery::run(recovery, request) {
+            Ok(code) => ExitCode::from(code),
+            Err(error) => {
+                log(&format!("native recovery failed: {error:#}"));
+                ExitCode::from(70)
+            }
+        };
+    }
+    #[cfg(not(feature = "legacy-tantivy"))]
+    if command.offline_operation().is_some() {
+        log("legacy state command unavailable in Native-only build");
+        return ExitCode::from(70);
+    }
+    #[cfg(feature = "legacy-tantivy")]
     if let Some(offline) = command.offline_operation().cloned() {
         let outcome = quanta_index_searchd::app::config::SearchdConfig::from_env_with_state_root(
             offline.source_root.clone(),
@@ -120,6 +155,12 @@ fn main() -> ExitCode {
             }
         };
     }
+    #[cfg(not(feature = "legacy-tantivy"))]
+    {
+        log("legacy serve unavailable in Native-only build");
+        ExitCode::from(70)
+    }
+    #[cfg(feature = "legacy-tantivy")]
     match run_supervised(command) {
         Ok(outcome) => {
             let code = outcome.exit_code();

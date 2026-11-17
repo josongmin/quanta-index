@@ -78,7 +78,7 @@ fn read_ticket_validation_trace_preserves_phase_order_and_off_clock() -> TestRes
             },
             request,
         );
-        let observation = crate::TicketValidationObservation::begin(&catalog)
+        let observation = crate::TicketValidationObservation::begin(&catalog, None)
             .ok_or("ticket observation owner exhausted")?;
         for regressed in [false, true] {
             clock.set(if regressed { 1_999 } else { 2_000 });
@@ -122,13 +122,17 @@ fn read_ticket_validation_trace_preserves_phase_order_and_off_clock() -> TestRes
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             let phases: Vec<_> = rows
                 .iter()
-                .filter_map(|row| match row.kind {
-                    DiagnosticEventKindV1::SpanBegin {
+                .filter_map(|row| {
+                    if let DiagnosticEventKindV1::SpanBegin {
                         stage: DiagnosticStageV1::SqliteWork,
                         lane: DiagnosticLaneV1(lane),
                         ..
-                    } => Some(lane),
-                    _ => None,
+                    } = row.kind
+                    {
+                        Some(lane)
+                    } else {
+                        None
+                    }
                 })
                 .collect();
             if observe {
@@ -138,14 +142,18 @@ fn read_ticket_validation_trace_preserves_phase_order_and_off_clock() -> TestRes
                     &[200, 201, 202, 203, 204, 205]
                 };
                 check_eq!(phases.as_slice(), expected);
-                let clock_span = rows.iter().find_map(|row| match row.kind {
-                    DiagnosticEventKindV1::SpanBegin {
+                let clock_span = rows.iter().find_map(|row| {
+                    if let DiagnosticEventKindV1::SpanBegin {
                         span_id,
                         stage: DiagnosticStageV1::SqliteWork,
                         lane: DiagnosticLaneV1(204),
                         ..
-                    } => Some(span_id),
-                    _ => None,
+                    } = row.kind
+                    {
+                        Some(span_id)
+                    } else {
+                        None
+                    }
                 });
                 let terminal = if regressed {
                     DiagnosticTerminalV1::Error { code: 1 }

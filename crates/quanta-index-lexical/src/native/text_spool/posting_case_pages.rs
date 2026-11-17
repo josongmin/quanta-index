@@ -4,23 +4,9 @@
 //! Map equality requires the provider's exact base/edit comparison and
 //! independent original-stream validation.
 
-use super::{MAX_TERM_KEY_BYTES, PAGE, TermPage, TextSpool, check_term_key, sql, term_page};
+use super::{PAGE, PostingCursor, PostingPacketCache, TermPage, TextSpool, check_term_key};
 use crate::native::text_memory::PreparedKey;
-use quanta_index_core::index::{IndexError, WorkBudget, WorkUsage};
-const SENSITIVE_TERMS_SQL: &str = "WITH RECURSIVE next(term,n) AS (
-    SELECT (SELECT term FROM posting WHERE term>?1 AND term>=X'00' AND term<X'01' ORDER BY term LIMIT 1),1
-    UNION ALL
-    SELECT (SELECT term FROM posting WHERE term>next.term AND term<X'01' ORDER BY term LIMIT 1),n+1
-    FROM next WHERE term IS NOT NULL AND n<64
-  ) SELECT term FROM next WHERE term IS NOT NULL ORDER BY n";
-const FOLDED_TERMS_SQL: &str = "WITH RECURSIVE next(term,n) AS (
-    SELECT (SELECT term FROM posting WHERE term>?1 AND term>=X'01' AND term<X'02' ORDER BY term LIMIT 1),1
-    UNION ALL
-    SELECT (SELECT term FROM posting WHERE term>next.term AND term<X'02' ORDER BY term LIMIT 1),n+1
-    FROM next WHERE term IS NOT NULL AND n<64
-  ) SELECT term FROM next WHERE term IS NOT NULL ORDER BY n";
-const GLOBAL_FIRST_SQL: &str = "SELECT term FROM posting ORDER BY term LIMIT 1";
-const GLOBAL_LAST_SQL: &str = "SELECT term FROM posting ORDER BY term DESC LIMIT 1";
+use quanta_index_core::index::{IndexError, WorkBudget};
 
 struct CaseCursor {
     surface: u8,
@@ -46,17 +32,13 @@ impl CaseCursor {
             return Ok(());
         }
         budget.checkpoint()?;
-        let db = spool.db.scoped(budget)?;
-        let fetched = term_page(
-            &db,
-            if self.surface == 0 {
-                SENSITIVE_TERMS_SQL
-            } else {
-                FOLDED_TERMS_SQL
-            },
+        let fetched = spool.packed_term_page(
             self.after.as_ref().map(PreparedKey::as_slice),
+            Some(self.surface),
             budget,
         )?;
+        // The packed reader already sealed this private page. It stays owned
+        // by the cursor until its entries are copied into a sealed pair.
         let mut previous = self.after.as_ref().map(PreparedKey::as_slice);
         for key in fetched.iter() {
             let term = key.as_slice();
@@ -97,34 +79,10 @@ impl CaseCursor {
     }
 }
 
-fn validate_global_bound(
-    spool: &TextSpool,
-    query: &str,
-    budget: &mut WorkBudget,
-) -> Result<(), IndexError> {
-    budget.checkpoint()?;
-    budget.charge(WorkUsage {
-        reads: 1,
-        bytes: 4096,
-        ..WorkUsage::default()
-    })?;
-    let db = spool.db.scoped(budget)?;
-    let mut statement = db.prepare_cached(query).map_err(|error| sql(&error))?;
-    let mut rows = statement.query([]).map_err(|error| sql(&error))?;
-    if let Some(row) = rows.next().map_err(|error| sql(&error))? {
-        let term = quanta_index_scratch_sqlite::bounded_blob(
-            row.get_ref(0).map_err(|error| sql(&error))?,
-            usize::try_from(MAX_TERM_KEY_BYTES).map_err(|_error| IndexError::ResourceLimited)?,
-        )?;
-        check_term_key(term)?;
-    }
-    budget.checkpoint()
-}
-
 pub(in crate::native) struct PostingCasePages {
     sensitive: CaseCursor,
     folded: CaseCursor,
-    initialized: bool,
+    packets: PostingPacketCache,
 }
 
 impl PostingCasePages {
@@ -132,8 +90,16 @@ impl PostingCasePages {
         Self {
             sensitive: CaseCursor::new(0),
             folded: CaseCursor::new(1),
-            initialized: false,
+            packets: PostingPacketCache::default(),
         }
+    }
+
+    pub(in crate::native) fn posting_cursor<'a>(
+        &'a mut self,
+        spool: &'a TextSpool,
+        terms: TermPage,
+    ) -> PostingCursor<'a> {
+        spool.posting_cursor_with_packets(terms, Some(&self.packets))
     }
 
     pub(in crate::native) fn next(
@@ -141,11 +107,9 @@ impl PostingCasePages {
         spool: &TextSpool,
         budget: &mut WorkBudget,
     ) -> Result<TermPage, IndexError> {
-        if !self.initialized {
-            validate_global_bound(spool, GLOBAL_FIRST_SQL, budget)?;
-            validate_global_bound(spool, GLOBAL_LAST_SQL, budget)?;
-            self.initialized = true;
-        }
+        spool.check_posting_usable()?;
+        budget.checkpoint()?;
+        spool.postings.check_page_source(spool)?;
         let mut output = TermPage::new();
         let mut saw_sensitive = false;
         let mut saw_folded = false;
@@ -170,27 +134,26 @@ impl PostingCasePages {
             if choice == 2 && output.len() == pair_limit {
                 break;
             }
+            if output.is_empty() {
+                let source = spool.postings.page_source(spool, budget)?;
+                output = TermPage::counted(source, budget)?;
+            }
             if choice != 1 {
-                output.push(
-                    self.sensitive.peek().ok_or(IndexError::ResourceLimited)?,
-                    budget,
-                )?;
+                output.push_from(&self.sensitive.page, self.sensitive.next, budget)?;
                 self.sensitive.consume()?;
                 saw_sensitive = true;
             }
             if choice != 0 {
-                output.push(
-                    self.folded.peek().ok_or(IndexError::ResourceLimited)?,
-                    budget,
-                )?;
+                output.push_from(&self.folded.page, self.folded.next, budget)?;
                 self.folded.consume()?;
                 saw_folded = true;
             }
         }
-        output
-            .keys
-            .sort_unstable_by(|left, right| left.as_slice().cmp(right.as_slice()));
-        output.case_ranges = saw_sensitive && saw_folded;
+        if !output.is_empty() {
+            output.sort_counted()?;
+            output.case_ranges = saw_sensitive && saw_folded;
+            output.seal_counts(budget)?;
+        }
         Ok(output)
     }
 }

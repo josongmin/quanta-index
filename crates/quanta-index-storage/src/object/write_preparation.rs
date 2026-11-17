@@ -2,10 +2,10 @@
 
 use quanta_index_core::index::{
     IndexError, MemoryLease, MemoryLifetime, ObjectRef, RegisteredObject, WorkBudget, WorkUsage,
+    native_immutable_object_header_v1, native_immutable_object_ref_v1,
 };
-use sha2::{Digest as _, Sha256};
 
-use super::{HASH_DOMAIN, HEADER_LEN, MAGIC, MAX_CHILDREN, MAX_PAYLOAD, digest_wire};
+use super::{HEADER_LEN, MAX_CHILDREN, MAX_PAYLOAD, digest_wire};
 
 #[cfg(test)]
 mod tests;
@@ -23,6 +23,27 @@ pub(crate) struct AdmittedWire {
 }
 
 impl AdmittedWire {
+    pub(super) fn try_capacity(
+        length: usize,
+        budget: &WorkBudget,
+    ) -> Result<Option<Self>, IndexError> {
+        let Some(memory) = budget.try_reserve_memory_for_optimization(
+            u64::try_from(length).map_err(|_error| IndexError::ResourceLimited)?,
+            MemoryLifetime::Temporary,
+        )?
+        else {
+            return Ok(None);
+        };
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(length).is_err() || bytes.capacity() > length {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            bytes,
+            memory: Some(memory),
+        }))
+    }
+
     pub(crate) fn new(length: usize, budget: &WorkBudget) -> Result<Self, IndexError> {
         let bytes = u64::try_from(length).map_err(|_error| IndexError::ResourceLimited)?;
         let memory = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
@@ -62,17 +83,9 @@ fn header(payload: &[u8], children: &[ObjectRef]) -> Result<([u8; HEADER_LEN], u
         )
         .and_then(|length| length.checked_add(payload.len()))
         .ok_or(IndexError::ResourceLimited)?;
-    let mut header = [0; HEADER_LEN];
-    header[..8].copy_from_slice(MAGIC);
-    header[8..12].copy_from_slice(
-        &u32::try_from(payload.len())
-            .map_err(|_error| IndexError::ResourceLimited)?
-            .to_be_bytes(),
-    );
-    header[12..].copy_from_slice(
-        &u32::try_from(children.len())
-            .map_err(|_error| IndexError::ResourceLimited)?
-            .to_be_bytes(),
+    let header = native_immutable_object_header_v1(
+        u32::try_from(payload.len()).map_err(|_error| IndexError::ResourceLimited)?,
+        u32::try_from(children.len()).map_err(|_error| IndexError::ResourceLimited)?,
     );
     Ok((header, wire_len))
 }
@@ -100,18 +113,13 @@ pub(super) fn identify(
     children: &[ObjectRef],
     budget: &mut WorkBudget,
 ) -> Result<RegisteredObject, IndexError> {
-    let (header, wire_len) = header(payload, children)?;
+    let (_, wire_len) = header(payload, children)?;
     let bytes = charge(wire_len, budget)?;
-    let mut digest = Sha256::new();
-    digest.update(HASH_DOMAIN);
-    digest.update(header);
-    for child in children {
-        digest.update((child.0).0);
-    }
-    digest.update(payload);
+    let reference = native_immutable_object_ref_v1(payload, children)
+        .ok_or(IndexError::ResourceLimited)?;
     budget.checkpoint()?;
     registration(
-        ObjectRef(quanta_index_core::index::Digest(digest.finalize().into())),
+        reference,
         bytes,
         children,
         budget,

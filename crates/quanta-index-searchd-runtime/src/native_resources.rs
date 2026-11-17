@@ -4,18 +4,19 @@
 //! physical disk measurements. Request deadlines remain in `WorkBudget`.
 
 use std::{
+    alloc::Layout,
     collections::BTreeMap,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
     time::Duration,
 };
 
 use quanta_index_core::index::{
-    IndexError, MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope, MemoryScopePort,
-    WorkBudget,
+    IndexError, MemoryCredit, MemoryCreditClosePort, MemoryCreditLimits, MemoryLease,
+    MemoryLeaseOwner, MemoryLifetime, MemoryScope, MemoryScopePort, WorkBudget,
     effort::{ReservationGuard, ResourceNeed, ResourceScheduler},
 };
 
@@ -366,6 +367,7 @@ impl NativeResourceClass {
 struct LedgerState {
     total: ResourceNeed,
     next_reservation: u64,
+    next_credit: u64,
     allocations: BTreeMap<u64, AllocationState>,
     live_memory_bytes: u64,
     retained_memory_bytes: u64,
@@ -378,13 +380,25 @@ struct LedgerState {
     enrichment: NativeClassSnapshot,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct AllocationState {
     class: NativeResourceClass,
     need: ResourceNeed,
     active: bool,
     temporary_bytes: u64,
     retained_bytes: u64,
+    credit: Option<CreditState>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CreditState {
+    id: u64,
+    temporary_available: u64,
+    retained_available: u64,
+    temporary_slots: u32,
+    retained_slots: u32,
+    live_temporary: u32,
+    live_retained: u32,
 }
 
 impl LedgerState {
@@ -756,6 +770,7 @@ impl ResourceScheduler for NativeClassScheduler {
                 active: true,
                 temporary_bytes: 0,
                 retained_bytes: 0,
+                credit: None,
             },
         );
         Some(NativeResourceToken {
@@ -802,6 +817,147 @@ impl MemoryScopePort for NativeMemoryScope {
             }),
         ))
     }
+
+    fn observe_refusal(&self, bytes: u64, lifetime: MemoryLifetime) {
+        crate::native_work_diagnostic::record_memory_scope_refusal_if_enabled(
+            self.reservation,
+            bytes,
+            lifetime,
+            "execution",
+            || self.ledger.memory_refusal_diagnostic(self.reservation),
+        );
+    }
+
+    fn try_reserve_credit(
+        &self,
+        limits: MemoryCreditLimits,
+    ) -> Result<Option<MemoryCredit>, IndexError> {
+        limits.validate()?;
+        let lease_backing = u64::try_from(MemoryLease::allocation_backing_layout()?.size())
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        // These fixed Arc backings, including the metadata lease's own owner
+        // and backing, stay charged only while the scope or a child exists.
+        let child_owner_bytes = arc_backing_bytes::<NativeCreditChildOwner>()?
+            .checked_mul(2)
+            .ok_or(IndexError::ResourceLimited)?;
+        let metadata_owner_bytes = arc_backing_bytes::<NativeMemoryLease>()?;
+        let fixed_bytes = arc_backing_bytes::<NativeCreditScope>()?
+            .checked_add(child_owner_bytes)
+            .and_then(|bytes| bytes.checked_add(metadata_owner_bytes))
+            .and_then(|bytes| bytes.checked_add(lease_backing))
+            .ok_or(IndexError::ResourceLimited)?;
+        let metadata = match self.reserve(fixed_bytes, MemoryLifetime::Retained) {
+            Ok(memory) => memory,
+            Err(IndexError::ResourceLimited) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let Some(id) = self
+            .ledger
+            .reserve_credit(self.reservation, limits, lease_backing)?
+        else {
+            return Ok(None);
+        };
+        let temporary_owner = Arc::new(NativeCreditChildOwner {
+            ledger: Arc::clone(&self.ledger),
+            reservation: self.reservation,
+            id,
+            lifetime: MemoryLifetime::Temporary,
+            _metadata: metadata.clone(),
+        });
+        let retained_owner = Arc::new(NativeCreditChildOwner {
+            ledger: Arc::clone(&self.ledger),
+            reservation: self.reservation,
+            id,
+            lifetime: MemoryLifetime::Retained,
+            _metadata: metadata.clone(),
+        });
+        let scope = Arc::new(NativeCreditScope {
+            ledger: Arc::clone(&self.ledger),
+            reservation: self.reservation,
+            id,
+            lease_backing,
+            temporary_owner,
+            retained_owner,
+            _metadata: metadata,
+        });
+        Ok(Some(MemoryCredit::new(
+            MemoryScope::new(scope.clone()),
+            scope,
+        )))
+    }
+}
+
+fn arc_backing_bytes<T>() -> Result<u64, IndexError> {
+    let layout = Layout::new::<[AtomicUsize; 2]>()
+        .extend(Layout::new::<T>())
+        .map(|(layout, _offset)| layout.pad_to_align())
+        .map_err(|_error| IndexError::ResourceLimited)?;
+    u64::try_from(layout.size()).map_err(|_error| IndexError::ResourceLimited)
+}
+
+struct NativeCreditScope {
+    ledger: Arc<NativeResourceLedger>,
+    reservation: u64,
+    id: u64,
+    lease_backing: u64,
+    temporary_owner: Arc<NativeCreditChildOwner>,
+    retained_owner: Arc<NativeCreditChildOwner>,
+    _metadata: MemoryLease,
+}
+
+impl MemoryScopePort for NativeCreditScope {
+    fn reserve(&self, bytes: u64, lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+        self.ledger.reserve_credit_child(
+            self.reservation,
+            self.id,
+            bytes,
+            self.lease_backing,
+            lifetime,
+        )?;
+        let owner: Arc<dyn MemoryLeaseOwner> = match lifetime {
+            MemoryLifetime::Temporary => self.temporary_owner.clone(),
+            MemoryLifetime::Retained => self.retained_owner.clone(),
+        };
+        Ok(MemoryLease::new(bytes, owner))
+    }
+
+    fn observe_refusal(&self, bytes: u64, lifetime: MemoryLifetime) {
+        crate::native_work_diagnostic::record_memory_scope_refusal_if_enabled(
+            self.reservation,
+            bytes,
+            lifetime,
+            "credit",
+            || self.ledger.memory_refusal_diagnostic(self.reservation),
+        );
+    }
+}
+
+impl MemoryCreditClosePort for NativeCreditScope {
+    fn close(&self) {
+        if self.ledger.close_credit(self.reservation, self.id).is_err() {
+            self.ledger.invalid.store(true, Ordering::Release);
+        }
+    }
+}
+
+struct NativeCreditChildOwner {
+    ledger: Arc<NativeResourceLedger>,
+    reservation: u64,
+    id: u64,
+    lifetime: MemoryLifetime,
+    _metadata: MemoryLease,
+}
+
+impl MemoryLeaseOwner for NativeCreditChildOwner {
+    fn release(&self, bytes: u64) {
+        if self
+            .ledger
+            .release_credit_child(self.reservation, self.id, bytes, self.lifetime)
+            .is_err()
+        {
+            self.ledger.invalid.store(true, Ordering::Release);
+        }
+    }
 }
 
 struct NativeMemoryLease {
@@ -822,6 +978,19 @@ impl MemoryLeaseOwner for NativeMemoryLease {
 }
 
 impl NativeResourceLedger {
+    fn memory_refusal_diagnostic(&self, reservation: u64) -> Result<String, IndexError> {
+        let state = self.state.lock().map_err(|_| invalid_ledger())?;
+        Ok(format!(
+            "capacity={:?}; reserved={:?}; live_memory_bytes={}; retained_memory_bytes={}; pending_escape_bytes={}; allocation={:?}",
+            self.plan.capacity,
+            state.total,
+            state.live_memory_bytes,
+            state.retained_memory_bytes,
+            state.pending_escape_bytes,
+            state.allocations.get(&reservation),
+        ))
+    }
+
     fn promised(&self, state: &LedgerState) -> Option<ResourceNeed> {
         let mut promised = state.total;
         promised.memory_bytes = promised
@@ -919,6 +1088,7 @@ impl NativeResourceLedger {
                 active: false,
                 temporary_bytes: 0,
                 retained_bytes: bytes,
+                credit: None,
             },
         );
         drop(state);
@@ -930,6 +1100,223 @@ impl NativeResourceLedger {
                 lifetime: MemoryLifetime::Retained,
             }),
         ))
+    }
+
+    fn reserve_credit(
+        &self,
+        reservation: u64,
+        limits: MemoryCreditLimits,
+        lease_backing: u64,
+    ) -> Result<Option<u64>, IndexError> {
+        if self.invalid.load(Ordering::Acquire) {
+            return Err(invalid_ledger());
+        }
+        let Some(temporary_credit) = lease_backing
+            .checked_mul(u64::from(limits.max_live_temporary_leases))
+            .and_then(|slots| slots.checked_add(limits.temporary_data_bytes))
+        else {
+            return Ok(None);
+        };
+        let Some(retained_credit) = lease_backing
+            .checked_mul(u64::from(limits.max_live_retained_leases))
+            .and_then(|slots| slots.checked_add(limits.retained_data_bytes))
+        else {
+            return Ok(None);
+        };
+        let mut state = self.state.lock().map_err(|_poison| invalid_ledger())?;
+        if self.invalid.load(Ordering::Acquire) {
+            return Err(invalid_ledger());
+        }
+        let mut allocation = state
+            .allocations
+            .get(&reservation)
+            .copied()
+            .filter(|allocation| allocation.active)
+            .ok_or_else(|| IndexError::BackendViolation("allocation scope has ended".into()))?;
+        if allocation.credit.is_some() {
+            return Err(IndexError::BackendViolation(
+                "allocation credit already active".into(),
+            ));
+        }
+        let fits_stage = allocation
+            .temporary_bytes
+            .checked_add(allocation.retained_bytes)
+            .and_then(|used| used.checked_add(temporary_credit))
+            .and_then(|used| used.checked_add(retained_credit))
+            .is_some_and(|used| used <= allocation.need.memory_bytes);
+        let future = self
+            .promised(&state)
+            .and_then(|promised| {
+                add(
+                    promised,
+                    ResourceNeed {
+                        memory_bytes: retained_credit,
+                        ..ResourceNeed::default()
+                    },
+                )
+            })
+            .is_some_and(|promised| fits(promised, self.plan.capacity));
+        let Some(pending) = state.pending_escape_bytes.checked_add(retained_credit) else {
+            return Ok(None);
+        };
+        if !fits_stage || !future {
+            return Ok(None);
+        }
+        let id = state
+            .next_credit
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        allocation.credit = Some(CreditState {
+            id,
+            temporary_available: temporary_credit,
+            retained_available: retained_credit,
+            temporary_slots: limits.max_live_temporary_leases,
+            retained_slots: limits.max_live_retained_leases,
+            live_temporary: 0,
+            live_retained: 0,
+        });
+        state.next_credit = id;
+        state.pending_escape_bytes = pending;
+        let _previous = state.allocations.insert(reservation, allocation);
+        Ok(Some(id))
+    }
+
+    fn reserve_credit_child(
+        &self,
+        reservation: u64,
+        id: u64,
+        bytes: u64,
+        backing: u64,
+        lifetime: MemoryLifetime,
+    ) -> Result<(), IndexError> {
+        if bytes == 0 {
+            return Err(IndexError::InvalidInput(
+                "live memory reservation must be nonzero".into(),
+            ));
+        }
+        if self.invalid.load(Ordering::Acquire) {
+            return Err(invalid_ledger());
+        }
+        let charge = bytes
+            .checked_add(backing)
+            .ok_or(IndexError::ResourceLimited)?;
+        let mut state = self.state.lock().map_err(|_poison| invalid_ledger())?;
+        if self.invalid.load(Ordering::Acquire) {
+            return Err(invalid_ledger());
+        }
+        let mut allocation = state
+            .allocations
+            .get(&reservation)
+            .copied()
+            .filter(|allocation| allocation.active)
+            .ok_or_else(|| IndexError::BackendViolation("allocation scope has ended".into()))?;
+        let mut credit = allocation
+            .credit
+            .filter(|credit| credit.id == id)
+            .ok_or_else(|| IndexError::BackendViolation("allocation credit has closed".into()))?;
+        let (available, live, slots, allocated) = match lifetime {
+            MemoryLifetime::Temporary => (
+                &mut credit.temporary_available,
+                &mut credit.live_temporary,
+                credit.temporary_slots,
+                &mut allocation.temporary_bytes,
+            ),
+            MemoryLifetime::Retained => (
+                &mut credit.retained_available,
+                &mut credit.live_retained,
+                credit.retained_slots,
+                &mut allocation.retained_bytes,
+            ),
+        };
+        let next_available = available
+            .checked_sub(charge)
+            .ok_or(IndexError::ResourceLimited)?;
+        let next_live = live
+            .checked_add(1)
+            .filter(|count| *count <= slots)
+            .ok_or(IndexError::ResourceLimited)?;
+        let next_allocated = allocated
+            .checked_add(charge)
+            .ok_or(IndexError::ResourceLimited)?;
+        let next_total = state
+            .live_memory_bytes
+            .checked_add(charge)
+            .ok_or(IndexError::ResourceLimited)?;
+        *available = next_available;
+        *live = next_live;
+        *allocated = next_allocated;
+        allocation.credit = Some(credit);
+        state.live_memory_bytes = next_total;
+        let _previous = state.allocations.insert(reservation, allocation);
+        Ok(())
+    }
+
+    fn close_credit(&self, reservation: u64, id: u64) -> Result<(), IndexError> {
+        let mut state = self.state.lock().map_err(|_poison| invalid_ledger())?;
+        let Some(mut allocation) = state.allocations.get(&reservation).copied() else {
+            return Ok(());
+        };
+        let Some(credit) = allocation.credit else {
+            return Ok(());
+        };
+        if credit.id != id {
+            return Ok(());
+        }
+        state.pending_escape_bytes = state
+            .pending_escape_bytes
+            .checked_sub(credit.retained_available)
+            .ok_or_else(invalid_ledger)?;
+        allocation.credit = None;
+        let _previous = state.allocations.insert(reservation, allocation);
+        drop(state);
+        self.interactive_changed.notify_all();
+        self.control_changed.notify_all();
+        Ok(())
+    }
+
+    fn release_credit_child(
+        &self,
+        reservation: u64,
+        id: u64,
+        bytes: u64,
+        lifetime: MemoryLifetime,
+    ) -> Result<(), IndexError> {
+        let backing = u64::try_from(MemoryLease::allocation_backing_layout()?.size())
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        let charge = bytes.checked_add(backing).ok_or_else(invalid_ledger)?;
+        let mut state = self.state.lock().map_err(|_poison| invalid_ledger())?;
+        let mut allocation = state
+            .allocations
+            .get(&reservation)
+            .copied()
+            .ok_or_else(invalid_ledger)?;
+        if allocation.active && allocation.credit.is_some_and(|credit| credit.id == id) {
+            let mut credit = allocation.credit.ok_or_else(invalid_ledger)?;
+            let (available, live, allocated) = match lifetime {
+                MemoryLifetime::Temporary => (
+                    &mut credit.temporary_available,
+                    &mut credit.live_temporary,
+                    &mut allocation.temporary_bytes,
+                ),
+                MemoryLifetime::Retained => (
+                    &mut credit.retained_available,
+                    &mut credit.live_retained,
+                    &mut allocation.retained_bytes,
+                ),
+            };
+            *available = available.checked_add(charge).ok_or_else(invalid_ledger)?;
+            *live = live.checked_sub(1).ok_or_else(invalid_ledger)?;
+            *allocated = allocated.checked_sub(charge).ok_or_else(invalid_ledger)?;
+            state.live_memory_bytes = state
+                .live_memory_bytes
+                .checked_sub(charge)
+                .ok_or_else(invalid_ledger)?;
+            allocation.credit = Some(credit);
+            let _previous = state.allocations.insert(reservation, allocation);
+            return Ok(());
+        }
+        drop(state);
+        self.release_memory(reservation, charge, lifetime)
     }
 
     fn reserve_memory(
@@ -960,6 +1347,12 @@ impl NativeResourceLedger {
             .temporary_bytes
             .checked_add(allocation.retained_bytes)
             .and_then(|live| live.checked_add(bytes))
+            .and_then(|live| {
+                allocation.credit.map_or(Some(live), |credit| {
+                    live.checked_add(credit.temporary_available)?
+                        .checked_add(credit.retained_available)
+                })
+            })
             .filter(|live| *live <= allocation.need.memory_bytes)
             .ok_or(IndexError::ResourceLimited)?;
         let pending = match lifetime {
@@ -1089,6 +1482,14 @@ impl NativeResourceLedger {
                     && allocation.need == token.need
             })
             .ok_or_else(invalid_ledger)?;
+        // Closing the execution also closes a leaked child scope. Only unused
+        // credit is released; each live child remains an ordinary allocation.
+        if let Some(credit) = allocation.credit.take() {
+            state.pending_escape_bytes = state
+                .pending_escape_bytes
+                .checked_sub(credit.retained_available)
+                .ok_or_else(invalid_ledger)?;
+        }
         let total = subtract(state.total, token.need).ok_or_else(invalid_ledger)?;
         let current_class = *state.class(class);
         let class_reserved =
@@ -1175,6 +1576,9 @@ fn floor_shortfall(floor: ResourceNeed, reserved: ResourceNeed) -> ResourceNeed 
         provider_units: floor.provider_units.saturating_sub(reserved.provider_units),
     }
 }
+
+#[cfg(test)]
+mod credit_tests;
 
 #[cfg(test)]
 mod tests {

@@ -11,16 +11,17 @@ use crate::{
     ClusterMembershipBatchReadResponseV1, CurrentGenerationRequest, DiagnosticAttemptFieldV1,
     GenerationPin, GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest,
     GoTestTraceFileQueryRequestV1, GoTestTraceFileQueryResponseV1, HistoryQueryRequest,
-    HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse,
-    MetricsSnapshotRequest, MetricsSnapshotV1, ProcessReadinessRequest, ProcessReadinessV1,
-    ProcessRequestEventsRequestV1, ProcessRequestEventsV1, QuarantineDiscardAck,
-    QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
-    RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2, RepoMapActiveHeadResponseV2,
-    RepoMapQueryRequest, RepoMapQueryResponse, RepoMapTerminalReceiptV2,
-    RuntimeMetadataQueryRequest, SearchCorpusActiveHeadObservationV1,
-    SearchCorpusGenerationReservationRequestV1, SearchCorpusGenerationReservationV1,
-    SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryRequest,
-    SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
+    HybridFileQueryRequestV1, HybridFileQueryResponseV1, HybridQueryRequest, HybridQueryResponse,
+    HybridSeedQueryRequest, HybridSeedQueryResponse, MetricsSnapshotRequest, MetricsSnapshotV1,
+    ProcessReadinessRequest, ProcessReadinessV1, ProcessRequestEventsRequestV1,
+    ProcessRequestEventsV1, QuarantineDiscardAck, QuarantineDiscardRequest,
+    QuarantineInventoryRequest, QuarantineInventoryV1, RepoMapActivateGenerationRequestV2,
+    RepoMapActiveHeadRequestV2, RepoMapActiveHeadResponseV2, RepoMapQueryRequest,
+    RepoMapQueryResponse, RepoMapTerminalReceiptV2, RuntimeMetadataQueryRequest,
+    SearchCorpusActiveHeadObservationV1, SearchCorpusGenerationReservationRequestV1,
+    SearchCorpusGenerationReservationV1, SearchPlaneActivateSearchCorpusGenerationCasRequest,
+    SearchPlaneExplainQueryRequest, SearchPlaneExplainQueryResponse,
+    SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
     SearchPlaneSearchCorpusActivationCasAck, SearchPlaneSearchCorpusRollbackCasAck,
     SearchPlaneStructuralQueryResponse, SemanticQueryRequest, SemanticQueryResponse,
@@ -42,6 +43,7 @@ const SEARCH_PLANE_QUERY_IPC_REQUEST_VARIANTS: &[&str] = &[
     "Semantic",
     "SemanticWorkBoundedV1",
     "Hybrid",
+    "HybridFileV1",
     "GoTestTraceFileV1",
     "HybridSeed",
     "History",
@@ -59,6 +61,7 @@ const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "Semantic",
     "SemanticWorkBoundedV1",
     "Hybrid",
+    "HybridFileV1",
     "GoTestTraceFileV1",
     "HybridSeed",
     "History",
@@ -119,28 +122,33 @@ pub struct SearchPlaneQueryIpcRequestEnvelope {
 pub struct SemanticWorkBoundedQueryRequestV1 {
     pub query: SemanticQueryRequest,
     pub max_work_units: u64,
+    /// Select canonical source/path/line/id ties before the exact Top-K cut.
+    /// This is the raw dense pool used by file ranking.
+    pub canonical_ties: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticWorkBoundedQueryResponseV1 {
     pub query: SemanticQueryResponse,
     pub charged_work_units: u64,
+    pub canonical_ties: bool,
 }
 
-const SEMANTIC_WORK_REQUEST_FIELDS: &[&str] = &["query", "max_work_units"];
-const SEMANTIC_WORK_RESPONSE_FIELDS: &[&str] = &["query", "charged_work_units"];
+const SEMANTIC_WORK_REQUEST_FIELDS: &[&str] = &["query", "max_work_units", "canonical_ties"];
+const SEMANTIC_WORK_RESPONSE_FIELDS: &[&str] = &["query", "charged_work_units", "canonical_ties"];
 
 fn deserialize_semantic_work<'de, A, Query>(
     mut map: A,
     work_field: &'static str,
     fields: &'static [&'static str],
-) -> Result<(Query, u64), A::Error>
+) -> Result<(Query, u64, bool), A::Error>
 where
     A: MapAccess<'de>,
     Query: Deserialize<'de>,
 {
     let mut query = None;
     let mut work_units = None;
+    let mut canonical_ties = None;
     while let Some(key) = map.next_key::<String>()? {
         if key == "query" {
             if query.is_some() {
@@ -152,6 +160,11 @@ where
                 return Err(de::Error::duplicate_field(work_field));
             }
             work_units = Some(map.next_value()?);
+        } else if key == "canonical_ties" {
+            if canonical_ties.is_some() {
+                return Err(de::Error::duplicate_field("canonical_ties"));
+            }
+            canonical_ties = Some(map.next_value()?);
         } else {
             return Err(de::Error::unknown_field(&key, fields));
         }
@@ -159,14 +172,16 @@ where
     Ok((
         query.ok_or_else(|| de::Error::missing_field("query"))?,
         work_units.ok_or_else(|| de::Error::missing_field(work_field))?,
+        canonical_ties.ok_or_else(|| de::Error::missing_field("canonical_ties"))?,
     ))
 }
 
 impl Serialize for SemanticWorkBoundedQueryRequestV1 {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("SemanticWorkBoundedQueryRequestV1", 2)?;
+        let mut state = serializer.serialize_struct("SemanticWorkBoundedQueryRequestV1", 3)?;
         state.serialize_field("query", &self.query)?;
         state.serialize_field("max_work_units", &self.max_work_units)?;
+        state.serialize_field("canonical_ties", &self.canonical_ties)?;
         state.end()
     }
 }
@@ -181,11 +196,12 @@ impl<'de> Visitor<'de> for SemanticWorkBoundedQueryRequestVisitorV1 {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-        let (query, max_work_units) =
+        let (query, max_work_units, canonical_ties) =
             deserialize_semantic_work(map, "max_work_units", SEMANTIC_WORK_REQUEST_FIELDS)?;
         Ok(SemanticWorkBoundedQueryRequestV1 {
             query,
             max_work_units,
+            canonical_ties,
         })
     }
 }
@@ -202,9 +218,10 @@ impl<'de> Deserialize<'de> for SemanticWorkBoundedQueryRequestV1 {
 
 impl Serialize for SemanticWorkBoundedQueryResponseV1 {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("SemanticWorkBoundedQueryResponseV1", 2)?;
+        let mut state = serializer.serialize_struct("SemanticWorkBoundedQueryResponseV1", 3)?;
         state.serialize_field("query", &self.query)?;
         state.serialize_field("charged_work_units", &self.charged_work_units)?;
+        state.serialize_field("canonical_ties", &self.canonical_ties)?;
         state.end()
     }
 }
@@ -219,11 +236,12 @@ impl<'de> Visitor<'de> for SemanticWorkBoundedQueryResponseVisitorV1 {
     }
 
     fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
-        let (query, charged_work_units) =
+        let (query, charged_work_units, canonical_ties) =
             deserialize_semantic_work(map, "charged_work_units", SEMANTIC_WORK_RESPONSE_FIELDS)?;
         Ok(SemanticWorkBoundedQueryResponseV1 {
             query,
             charged_work_units,
+            canonical_ties,
         })
     }
 }
@@ -258,6 +276,7 @@ pub enum SearchPlaneQueryIpcRequest {
     Semantic(SemanticQueryRequest),
     SemanticWorkBoundedV1(SemanticWorkBoundedQueryRequestV1),
     Hybrid(HybridQueryRequest),
+    HybridFileV1(HybridFileQueryRequestV1),
     GoTestTraceFileV1(GoTestTraceFileQueryRequestV1),
     HybridSeed(HybridSeedQueryRequest),
     History(HistoryQueryRequest),
@@ -283,6 +302,7 @@ pub enum SearchPlaneQueryIpcResponse {
     Semantic(SemanticQueryResponse),
     SemanticWorkBoundedV1(SemanticWorkBoundedQueryResponseV1),
     Hybrid(HybridQueryResponse),
+    HybridFileV1(HybridFileQueryResponseV1),
     GoTestTraceFileV1(GoTestTraceFileQueryResponseV1),
     HybridSeed(HybridSeedQueryResponse),
     History(SearchPlaneHistoryQueryResponse),
@@ -296,9 +316,9 @@ pub enum SearchPlaneQueryIpcResponse {
 
 impl SearchPlaneQueryIpcResponse {
     /// Stamp the transport request id onto the carried explanation (S21-10),
-    /// so a typed payload correlates without its envelope. Only the five
+    /// so a typed payload correlates without its envelope. Only the
     /// explanation-carrying variants (`Semantic`, `SemanticWorkBoundedV1`,
-    /// `Hybrid`, `GoTestTraceFileV1`, `HybridSeed`, `Explain`) change; every other variant has no explanation to stamp
+    /// `Hybrid`, `HybridFileV1`, `GoTestTraceFileV1`, `HybridSeed`, `Explain`) change; every other variant has no explanation to stamp
     /// and is left untouched.
     pub fn stamp_request_id(&mut self, request_id: u64) {
         let explanation = match self {
@@ -307,6 +327,7 @@ impl SearchPlaneQueryIpcResponse {
                 Some(&mut response.query.explanation)
             }
             SearchPlaneQueryIpcResponse::Hybrid(response) => Some(&mut response.explanation),
+            SearchPlaneQueryIpcResponse::HybridFileV1(response) => Some(&mut response.explanation),
             SearchPlaneQueryIpcResponse::GoTestTraceFileV1(response) => {
                 Some(&mut response.explanation)
             }
@@ -658,6 +679,12 @@ impl Serialize for SearchPlaneQueryIpcRequest {
                 payload,
                 serializer,
             ),
+            Self::HybridFileV1(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcRequest",
+                "HybridFileV1",
+                payload,
+                serializer,
+            ),
             Self::GoTestTraceFileV1(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcRequest",
                 "GoTestTraceFileV1",
@@ -754,6 +781,9 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcRequestVisitor {
                             SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(map.next_value()?)
                         }
                         "Hybrid" => SearchPlaneQueryIpcRequest::Hybrid(map.next_value()?),
+                        "HybridFileV1" => {
+                            SearchPlaneQueryIpcRequest::HybridFileV1(map.next_value()?)
+                        }
                         "GoTestTraceFileV1" => {
                             SearchPlaneQueryIpcRequest::GoTestTraceFileV1(map.next_value()?)
                         }
@@ -907,6 +937,12 @@ impl Serialize for SearchPlaneQueryIpcResponse {
                 payload,
                 serializer,
             ),
+            Self::HybridFileV1(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcResponse",
+                "HybridFileV1",
+                payload,
+                serializer,
+            ),
             Self::GoTestTraceFileV1(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcResponse",
                 "GoTestTraceFileV1",
@@ -1011,6 +1047,9 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcResponseVisitor {
                             SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(map.next_value()?)
                         }
                         "Hybrid" => SearchPlaneQueryIpcResponse::Hybrid(map.next_value()?),
+                        "HybridFileV1" => {
+                            SearchPlaneQueryIpcResponse::HybridFileV1(map.next_value()?)
+                        }
                         "GoTestTraceFileV1" => {
                             SearchPlaneQueryIpcResponse::GoTestTraceFileV1(map.next_value()?)
                         }
@@ -1668,6 +1707,7 @@ mod tests {
                     top_k: 2,
                 },
                 max_work_units: 4_096,
+                canonical_ties: false,
             });
         assert_eq!(
             serde_json::to_value(&request)
@@ -1687,6 +1727,26 @@ mod tests {
             decode::<SearchPlaneQueryIpcRequest>(&encode(&request).expect("CBOR")).expect("decode"),
             request
         );
+        let SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(mut canonical) = request.clone()
+        else {
+            panic!("dedicated bounded request variant");
+        };
+        canonical.canonical_ties = true;
+        let canonical_request = SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(canonical);
+        assert_eq!(
+            serde_json::from_value::<SearchPlaneQueryIpcRequest>(
+                serde_json::to_value(&canonical_request).expect("canonical request JSON")
+            )
+            .expect("canonical request JSON decode"),
+            canonical_request
+        );
+        assert_eq!(
+            decode::<SearchPlaneQueryIpcRequest>(
+                &encode(&canonical_request).expect("canonical request CBOR")
+            )
+            .expect("canonical request CBOR decode"),
+            canonical_request
+        );
         let mut response = SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(
             SemanticWorkBoundedQueryResponseV1 {
                 query: SemanticQueryResponse {
@@ -1697,6 +1757,7 @@ mod tests {
                     explanation: crate::SearchExplanation::empty(),
                 },
                 charged_work_units: 5,
+                canonical_ties: false,
             },
         );
         response.stamp_request_id(19);
@@ -1717,6 +1778,18 @@ mod tests {
         };
         assert_eq!(settled.query.explanation.request_id, 19);
         assert_eq!(settled.charged_work_units, 5);
+        assert!(!settled.canonical_ties);
+        let mut canonical_settlement = settled;
+        canonical_settlement.canonical_ties = true;
+        let canonical_response =
+            SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(canonical_settlement);
+        assert_eq!(
+            decode::<SearchPlaneQueryIpcResponse>(
+                &encode(&canonical_response).expect("canonical response CBOR")
+            )
+            .expect("canonical response CBOR decode"),
+            canonical_response
+        );
     }
 
     #[test]
@@ -1736,13 +1809,24 @@ mod tests {
         };
         let query = serde_json::to_string(&request_query).expect("request query JSON");
         for malformed in [
-            format!("{{\"query\":{query},\"max_work_units\":1,\"max_work_units\":2}}"),
-            format!("{{\"query\":{query},\"query\":{query},\"max_work_units\":1}}"),
+            format!(
+                "{{\"query\":{query},\"max_work_units\":1,\"canonical_ties\":false,\"max_work_units\":2}}"
+            ),
+            format!(
+                "{{\"query\":{query},\"query\":{query},\"max_work_units\":1,\"canonical_ties\":false}}"
+            ),
             format!("{{\"query\":{query}}}"),
-            "{\"max_work_units\":1}".into(),
-            format!("{{\"query\":{query},\"max_work_units\":1,\"extra\":0}}"),
-            format!("{{\"query\":{query},\"max_work_units\":-1}}"),
-            format!("{{\"query\":{query},\"max_work_units\":1.5}}"),
+            "{\"max_work_units\":1,\"canonical_ties\":false}".into(),
+            format!("{{\"query\":{query},\"max_work_units\":1}}"),
+            format!(
+                "{{\"query\":{query},\"max_work_units\":1,\"canonical_ties\":false,\"canonical_ties\":true}}"
+            ),
+            format!(
+                "{{\"query\":{query},\"max_work_units\":1,\"canonical_ties\":false,\"extra\":0}}"
+            ),
+            format!("{{\"query\":{query},\"max_work_units\":-1,\"canonical_ties\":false}}"),
+            format!("{{\"query\":{query},\"max_work_units\":1.5,\"canonical_ties\":false}}"),
+            format!("{{\"query\":{query},\"max_work_units\":1,\"canonical_ties\":0}}"),
         ] {
             assert!(
                 serde_json::from_str::<SemanticWorkBoundedQueryRequestV1>(&malformed).is_err(),
@@ -1758,13 +1842,24 @@ mod tests {
         };
         let query = serde_json::to_string(&response_query).expect("response query JSON");
         for malformed in [
-            format!("{{\"query\":{query},\"charged_work_units\":1,\"charged_work_units\":2}}"),
-            format!("{{\"query\":{query},\"query\":{query},\"charged_work_units\":1}}"),
+            format!(
+                "{{\"query\":{query},\"charged_work_units\":1,\"canonical_ties\":false,\"charged_work_units\":2}}"
+            ),
+            format!(
+                "{{\"query\":{query},\"query\":{query},\"charged_work_units\":1,\"canonical_ties\":false}}"
+            ),
             format!("{{\"query\":{query}}}"),
-            "{\"charged_work_units\":1}".into(),
-            format!("{{\"query\":{query},\"charged_work_units\":1,\"extra\":0}}"),
-            format!("{{\"query\":{query},\"charged_work_units\":-1}}"),
-            format!("{{\"query\":{query},\"charged_work_units\":1.5}}"),
+            "{\"charged_work_units\":1,\"canonical_ties\":false}".into(),
+            format!("{{\"query\":{query},\"charged_work_units\":1}}"),
+            format!(
+                "{{\"query\":{query},\"charged_work_units\":1,\"canonical_ties\":false,\"canonical_ties\":true}}"
+            ),
+            format!(
+                "{{\"query\":{query},\"charged_work_units\":1,\"canonical_ties\":false,\"extra\":0}}"
+            ),
+            format!("{{\"query\":{query},\"charged_work_units\":-1,\"canonical_ties\":false}}"),
+            format!("{{\"query\":{query},\"charged_work_units\":1.5,\"canonical_ties\":false}}"),
+            format!("{{\"query\":{query},\"charged_work_units\":1,\"canonical_ties\":0}}"),
         ] {
             assert!(
                 serde_json::from_str::<SemanticWorkBoundedQueryResponseV1>(&malformed).is_err(),
@@ -2575,6 +2670,24 @@ mod tests {
                 true,
             ),
             (
+                "HybridFileV1",
+                SearchPlaneQueryIpcResponse::HybridFileV1(HybridFileQueryResponseV1 {
+                    selected_active_head: None,
+                    generation: pin(),
+                    file_top_k: 1,
+                    bounded_file_count: 0,
+                    lexical_pool_sha256: crate::hybrid_file_candidate_pool_sha256_v1(&pin(), &[])
+                        .expect("empty pool digest"),
+                    dense_pool_sha256: crate::hybrid_file_candidate_pool_sha256_v1(&pin(), &[])
+                        .expect("empty pool digest"),
+                    results: Vec::new(),
+                    lexical_window: crate::QueryResultWindowV2::exact_probe(0),
+                    dense_window: crate::QueryResultWindowV2::exact_probe(0),
+                    explanation: crate::SearchExplanation::empty(),
+                }),
+                true,
+            ),
+            (
                 "GoTestTraceFileV1",
                 SearchPlaneQueryIpcResponse::GoTestTraceFileV1(GoTestTraceFileQueryResponseV1 {
                     selected_active_head: None,
@@ -2582,6 +2695,7 @@ mod tests {
                     results: Vec::new(),
                     lexical_window: window(),
                     dense_window: window(),
+                    rank_pools: None,
                     frame_class: crate::GoTestTraceFrameClassV1::Unresolved,
                     explanation: crate::SearchExplanation::empty(),
                 }),
@@ -2661,6 +2775,7 @@ mod tests {
                     Some(r.query.explanation.request_id)
                 }
                 SearchPlaneQueryIpcResponse::Hybrid(r) => Some(r.explanation.request_id),
+                SearchPlaneQueryIpcResponse::HybridFileV1(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::GoTestTraceFileV1(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::HybridSeed(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::Explain(r) => Some(r.explanation.request_id),

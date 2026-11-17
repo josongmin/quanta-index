@@ -6,7 +6,7 @@
 )]
 
 use crate::analyzer::register_analyzers;
-use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
+pub(crate) use crate::legacy::errors::sidecar_corrupt;
 #[cfg(test)]
 use crate::publication_faults::{Cut, Side, authority_cut_core, root_cut_core};
 use crate::{
@@ -21,7 +21,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tantivy::Index;
 
-const MAX_SEALED_IDENTITY_BYTES: usize = 4096;
+pub(crate) use crate::legacy::identity::validate_lexical_sealed_identity;
+use crate::legacy::names::MAX_SEALED_IDENTITY_BYTES;
 /// Format of a writable index whose merge engine records exact live BM25 totals.
 ///
 /// This marker is written before creating the first index commit, and the
@@ -712,27 +713,8 @@ pub(crate) fn persist_lexical_sealed_identity_observed(
     )
 }
 
-pub(crate) fn normalizer_unsupported(path: &Path, built_with: TextNormalizerVersion) -> CoreError {
-    CoreError::Typed {
-        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationNormalizerUnsupported,
-        message: format!(
-            "lexical: sealed generation {} was built under text normalizer {built_with} (this build runs {TEXT_NORMALIZER_VERSION}); it must be rebuilt, never served with mismatched text semantics",
-            path.display()
-        ),
-    }
-}
-
 /// The typed refusal for a sealed generation that is not what its
 /// manifest committed to.
-pub(crate) fn sidecar_corrupt(generation_dir: &Path, name: &str, reason: &str) -> CoreError {
-    CoreError::Typed {
-        code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
-        message: format!(
-            "lexical: generation {} does not match its manifest: {name}: {reason}",
-            generation_dir.display()
-        ),
-    }
-}
 
 pub(crate) fn read_lexical_sealed_identity(
     generation_dir: &Path,
@@ -851,24 +833,6 @@ pub(crate) fn read_lexical_sealed_identity_at(
             &format!("cannot decode: {error}"),
         )
     })
-}
-
-pub(crate) fn validate_lexical_sealed_identity(
-    observed: &GenerationSnapshot,
-    candidate: &GenerationSnapshot,
-) -> Result<(), CoreError> {
-    if observed != candidate {
-        return Err(CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
-            message: format!(
-                "lexical: durable generation identity mismatch for repo={} revision={} generation={}",
-                candidate.repo_id.as_str(),
-                candidate.revision_id.as_str(),
-                candidate.manifest_generation.get(),
-            ),
-        });
-    }
-    Ok(())
 }
 
 #[cfg(test)]

@@ -67,8 +67,22 @@ impl SearchPlaneDispatcher {
         request: &SemanticQueryRequest,
         budget: &RequestBudgetV1,
     ) -> Result<SemanticQueryResponse, CoreError> {
+        self.semantic_with_canonical_ties(request, budget, false)
+    }
+
+    pub(crate) fn semantic_with_canonical_ties(
+        &self,
+        request: &SemanticQueryRequest,
+        budget: &RequestBudgetV1,
+        canonical_ties: bool,
+    ) -> Result<SemanticQueryResponse, CoreError> {
         budget.checkpoint("semantic:entry")?;
         SemanticPolicy::validate_top_k(request.top_k)?;
+        if canonical_ties && budget.semantic_work_consumed_v1()?.is_none() {
+            return Err(CoreError::InvalidContract(
+                "canonical semantic pool requires a work-bounded request".into(),
+            ));
+        }
         if budget.semantic_work_consumed_v1()?.is_some() {
             let query_bytes = u64::try_from(request.query_text.len()).map_err(|error| {
                 CoreError::InvalidContract(format!("semantic query text length overflow: {error}"))
@@ -206,12 +220,21 @@ impl SearchPlaneDispatcher {
                     "bounded semantic search does not admit lexical scope".into(),
                 ));
             }
-            searcher.search_work_bounded_v1(
-                &query_vector,
-                &effective_constraints,
-                probe_top_k,
-                budget,
-            )?
+            if canonical_ties {
+                searcher.search_constrained_canonical_ties(
+                    &query_vector,
+                    &effective_constraints,
+                    probe_top_k,
+                    budget,
+                )?
+            } else {
+                searcher.search_work_bounded_v1(
+                    &query_vector,
+                    &effective_constraints,
+                    probe_top_k,
+                    budget,
+                )?
+            }
         } else if let Some(scope_ids) = scope_candidate_ids {
             searcher.search_scoped_constrained(
                 &query_vector,

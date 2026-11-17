@@ -22,6 +22,33 @@ pub(in crate::native) const LAYOUT_POLICY: &[u8] =
 
 const MAGIC: &[u8; 8] = b"QITXOC01";
 pub(in crate::native) const HEADER_BYTES: usize = 16;
+
+/// The physical block split is shared by the owned writer and the borrowed
+/// cold-input preflight. `None` means the candidate starts another block.
+pub(in crate::native) fn next_block_len(
+    encoded_len: usize,
+    term_count: usize,
+    key_len: usize,
+    positions_len: usize,
+    new_vector: bool,
+) -> Result<Option<usize>, IndexError> {
+    let row_bytes = 4_usize
+        .checked_add(key_len)
+        .ok_or(IndexError::ResourceLimited)?;
+    let vector_bytes = if new_vector {
+        positions_len
+            .checked_mul(4)
+            .and_then(|bytes| bytes.checked_add(2))
+            .ok_or(IndexError::ResourceLimited)?
+    } else {
+        0
+    };
+    let next = encoded_len
+        .checked_add(row_bytes)
+        .and_then(|bytes| bytes.checked_add(vector_bytes))
+        .ok_or(IndexError::ResourceLimited)?;
+    Ok((term_count < MAX_BLOCK_TERMS && next <= MAX_BLOCK_BYTES).then_some(next))
+}
 /// Ephemeral sorted ordinals; the exact vector remains in the original
 /// first-use slot, so lookup order cannot change the canonical wire.
 pub(in crate::native) struct VectorIndex {
@@ -134,10 +161,40 @@ pub(in crate::native) fn encode_packed(
         u64::try_from(encoded_len).map_err(|_error| IndexError::ResourceLimited)?,
         MemoryLifetime::Temporary,
     )?;
+    encode_packed_with_memory(view, encoded_len, memory, budget)?.ok_or(IndexError::ResourceLimited)
+}
+
+/// Encode through the canonical writer using a previously admitted output grant.
+pub(in crate::native) fn encode_packed_with_memory(
+    view: &impl PackedBlockView,
+    encoded_len: usize,
+    memory: Option<MemoryLease>,
+    budget: &WorkBudget,
+) -> Result<Option<StagedPayload>, IndexError> {
+    budget.checkpoint()?;
+    if !(2..=MAX_BLOCK_TERMS).contains(&view.term_count()) || encoded_len > MAX_BLOCK_BYTES {
+        return Err(IndexError::ResourceLimited);
+    }
+    let expected = u64::try_from(encoded_len).map_err(|_error| IndexError::ResourceLimited)?;
+    if memory
+        .as_ref()
+        .is_some_and(|grant| grant.bytes() != expected)
+    {
+        return Err(IndexError::BackendViolation(
+            "packed text output grant differs from its wire length".into(),
+        ));
+    }
     let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(encoded_len)
-        .map_err(|_error| IndexError::ResourceLimited)?;
+    if bytes.try_reserve_exact(encoded_len).is_err() {
+        return Ok(None);
+    }
+    let capacity = u64::try_from(bytes.capacity()).map_err(|_error| IndexError::ResourceLimited)?;
+    if memory
+        .as_ref()
+        .is_some_and(|grant| grant.bytes() < capacity)
+    {
+        return Ok(None);
+    }
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(
         &u16::try_from(view.term_count())
@@ -179,7 +236,7 @@ pub(in crate::native) fn encode_packed(
         ));
     }
     budget.checkpoint()?;
-    Ok(StagedPayload { bytes, memory })
+    Ok(Some(StagedPayload { bytes, memory }))
 }
 
 impl PackedBlockView for BlockDraft {
@@ -329,29 +386,16 @@ impl BlockDraft {
                     0,
                 )
             };
-        let row_bytes = 4_usize
-            .checked_add(key.len())
-            .ok_or(IndexError::ResourceLimited)?;
-        let vector_bytes = if same.is_some() {
-            0
-        } else {
-            2_usize
-                .checked_add(
-                    values
-                        .len()
-                        .checked_mul(4)
-                        .ok_or(IndexError::ResourceLimited)?,
-                )
-                .ok_or(IndexError::ResourceLimited)?
-        };
-        let next_len = self
-            .encoded_len
-            .checked_add(row_bytes)
-            .and_then(|len| len.checked_add(vector_bytes))
-            .ok_or(IndexError::ResourceLimited)?;
-        if self.terms.len() == MAX_BLOCK_TERMS || next_len > MAX_BLOCK_BYTES {
+        let Some(next_len) = next_block_len(
+            self.encoded_len,
+            self.terms.len(),
+            key.len(),
+            values.len(),
+            same.is_none(),
+        )?
+        else {
             return Ok(BlockPush::Full { term, positions });
-        }
+        };
         let vector = if let Some(index) = same {
             drop(positions);
             u16::try_from(index).map_err(|_error| IndexError::ResourceLimited)?

@@ -146,8 +146,42 @@ def test_complete_git_inventory_two_views_and_portable_replay(source, tmp_path):
     assert not second.exists()
 
 
+def test_replays_multiple_bundles_with_one_live_checkout(source, tmp_path, monkeypatch):
+    checkouts, root, recipe, spec = source
+    shutil.copytree(root, checkouts / "second", symlinks=True)
+    spec["repositories"].append({**spec["repositories"][0], "name": "second"})
+    recipe.write_text(json.dumps(spec))
+    target, document = release(source, tmp_path)
+    shutil.rmtree(checkouts)
+    original_git = corpus.git
+    cloned = []
+
+    def observe_replay(root, *args):
+        result = original_git(root, *args)
+        if args[0] == "clone":
+            cloned.append(Path(args[-1]).name)
+            assert sorted(path.name for path in root.iterdir()) == [cloned[-1]]
+        return result
+
+    monkeypatch.setattr(corpus, "git", observe_replay)
+    assert corpus.validate(target) == document
+    assert cloned == ["fixture", "second"]
+
+
 @pytest.mark.parametrize(
-    "kind", ["view", "blob", "bundle", "manifest", "extra", "mode", "link", "fifo", "inventory"]
+    "kind",
+    [
+        "view",
+        "blob",
+        "bundle",
+        "manifest",
+        "extra",
+        "mode",
+        "link",
+        "fifo",
+        "inventory",
+        "generator",
+    ],
 )
 def test_release_tampering_cannot_be_requalified(source, tmp_path, kind):
     target, document = release(source, tmp_path)
@@ -171,7 +205,10 @@ def test_release_tampering_cannot_be_requalified(source, tmp_path, kind):
     elif kind == "fifo":
         os.mkfifo(target / "fifo")
     else:
-        document["repositories"][0]["tracked_inventory"].pop()
+        if kind == "generator":
+            document["generator_digest"] = "sha256:" + "0" * 64
+        else:
+            document["repositories"][0]["tracked_inventory"].pop()
         body = {key: value for key, value in document.items() if key != "digest"}
         document["digest"] = corpus.digest_bytes(corpus.canonical_json(body).encode())
         (target / "release.json").write_text(corpus.canonical_json(document))

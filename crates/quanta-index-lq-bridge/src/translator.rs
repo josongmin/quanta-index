@@ -27,10 +27,10 @@
 use crate::errors::{BridgeError, BridgeErrorCode};
 use crate::syntax::{SgFilter, SgQuery};
 use crate::version::SourcegraphVersionTag;
-use quanta_index_contract::{
+use quanta_index_lq_norm::{
     LQ_VERSION_TAG, LqCase, LqCountBound, LqDirective, LqExpr, LqFileScope, LqFilter, LqLeaf,
-    LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqSpan, LqType, LqVisibility,
-    LqYesNoOnly,
+    LqNormalizedQuery as LqQuery, LqOptions, LqPatternType, LqPredicateArg, LqSelect, LqSpan,
+    LqType, LqVisibility, LqYesNoOnly,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -898,9 +898,10 @@ mod tests {
     use crate::errors::BridgeErrorCode;
     use crate::syntax::{SgPatternKind, SgQuery, parse_sourcegraph};
     use crate::version::SourcegraphVersionTag;
-    use quanta_index_contract::{
-        LQ_VERSION_TAG, LqCase, LqCountBound, LqExpr, LqFilter, LqLeaf, LqOptions, LqPatternType,
-        LqPredicateArg, LqQuery, LqSpan, LqVisibility, LqYesNoOnly,
+    use quanta_index_lq_norm::{
+        LQ_VERSION_TAG, LqCase, LqCountBound, LqExpr, LqFilter, LqLeaf,
+        LqNormalizedQuery as LqQuery, LqOptions, LqPatternType, LqPredicateArg, LqSpan,
+        LqVisibility, LqYesNoOnly,
     };
 
     fn ver() -> SourcegraphVersionTag {

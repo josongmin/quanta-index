@@ -93,11 +93,21 @@ impl ScratchConnection {
         })
     }
 
+    fn open_connection(&self) -> Result<&Connection, IndexError> {
+        self.connection
+            .as_ref()
+            .ok_or_else(|| IndexError::BackendViolation("scratch connection is closed".into()))
+    }
+
+    /// Snapshot SQLite's connection-local change counter. This is an in-memory
+    /// accessor; database statements must still use `scoped` for I/O custody.
+    pub fn change_count(&self) -> Result<u64, IndexError> {
+        Ok(self.open_connection()?.total_changes())
+    }
+
     pub fn scoped(&self, budget: &WorkBudget) -> Result<ScratchConnectionScope<'_>, IndexError> {
         Ok(ScratchConnectionScope {
-            connection: self.connection.as_ref().ok_or_else(|| {
-                IndexError::BackendViolation("scratch connection is closed".into())
-            })?,
+            connection: self.open_connection()?,
             _scope: OperationScope::enter(
                 self.binding.as_ref(),
                 budget.request().diagnostic_context(),
@@ -151,6 +161,7 @@ mod tests {
     struct Binding {
         name: &'static str,
         live: Arc<AtomicUsize>,
+        entries: Option<Arc<AtomicUsize>>,
     }
     struct Scope(Arc<AtomicUsize>);
     #[derive(Debug)]
@@ -182,6 +193,9 @@ mod tests {
             _: Option<&quanta_index_core::DiagnosticContextV1>,
         ) -> Box<dyn ScratchIoScope> {
             let _previous = self.live.fetch_add(1, Ordering::SeqCst);
+            if let Some(entries) = self.entries.as_ref() {
+                let _previous = entries.fetch_add(1, Ordering::SeqCst);
+            }
             Box::new(Scope(Arc::clone(&self.live)))
         }
         fn acquire_namespace(
@@ -233,6 +247,30 @@ mod tests {
     }
 
     #[test]
+    fn change_count_observes_sql_changes_without_entering_io_scope()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let work = test_budget();
+        let directory = tempfile::tempdir()?;
+        let entries = Arc::new(AtomicUsize::new(0));
+        let allocation = Allocation {
+            path: directory.path().to_path_buf(),
+            binding: Some(Arc::new(Binding {
+                name: "unix",
+                live: Arc::new(AtomicUsize::new(0)),
+                entries: Some(Arc::clone(&entries)),
+            })),
+        };
+        let connection =
+            ScratchConnection::open(&allocation.path().join("count.sqlite"), &allocation, &work)?;
+        require(connection.change_count()? == 0 && entries.load(Ordering::SeqCst) == 1)?;
+        connection.scoped(&work)?.execute_batch(
+            "CREATE TABLE observations(v); INSERT INTO observations VALUES(1),(2);",
+        )?;
+        require(connection.change_count()? == 2 && entries.load(Ordering::SeqCst) == 2)?;
+        Ok(())
+    }
+
+    #[test]
     fn missing_named_driver_never_falls_back_or_creates_database()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
@@ -242,6 +280,7 @@ mod tests {
             binding: Some(Arc::new(Binding {
                 name: "quanta-absent-scratch-driver",
                 live: Arc::clone(&live),
+                entries: None,
             })),
         };
         let file = allocation.path().join("denied.sqlite");
@@ -261,6 +300,7 @@ mod tests {
         let binding: Arc<dyn ScratchIoBinding> = Arc::new(Binding {
             name: "unix",
             live: Arc::clone(&live),
+            entries: None,
         });
         let outer = OperationScope::enter(Some(&binding), None);
         require(matches!(

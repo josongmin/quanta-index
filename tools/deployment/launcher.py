@@ -15,22 +15,27 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
 import os
 import re
+import secrets
 import signal
+import socket as unix_socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable
+from typing import BinaryIO, Callable, TypeVar
 
 FORMAT_VERSION = 2
 MAX_SELECTION_BYTES = 64 * 1024
@@ -38,6 +43,8 @@ MAX_NATIVE_CONFIG_BYTES = 64 * 1024
 MAX_NATIVE_RECEIPT_BYTES = 8 * 1024
 # searchd's hard drain deadline is 125 seconds. Allow five seconds for exit.
 DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 130.0
+DEFAULT_CANDIDATE_PREPARE_TIMEOUT_SECONDS = 600.0
+LINUX_UNIX_PATH_BYTES = 108  # sun_path includes the terminating NUL.
 DEPLOYMENT_LOCK_NAME = ".quanta-index-deployment.lock"
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _FIELDS = {"schema_version", "mode", "binary", "binary_sha256", "state_root", "environment"}
@@ -110,6 +117,7 @@ _CONFIG_ENV = frozenset(
 _PROCESS_ENV = frozenset({"HOME", "PATH", "TMPDIR", "XDG_CACHE_HOME", "LANG", "LC_ALL"})
 _ALLOWED_ENV = _CONFIG_ENV | _PROCESS_ENV
 FaultHook = Callable[[str], None]
+ControlDocument = TypeVar("ControlDocument")
 
 
 class SelectionError(Exception):
@@ -354,6 +362,13 @@ def proposed_native_selection(
 
 
 def _check_native_config(config: Path, state_root: Path, expected_digest: str | None = None) -> str:
+    digest, _ = _read_native_config(config, state_root, expected_digest)
+    return digest
+
+
+def _read_native_config(
+    config: Path, state_root: Path, expected_digest: str | None
+) -> tuple[str, dict[str, object]]:
     if _canonical_existing(config, directory=False) != config:
         raise SelectionError("native config path changed")
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -378,7 +393,7 @@ def _check_native_config(config: Path, state_root: Path, expected_digest: str | 
         raise SelectionError(f"invalid native config JSON: {error}") from error
     if not isinstance(config_wire, dict) or config_wire.get("state_root") != str(state_root):
         raise SelectionError("native config state_root differs from selected root")
-    return digest
+    return digest, config_wire
 
 
 def _sha256_binary(binary: Path) -> str:
@@ -412,6 +427,8 @@ def _selection_path(path: str | Path) -> Path:
         raise SelectionError("selection path contains NUL")
     if not path.is_absolute() or path.name in {"", ".", ".."}:
         raise SelectionError("selection path must be an absolute file path")
+    if path.name == DEPLOYMENT_LOCK_NAME:
+        raise SelectionError("selection path aliases the deployment lock")
     parent = _canonical_existing(path.parent, directory=True)
     if parent != path.parent:
         raise SelectionError("selection parent is not canonical")
@@ -471,7 +488,7 @@ def _reject_duplicate_fields(pairs: list[tuple[str, object]]) -> dict[str, objec
 
 
 def _read_selection_locked(path: Path) -> Selection:
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
         with os.fdopen(descriptor, "rb") as stream:
@@ -481,6 +498,10 @@ def _read_selection_locked(path: Path) -> Selection:
         raise SelectionError(f"cannot read selection {path}: {error}") from error
     if len(contents) > MAX_SELECTION_BYTES:
         raise SelectionError("selection exceeds byte bound")
+    return _decode_selection(contents)
+
+
+def _decode_selection(contents: bytes) -> Selection:
     try:
         wire = json.loads(contents.decode("utf-8"), object_pairs_hook=_reject_duplicate_fields)
     except (UnicodeError, ValueError) as error:
@@ -490,7 +511,7 @@ def _read_selection_locked(path: Path) -> Selection:
 
 def _read_native_receipt(path: str | Path) -> NativeBootReceipt:
     canonical = _canonical_existing(path, directory=False)
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(canonical, flags)
         with os.fdopen(descriptor, "rb") as stream:
@@ -500,6 +521,10 @@ def _read_native_receipt(path: str | Path) -> NativeBootReceipt:
         raise SelectionError(f"cannot read native receipt {canonical}: {error}") from error
     if len(payload) > MAX_NATIVE_RECEIPT_BYTES:
         raise SelectionError("native receipt exceeds byte bound")
+    return _decode_native_receipt(payload)
+
+
+def _decode_native_receipt(payload: bytes) -> NativeBootReceipt:
     try:
         wire = json.loads(payload.decode("utf-8"), object_pairs_hook=_reject_duplicate_fields)
     except (UnicodeError, ValueError) as error:
@@ -529,6 +554,9 @@ def _run_selected_command(
     lock_fd: int,
     *,
     shutdown_timeout_seconds: float = DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
+    candidate_receipt: tuple[Path, str, str, str] | None = None,
+    with_candidate: Callable[[subprocess.Popen[bytes], Callable[[], bool]], None] | None = None,
+    fail_on_external_signal: bool = False,
 ) -> int:
     _check_binary(selection)
     if threading.current_thread() is not threading.main_thread():
@@ -542,11 +570,32 @@ def _run_selected_command(
         if selection.native_config_sha256 is None:
             raise SelectionError("native selection is missing its pinned config digest")
     args = [str(selection.binary), operation]
-    if operation == "verify-native-state" and selection.native_config is not None:
+    if (
+        operation == "select-native-candidate"
+        and selection.native_config is not None
+        and candidate_receipt is not None
+    ):
+        path, nonce, published_operation, source_cut = candidate_receipt
+        args.extend(
+            (
+                "--config", str(selection.native_config),
+                "--config-digest", selection.native_config_sha256,
+                "--root-nonce", nonce,
+                "--manifest-operation", published_operation,
+                "--source-cut-digest", source_cut,
+                "--receipt", str(path),
+            )
+        )
+    elif operation in {"verify-native-state", "verify-native-candidate"} and selection.native_config is not None:
         args.extend(("--config", str(selection.native_config)))
         if selection.native_boot_receipt is None:
             raise SelectionError("native selection is missing its immutable boot receipt")
         args.extend(_native_identity_args(selection.native_boot_receipt, install=True))
+        args.extend(("--config-digest", selection.native_config_sha256))
+    elif operation == "serve-native-candidate" and selection.native_config is not None:
+        if selection.native_boot_receipt is not None:
+            raise SelectionError("candidate process requires an unselected root")
+        args.extend(("--config", str(selection.native_config)))
         args.extend(("--config-digest", selection.native_config_sha256))
     elif operation == "serve-native" and selection.native_config is not None:
         args.extend(("--config", str(selection.native_config)))
@@ -563,6 +612,7 @@ def _run_selected_command(
     child: subprocess.Popen[bytes] | None = None
     pending_signals: list[int] = []
     first_signal_deadline: float | None = None
+    external_interrupted = False
 
     def forward(signum: int) -> None:
         nonlocal first_signal_deadline
@@ -577,9 +627,16 @@ def _run_selected_command(
             pass
 
     def handle_signal(signum: int, _frame: object) -> None:
+        nonlocal external_interrupted
         # Each operator signal has one forward. A first SIGINT must not cause
         # an implicit SIGTERM while searchd is draining.
+        external_interrupted = True
         forward(signum)
+
+    def result_after_signal(status: int) -> int:
+        if fail_on_external_signal and external_interrupted:
+            raise SelectionError(f"{operation} interrupted")
+        return status
 
     old_int = signal.getsignal(signal.SIGINT)
     old_term = signal.getsignal(signal.SIGTERM)
@@ -600,6 +657,27 @@ def _run_selected_command(
         for signum in pending_signals:
             forward(signum)
         pending_signals.clear()
+        if with_candidate is not None:
+            try:
+                if first_signal_deadline is not None:
+                    raise SelectionError("candidate preparation interrupted")
+                with_candidate(child, lambda: first_signal_deadline is not None)
+                if first_signal_deadline is not None or child.poll() is not None:
+                    raise SelectionError("candidate exited during preparation")
+            finally:
+                if first_signal_deadline is None and child.poll() is None:
+                    forward(signal.SIGTERM)
+                remaining = max(0.0, (first_signal_deadline or time.monotonic()) - time.monotonic())
+                try:
+                    child.wait(timeout=remaining)
+                except subprocess.TimeoutExpired as error:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(child.pid, signal.SIGKILL)
+                    child.wait()
+                    raise SelectionError("candidate exceeded its drain deadline") from error
+            if external_interrupted:
+                raise SelectionError("candidate preparation interrupted")
+            return child.returncode
         while True:
             remaining = (
                 None if first_signal_deadline is None else first_signal_deadline - time.monotonic()
@@ -607,7 +685,7 @@ def _run_selected_command(
             if remaining is not None and remaining <= 0:
                 status = child.poll()
                 if status is not None:
-                    return status
+                    return result_after_signal(status)
                 try:
                     os.killpg(child.pid, signal.SIGKILL)
                 except ProcessLookupError:
@@ -618,7 +696,9 @@ def _run_selected_command(
                     "owned process group was killed"
                 )
             try:
-                return child.wait(timeout=min(0.25, remaining) if remaining else 0.25)
+                return result_after_signal(
+                    child.wait(timeout=min(0.25, remaining) if remaining else 0.25)
+                )
             except subprocess.TimeoutExpired:
                 continue
     finally:
@@ -626,9 +706,21 @@ def _run_selected_command(
         signal.signal(signal.SIGINT, old_int)
 
 
-def _verify_bootstrap_locked(selection: Selection, lock_fd: int) -> None:
-    operation = "verify-native-state" if selection.native_config is not None else "verify-state"
-    status = _run_selected_command(selection, operation, lock_fd)
+def _verify_bootstrap_locked(
+    selection: Selection,
+    lock_fd: int,
+    *,
+    candidate: bool = False,
+) -> None:
+    if candidate and selection.native_config is None:
+        raise SelectionError("candidate verification requires a Native selection")
+    operation = (
+        "verify-native-candidate" if candidate
+        else "verify-native-state" if selection.native_config is not None else "verify-state"
+    )
+    status = _run_selected_command(
+        selection, operation, lock_fd, fail_on_external_signal=candidate
+    )
     if status != 0:
         raise SelectionError(f"selected {operation} failed with exit status {status}")
     _check_binary(selection)
@@ -686,7 +778,7 @@ def _require_current_selection(path: Path, expected: str) -> Selection:
 
 def _previous_legacy_path(path: Path, previous_path: str | Path) -> Path:
     previous = _selection_path(previous_path)
-    if previous.parent != path.parent or previous == path or previous.name == DEPLOYMENT_LOCK_NAME:
+    if previous.parent != path.parent or previous == path:
         raise SelectionError("previous Legacy selection must be a separate file in deployment")
     return previous
 
@@ -723,7 +815,7 @@ def preserve_legacy_selection(
     """Durably preserve the selected Legacy head at a caller-chosen separate path."""
     path = _selection_path(path)
     previous = _previous_legacy_path(path, previous_path)
-    with deployment_lock(path):
+    with deployment_lock(path) as lock_fd:
         current = _require_current_selection(path, expected_current_sha256)
         if current.native_config is not None:
             raise SelectionError("preserve-legacy requires a current Legacy selection")
@@ -742,7 +834,7 @@ def preserve_legacy_selection(
 
         # This publisher's expected_current_sha256 checks its destination,
         # not the active source. Recheck both paths in the wrapper instead.
-        _publish_selection_locked(previous, current, fault_hook=recheck_after_hook)
+        _publish_selection_locked(previous, current, lock_fd, fault_hook=recheck_after_hook)
         return _selection_fingerprint(current)
 
 
@@ -781,8 +873,527 @@ def publish_selection(
                 raise SelectionError(
                     "native cross-root installation requires switch-native and selection CAS"
                 )
+            if (
+                current.native_config is not None
+                and current.native_boot_receipt != selection.native_boot_receipt
+            ):
+                raise SelectionError(
+                    "installed Native baseline cannot be replaced by a reissued BOOT receipt"
+                )
         _verify_bootstrap_locked(selection, lock_fd)
-        _publish_selection_locked(path, selection, fault_hook=fault_hook)
+        _publish_selection_locked(path, selection, lock_fd, fault_hook=fault_hook)
+
+
+def prepare_native_candidate(
+    active_path: str | Path,
+    candidate_path: str | Path,
+    selection: Selection,
+    expected_current_sha256: str,
+    *,
+    receipt_path: Path,
+    root_nonce: str,
+    manifest_operation: str,
+    source_cut_digest: str,
+) -> str:
+    """Verify an offline candidate and persist its document without switching."""
+    active, candidate, receipt_path = _candidate_paths(
+        active_path, candidate_path, selection.state_root, receipt_path
+    )
+    with deployment_lock(candidate) as lock_fd:
+        return _prepare_native_candidate_locked(
+            active, candidate, selection, expected_current_sha256, receipt_path,
+            root_nonce, manifest_operation, source_cut_digest, lock_fd,
+        )
+
+
+def _candidate_paths(
+    active_path: str | Path, candidate_path: str | Path, state_root: Path, receipt_path: Path
+) -> tuple[Path, Path, Path]:
+    active = _selection_path(active_path)
+    candidate = _selection_path(candidate_path)
+    receipt_path = _selection_path(receipt_path)
+    if (
+        candidate == active
+        or receipt_path in (active, candidate)
+        or candidate.is_relative_to(state_root)
+        or receipt_path.is_relative_to(state_root)
+    ):
+        raise SelectionError("candidate and receipt must be separate control files outside the root")
+    if active.parent.samefile(candidate.parent) or receipt_path.parent != candidate.parent:
+        raise SelectionError("candidate and receipt require one separate deployment directory")
+    return active, candidate, receipt_path
+
+
+def _require_candidate_source_selection(active: Path, expected: str, state_root: Path) -> None:
+    current = _require_current_selection(active, expected)
+    if current.native_config is not None and current.native_boot_receipt is None:
+        raise SelectionError("active Native selection has no BOOT receipt")
+    _require_distinct_switch_roots(current.state_root, state_root)
+
+
+def _prepare_native_candidate_locked(
+    active: Path,
+    candidate: Path,
+    selection: Selection,
+    expected_current_sha256: str,
+    receipt_path: Path,
+    root_nonce: str,
+    manifest_operation: str,
+    source_cut_digest: str,
+    lock_fd: int,
+) -> str:
+    _require_candidate_source_selection(active, expected_current_sha256, selection.state_root)
+    if not os.path.lexists(receipt_path):
+        if os.path.lexists(candidate):
+            raise SelectionError("retained candidate has no BOOT receipt")
+        status = _run_selected_command(
+            selection, "select-native-candidate", lock_fd,
+            candidate_receipt=(receipt_path, root_nonce, manifest_operation, source_cut_digest),
+            fail_on_external_signal=True,
+        )
+        if status != 0 and not os.path.lexists(receipt_path):
+            raise SelectionError(f"select-native-candidate failed with exit status {status}")
+    if receipt_path.is_symlink():
+        raise SelectionError("candidate receipt must be a private file at the requested path")
+    receipt = _read_native_receipt(receipt_path)
+    if (
+        receipt.root_nonce_hex != root_nonce
+        or receipt.manifest_operation_json != manifest_operation
+        or receipt.source_cut_digest_hex != source_cut_digest
+    ):
+        raise SelectionError("candidate receipt differs from expected publication identity")
+    selection = replace(selection, native_boot_receipt=receipt)
+    if selection_from_wire(selection.to_wire()) != selection:
+        raise SelectionError("candidate must be a canonical Native selection")
+    try:
+        retained = _read_selection_locked(candidate)
+    except SelectionError as error:
+        if not isinstance(error.__cause__, FileNotFoundError):
+            raise
+        retained = None
+    if retained is not None and retained != selection:
+        raise SelectionError("retained candidate differs from requested selection")
+    _verify_bootstrap_locked(selection, lock_fd, candidate=True)
+    _require_current_selection(active, expected_current_sha256)
+    _sync_retained_publication(
+        receipt_path, lock_fd, receipt, MAX_NATIVE_RECEIPT_BYTES, _decode_native_receipt
+    )
+    if retained is None:
+        _publish_selection_locked(candidate, selection, lock_fd, fault_hook=None, create_only=True)
+    else:
+        _sync_retained_publication(
+            candidate, lock_fd, retained, MAX_SELECTION_BYTES, _decode_selection
+        )
+    return _selection_fingerprint(selection)
+
+
+def _candidate_source_handoff(payload: bytes) -> tuple[str, str, str, int]:
+    try:
+        wire = json.loads(payload.decode("utf-8"), object_pairs_hook=_reject_duplicate_fields)
+    except (UnicodeError, ValueError) as error:
+        raise SelectionError("invalid candidate FULL handoff JSON") from error
+    if not isinstance(wire, dict) or set(wire) != {
+        "root_nonce_hex", "manifest_operation", "source_cut_digest_hex", "original_full_sequence",
+    }:
+        raise SelectionError("candidate FULL handoff has unexpected fields")
+    root_nonce = _hex_digest(wire["root_nonce_hex"], "candidate root nonce")
+    source_cut = _hex_digest(wire["source_cut_digest_hex"], "candidate SourceCut")
+    sequence = _uint64(wire["original_full_sequence"], "candidate Original FULL sequence")
+    if not sequence or root_nonce == "0" * 64 or source_cut == "0" * 64:
+        raise SelectionError("candidate FULL handoff has an empty identity")
+    return root_nonce, _canonical_operation(wire["manifest_operation"]), source_cut, sequence
+
+
+def _unreaped_child_exited(process: subprocess.Popen[bytes]) -> bool:
+    """Observe S completion without releasing its PID and process-group identity."""
+    if hasattr(os, "waitid"):
+        return os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+    if sys.platform != "darwin":
+        raise SelectionError("unreaped producer observation is unavailable")
+    # macOS has waitid(2), but the system Python 3.9 does not expose os.waitid.
+    libc = ctypes.CDLL(None, use_errno=True)
+    waitid = libc.waitid
+    waitid.argtypes = (ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_int)
+    waitid.restype = ctypes.c_int
+    info = (ctypes.c_int * 32)()
+    if waitid(1, process.pid, ctypes.byref(info), 0x25):  # P_PID, WEXITED|WNOHANG|WNOWAIT
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), str(process.pid))
+    if info[3] not in (0, process.pid):  # Darwin siginfo_t.si_pid
+        raise SelectionError("producer completion reports a different PID")
+    return info[3] == process.pid
+
+
+def _kill_candidate_producer_group(pid: int) -> None:
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        if sys.platform != "darwin":
+            raise
+        # Darwin reports EPERM for a process group containing only an unreaped
+        # zombie leader. The trusted one-shot producer has no live same-user
+        # descendant in that case.
+
+
+def _run_candidate_source(
+    child: subprocess.Popen[bytes],
+    stopping: Callable[[], bool],
+    lock_fd: int,
+    socket: Path,
+    producer: Path,
+    arguments: list[str],
+    environment: dict[str, str],
+    timeout_seconds: float,
+) -> bytes:
+    deadline = time.monotonic() + timeout_seconds
+
+    _wait_candidate_endpoint(child, stopping, socket, deadline)
+    with tempfile.TemporaryFile() as output:
+        try:
+            process = subprocess.Popen(
+                [str(producer), "--prepare-native-candidate-full", *arguments,
+                 "--native-candidate-q-pid", str(child.pid)],
+                env=environment, cwd="/", stdin=subprocess.DEVNULL, stdout=output,
+                # If the launcher and Q exit while S is still settling FULL,
+                # S must keep the candidate fenced against another invocation.
+                close_fds=True, pass_fds=(lock_fd,), start_new_session=True,
+            )
+        except OSError as error:
+            raise SelectionError(f"cannot start installed S candidate producer: {error}") from error
+        group_terminated = False
+        try:
+            while not _unreaped_child_exited(process):
+                _candidate_checkpoint(child, stopping, deadline)
+                if os.fstat(output.fileno()).st_size > MAX_NATIVE_RECEIPT_BYTES:
+                    raise SelectionError("candidate FULL handoff exceeds byte bound")
+                time.sleep(0.05)
+            _kill_candidate_producer_group(process.pid)
+            group_terminated = True
+            process.wait()
+            if process.returncode != 0:
+                raise SelectionError(f"candidate FULL refused with exit status {process.returncode}")
+            _candidate_checkpoint(child, stopping, deadline)
+            output.seek(0)
+            payload = output.read(MAX_NATIVE_RECEIPT_BYTES + 1)
+            if len(payload) > MAX_NATIVE_RECEIPT_BYTES:
+                raise SelectionError("candidate FULL handoff exceeds byte bound")
+            return payload
+        finally:
+            # The one-shot producer owns its entire isolated process group. A
+            # successful leader exit must not leave a worker writing after BOOT.
+            try:
+                if not group_terminated:
+                    _kill_candidate_producer_group(process.pid)
+            finally:
+                process.wait()
+
+
+def _candidate_checkpoint(
+    child: subprocess.Popen[bytes], stopping: Callable[[], bool], deadline: float
+) -> None:
+    if stopping() or child.poll() is not None:
+        raise SelectionError("candidate searchd stopped during FULL preparation")
+    if time.monotonic() >= deadline:
+        raise SelectionError("candidate FULL preparation exceeded its deadline")
+
+
+def _wait_candidate_endpoint(
+    child: subprocess.Popen[bytes],
+    stopping: Callable[[], bool],
+    socket: Path,
+    deadline: float,
+) -> None:
+    """Wait for the unselected Q listener before FULL or a drain-only retry."""
+
+    while True:
+        _candidate_checkpoint(child, stopping, deadline)
+        try:
+            _probe_candidate_socket(socket, child.pid)
+        except (FileNotFoundError, ConnectionRefusedError, TimeoutError):
+            time.sleep(0.05)
+        except OSError as error:
+            raise SelectionError(f"cannot connect to candidate Native endpoint: {error}") from error
+        else:
+            _candidate_checkpoint(child, stopping, deadline)
+            return
+
+
+def _probe_candidate_socket(socket: Path, expected_pid: int) -> None:
+    """Use the same on-disk endpoint as Q when Linux needs a shorter address."""
+    original = socket.lstat()
+    _selection_path(socket)
+    if not stat.S_ISSOCK(original.st_mode):
+        raise SelectionError("candidate Native endpoint is not a socket")
+    with contextlib.ExitStack() as custody:
+        address = socket
+        if sys.platform == "linux" and len(os.fsencode(socket)) >= LINUX_UNIX_PATH_BYTES:
+            directory = os.open(socket.parent, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+            custody.callback(os.close, directory)
+            address = Path(f"/proc/self/fd/{directory}") / socket.name
+            if not os.path.samestat(original, address.lstat()):
+                raise SelectionError("candidate Native endpoint changed before probe")
+        with unix_socket.socket(unix_socket.AF_UNIX, unix_socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.1)
+            probe.connect(str(address))
+            if sys.platform == "linux":
+                credential_layout = struct.Struct("@iII")
+                pid, _, _ = credential_layout.unpack(probe.getsockopt(
+                    unix_socket.SOL_SOCKET, unix_socket.SO_PEERCRED, credential_layout.size
+                ))
+                if pid != expected_pid:
+                    raise SelectionError("candidate Native endpoint belongs to a different process")
+        if not os.path.samestat(original, socket.lstat()):
+            raise SelectionError("candidate Native endpoint changed during probe")
+
+
+def build_native_candidate(
+    active_path: Path,
+    candidate_path: Path,
+    selection: Selection,
+    expected_current_sha256: str,
+    *,
+    receipt_path: Path,
+    producer: Path,
+    producer_sha256: str,
+    producer_arguments: list[str],
+    producer_environment: dict[str, str],
+    timeout_seconds: float = DEFAULT_CANDIDATE_PREPARE_TIMEOUT_SECONDS,
+) -> dict[str, object]:
+    """Run the digest-pinned FULL producer, retain its handoff, reap Q, and seal BOOT."""
+    active, candidate, receipt_path = _candidate_paths(
+        active_path, candidate_path, selection.state_root, receipt_path
+    )
+    handoff = _selection_path(candidate.with_name(f".{candidate.name}.full-handoff.json"))
+    drained = _selection_path(candidate.with_name(f".{candidate.name}.clean-drain.json"))
+    if receipt_path in (handoff, drained) or not 0 < timeout_seconds < float("inf"):
+        raise SelectionError("candidate handoff path and timeout must be valid")
+    producer = _canonical_existing(producer, directory=False)
+    if _sha256_binary(producer) != _hex_digest(producer_sha256, "S producer SHA-256"):
+        raise SelectionError("S producer SHA-256 changed")
+    if selection.native_config is None or selection.native_config_sha256 is None:
+        raise SelectionError("candidate preparation requires a pinned Native config")
+    _, config = _read_native_config(
+        selection.native_config, selection.state_root, selection.native_config_sha256
+    )
+    socket_wire = config.get("socket_path")
+    if not isinstance(socket_wire, str):
+        raise SelectionError("Native candidate config has no socket path")
+    socket = Path(socket_wire)
+    if (
+        "\x00" in socket_wire or not socket.is_absolute() or not socket.name
+        or ".." in socket.parts or socket.name == DEPLOYMENT_LOCK_NAME
+    ):
+        raise SelectionError("Native candidate socket path must be absolute and canonical")
+    # Q owns creation of the socket directory. Check its custody after bind,
+    # and check immediately when the directory already exists.
+    try:
+        parent = socket.parent.resolve()
+    except (OSError, RuntimeError) as error:
+        raise SelectionError(f"cannot inspect Native candidate socket parent: {error}") from error
+    if parent != socket.parent:
+        raise SelectionError("Native candidate socket parent is not canonical")
+    if parent.exists():
+        _selection_path(socket)
+    if len(producer_arguments) % 2:
+        raise SelectionError("S producer startup arguments must be flag/value pairs")
+    history_sources = [value for flag, value in zip(
+        producer_arguments[::2], producer_arguments[1::2]
+    ) if flag == "--native-candidate-history-source"]
+    if len(history_sources) > 1 or (history_sources and history_sources[0] not in {"replay", "snapshot"}):
+        raise SelectionError("candidate History source must be replay or snapshot exactly once")
+    snapshot_history = history_sources == ["snapshot"]
+    pinned_flags = {
+        "--native-source-socket": str(socket),
+        "--native-q-executable": str(selection.binary),
+        "--native-q-sha256": selection.binary_sha256,
+        "--native-q-root": str(selection.state_root),
+    }
+    if set(producer_arguments[::2]) & (
+        pinned_flags.keys() | {
+            "--native-candidate-q-pid",
+            "--native-candidate-active-selection-path",
+            "--native-candidate-active-selection-sha256",
+            "--native-candidate-q-config",
+            "--native-candidate-q-config-sha256",
+        }
+    ):
+        raise SelectionError("launcher owns the candidate Q endpoint and PID flags")
+    if snapshot_history:
+        pinned_flags.update({
+            "--native-candidate-active-selection-path": str(active),
+            "--native-candidate-active-selection-sha256": _hex_digest(
+                expected_current_sha256, "active selection SHA-256"
+            ),
+            "--native-candidate-q-config": str(selection.native_config),
+            "--native-candidate-q-config-sha256": selection.native_config_sha256,
+        })
+    arguments = list(producer_arguments)
+    for flag, value in pinned_flags.items():
+        arguments.extend((flag, value))
+    binding = hashlib.sha256(json.dumps(
+        [expected_current_sha256, _selection_fingerprint(selection), str(receipt_path),
+         str(producer), producer_sha256, arguments, producer_environment],
+        sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    # The retained binding already covers both values through the producer
+    # identity. Preserve existing handoffs and accept only the same explicit pin.
+    scan_worker_flags = {
+        "--quanta-internal-filesystem-scan-worker-path-v1": str(producer),
+        "--quanta-internal-filesystem-scan-worker-sha256-v1": producer_sha256,
+    }
+    for flag, expected_value in scan_worker_flags.items():
+        supplied = [value for name, value in zip(producer_arguments[::2], producer_arguments[1::2])
+                    if name == flag]
+        if not supplied:
+            arguments.extend((flag, expected_value))
+        elif supplied != [expected_value]:
+            raise SelectionError("S scan worker flags must match the pinned producer exactly once")
+
+    with deployment_lock(candidate) as lock_fd:
+        _require_candidate_source_selection(active, expected_current_sha256, selection.state_root)
+        if snapshot_history and _require_current_selection(active, expected_current_sha256).native_config is not None:
+            raise SelectionError("candidate History snapshot requires an active Legacy selection")
+        completed_drain = False
+        if not os.path.lexists(handoff):
+            if any(os.path.lexists(path) for path in (drained, receipt_path, candidate)):
+                raise SelectionError("candidate has BOOT or drain proof without its FULL handoff")
+
+            def produce(child: subprocess.Popen[bytes], stopping: Callable[[], bool]) -> None:
+                if _sha256_binary(producer) != producer_sha256:
+                    raise SelectionError("S producer SHA-256 changed before execution")
+                payload = _run_candidate_source(
+                    child, stopping, lock_fd, socket, producer, arguments,
+                    producer_environment, timeout_seconds,
+                )
+                envelope = _candidate_handoff_envelope(binding, _candidate_source_handoff(payload))
+                _publish_control_file_locked(handoff, envelope, lock_fd, create_only=True)
+
+            status = _run_selected_command(
+                selection, "serve-native-candidate", lock_fd, with_candidate=produce
+            )
+            if status != 0:
+                raise SelectionError(f"candidate searchd drain failed with exit status {status}")
+            completed_drain = True
+        publication = _read_candidate_handoff(handoff, binding)
+        _sync_retained_publication(
+            handoff, lock_fd, publication, MAX_NATIVE_RECEIPT_BYTES,
+            lambda payload: _decode_candidate_handoff(payload, binding),
+        )
+        if not os.path.lexists(drained):
+            if os.path.lexists(receipt_path) or os.path.lexists(candidate):
+                raise SelectionError("candidate BOOT requires a completed Q drain")
+            if not completed_drain:
+                # The FULL handoff is durable, but the previous Q drain may have
+                # failed or been interrupted. Reopen Q without repeating FULL.
+                status = _run_selected_command(
+                    selection, "serve-native-candidate", lock_fd,
+                    with_candidate=lambda child, stopping: _wait_candidate_endpoint(
+                        child, stopping, socket, time.monotonic() + timeout_seconds
+                    ),
+                )
+                if status != 0:
+                    raise SelectionError(f"candidate searchd drain failed with exit status {status}")
+            _publish_control_file_locked(
+                drained, _candidate_handoff_envelope(binding, publication), lock_fd,
+                create_only=True,
+            )
+        drained_publication = _read_candidate_handoff(drained, binding)
+        if drained_publication != publication:
+            raise SelectionError("candidate drain proof differs from FULL handoff")
+        _sync_retained_publication(
+            drained, lock_fd, publication, MAX_NATIVE_RECEIPT_BYTES,
+            lambda payload: _decode_candidate_handoff(payload, binding),
+        )
+        root_nonce, operation, source_cut, original_full_sequence = publication
+        digest = _prepare_native_candidate_locked(
+            active, candidate, selection, expected_current_sha256, receipt_path,
+            root_nonce, operation, source_cut, lock_fd,
+        )
+    return {
+        "candidate_path": str(candidate),
+        "candidate_sha256": digest,
+        "original_full_sequence": original_full_sequence,
+    }
+
+
+def _candidate_handoff_envelope(binding: str, publication: tuple[str, str, str, int]) -> bytes:
+    nonce, operation, source_cut, sequence = publication
+    payload = json.dumps({
+        "binding": binding,
+        "publication": {
+            "root_nonce_hex": nonce,
+            "manifest_operation": json.loads(operation),
+            "source_cut_digest_hex": source_cut,
+            "original_full_sequence": sequence,
+        },
+    }, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    if len(payload) > MAX_NATIVE_RECEIPT_BYTES:
+        raise SelectionError("candidate FULL handoff exceeds byte bound")
+    return payload
+
+
+def _decode_candidate_handoff(payload: bytes, binding: str) -> tuple[str, str, str, int]:
+    try:
+        wire = json.loads(payload.decode("utf-8"), object_pairs_hook=_reject_duplicate_fields)
+    except (UnicodeError, ValueError) as error:
+        raise SelectionError("invalid retained candidate FULL handoff JSON") from error
+    if not isinstance(wire, dict) or set(wire) != {"binding", "publication"} or wire["binding"] != binding:
+        raise SelectionError("candidate FULL handoff differs from preparation inputs")
+    return _candidate_source_handoff(json.dumps(wire["publication"]).encode())
+
+
+def _read_candidate_handoff(path: Path, binding: str) -> tuple[str, str, str, int]:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as stream:
+            _check_control_file(os.fstat(stream.fileno()), "candidate FULL handoff")
+            payload = stream.read(MAX_NATIVE_RECEIPT_BYTES + 1)
+        if len(payload) > MAX_NATIVE_RECEIPT_BYTES:
+            raise SelectionError("candidate FULL handoff exceeds byte bound")
+        return _decode_candidate_handoff(payload, binding)
+    except (OSError, UnicodeError, ValueError) as error:
+        raise SelectionError("cannot read retained candidate FULL handoff") from error
+
+
+def serve_native_candidate(
+    active_path: str | Path,
+    expected_current_sha256: str,
+    candidate_path: str | Path,
+    binary: str | Path,
+    binary_sha256: str,
+    state_root: str | Path,
+    config: str | Path,
+    config_sha256: str,
+    environment: dict[str, str],
+) -> int:
+    """Own the unselected searchd process until it exits and has been reaped."""
+    active = _selection_path(active_path)
+    candidate = _selection_path(candidate_path)
+    if active.parent.samefile(candidate.parent):
+        raise SelectionError("candidate process requires a separate deployment directory")
+    root = _canonical_existing(state_root, directory=True)
+    if candidate.is_relative_to(root):
+        raise SelectionError("candidate control file must be outside the candidate root")
+    config_path = _canonical_existing(config, directory=False)
+    config_sha256 = _hex_digest(config_sha256, "config SHA-256")
+    selection = Selection(
+        _canonical_existing(binary, directory=False),
+        _hex_digest(binary_sha256, "binary SHA-256"),
+        root,
+        _environment(environment),
+        config_path,
+        config_sha256,
+    )
+    with deployment_lock(candidate) as lock_fd:
+        # The running selected service may hold its deployment lock. The
+        # selection file is replaced atomically, so this is one snapshot.
+        # Preparation and cutover revalidate it under the active lock.
+        _require_candidate_source_selection(active, expected_current_sha256, root)
+        if os.path.lexists(candidate):
+            raise SelectionError("candidate is already prepared")
+        return _run_selected_command(selection, "serve-native-candidate", lock_fd)
 
 
 def switch_native_selection(
@@ -801,10 +1412,11 @@ def switch_native_selection(
 
     The authoritative producer must have rebuilt and published the candidate.
     This consumer proves boot integrity, not parity between different SourceCuts.
-    Native-to-Native rollback uses this CAS path with a fresh target receipt.
+    Native-to-Native replacement is refused until the offline Catalog and
+    fenced producer authorities can prove no source work would be lost.
     Legacy cutover requires a caller-preserved exact private selection in the
-    same deployment directory. Callers may preserve that head explicitly under
-    its source CAS; this switch never chooses or creates a predecessor.
+    same deployment directory and all three producer handoff values. Callers
+    may preserve that head explicitly under its source CAS.
     """
     path = _selection_path(path)
     if selection_from_wire(selection.to_wire()) != selection:
@@ -818,7 +1430,7 @@ def switch_native_selection(
             published_operation_json,
             published_source_cut_digest_hex,
         )
-        if any(axis is not None for axis in handoff):
+        if current.native_boot_receipt is None or any(axis is not None for axis in handoff):
             if not all(axis is not None for axis in handoff):
                 raise SelectionError("Native publication handoff requires all three axes")
             target_operation = _published_handoff_operation(
@@ -853,9 +1465,12 @@ def switch_native_selection(
             new_operation = json.loads(new_receipt.manifest_operation_json)
             if old_operation["workspace"] != new_operation["workspace"]:
                 raise SelectionError("switch candidate belongs to another workspace")
-            # A Native old root must still authenticate its actual Catalog bytes.
-            # An updated old root must first be reselected with a fresh receipt.
-            _verify_bootstrap_locked(current, lock_fd)
+            # BOOT does not distinguish a complete restore-forward from an old
+            # source cut, and cannot see producer work not yet sent to Catalog.
+            raise SelectionError(
+                "Native cross-root switching requires offline Catalog publication baseline "
+                "and fenced producer outbox verification; these authorities are not available"
+            )
         else:
             if previous_selection_path is None or expected_previous_selection_sha256 is None:
                 raise SelectionError("Legacy cutover requires the saved exact prior selection")
@@ -870,7 +1485,8 @@ def switch_native_selection(
             _check_binary(current)
         _verify_bootstrap_locked(selection, lock_fd)
         _publish_selection_locked(
-            path, selection, fault_hook=fault_hook, expected_current_sha256=expected_current_sha256
+            path, selection, lock_fd, fault_hook=fault_hook,
+            expected_current_sha256=expected_current_sha256,
         )
 
 
@@ -882,14 +1498,15 @@ def rollback_legacy_selection(
     *,
     fault_hook: FaultHook | None = None,
 ) -> None:
-    """CAS restore the caller-preserved Legacy selection after Native cutover.
+    """Refuse Legacy rollback until both durable authorities can prove it safe.
 
-    This verifies the current Native root and old binary. Legacy verify-state
-    cannot verify an arbitrary updated service root. Search/Serve acceptance
-    of the retained old root remains a product cutover condition.
+    BOOT authenticates the installed Native root, not the producer's pending
+    work or publications since cutover. Reissuing BOOT cannot authorize a
+    backward selection. No caller-supplied success flag substitutes for the
+    missing fenced producer and offline Catalog verification.
     """
     path = _selection_path(path)
-    with deployment_lock(path) as lock_fd:
+    with deployment_lock(path):
         current = _require_current_selection(path, expected_current_sha256)
         if current.native_boot_receipt is None:
             raise SelectionError("Legacy rollback requires a current Native selection")
@@ -898,50 +1515,96 @@ def rollback_legacy_selection(
         )
         _require_distinct_switch_roots(current.state_root, saved.state_root)
         _check_binary(saved)
-        _verify_bootstrap_locked(current, lock_fd)
-        _publish_selection_locked(
-            path, saved, fault_hook=fault_hook, expected_current_sha256=expected_current_sha256
+        raise SelectionError(
+            "Legacy rollback requires offline Catalog publication baseline and fenced "
+            "producer outbox verification; these authorities are not available"
         )
 
 
 def _publish_selection_locked(
     path: Path,
     selection: Selection,
+    lock_fd: int,
     *,
     fault_hook: FaultHook | None,
     expected_current_sha256: str | None = None,
+    create_only: bool = False,
+) -> None:
+    _publish_control_file_locked(
+        path, _selection_payload(selection), lock_fd, fault_hook=fault_hook,
+        expected_current_sha256=expected_current_sha256, create_only=create_only,
+    )
+
+
+def _publish_control_file_locked(
+    path: Path,
+    payload: bytes,
+    lock_fd: int,
+    *,
+    fault_hook: FaultHook | None = None,
+    expected_current_sha256: str | None = None,
+    create_only: bool = False,
 ) -> None:
     # The caller retains the one deployment lock through verification and rename.
-    payload = _selection_payload(selection)
-    temporary: Path | None = None
     rename_attempted = False
     try:
-        descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.tmp-", dir=path.parent)
-        temporary = Path(name)
-        with os.fdopen(descriptor, "wb") as stream:
-            os.fchmod(stream.fileno(), 0o600)
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        if fault_hook is not None:
-            fault_hook("after_file_fsync")
-        _check_existing_selection(path)
-        if expected_current_sha256 is not None:
-            _require_current_selection(path, expected_current_sha256)
-        # A signal can arrive after rename succeeds but before Python
-        # records its return. From this point, the selected authority is
-        # uncertain until the durable file is inspected.
-        rename_attempted = True
-        os.replace(temporary, path)
-        if fault_hook is not None:
-            fault_hook("after_rename")
-        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            os.fsync(directory)
+            _require_publication_directory(path, directory, lock_fd)
+            temporary = f".{path.name}.tmp-{secrets.token_hex(16)}"
+            descriptor = os.open(
+                temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600, dir_fd=directory,
+            )
+            with os.fdopen(descriptor, "w+b") as stream:
+                try:
+                    os.fchmod(stream.fileno(), 0o600)
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                    if fault_hook is not None:
+                        fault_hook("after_file_fsync")
+                    if create_only:
+                        try:
+                            os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+                        except FileNotFoundError:
+                            pass
+                        else:
+                            raise SelectionError("candidate already exists; reconcile before retrying")
+                    else:
+                        _check_existing_selection(path)
+                    if expected_current_sha256 is not None:
+                        _require_current_selection(path, expected_current_sha256)
+                    _require_publication_directory(path, directory, lock_fd)
+                    _require_publication_file(stream, directory, temporary, payload)
+                    # A signal can arrive after publication but before its
+                    # return. Treat that boundary as uncertain.
+                    rename_attempted = True
+                    if create_only:
+                        try:
+                            _rename_create_only(directory, temporary, path.name)
+                        except SelectionError:
+                            # Unsupported syscall or EEXIST is a known no-publish result.
+                            rename_attempted = False
+                            raise
+                    else:
+                        os.replace(
+                            temporary, path.name, src_dir_fd=directory, dst_dir_fd=directory
+                        )
+                    if fault_hook is not None:
+                        fault_hook("after_rename")
+                    os.fsync(directory)
+                    if fault_hook is not None:
+                        fault_hook("after_directory_fsync")
+                    _require_publication_directory(path, directory, lock_fd)
+                    _require_publication_file(stream, directory, path.name, payload)
+                finally:
+                    with contextlib.suppress(OSError):
+                        named = os.stat(temporary, dir_fd=directory, follow_symlinks=False)
+                        if os.path.samestat(named, os.fstat(stream.fileno())):
+                            os.unlink(temporary, dir_fd=directory)
         finally:
             os.close(directory)
-        if fault_hook is not None:
-            fault_hook("after_directory_fsync")
     except BaseException as error:
         if rename_attempted:
             raise PersistenceUncertain(
@@ -952,11 +1615,82 @@ def _publish_selection_locked(
         if not isinstance(error, Exception):
             raise
         raise SelectionError(f"selection was not changed: {error}") from error
-    finally:
-        # After entering rename, leave any uncertain temporary inode for
-        # inspection; cleanup must not mask the authority uncertainty.
-        if temporary is not None and not rename_attempted:
-            temporary.unlink(missing_ok=True)
+
+
+def _rename_create_only(directory: int, source: str, destination: str) -> None:
+    """Atomically publish one private control file without replacing an existing name."""
+    if sys.platform == "linux":
+        symbol, no_replace = "renameat2", 1  # RENAME_NOREPLACE
+    elif sys.platform == "darwin":
+        symbol, no_replace = "renameatx_np", 0x00000004  # RENAME_EXCL
+    else:
+        raise SelectionError("atomic create-only publication is unsupported on this platform")
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        rename = getattr(libc, symbol)
+    except AttributeError as error:
+        raise SelectionError("atomic create-only publication is unavailable") from error
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    if rename(directory, os.fsencode(source), directory, os.fsencode(destination), no_replace):
+        code = ctypes.get_errno()
+        if code == errno.EEXIST:
+            raise SelectionError("candidate already exists; reconcile before retrying")
+        raise OSError(code, os.strerror(code), destination)
+
+
+def _require_publication_directory(path: Path, directory: int, lock_fd: int) -> None:
+    _selection_path(path)
+    if not os.path.samestat(os.fstat(directory), path.parent.lstat()):
+        raise SelectionError("deployment directory changed during publication")
+    named = os.stat(DEPLOYMENT_LOCK_NAME, dir_fd=directory, follow_symlinks=False)
+    _check_control_file(named, "deployment lock")
+    if not os.path.samestat(os.fstat(lock_fd), named):
+        raise SelectionError("deployment lock changed during publication")
+
+
+def _require_publication_file(
+    stream: BinaryIO, directory: int, name: str, payload: bytes
+) -> None:
+    stream.seek(0)
+    if stream.read(len(payload) + 1) != payload:
+        raise SelectionError("selection bytes changed during publication")
+    named = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    _check_control_file(named, "selection")
+    if not os.path.samestat(os.fstat(stream.fileno()), named):
+        raise SelectionError("selection inode changed during publication")
+
+
+def _sync_retained_publication(
+    path: Path,
+    lock_fd: int,
+    expected: ControlDocument,
+    maximum: int,
+    decode: Callable[[bytes], ControlDocument],
+) -> None:
+    """Sync the exact retained object, then recheck its name and contents."""
+    try:
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            _require_publication_directory(path, directory, lock_fd)
+            descriptor = os.open(
+                path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory
+            )
+            with os.fdopen(descriptor, "rb") as stream:
+                _check_control_file(os.fstat(stream.fileno()), "retained control file")
+                payload = stream.read(maximum + 1)
+                if len(payload) > maximum or decode(payload) != expected:
+                    raise SelectionError("retained control file differs from expected identity")
+                os.fsync(stream.fileno())
+                os.fsync(directory)
+                _require_publication_directory(path, directory, lock_fd)
+                _require_publication_file(stream, directory, path.name, payload)
+        finally:
+            os.close(directory)
+    except (OSError, SelectionError) as error:
+        raise PersistenceUncertain(
+            "retained control file durability is uncertain; retry exact candidate"
+        ) from error
 
 
 def serve_selection(path: str | Path) -> int:
@@ -1003,8 +1737,39 @@ def main(argv: list[str] | None = None) -> int:
         help="private candidate receipt checked by verify-native-state",
     )
     install_native.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
+    serve_candidate = commands.add_parser(
+        "serve-native-candidate", help="supervise an unselected Native candidate process"
+    )
+    prepare_native = commands.add_parser(
+        "prepare-native-candidate", help="verify and write a Native candidate without switching"
+    )
+    build_native = commands.add_parser(
+        "build-native-candidate", help="run the pinned FULL producer and seal its Q candidate"
+    )
+    for candidate_command in (serve_candidate, prepare_native, build_native):
+        candidate_command.add_argument("--selection", type=Path, required=True)
+        candidate_command.add_argument("--expected-selection-sha256", required=True)
+        candidate_command.add_argument("--candidate", type=Path, required=True)
+        candidate_command.add_argument("--binary", type=Path, required=True)
+        candidate_command.add_argument("--binary-sha256", required=True)
+        candidate_command.add_argument("--state-root", type=Path, required=True)
+        candidate_command.add_argument("--config", type=Path, required=True)
+        candidate_command.add_argument("--config-sha256", required=True)
+        candidate_command.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
+    prepare_native.add_argument("--receipt", type=Path, required=True)
+    prepare_native.add_argument("--root-nonce", required=True)
+    prepare_native.add_argument("--manifest-operation", required=True)
+    prepare_native.add_argument("--source-cut-digest", required=True)
+    build_native.add_argument("--receipt", type=Path, required=True)
+    build_native.add_argument("--producer", type=Path, required=True)
+    build_native.add_argument("--producer-sha256", required=True)
+    build_native.add_argument("--producer-env", action="append", default=[], metavar="NAME=VALUE")
+    build_native.add_argument("--timeout-seconds", type=float,
+                              default=DEFAULT_CANDIDATE_PREPARE_TIMEOUT_SECONDS)
+    build_native.add_argument("producer_arguments", nargs=argparse.REMAINDER,
+                              help="installed S startup and candidate flags after --")
     switch_native = commands.add_parser(
-        "switch-native", help="CAS switch to a verified offline Native root"
+        "switch-native", help="CAS cutover from Legacy to a verified offline Native root"
     )
     switch_native.add_argument("--selection", type=Path, required=True)
     switch_native.add_argument("--expected-selection-sha256", required=True)
@@ -1015,11 +1780,17 @@ def main(argv: list[str] | None = None) -> int:
     switch_native.add_argument("--env", action="append", default=[], metavar="NAME=VALUE")
     switch_native.add_argument("--previous-selection", type=Path)
     switch_native.add_argument("--expected-previous-selection-sha256")
-    switch_native.add_argument("--target-operation")
-    switch_native.add_argument("--published-operation")
-    switch_native.add_argument("--published-source-cut-digest")
+    switch_native.add_argument(
+        "--target-operation", help="producer target operation JSON; required for Legacy cutover"
+    )
+    switch_native.add_argument(
+        "--published-operation", help="published operation JSON; required for Legacy cutover"
+    )
+    switch_native.add_argument(
+        "--published-source-cut-digest", help="published SourceCut digest; required for Legacy cutover"
+    )
     rollback_legacy = commands.add_parser(
-        "rollback-legacy", help="CAS restore a saved exact Legacy selection"
+        "rollback-legacy", help="Legacy rollback; refuses until offline authorities are connected"
     )
     rollback_legacy.add_argument("--selection", type=Path, required=True)
     rollback_legacy.add_argument("--expected-selection-sha256", required=True)
@@ -1047,13 +1818,58 @@ def main(argv: list[str] | None = None) -> int:
             selection = proposed_selection(args.binary, args.state_root, _cli_environment(args.env))
             publish_selection(args.selection, selection)
             return 0
+        if args.command == "serve-native-candidate":
+            return serve_native_candidate(
+                args.selection, args.expected_selection_sha256, args.candidate,
+                args.binary, args.binary_sha256, args.state_root,
+                args.config, args.config_sha256, _cli_environment(args.env),
+            )
+        if args.command in {"prepare-native-candidate", "build-native-candidate"}:
+            selection = Selection(
+                _canonical_existing(args.binary, directory=False),
+                _hex_digest(args.binary_sha256, "binary SHA-256"),
+                _canonical_existing(args.state_root, directory=True),
+                _environment(_cli_environment(args.env)),
+                _canonical_existing(args.config, directory=False),
+                _hex_digest(args.config_sha256, "config SHA-256"),
+            )
+            if args.command == "build-native-candidate":
+                producer_arguments = args.producer_arguments
+                if producer_arguments and producer_arguments[0] == "--":
+                    producer_arguments = producer_arguments[1:]
+                producer_environment = {}
+                for item in args.producer_env:
+                    name, separator, value = item.partition("=")
+                    if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) or name in producer_environment:
+                        raise SelectionError("--producer-env requires a unique NAME=VALUE")
+                    producer_environment[name] = value
+                result = build_native_candidate(
+                    args.selection, args.candidate, selection, args.expected_selection_sha256,
+                    receipt_path=args.receipt, producer=args.producer, producer_sha256=args.producer_sha256,
+                    producer_arguments=producer_arguments, producer_environment=producer_environment,
+                    timeout_seconds=args.timeout_seconds,
+                )
+                print(json.dumps(result))
+                return 0
+            digest = prepare_native_candidate(
+                args.selection, args.candidate, selection, args.expected_selection_sha256,
+                receipt_path=args.receipt,
+                root_nonce=_hex_digest(args.root_nonce, "candidate root nonce"),
+                manifest_operation=_published_handoff_operation(
+                    args.manifest_operation, "candidate boot operation"
+                ),
+                source_cut_digest=_hex_digest(args.source_cut_digest, "candidate SourceCut"),
+            )
+            print(json.dumps({"candidate_path": str(args.candidate), "candidate_sha256": digest}))
+            return 0
         if args.command in ("install-native", "switch-native"):
+            receipt = _read_native_receipt(args.receipt)
             selection = proposed_native_selection(
                 args.binary,
                 args.state_root,
                 args.config,
                 _cli_environment(args.env),
-                _read_native_receipt(args.receipt),
+                receipt,
             )
             if args.command == "switch-native":
                 switch_native_selection(

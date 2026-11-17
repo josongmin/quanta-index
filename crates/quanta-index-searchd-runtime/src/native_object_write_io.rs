@@ -63,7 +63,35 @@ fn index_error_at(error: &CoreError, budget: &WorkBudget, boundary: &'static str
     index_error(error)
 }
 
+fn write_ticket_memory_bytes() -> Result<u64, IndexError> {
+    u64::try_from(std::mem::size_of::<WriteTicket>()).map_err(|_error| IndexError::ResourceLimited)
+}
+
 impl ObjectWriteIoPort for NativeObjectWriteIo {
+    fn write_ticket_memory_bound(
+        &self,
+        maximum_outputs: usize,
+    ) -> Result<Option<quanta_index_core::index::MemoryCreditLimits>, IndexError> {
+        if maximum_outputs == 0
+            || maximum_outputs > quanta_index_core::index::ports::MAX_OBJECT_INSTALL_BATCH
+        {
+            return Err(IndexError::InvalidInput(
+                "object write ticket bound count".into(),
+            ));
+        }
+        Ok(Some(quanta_index_core::index::MemoryCreditLimits {
+            temporary_data_bytes: write_ticket_memory_bytes()?
+                .checked_mul(
+                    u64::try_from(maximum_outputs).map_err(|_error| IndexError::ResourceLimited)?,
+                )
+                .ok_or(IndexError::ResourceLimited)?,
+            retained_data_bytes: 0,
+            max_live_temporary_leases: u32::try_from(maximum_outputs)
+                .map_err(|_error| IndexError::ResourceLimited)?,
+            max_live_retained_leases: 0,
+        }))
+    }
+
     fn recover_retired_visible_create(
         &self,
         target: &Path,
@@ -121,11 +149,8 @@ impl ObjectWriteIoPort for NativeObjectWriteIo {
         if path_bytes > 4096 || target.as_os_str().len() > 4096 {
             return Err(IndexError::ResourceLimited);
         }
-        let memory = budget.reserve_memory(
-            u64::try_from(std::mem::size_of::<WriteTicket>())
-                .map_err(|_error| IndexError::ResourceLimited)?,
-            MemoryLifetime::Temporary,
-        )?;
+        let memory =
+            budget.reserve_memory(write_ticket_memory_bytes()?, MemoryLifetime::Temporary)?;
         // The anchored claim checks absence before funding the entire output.
         // Local admission already refreshed the maintenance reserve.
         let mut mutation = self

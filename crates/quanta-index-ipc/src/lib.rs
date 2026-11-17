@@ -20,6 +20,7 @@ mod error;
 mod native_protocol;
 mod payload_admission;
 mod peer_credentials;
+mod peer_process_v1;
 mod plane;
 mod server;
 mod socket_access;
@@ -39,6 +40,8 @@ pub use admitted_decode::{
 pub use batch_digest::{
     BatchDigestVerdictV1, CanonicalBatchDigestProgressError, canonical_batch_digest_v1,
     canonical_batch_digest_with_progress_v1, matches_batch_digest_token_v1, stamp_batch_digest_v1,
+    history_replay_advance_with_progress_v1, history_replay_genesis_with_progress_v1,
+    history_snapshot_checkpoint_replay_with_progress_v1,
     verify_batch_digest_v1,
 };
 pub use codec::{
@@ -60,6 +63,7 @@ pub use payload_admission::{
     CborPayloadAdmissionErrorV1, encode_cbor_payload_admitted_v1, encode_cbor_payload_into_slots_v1,
 };
 pub use peer_credentials::{KernelPeerCredentials, PeerCredentialsSource};
+pub use peer_process_v1::{KernelConnectedPeerProcessV1, KernelConnectedPeerProcessLeaseV1, PeerBindingRefusalV1};
 pub use plane::IpcPlane;
 pub use quanta_index_core::index::{
     IndexError, MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope, MemoryScopePort,
@@ -69,14 +73,19 @@ pub use quanta_index_core::{
     REQUEST_DEADLINE_EXCEEDED_CODE, RequestBudgetV1, RequestExecutionObserverV1,
 };
 pub use server::{
+    capture_connected_peer_process_with_budget_v1,
     BoundSocketPathProbe, ClientIoPolicy, ClientIpcTimingV1, ClientResponseStream,
     DEFAULT_CLIENT_IO_TIMEOUT, DispatchContextV1, IpcDispatcher, RequestEnvelope, ResponseEnvelope,
     ShutdownHandle, StreamDispatch, UdsServer, send_request,
     send_request_body_negotiated_with_budget_admitted,
     send_request_body_negotiated_with_budget_admitted_with_work_v1,
-    send_request_body_with_budget_admitted, send_request_body_with_budget_admitted_with_work_v1,
-    send_request_negotiated, send_request_observed, send_request_observed_negotiated,
-    send_request_with_budget, send_stream_request,
+    send_request_body_with_budget_admitted, send_request_body_with_budget_admitted_peer_v1,
+    send_request_body_with_budget_admitted_bound_peer_v1,
+    send_request_body_with_budget_admitted_multiframe_bound_peer_v1,
+    send_request_body_with_budget_admitted_with_work_v1, send_request_negotiated,
+    send_request_observed, send_request_observed_negotiated, send_request_with_budget,
+    send_request_with_budget_bound_peer_v1,
+    send_stream_request,
 };
 pub use socket_access::{
     GROUP_DIRECTORY_MODE, GROUP_SOCKET_MODE, PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE,

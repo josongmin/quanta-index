@@ -10,6 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize as _, de::value::BorrowedStrDeserializer};
 use sha2::{Digest as _, Sha256};
 
 use quanta_index_contract::{
@@ -117,9 +118,22 @@ impl RepoMapGraphCompiler {
             self.budget.max_work_units,
             work_units,
         )?;
+        let owner_symbols = identities
+            .iter()
+            .filter(|identity| matches!(identity, RepoMapNodeRef::Symbol(_)))
+            .count();
+        let owner_symbols = u64::try_from(owner_symbols).map_err(|_error| overflow())?;
+        if owner_symbols > self.budget.max_owner_symbols {
+            return Err(refusal(
+                RepoMapCompileStageV1::Projection,
+                RepoMapCompileRefusalCodeV1::OwnerSymbolLimitExceeded,
+                Some(self.budget.max_owner_symbols),
+                owner_symbols,
+            ));
+        }
 
         // Stage: Projection ---------------------------------------------------
-        let projection = self.build_projection(bundle, &canonical_edges)?;
+        let (projection, preview_bytes) = self.build_projection(bundle, &canonical_edges)?;
 
         // Stage: Commitment ---------------------------------------------------
         let canonical_graph = canonical_graph_table(&identities, &canonical_edges);
@@ -136,12 +150,6 @@ impl RepoMapGraphCompiler {
         let profile_bytes = REPOMAP_COMPILE_PROJECTION_PROFILE_DESCRIPTOR
             .as_bytes()
             .to_vec();
-        let owner_symbols = canonical_graph
-            .nodes
-            .iter()
-            .filter(|node| matches!(node.identity, RepoMapNodeRef::Symbol(_)))
-            .count();
-        let owner_symbols = u64::try_from(owner_symbols).map_err(|_error| overflow())?;
         let commitments = RepoMapCandidateCommitmentsV1 {
             producer_manifest,
             producer_authority,
@@ -153,10 +161,7 @@ impl RepoMapGraphCompiler {
             nodes: node_count,
             edges: edge_count,
             owner_symbols,
-            preview_bytes: projection
-                .iter()
-                .map(|entry| u64::try_from(entry.search_text.len()).map_or(u64::MAX, |len| len))
-                .fold(0_u64, u64::saturating_add),
+            preview_bytes,
             materialized_bytes,
             work_units,
             budget: self.budget,
@@ -275,7 +280,7 @@ impl RepoMapGraphCompiler {
         &self,
         bundle: &RepoMapSourceBundle,
         canonical_edges: &[CompiledRepoMapEdgeV1],
-    ) -> Result<Vec<CompiledRepoMapProjectionEntryV1>, RepoMapCompileRefusalV1> {
+    ) -> Result<(Vec<CompiledRepoMapProjectionEntryV1>, u64), RepoMapCompileRefusalV1> {
         let mut degrees = BTreeMap::<&RepoMapNodeRef, (u32, u32)>::new();
         for edge in canonical_edges {
             degrees.entry(&edge.source).or_default().0 = degrees
@@ -287,7 +292,6 @@ impl RepoMapGraphCompiler {
                 .map_or(0, |pair| pair.1)
                 .saturating_add(1);
         }
-        let mut per_owner_symbols = BTreeMap::<&str, u64>::new();
         let mut files = Vec::new();
         let mut symbols = Vec::new();
         for node in &bundle.nodes {
@@ -307,41 +311,31 @@ impl RepoMapGraphCompiler {
                     local_name,
                     qualified_name,
                     symbol_kind,
-                }) => {
-                    let count = per_owner_symbols.entry(owner_path.as_str()).or_insert(0);
-                    *count = count.checked_add(1).ok_or_else(overflow)?;
-                    symbols.push(SymbolEntryInput {
-                        subject: RepoMapNodeRef::Symbol(symbol_id.clone()),
-                        owner_path: owner_path.as_str().to_string(),
-                        local_name: local_name.clone(),
-                        qualified_name: qualified_name.clone(),
-                        symbol_kind: symbol_kind.as_str().to_string(),
-                    });
-                }
+                }) => symbols.push(SymbolEntryInput {
+                    subject: RepoMapNodeRef::Symbol(symbol_id.clone()),
+                    owner_path: owner_path.as_str().to_string(),
+                    local_name: local_name.clone(),
+                    qualified_name: qualified_name.clone(),
+                    symbol_kind: symbol_kind.as_str().to_string(),
+                }),
                 RepoMapNode::Module(_) | RepoMapNode::Chunk(_) => {}
             }
         }
-        for observed in per_owner_symbols.values() {
-            if *observed > self.budget.max_owner_symbols {
-                return Err(refusal(
-                    RepoMapCompileStageV1::Projection,
-                    RepoMapCompileRefusalCodeV1::OwnerSymbolLimitExceeded,
-                    Some(self.budget.max_owner_symbols),
-                    *observed,
-                ));
-            }
-        }
-
         let chunk_stats = validated_chunk_stats(bundle)?;
         let mut projection = Vec::new();
-        for file in &files {
-            let search_text = file_search_text(file, &chunk_stats.0);
-            let preview_bytes = u64::try_from(search_text.len()).map_err(|_error| overflow())?;
+        let mut preview_bytes = 0_u64;
+        let mut charge_preview = |search_text: &str| {
+            let length = u64::try_from(search_text.len()).map_err(|_error| overflow())?;
+            preview_bytes = preview_bytes.checked_add(length).ok_or_else(overflow)?;
             check_cap(
                 RepoMapCompileRefusalCodeV1::PreviewLimitExceeded,
                 self.budget.max_preview_bytes,
                 preview_bytes,
-            )?;
+            )
+        };
+        for file in &files {
+            let search_text = file_search_text(file, &chunk_stats.0);
+            charge_preview(&search_text)?;
             let degree = degrees.get(&file.subject).copied().unwrap_or((0, 0));
             let graph_degree = degree.0.saturating_add(degree.1);
             let final_score_millis = file_score_millis(file, &chunk_stats.0, graph_degree);
@@ -355,12 +349,7 @@ impl RepoMapGraphCompiler {
         }
         for symbol in &symbols {
             let search_text = symbol_search_text(symbol, &chunk_stats.1);
-            let preview_bytes = u64::try_from(search_text.len()).map_err(|_error| overflow())?;
-            check_cap(
-                RepoMapCompileRefusalCodeV1::PreviewLimitExceeded,
-                self.budget.max_preview_bytes,
-                preview_bytes,
-            )?;
+            charge_preview(&search_text)?;
             let degree = degrees.get(&symbol.subject).copied().unwrap_or((0, 0));
             let graph_degree = degree.0.saturating_add(degree.1);
             let final_score_millis = symbol_score_millis(symbol, &chunk_stats.1, graph_degree);
@@ -373,7 +362,7 @@ impl RepoMapGraphCompiler {
             });
         }
         projection.sort_by(|lhs, rhs| lhs.subject.cmp(&rhs.subject));
-        Ok(projection)
+        Ok((projection, preview_bytes))
     }
 }
 
@@ -942,6 +931,34 @@ pub fn decode_compiled_payload(
     ),
     quanta_index_core::CoreError,
 > {
+    let mut graph = CompiledRepoMapGraphV1 {
+        nodes: Vec::new(),
+        edges: Vec::new(),
+    };
+    let mut projection = Vec::new();
+    visit_compiled_payload(bytes, |entry| match entry {
+        CompiledPayloadEntry::Node(node) => graph.nodes.push(node),
+        CompiledPayloadEntry::Edge(edge) => graph.edges.push(edge),
+        CompiledPayloadEntry::Projection(entry) => projection.push(entry),
+    })?;
+    Ok((graph, projection))
+}
+
+/// Use the serving decoder's validation without retaining decoded tables.
+pub(crate) fn validate_compiled_payload(bytes: &[u8]) -> Result<(), quanta_index_core::CoreError> {
+    visit_compiled_payload(bytes, drop)
+}
+
+enum CompiledPayloadEntry {
+    Node(CompiledRepoMapNodeV1),
+    Edge(CompiledRepoMapEdgeV1),
+    Projection(CompiledRepoMapProjectionEntryV1),
+}
+
+fn visit_compiled_payload(
+    bytes: &[u8],
+    mut visit: impl FnMut(CompiledPayloadEntry),
+) -> Result<(), quanta_index_core::CoreError> {
     let refuse = |detail: String| -> quanta_index_core::CoreError {
         quanta_index_core::CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
@@ -962,7 +979,6 @@ pub fn decode_compiled_payload(
     if !matches!(nodes_len, 0..=2_000_000) {
         return Err(refuse(format!("node table holds {nodes_len} entries")));
     }
-    let mut nodes = Vec::new();
     for _ in 0..nodes_len {
         let entry_len = reader.array_header("node").map_err(refuse)?;
         if entry_len != 3 {
@@ -973,17 +989,16 @@ pub fn decode_compiled_payload(
         let identity = reader.node_ref("node.identity").map_err(refuse)?;
         let degree_in = reader.u32_value("node.degree_in").map_err(refuse)?;
         let degree_out = reader.u32_value("node.degree_out").map_err(refuse)?;
-        nodes.push(CompiledRepoMapNodeV1 {
+        visit(CompiledPayloadEntry::Node(CompiledRepoMapNodeV1 {
             identity,
             degree_in,
             degree_out,
-        });
+        }));
     }
     let edges_len = reader.array_header("edges").map_err(refuse)?;
     if !matches!(edges_len, 0..=20_000_000) {
         return Err(refuse(format!("edge table holds {edges_len} entries")));
     }
-    let mut edges = Vec::new();
     for _ in 0..edges_len {
         let entry_len = reader.array_header("edge").map_err(refuse)?;
         if entry_len != 3 {
@@ -994,11 +1009,11 @@ pub fn decode_compiled_payload(
         let kind = reader.edge_kind("edge.kind").map_err(refuse)?;
         let source = reader.node_ref("edge.source").map_err(refuse)?;
         let target = reader.node_ref("edge.target").map_err(refuse)?;
-        edges.push(CompiledRepoMapEdgeV1 {
+        visit(CompiledPayloadEntry::Edge(CompiledRepoMapEdgeV1 {
             kind,
             source,
             target,
-        });
+        }));
     }
     let projection_len = reader.array_header("projection").map_err(refuse)?;
     if !matches!(projection_len, 0..=2_000_000) {
@@ -1006,7 +1021,6 @@ pub fn decode_compiled_payload(
             "projection table holds {projection_len} entries"
         )));
     }
-    let mut projection = Vec::new();
     for _ in 0..projection_len {
         let entry_len = reader.array_header("projection-entry").map_err(refuse)?;
         if entry_len != 5 {
@@ -1021,16 +1035,17 @@ pub fn decode_compiled_payload(
         let final_score_millis = reader
             .i64_value("projection.final_score_millis")
             .map_err(refuse)?;
-        projection.push(CompiledRepoMapProjectionEntryV1 {
-            subject,
-            doc_type,
-            owner_path,
-            search_text,
-            final_score_millis,
-        });
+        visit(CompiledPayloadEntry::Projection(
+            CompiledRepoMapProjectionEntryV1 {
+                subject,
+                doc_type,
+                owner_path,
+                search_text: search_text.to_owned(),
+                final_score_millis,
+            },
+        ));
     }
-    reader.expect_end().map_err(refuse)?;
-    Ok((CompiledRepoMapGraphV1 { nodes, edges }, projection))
+    reader.expect_end().map_err(refuse)
 }
 
 /// Minimal strict CBOR reader for the compiler's canonical payload schema:
@@ -1041,6 +1056,10 @@ struct CompileCborReader<'a> {
 }
 
 impl<'a> CompileCborReader<'a> {
+    // The persisted node, edge and document tags are all short ASCII tokens.
+    // Bound diagnostics before passing untrusted text to a variant decoder.
+    const MAX_TAG_BYTES: usize = 16;
+
     fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, position: 0 }
     }
@@ -1060,20 +1079,28 @@ impl<'a> CompileCborReader<'a> {
 
     fn uint_value(&mut self, label: &str) -> Result<u64, String> {
         let major = self.take()?;
-        let info = major & 0x1f;
         if major & 0xe0 != 0 {
             return Err(format!("{label}: expected unsigned integer"));
         }
-        let width = match info {
-            0..=23 => {
-                let value = u64::from(info);
-                return Ok(value);
-            }
-            24 => 1,
-            25 => 2,
-            26 => 4,
-            27 => 8,
-            _ => return Err(format!("{label}: non-minimal or unsupported integer")),
+        self.uint_body(major & 0x1f, label)
+    }
+
+    /// The compiler's framing writes table and tuple lengths as bare
+    /// canonical unsigned integers (not CBOR array heads); read exactly
+    /// that, with the minimality check `uint_value` carries.
+    fn array_header(&mut self, label: &str) -> Result<u64, String> {
+        let value = self.uint_value(label)?;
+        Ok(value)
+    }
+
+    fn uint_body(&mut self, info: u8, label: &str) -> Result<u64, String> {
+        let (width, minimum) = match info {
+            0..=23 => return Ok(u64::from(info)),
+            24 => (1, 24),
+            25 => (2, 1 << 8),
+            26 => (4, 1 << 16),
+            27 => (8, 1 << 32),
+            _ => return Err(format!("{label}: unsupported integer width")),
         };
         let mut raw = [0_u8; 8];
         let end = self.position.saturating_add(width);
@@ -1089,48 +1116,13 @@ impl<'a> CompileCborReader<'a> {
             .copy_from_slice(slice);
         self.position = end;
         let value = u64::from_be_bytes(raw);
-        // Minimality: the encoding must be the shortest for its value.
-        let minimal_shift = 8_usize.checked_mul(width.saturating_sub(1)).unwrap_or(0);
-        if width < 8 && value < (1_u64 << minimal_shift) {
+        if value < minimum {
             return Err(format!("{label}: non-minimal integer"));
         }
         Ok(value)
     }
 
-    /// The compiler's framing writes table and tuple lengths as bare
-    /// canonical unsigned integers (not CBOR array heads); read exactly
-    /// that, with the minimality check `uint_value` carries.
-    fn array_header(&mut self, label: &str) -> Result<u64, String> {
-        let value = self.uint_value(label)?;
-        Ok(value)
-    }
-
-    fn uint_body(&mut self, info: u8, label: &str) -> Result<u64, String> {
-        let width = match info {
-            0..=23 => return Ok(u64::from(info)),
-            24 => 1,
-            25 => 2,
-            26 => 4,
-            27 => 8,
-            _ => return Err(format!("{label}: unsupported array length")),
-        };
-        let mut raw = [0_u8; 8];
-        let end = self.position.saturating_add(width);
-        let slice = self
-            .bytes
-            .get(self.position..end)
-            .ok_or_else(|| format!("{label}: unexpected end"))?;
-        let offset = 8_usize
-            .checked_sub(width)
-            .ok_or_else(|| format!("{label}: width out of range"))?;
-        raw.get_mut(offset..)
-            .ok_or_else(|| format!("{label}: width out of range"))?
-            .copy_from_slice(slice);
-        self.position = end;
-        Ok(u64::from_be_bytes(raw))
-    }
-
-    fn text(&mut self, label: &str) -> Result<String, String> {
+    fn text(&mut self, label: &str) -> Result<&'a str, String> {
         let major = self.take()?;
         if (major >> 5) != 3 {
             return Err(format!("{label}: expected text"));
@@ -1143,9 +1135,15 @@ impl<'a> CompileCborReader<'a> {
             .get(self.position..end)
             .ok_or_else(|| format!("{label}: unexpected end"))?;
         self.position = end;
-        std::str::from_utf8(slice)
-            .map(str::to_owned)
-            .map_err(|_error| format!("{label}: invalid UTF-8"))
+        std::str::from_utf8(slice).map_err(|_error| format!("{label}: invalid UTF-8"))
+    }
+
+    fn tag(&mut self, label: &str) -> Result<&'a str, String> {
+        let tag = self.text(label)?;
+        if tag.len() > Self::MAX_TAG_BYTES {
+            return Err(format!("{label}: tag is too long"));
+        }
+        Ok(tag)
     }
 
     fn u32_value(&mut self, label: &str) -> Result<u32, String> {
@@ -1156,15 +1154,17 @@ impl<'a> CompileCborReader<'a> {
     fn i64_value(&mut self, label: &str) -> Result<i64, String> {
         let major = self.peek()?;
         if major & 0xe0 == 0x20 {
-            let _tag: u8 = self.take()?;
-            let magnitude = self.uint_value(label)?;
-            let signed = magnitude
-                .checked_add(1)
-                .ok_or_else(|| format!("{label}: overflow"))?;
-            let signed = i64::try_from(signed).map_err(|_error| format!("{label}: overflow"))?;
-            signed
-                .checked_neg()
-                .ok_or_else(|| format!("{label}: overflow"))
+            // The existing V2 payload writer uses absolute magnitude in
+            // the negative integer argument. Keep its persisted encoding.
+            let tag = self.take()?;
+            let magnitude = self.uint_body(tag & 0x1f, label)?;
+            match magnitude {
+                0 => Err(format!("{label}: negative zero")),
+                0x8000_0000_0000_0000 => Ok(i64::MIN),
+                _ => i64::try_from(magnitude)
+                    .map(|value| value.saturating_neg())
+                    .map_err(|_error| format!("{label}: overflow")),
+            }
         } else {
             let value = self.uint_value(label)?;
             i64::try_from(value).map_err(|_error| format!("{label}: does not fit i64"))
@@ -1178,32 +1178,29 @@ impl<'a> CompileCborReader<'a> {
                 "{label}: array holds {entry_len} items, expected 2"
             ));
         }
-        let variant = self.text(label)?;
+        let variant = self.tag(label)?;
         let id = self.text(label)?;
-        match variant.as_str() {
-            "File" => Ok(RepoMapNodeRef::File(FileId::new(&id))),
-            "Module" => Ok(RepoMapNodeRef::Module(RepoMapModuleId::new(&id))),
-            "Symbol" => Ok(RepoMapNodeRef::Symbol(SymbolId::new(&id))),
-            "Chunk" => Ok(RepoMapNodeRef::Chunk(ChunkId::new(&id))),
+        match variant {
+            "File" => Ok(RepoMapNodeRef::File(FileId::new(id))),
+            "Module" => Ok(RepoMapNodeRef::Module(RepoMapModuleId::new(id))),
+            "Symbol" => Ok(RepoMapNodeRef::Symbol(SymbolId::new(id))),
+            "Chunk" => Ok(RepoMapNodeRef::Chunk(ChunkId::new(id))),
             other => Err(format!("{label}: unknown node variant `{other}`")),
         }
     }
 
     fn edge_kind(&mut self, label: &str) -> Result<RepoMapEdgeKind, String> {
-        let code = self.text(label)?;
-        serde_json::from_value(serde_json::Value::String(code))
-            .map_err(|error| format!("{label}: {error}"))
+        let code = BorrowedStrDeserializer::<serde::de::value::Error>::new(self.tag(label)?);
+        RepoMapEdgeKind::deserialize(code).map_err(|error| format!("{label}: {error}"))
     }
 
     fn doc_type(&mut self, label: &str) -> Result<RepoMapDocType, String> {
-        let code = self.text(label)?;
-        serde_json::from_value(serde_json::Value::String(code))
-            .map_err(|error| format!("{label}: {error}"))
+        let code = BorrowedStrDeserializer::<serde::de::value::Error>::new(self.tag(label)?);
+        RepoMapDocType::deserialize(code).map_err(|error| format!("{label}: {error}"))
     }
 
     fn path_id(&mut self, label: &str) -> Result<RepoRelativePath, String> {
-        let text = self.text(label)?;
-        Ok(RepoRelativePath::new(&text))
+        Ok(RepoRelativePath::new(self.text(label)?))
     }
 
     fn expect_end(&self) -> Result<(), String> {

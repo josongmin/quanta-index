@@ -3,7 +3,7 @@
 
 use super::{
     BranchValue, FileObjectStore, IndexError, MAX_NIBBLES, MapBuffer, MapRoot, MapValue, Node,
-    ObjectRef, PackedBranch, WorkBudget, WorkUsage, charge_key_allocation, key_nibbles,
+    ObjectRef, PackedBranch, WorkBudget, WorkUsage, lookup_nibbles,
 };
 use quanta_index_core::index::ports::MAX_MAP_LOOKUP_BATCH;
 
@@ -30,9 +30,10 @@ pub(super) fn lookup_batch_with(
     })?;
     let mut lookup = OriginalLookup::new();
     for (key, value) in keys.iter().zip(values) {
-        charge_key_allocation(key, budget)?;
-        let nibbles = key_nibbles(key, budget)?;
-        *value = lookup.lookup_with(root, &nibbles, budget, &mut read_node)?;
+        *value = match lookup_nibbles(root, key, budget)? {
+            Some(nibbles) => lookup.lookup_with(root, &nibbles, budget, &mut read_node)?,
+            None => None,
+        };
     }
     Ok(())
 }
@@ -43,8 +44,8 @@ struct Frame {
     node: Node,
 }
 
-/// Packed DATA is terminal-only and belongs to its enclosing physical frame.
-/// A borrowed lookup avoids retaining another frame or charging a decoded read.
+/// Packed DATA belongs to its enclosing physical frame. A borrowed lookup
+/// walks at most eight inline levels without an extra object read.
 fn lookup_packed(
     packed: &PackedBranch,
     nibbles: &[u8],
@@ -52,52 +53,74 @@ fn lookup_packed(
     budget: &mut WorkBudget,
 ) -> Result<Option<MapValue>, IndexError> {
     budget.checkpoint()?;
-    let node = &packed.node;
-    budget.charge(WorkUsage {
-        bytes: u64::try_from(node.prefix.len()).map_err(|_error| IndexError::ResourceLimited)?,
-        ..WorkUsage::default()
-    })?;
-    let remaining = nibbles
-        .get(offset..)
-        .ok_or_else(|| IndexError::CorruptObject("map traversal passed key end".into()))?;
-    if !remaining.starts_with(&node.prefix) {
-        return Ok(None);
+    let mut node = &packed.node;
+    let mut offset = offset;
+    for _depth in 1..=8 {
+        budget.checkpoint()?;
+        budget.charge(WorkUsage {
+            bytes: u64::try_from(node.prefix.len())
+                .map_err(|_error| IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        let remaining = nibbles
+            .get(offset..)
+            .ok_or_else(|| IndexError::CorruptObject("map traversal passed key end".into()))?;
+        if !remaining.starts_with(&node.prefix) {
+            return Ok(None);
+        }
+        offset = offset
+            .checked_add(node.prefix.len())
+            .ok_or(IndexError::ResourceLimited)?;
+        if offset > MAX_NIBBLES {
+            return Err(IndexError::CorruptObject(
+                "packed map traversal exceeds key limit".into(),
+            ));
+        }
+        if offset == nibbles.len() {
+            return node
+                .value
+                .as_ref()
+                .map(|value| value.to_public(budget))
+                .transpose();
+        }
+        let edge = usize::from(
+            *nibbles
+                .get(offset)
+                .ok_or_else(|| IndexError::CorruptObject("map traversal passed key end".into()))?,
+        );
+        offset = offset.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        if offset > MAX_NIBBLES {
+            return Err(IndexError::CorruptObject(
+                "packed map traversal exceeds key limit".into(),
+            ));
+        }
+        let Some(branch) = node.branches.get(edge)? else {
+            return Ok(None);
+        };
+        match &branch.value {
+            BranchValue::Terminal(value) => {
+                budget.charge(WorkUsage {
+                    bytes: u64::try_from(branch.prefix.len())
+                        .map_err(|_error| IndexError::ResourceLimited)?,
+                    ..WorkUsage::default()
+                })?;
+                return if nibbles.get(offset..) == Some(branch.prefix.as_slice()) {
+                    value.to_public(budget).map(Some)
+                } else {
+                    Ok(None)
+                };
+            }
+            BranchValue::Packed(child) if branch.prefix.is_empty() => node = &child.node,
+            BranchValue::Indirect(_) | BranchValue::Packed(_) => {
+                return Err(IndexError::CorruptObject(
+                    "packed map branch has an external or tailed child".into(),
+                ));
+            }
+        }
     }
-    let offset = offset
-        .checked_add(node.prefix.len())
-        .ok_or(IndexError::ResourceLimited)?;
-    if offset > MAX_NIBBLES {
-        return Err(IndexError::CorruptObject(
-            "packed map traversal exceeds key limit".into(),
-        ));
-    }
-    if offset == nibbles.len() {
-        return Ok(node.value);
-    }
-    let edge = usize::from(
-        *nibbles
-            .get(offset)
-            .ok_or_else(|| IndexError::CorruptObject("map traversal passed key end".into()))?,
-    );
-    let offset = offset.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-    if offset > MAX_NIBBLES {
-        return Err(IndexError::CorruptObject(
-            "packed map traversal exceeds key limit".into(),
-        ));
-    }
-    let Some(branch) = node.branches.get(edge)? else {
-        return Ok(None);
-    };
-    let BranchValue::Terminal(value) = &branch.value else {
-        return Err(IndexError::CorruptObject(
-            "packed map branch has a nested child".into(),
-        ));
-    };
-    budget.charge(WorkUsage {
-        bytes: u64::try_from(branch.prefix.len()).map_err(|_error| IndexError::ResourceLimited)?,
-        ..WorkUsage::default()
-    })?;
-    Ok((nibbles.get(offset..) == Some(branch.prefix.as_slice())).then_some(*value))
+    Err(IndexError::CorruptObject(
+        "packed map depth exceeds bound".into(),
+    ))
 }
 
 pub(super) struct OriginalLookup {
@@ -192,7 +215,12 @@ impl OriginalLookup {
                     .checked_add(node.prefix.len())
                     .ok_or(IndexError::ResourceLimited)?;
                 if offset == nibbles.len() {
-                    Some(node.value)
+                    Some(
+                        node.value
+                            .as_ref()
+                            .map(|value| value.to_public(budget))
+                            .transpose()?,
+                    )
                 } else {
                     let edge = usize::from(*nibbles.get(offset).ok_or_else(|| {
                         IndexError::CorruptObject("map traversal passed key end".into())
@@ -224,10 +252,11 @@ impl OriginalLookup {
                                         .map_err(|_error| IndexError::ResourceLimited)?,
                                     ..WorkUsage::default()
                                 })?;
-                                Some(
-                                    (nibbles.get(offset..) == Some(branch.prefix.as_slice()))
-                                        .then_some(*value),
-                                )
+                                Some(if nibbles.get(offset..) == Some(branch.prefix.as_slice()) {
+                                    Some(value.to_public(budget)?)
+                                } else {
+                                    None
+                                })
                             }
                         },
                     }

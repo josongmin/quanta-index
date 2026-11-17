@@ -65,6 +65,7 @@ fn batch(state: &CorpusPublicationState, generation: u64) -> Result<SearchCorpus
 }
 fn receipt(batch: &SearchCorpusIngestBatch) -> Result<SearchCorpusPublishOutcome> {
     Ok(SearchCorpusPublishOutcome {
+        upload_cleanup: None,
         publication: SourcePublicationBinding::for_batch(batch),
         observation: None,
         receipt: BatchPublishReceipt {

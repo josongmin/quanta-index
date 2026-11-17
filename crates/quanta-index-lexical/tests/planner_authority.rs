@@ -10,6 +10,7 @@
 //! Error>>` and propagates errors via `?` (no `.unwrap()`/`.expect()` per
 //! workspace lint policy).
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/op_fixture.rs"]

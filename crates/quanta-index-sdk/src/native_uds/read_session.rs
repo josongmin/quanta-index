@@ -1,15 +1,37 @@
 //! Explicit product read leases; callers retain the last acknowledged identity.
 
+mod admitted;
+mod history;
+mod hybrid;
+mod page;
+mod profile;
+
 use super::{
     IndexInstanceId, MAX_NATIVE_TEXT_TOP_K, NativeIndexRequest, NativeIndexResponse,
     NativeTextResult, NativeUdsClient, NativeUdsError, Path, RequestBudgetV1, TextQueryRequest,
-    ViewSelection, native_text_result_limit, selection_matches, validate_text_result,
+    ViewSelection, selection_matches, validate_text_result,
 };
 use quanta_index_contract::native_protocol::{
     NativeReadSessionId, NativeReadSessionReply, NativeReadSessionRequest,
     NativeReadSessionSettlement, NativeReadSessionState, NativeReadSessionStatus,
     NativeReadSettlementState,
 };
+
+// The original budget owns cancellation, absolute and phase-observed deadlines.
+// Do not approximate it with a copied clock or cancellation flag.
+pub(super) fn admitted_budget_checkpoint(budget: &RequestBudgetV1) -> Result<(), NativeUdsError> {
+    budget.checkpoint("native_admitted_read").map_err(|cause| {
+        let (code, message) = cause.into_search_plane_wire();
+        if code == quanta_index_ipc::REQUEST_CANCELLED_CODE {
+            NativeUdsError::Refused(super::NativeIndexWireError {
+                code: super::NativeIndexErrorCode::Cancelled,
+                message,
+            })
+        } else {
+            NativeUdsError::Transport(message)
+        }
+    })
+}
 
 fn binding(
     expected: &NativeReadSessionStatus,
@@ -50,15 +72,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 "unexpected read session open reply".into(),
             ));
         };
-        if !selection_matches(selection, status.view)
-            || status.session == NativeReadSessionId([0; 32])
-            || status.revision == 0
-            || status.expires_at_ms == 0
-        {
-            return Err(NativeUdsError::Protocol(
-                "read session open binding differs".into(),
-            ));
-        }
+        validate_open(selection, &status)?;
         Ok(status)
     }
 
@@ -132,12 +146,7 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 "unexpected read session release reply".into(),
             ));
         };
-        binding(expected, &status)?;
-        if status.state != NativeReadSessionState::Released {
-            return Err(NativeUdsError::Protocol(
-                "read session release was not confirmed".into(),
-            ));
-        }
+        validate_release(expected, &status)?;
         Ok((status, has_remaining_target_pins))
     }
 
@@ -188,14 +197,8 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         query: TextQueryRequest,
         budget: &RequestBudgetV1,
     ) -> Result<NativeTextResult, NativeUdsError> {
-        if expected.state != NativeReadSessionState::Active
-            || !(1..=MAX_NATIVE_TEXT_TOP_K).contains(&query.top_k)
-        {
-            return Err(NativeUdsError::Protocol(
-                "read session query is not active or exceeds bounds".into(),
-            ));
-        }
-        let limit = native_text_result_limit(&query)?;
+        let limit = prepare_text(expected, &query, None)?;
+        let constraints = query.constraints.clone();
         let NativeIndexResponse::TextRanked(result) = self.request(
             NativeIndexRequest::ReadSession(NativeReadSessionRequest::SearchText {
                 session: expected.session,
@@ -213,8 +216,113 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             ViewSelection::Exact(expected.view),
             instance,
             limit,
+            &constraints,
             &result,
         )?;
         Ok(result)
     }
+}
+
+fn validate_open(
+    selection: ViewSelection,
+    status: &NativeReadSessionStatus,
+) -> Result<(), NativeUdsError> {
+    if !selection_matches(selection, status.view)
+        || status.session == NativeReadSessionId([0; 32])
+        || status.revision == 0
+        || status.expires_at_ms == 0
+    {
+        return Err(NativeUdsError::Protocol(
+            "read session open binding differs".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_release(
+    expected: &NativeReadSessionStatus,
+    status: &NativeReadSessionStatus,
+) -> Result<(), NativeUdsError> {
+    binding(expected, status)?;
+    if status.state != NativeReadSessionState::Released {
+        return Err(NativeUdsError::Protocol(
+            "read session release was not confirmed".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn response_matches_request(
+    request: &NativeReadSessionRequest,
+    response: &NativeIndexResponse,
+) -> bool {
+    use NativeIndexResponse as S;
+    use NativeReadSessionRequest as R;
+    match (request, response) {
+        (R::Open { selection, .. }, S::ReadSession(NativeReadSessionReply::Status(status))) => {
+            validate_open(*selection, status).is_ok()
+        }
+        (
+            R::Renew { session, revision },
+            S::ReadSession(NativeReadSessionReply::Status(status)),
+        ) => {
+            status.session == *session
+                && revision.checked_add(1) == Some(status.revision)
+                && status.state == NativeReadSessionState::Active
+        }
+        (R::Status(session), S::ReadSession(NativeReadSessionReply::Status(status))) => {
+            status.session == *session
+        }
+        (R::Release(session), S::ReadSession(NativeReadSessionReply::Released { status, .. })) => {
+            status.session == *session && status.state == NativeReadSessionState::Released
+        }
+        (R::Settlement(session), S::ReadSession(NativeReadSessionReply::Settlement(result))) => {
+            result.session == *session
+        }
+        (R::ReadProfile { session }, S::ReadSessionProfile(result)) => result.session == *session,
+        (R::ReadHistoryCut { session, instance }, S::HistoryCut(result)) => {
+            result.session == *session && result.instance == *instance
+        }
+        (R::ReadHistoryGeneration { session, instance }, S::HistoryGeneration(result)) => {
+            result.session == *session && result.instance == *instance
+        }
+        (R::SearchText { instance, .. }, S::TextRanked(result)) => result.instance == *instance,
+        (
+            R::SearchTextPage {
+                session, instance, ..
+            },
+            S::TextRankedPage(result),
+        ) => result.session == *session && result.instance == *instance,
+        (
+            R::SearchHybridFile {
+                session,
+                text_instance,
+                semantic_instance,
+                file_top_k,
+                ..
+            },
+            S::HybridFileRanked(result),
+        ) => {
+            result.session == *session
+                && result.text_instance == *text_instance
+                && result.semantic_instance == *semantic_instance
+                && result.file_top_k == *file_top_k
+        }
+        _ => false,
+    }
+}
+
+fn prepare_text(
+    expected: &NativeReadSessionStatus,
+    query: &TextQueryRequest,
+    memory: Option<&super::MemoryScope>,
+) -> Result<u32, NativeUdsError> {
+    if expected.state != NativeReadSessionState::Active
+        || !(1..=MAX_NATIVE_TEXT_TOP_K).contains(&query.top_k)
+    {
+        return Err(NativeUdsError::Protocol(
+            "read session query is not active or exceeds bounds".into(),
+        ));
+    }
+    super::native_text_result_limit_checked_with_memory(query, memory, |_| Ok(()))
 }

@@ -74,7 +74,7 @@ fn advance(
     let key = operation(sequence);
     let references = engine.stage_sources(
         engine.begin_input(key)?,
-        &[SourceInput {
+        vec![SourceInput {
             path: "entry.rs".into(),
             bytes: body.to_vec(),
             text: SourceTextAdmission::Utf8 {
@@ -722,7 +722,7 @@ fn posting_tree_witness_shrinks_to_small_and_reexpands_with_pinned_views() -> Te
             },
         })
         .collect();
-    let source_refs = engine.stage_sources(engine.begin_input(add)?, &inputs, &mut budget())?;
+    let source_refs = engine.stage_sources(engine.begin_input(add)?, inputs, &mut budget())?;
     assert_eq!(source_refs.len(), 9);
     let initial = published(block_on(
         engine.submit(
@@ -838,21 +838,61 @@ fn posting_tree_witness_shrinks_to_small_and_reexpands_with_pinned_views() -> Te
     let value = objects
         .lookup(terms, b"\0shared", &mut budget())?
         .ok_or("eight-owner posting absent")?;
-    let quanta_index_core::index::MapValue::Object(posting_ref) = value else {
-        return Err("dense posting did not shrink to Small".into());
+    let quanta_index_core::index::MapValue::Inline(value) = value else {
+        return Err("dense posting did not shrink to shared Small".into());
     };
+    assert_eq!(value.data()?, &[3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8]);
+    let posting_ref = value.single_child()?.ok_or("Small block absent")?;
     let posting = objects.get(posting_ref, &mut budget())?;
-    let posting_json: serde_json::Value = serde_json::from_slice(&posting.payload)?;
-    assert_eq!(
-        posting_json.pointer("/root/Small/len"),
-        Some(&serde_json::json!(8))
-    );
-    assert_eq!(posting.registration.children.len(), 8);
+    let mut posting_name = String::with_capacity(64);
+    for byte in posting_ref.0.0 {
+        write!(&mut posting_name, "{byte:02x}")?;
+    }
+    let posting_file = directory
+        .path()
+        .join("native-objects/objects")
+        .join(&posting_name[..2])
+        .join(&posting_name);
+    assert!(posting_file.is_file());
+    assert_eq!(&posting.payload[..16], b"QITXSP01\0\x10\0\x02\0\x01\0\0");
+    // All owners have the same [0,1] occurrence payload. Its immutable child
+    // is shared while the eight owner memberships remain distinct.
+    assert_eq!(posting.registration.children.len(), 1);
+    let mut at = 16;
+    for surface in [0_u8, 1] {
+        assert_eq!(&posting.payload[at..at + 2], &[0, 7]);
+        at += 2;
+        assert_eq!(posting.payload[at], surface);
+        assert_eq!(&posting.payload[at + 1..at + 7], b"shared");
+        at += 7;
+        assert_eq!(posting.payload[at], 8);
+        at += 1;
+        for id in 1..=8_u8 {
+            let expected_owner: Vec<_> = owner(id)
+                .producer
+                .0
+                .into_iter()
+                .chain(owner(id).stable_id.0)
+                .collect();
+            assert_eq!(&posting.payload[at..at + 32], expected_owner.as_slice());
+            assert_eq!(&posting.payload[at + 32..at + 34], &[0, 0]);
+            at += 34;
+        }
+    }
+    assert_eq!(posting.payload.len(), at);
+    let folded = objects
+        .lookup(terms, b"\x01shared", &mut budget())?
+        .ok_or("folded Small absent")?;
+    let quanta_index_core::index::MapValue::Inline(folded) = folded else {
+        return Err("folded posting is not shared Small".into());
+    };
+    assert_eq!(folded.data()?, &[3, 0, 1, 0, 0, 0, 0, 0, 0, 0, 8]);
+    assert_eq!(folded.single_child()?, Some(posting_ref));
 
     let readd = operation(4);
     let replacement = engine.stage_sources(
         engine.begin_input(readd)?,
-        &[SourceInput {
+        vec![SourceInput {
             path: "entry-9.rs".into(),
             bytes: b"lead shared shared".to_vec(),
             text: SourceTextAdmission::Utf8 {
@@ -911,6 +951,16 @@ fn posting_tree_witness_shrinks_to_small_and_reexpands_with_pinned_views() -> Te
     )?;
     assert_shared_positions(&objects, initial_pin.record(), &initial_binding, 9, None)?;
     assert_shared_positions(&objects, small_pin.record(), &small_binding, 8, None)?;
+    assert_eq!(
+        objects.get(posting_ref, &mut budget())?.payload,
+        posting.payload
+    );
+    for child in &posting.registration.children {
+        assert_eq!(
+            objects.get(*child, &mut budget())?.registration.reference,
+            *child
+        );
+    }
 
     for key in [configure, add, remove, readd] {
         loop {
@@ -954,9 +1004,38 @@ fn posting_tree_witness_shrinks_to_small_and_reexpands_with_pinned_views() -> Te
         9,
         Some(&[1, 2]),
     )?;
+    assert!(
+        posting_file.is_file(),
+        "shared block removed while its exact view is pinned"
+    );
     initial_pin.release()?;
     small_pin.release()?;
     latest_pin.release()?;
+    let retired = catalog.retire_exact_history_page(workspace(), 1, None, 16, &mut budget())?;
+    assert!(retired.retired >= 1);
+    let mut reclaimed = false;
+    for _ in 0..128 {
+        let page = catalog.reclaim_work_page(None, 8, &mut budget())?;
+        if page.items.is_empty() {
+            break;
+        }
+        for work in page.items {
+            let _page = objects.reclaim_one(work, 32, &mut budget())?;
+        }
+        if matches!(
+            objects.get(posting_ref, &mut budget()),
+            Err(IndexError::CorruptObject(_))
+        ) {
+            reclaimed = true;
+            break;
+        }
+    }
+    assert!(
+        reclaimed,
+        "shared Small block retained after its last pin and term locator"
+    );
+    assert!(matches!(std::fs::symlink_metadata(&posting_file),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound));
 
     drop(spy);
     drop(objects);

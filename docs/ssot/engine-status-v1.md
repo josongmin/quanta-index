@@ -29,14 +29,24 @@ authority rather than implying a missing producer crate.
 | SDK publication and reads | [Native SDK contract](../../crates/quanta-index-sdk/src/native_index.rs) and [Native UDS client](../../crates/quanta-index-sdk/src/native_uds.rs) |
 | Durable publication and recovery | [Kernel coordination](../../crates/quanta-index-kernel/src/lib.rs), [Catalog authority](../../crates/quanta-index-catalog/src/native/authority.rs) and [immutable storage](../../crates/quanta-index-storage/src/lib.rs) |
 | Search and graph | [Native literal](../../crates/quanta-index-lexical/src/native/literal.rs), [Native text](../../crates/quanta-index-lexical/src/native/text.rs), [Native semantic](../../crates/quanta-index-semantic/src/native/mod.rs) and [Native graph](../../crates/quanta-index-repomap/src/native/graph.rs) adapters |
+| Native ANN regions | [Immutable HNSW](../../crates/quanta-index-semantic/src/native/embedding/native_graph.rs), [materialization](../../crates/quanta-index-semantic/src/native/embedding/ann_materialization.rs) and [query](../../crates/quanta-index-semantic/src/native/embedding/ann_query.rs); Native `ann_lance` is test-only, while Legacy dependencies remain |
+| Retained file pages and Hybrid | [Text page](../../crates/quanta-index-searchd-runtime/src/native_read_session_transport/page.rs) and [two-reader Hybrid](../../crates/quanta-index-searchd-runtime/src/native_read_session_transport/hybrid.rs), using one view/attempt and cumulative budget |
 
-The Native runtime's configured semantic provider is OpenAI; the legacy
+The Native runtime selects OpenAI or LocalCode through admitted
+[provider configuration](../../crates/quanta-index-searchd-runtime/src/native_product.rs).
+Configured provider support is source evidence; actual execution, quality and
+installed-product acceptance retain their own gates. The legacy
 `QUANTA_INDEX_EMBEDDER` defaults below and the external producer's Voyage
-transport are separate boundaries. The Native source path is present; installed
-acceptance, production inputs and the default switch remain under
-[E02](../plans/oct-22-finalizing/README.md#e02),
-[E06](../plans/oct-22-finalizing/README.md#e06) and
-[E08](../plans/oct-22-finalizing/README.md#e08).
+transport are separate boundaries. Ordinary SDK connections resolve a Native
+profile, and supported ordinary CLI commands use the Native parser. Legacy
+callers use explicit SDK constructors or the CLI's `legacy` subcommand.
+[SDK profile resolution](../../crates/quanta-index-sdk/src/config.rs) ·
+[CLI routing](../../crates/quanta-index-searchctl/src/lib.rs)
+
+Deployment selection still controls which daemon serves a root. Installed
+recovery, caller acceptance and production engine retirement track the
+[cutover plan](../plans/nov-12-native-cutover/README.md). Native query and
+semantic contracts are in [NOV-12-001](../adr/NOV-12-001-native-query-and-semantic-engine.md).
 
 ## Explicit capability limits
 

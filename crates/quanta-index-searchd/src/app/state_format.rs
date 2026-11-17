@@ -209,6 +209,7 @@ pub fn refuse_legacy_state_root_v1(root: &Path) -> Result<(), CoreError> {
         ".native-index-v17",
         ".native-index-v18",
         ".native-index-v19",
+        quanta_index_contract::index::NATIVE_INDEX_STATE_MARKER_NAME,
     ] {
         match fs::symlink_metadata(root.join(marker)) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

@@ -25,7 +25,7 @@
 4. 기존 A semantic compatibility·D RepoMap lifetime·C5 generation reservation의 VERIFIED 범위와 완료된 bank/engine은 재사용한다. 관련 source/입력 변경 영향만 좁게 재검증하고 전체 미수용을 이유로 재구현하지 않는다.
 5. Semantica의 전체 PTA/DFG/Type 캠페인을 Index 작업으로 복제하지 않는다. Index가 실제 소비하는 source/generation/affected-output/lower failure 계약은 기존 canonical owner에게 있고 그 결과의 접합/수용은 필수다.
 6. profile/hardware/backend/provider·sample 수·품질 gold·latency/자원 상한은 측정 전에 고정한다. 결과를 보고 예산/시나리오/분모/합격선을 바꾸지 않는다. unset profile·baseline/client workflow 부재는 해당 성능/IntelliJ claim을 닫지 못한다.
-7. W205 수용은 [기존 여섯 목표의 출구](OWNERSHIP.md#w205-closeout-20261030)를 따른다. 공개 Java5와 미게시 precommit 모델2, SDK7(BC2/FT1/Python4), Runtime floor3·공개 Strong2의 본문/Source를 분리한다. 실제 설치 provider의 typed 실패·winning/losing DATA·최종 Native alias/refund는 별도 같은 실행 관측이 필요하다. R792 wire whole-target17/17은 backing2/digest3을 실제 실행했으며, packet2·SDK·Product를 대신하지 않는다. Main private PTA ABI 연결부2파일/3줄은 정적 검증과 r2 포함까지 확인됐고 수리 후 Rust는 NOT_RUN이다. 기존 same-key A/B 절대0 writer 회귀를 재사용한다. Strong의 ordered successor→terminal 관측은 동시성 race 증거가 아니며, 캡처 성공·환경 서명·guard 통과와 L1의 별도 결과를 설치 SDK/Product 수용으로 합산하지 않는다. R791의 오래된 guard 기대값2건 수리는 유지한다. 구현 합류와 wire 통과는 R03/R04/R23/R24/R37/R38 및 전체 E01–E08의 수용을 면제하지 않는다.
+7. W205 수용은 [기존 여섯 목표의 출구](OWNERSHIP.md#w205-closeout-20261030)를 따른다. 공개 Java5와 미게시 precommit 모델2, SDK7(BC2/FT1/Python4), Runtime floor3·공개 Strong2의 본문/Source를 분리한다. 실제 설치 provider의 typed 실패·winning/losing DATA·최종 Native alias/refund는 별도 같은 실행 관측이 필요하다. 기존 same-key A/B 절대0 writer 회귀를 재사용하고, Strong의 ordered successor→terminal 관측을 동시성 race 증거로 계산하지 않는다. Chunk/packet·공개 SDK·Product 수용은 각각 원 계약으로 확인한다. 과거 wire/정적/guard/ABI 수리와 실행 수치는 [W205 검증 원장](VALIDATION.md#w205-proof-20261030)에서 source별로 재사용한다. 캡처·서명·guard나 다른 L1 결과는 설치 SDK/Product를 대체하지 않으며 구현 합류가 R03/R04/R23/R24/R37/R38 및 전체 E01–E08 수용을 면제하지 않는다.
 
 <a id="requirements"></a>
 ## R01–R40 — 각 요구의 주 에픽 하나
@@ -47,10 +47,10 @@
 | R11 | Shared live RAM/disk/WAL/provider reservations, draining charges and enforced aggregate limits | [E02](E02-publication-recovery.md) |
 | R12 | Service-owned scratch, crash cleanup under custody and enforcement including secondary spill | [E02](E02-publication-recovery.md) |
 | R13 | Existing waterfall P00-P09 integration, failure-surviving reopen stages and observer-cost isolation | [E07](E07-performance-operations.md) |
-| R14 | Native incremental byte-literal indexing and exact current/old-view query | [E03](E03-lexical-construction.md) |
-| R15 | Required token/BM25/regex domain parity with independent ranking/query gold | [E03](E03-lexical-construction.md) |
-| R16 | Bounded cold bulk-build, reopen and catch-up; initial-index algorithm/parallel preparation experiments | [E03](E03-lexical-construction.md) |
-| R17 | Sustainable lexical churn/maintenance and bounded write amplification/debt | [E03](E03-lexical-construction.md) |
+| R14 | Native incremental byte-literal indexing and exact current/old-view query | [E03](#e03-lexical-acceptance) |
+| R15 | Required token/BM25/regex domain parity with independent ranking/query gold | [E03](#e03-lexical-acceptance) |
+| R16 | Bounded cold bulk-build, reopen and catch-up; initial-index algorithm/parallel preparation experiments | [E03](#e03-lexical-acceptance) |
+| R17 | Sustainable lexical churn/maintenance and bounded write amplification/debt | [E03](#e03-lexical-acceptance) |
 | R18 | Semantic desired/covered/missing ownership, certified projection delta, stale job/delete fencing | [E04](E04-semantic-ann.md) |
 | R19 | Model/recipe/input provenance and durable unchanged-owner/ABA artifact reuse | [E04](E04-semantic-ann.md) |
 | R20 | Bounded small-scope exact vector materialization/search with exact coverage and cosine gold | [E04](E04-semantic-ann.md) |
@@ -93,6 +93,24 @@
 - native/IDE RFC profile의 100K files/≤1GiB·8 performance cores/≥32GiB host·Index RSS8GiB 등은 위 운영 profile과 섞지 않는다. 원 RFC 12.3/12.5절 absolute gates와 actual IntelliJ 비교를 함께 수용한다.
 - profile별 latency/quality/served rate·actual RSS/allocated disk·queue/retry/provider/maintenance/observer 비용을 모두 포함한다. 이 문서의 목표치는 관측 성능이나 보장이 아니다.
 
+## E03 Lexical acceptance
+
+R14–R17 and W2-11 use the current Native Text and SDK paths. The
+[implementation ADR](../../adr/NOV-07-001-native-index-execution-and-custody.md#cold-text-installation-and-packet-custody)
+owns the reusable construction contract. Track whole-corpus extraction,
+hashing, inventory and sealing through the actual caller and storage path
+for the fixed delta/no-op input. Test cold preparation, sort/spill, group
+commit and compaction on the same input under existing durability and GC.
+
+- [ ] current/held-old view의 byte-literal·필수 token/BM25/regex/filter/ranking을 독립 expected gold로 수용. 미지원은 정확한 capability 거절.
+- [ ] changed file의 전체 contribution을 포함해 rename/delete/recreate/no-op·통계/visibility·동일 위치 term 교체의 증분 결과가 cold build와 일치.
+- [ ] full bootstrap·warm reopen·journal continuity·gap catch-up/Resync가 실제 daemon에서 완결.
+- [ ] 고정 D/K를 두고 N/H/M을 독립 증가시켜 [RFC 12절](../../rfc/oct-10-native-incremental-vnext.md#12-structural-and-sustainable-performance-contracts)의 CPU/bytes/objects/catalog/allocation bounds를 실제 비용으로 검증.
+- [ ] corpus-sized Vec/inline manifest·숨은 전수 scan·매 tiny delta 즉시 전역 compaction 없이 bounded construction/scratch와 지속 churn/debt 수용.
+- [ ] 원 profile의 파일/s·MiB/s·증분 latency와 실제 제품 gold를 E07에 전달. elapsed만 낮아지고 실패/누락이 늘어난 결과는 거절.
+
+성능 실험의 계수·하드웨어·profile은 실행 전에 고정하고 구현과 독립된 gold를 유지한다. 원 lexical/ADR 사양은 [RFC 9절](../../rfc/oct-10-native-incremental-vnext.md#9-concrete-index-work-packages)와 [보존 lexical 계약](../../history/oct-10-index-closeout/LEXICAL-STORE-CONTRACT.md)을 따른다. 기존 구현 완료와 전체 운영/성능 수용을 구분한다.
+
 ## Previous work mapping
 
 | 이전 ID | 현재 주 에픽 |
@@ -107,7 +125,7 @@
 | W2-08 | [E06](E06-sdk-service-cutover.md) |
 | W2-09 | [E07](E07-performance-operations.md) |
 | W2-10 | [E07](E07-performance-operations.md) |
-| W2-11 | [E03](E03-lexical-construction.md) |
+| W2-11 | [E03](#e03-lexical-acceptance) |
 | W2-12 | [E01](E01-producer-generation.md) |
 | W2-13 | [E04](E04-semantic-ann.md) |
 | W2-14 | [E01](E01-producer-generation.md) |

@@ -13,6 +13,11 @@ conversion is offline-only under SEP-21-004.
 
 Consolidated: 2026-09-27
 
+Scope clarified: 2026-11-12 — this remains the Legacy generation backend
+decision. The Native selected-view graph implementation follows
+[NOV-12-001](NOV-12-001-native-query-and-semantic-engine.md). Native selection
+does not establish default caller migration or shipped Lance dependency removal.
+
 ## Context
 
 Semantic state was historically reconstructed from `journal.cbor` into an

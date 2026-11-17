@@ -16,8 +16,8 @@ use crate::{
 use quanta_index_contract::native_protocol::MAX_NATIVE_TEXT_TOP_K;
 use quanta_index_contract::{LqCountBound, LqFilter};
 use quanta_index_core::index::{
-    IndexError, MAX_SOURCE_PATH_BYTES, MemberBinding, MemoryLease, MemoryLifetime, ObjectRef,
-    OwnerKey, ViewRef, WorkBudget, WorkUsage,
+    FiniteScore, IndexError, MAX_SOURCE_PATH_BYTES, MemberBinding, MemoryLease, MemoryLifetime,
+    ObjectRef, OwnerKey, ViewRef, WorkBudget, WorkUsage,
 };
 use quanta_index_core::{
     DiagnosticContextV1, DiagnosticCounterV1, DiagnosticHealthCodeV1, DiagnosticSpanGuardV1,
@@ -476,6 +476,9 @@ impl Bm25Policy {
 pub struct TextContentExecution {
     pub top_k: u32,
     pub policy: Bm25Policy,
+    /// Continue strictly after this score/owner in the selected immutable view.
+    /// The caller authenticates the anchor's view, query and artifact binding.
+    pub rank_after: Option<(FiniteScore, OwnerKey)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -502,6 +505,8 @@ pub struct NativeTextRanking {
     pub view: ViewRef,
     pub artifact: ObjectRef,
     pub matched: u64,
+    /// Eligible matches strictly after the anchor, before the bounded heap.
+    pub remaining: u64,
     pub hits: Vec<NativeTextRankedHit>,
     // Returned ranking data may outlive its producing execution reservation.
     _hit_memory: Option<MemoryLease>,
@@ -512,6 +517,7 @@ impl PartialEq for NativeTextRanking {
         self.view == other.view
             && self.artifact == other.artifact
             && self.matched == other.matched
+            && self.remaining == other.remaining
             && self.hits == other.hits
     }
 }
@@ -599,6 +605,12 @@ impl QueryWorkspace {
 
 struct HeapHit(NativeTextRankedHit);
 
+// Ordering in the result: best first, including the complete source identity.
+// A maximum heap with this order retains its worst hit at the root.
+fn compare_rank(score: f64, owner: OwnerKey, other_score: f64, other_owner: OwnerKey) -> Ordering {
+    other_score.total_cmp(&score).then(owner.cmp(&other_owner))
+}
+
 impl PartialEq for HeapHit {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
@@ -613,11 +625,7 @@ impl PartialOrd for HeapHit {
 impl Ord for HeapHit {
     fn cmp(&self, other: &Self) -> Ordering {
         // The worst retained hit is the heap maximum.
-        other
-            .0
-            .score
-            .total_cmp(&self.0.score)
-            .then(self.0.owner.cmp(&other.0.owner))
+        compare_rank(self.0.score, self.0.owner, other.0.score, other.0.owner)
     }
 }
 
@@ -732,7 +740,11 @@ impl NativeTextIndex {
             member,
             plan,
             constraints,
-            TextContentExecution { top_k, policy },
+            TextContentExecution {
+                top_k,
+                policy,
+                rank_after: None,
+            },
             None,
             context,
         )
@@ -827,7 +839,18 @@ impl NativeTextIndex {
         observation: &mut QueryLexicalObservation,
     ) -> Result<NativeTextRanking, IndexError> {
         let member = member_scope.member();
-        let TextContentExecution { top_k, policy } = execution;
+        let TextContentExecution {
+            top_k,
+            policy,
+            rank_after,
+        } = execution;
+        if rank_after.is_some_and(|(score, _owner)| score.get() < 0.0)
+            || (rank_after.is_some() && plan.options.count.is_some())
+        {
+            return Err(IndexError::InvalidInput(
+                "native BM25 rank-after requires a nonnegative score and no count option".into(),
+            ));
+        }
         let mut occurrences = super::text_occurrence::OccurrenceReader::new(64)?;
         if let Some((corpus, _)) = overlay {
             corpus.validate_binding(context.ticket.view.identity, member)?;
@@ -1184,6 +1207,8 @@ impl NativeTextIndex {
             heads.push(observation.posting(cursor, &mut occurrences, &mut context)?);
         }
         let mut matched = 0u64;
+        let mut remaining = 0u64;
+        let mut anchor_found = rank_after.is_none();
         let mut phrase_candidates = [0u32; MAX_QUERY_NODES];
         let mut admitted = None;
         let mut overlay_documents = overlay.map(|(corpus, _)| corpus.documents().peekable());
@@ -1432,16 +1457,25 @@ impl NativeTextIndex {
                 };
                 if matching.matched && path_match && selected {
                     matched = matched.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-                    let ranked = HeapHit(NativeTextRankedHit {
-                        owner,
-                        source,
-                        score: value,
+                    let after_order = rank_after.map(|(score, anchor_owner)| {
+                        compare_rank(value, owner, score.get(), anchor_owner)
                     });
-                    if heap.len() < capacity {
-                        heap.push(ranked);
-                    } else if heap.peek().is_some_and(|worst| ranked < *worst) {
-                        let _discarded = heap.pop();
-                        heap.push(ranked);
+                    anchor_found |= after_order == Some(Ordering::Equal);
+                    if after_order.is_none_or(|order| order == Ordering::Greater) {
+                        remaining = remaining
+                            .checked_add(1)
+                            .ok_or(IndexError::ResourceLimited)?;
+                        let ranked = HeapHit(NativeTextRankedHit {
+                            owner,
+                            source,
+                            score: value,
+                        });
+                        if heap.len() < capacity {
+                            heap.push(ranked);
+                        } else if heap.peek().is_some_and(|worst| ranked < *worst) {
+                            let _discarded = heap.pop();
+                            heap.push(ranked);
+                        }
                     }
                 }
             }
@@ -1468,6 +1502,14 @@ impl NativeTextIndex {
                 "native text posting extends beyond admitted universe".into(),
             ));
         }
+        // A positional cursor must name an actual eligible row, including its
+        // exact score. Finish validation first so an unknown cursor cannot hide
+        // corruption or turn provisional heap contents into a successful suffix.
+        if !anchor_found {
+            return Err(IndexError::InvalidInput(
+                "native BM25 rank-after anchor is absent from eligible matches".into(),
+            ));
+        }
         let hit_bytes = capacity_bytes::<NativeTextRankedHit>(heap.len())?;
         context.budget.charge(WorkUsage {
             bytes: hit_bytes,
@@ -1484,6 +1526,7 @@ impl NativeTextIndex {
             view,
             artifact: member.artifact,
             matched,
+            remaining,
             hits: Vec::new(),
             _hit_memory: hit_memory,
         };
@@ -1494,7 +1537,7 @@ impl NativeTextIndex {
         ranked.hits.extend(heap.drain().map(|hit| hit.0));
         ranked
             .hits
-            .sort_unstable_by(|a, b| b.score.total_cmp(&a.score).then(a.owner.cmp(&b.owner)));
+            .sort_unstable_by(|a, b| compare_rank(a.score, a.owner, b.score, b.owner));
         context.budget.checkpoint()?;
         Ok(ranked)
     }

@@ -12,12 +12,14 @@ use super::{
 use crate::socket_access::{PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE};
 use rustix::fs::{OFlags, fcntl_getfl};
 use rustix::io::{Errno, FdFlags, fcntl_getfd};
+#[cfg(target_os = "linux")]
+use rustix::net::SocketAddrUnix;
 use std::io::{Read, Write};
 use std::net::Shutdown;
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -135,6 +137,24 @@ struct DroppingTraceSink;
 impl DiagnosticEventSinkV1 for DroppingTraceSink {
     fn try_emit(&self, _event: DiagnosticEmitV1) -> bool {
         false
+    }
+}
+
+#[derive(Debug)]
+struct QueueWaitSignalSink(mpsc::Sender<()>);
+
+impl DiagnosticEventSinkV1 for QueueWaitSignalSink {
+    fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+        if matches!(
+            event.kind,
+            DiagnosticEventKindV1::SpanBegin {
+                stage: quanta_index_core::DiagnosticStageV1::QueueWait,
+                ..
+            }
+        ) {
+            let _signalled = self.0.send(());
+        }
+        true
     }
 }
 
@@ -1179,6 +1199,56 @@ fn mode_of(path: &Path) -> Result<u32, String> {
         & 0o7777)
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn long_socket_path_preserves_the_bound_inode_and_both_client_deadlines() -> TestRes {
+    let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let parent = temp.path().join("x".repeat(160));
+    let path = parent.join("control.sock");
+    if SocketAddrUnix::new(&path).is_ok() {
+        return Err("fixture socket fits a direct Unix address".into());
+    }
+    let server = UdsServer::bind(&path).map_err(|error| error.to_string())?;
+    let first = SocketPathIdentity::capture(&path).map_err(|error| error.to_string())?;
+    if !matches!(
+        typed_bind_error(UdsServer::bind(&path))?,
+        IpcError::SocketInUse(owned) if owned == path
+    ) {
+        return Err("duplicate bind did not report the canonical live socket".into());
+    }
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let ordinary = connect_before_deadline(&path, deadline).map_err(|error| error.to_string())?;
+    let budget = RequestBudgetV1::for_duration(Duration::from_secs(1));
+    let budgeted = connect_stream_before_budget(&path, &budget).map_err(|error| error.to_string())?;
+    if !first.still_owns(&path).map_err(|error| error.to_string())? {
+        return Err("second bind or client dial replaced the socket".into());
+    }
+    drop((budgeted, ordinary, server));
+    if path.exists() {
+        return Err("socket was not removed at its canonical path".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn long_socket_shutdown_removes_its_inode_after_directory_replacement() -> TestRes {
+    let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let parent = temp.path().join("x".repeat(160));
+    let path = parent.join("control.sock");
+    let moved = temp.path().join("parked");
+    let server = UdsServer::bind(&path).map_err(|error| error.to_string())?;
+    std::fs::rename(&parent, &moved).map_err(|error| error.to_string())?;
+    let replacement = UdsServer::bind(&path).map_err(|error| error.to_string())?;
+    drop(server);
+    let current = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+    if moved.join("control.sock").exists() || !current.file_type().is_socket() {
+        return Err("old listener touched the replacement or left its old socket behind".into());
+    }
+    drop(replacement);
+    Ok(())
+}
+
 // QI-BB-014: a socket path with a live listener is never taken.
 #[test]
 fn a_live_listener_keeps_its_path_and_a_second_bind_is_refused() -> TestRes {
@@ -1615,6 +1685,31 @@ impl IpcDispatcher<u64, u64> for TestDispatcher {
     }
 }
 
+struct CountingDispatcher(Arc<AtomicUsize>);
+
+impl IpcDispatcher<u64, u64> for CountingDispatcher {
+    fn dispatch(
+        &self,
+        _context: &super::DispatchContextV1,
+        request: u64,
+        _budget: &RequestBudgetV1,
+    ) -> u64 {
+        let _previous = self.0.fetch_add(1, Ordering::AcqRel);
+        request
+    }
+
+    fn dispatch_stream(
+        &self,
+        _context: &super::DispatchContextV1,
+        _request: u64,
+        _budget: &RequestBudgetV1,
+        _emit: &mut dyn FnMut(u64) -> Result<(), IpcError>,
+    ) -> super::StreamDispatch<u64> {
+        let _previous = self.0.fetch_add(1, Ordering::AcqRel);
+        super::StreamDispatch::Unsupported
+    }
+}
+
 struct DeadlineConsistencyDispatcher;
 
 impl IpcDispatcher<u64, u64> for DeadlineConsistencyDispatcher {
@@ -1873,6 +1968,24 @@ impl RequestEnvelope<u64> for TestRequestEnvelope {
             self.payload,
             quanta_index_contract::DiagnosticAttemptFieldV1::Absent,
         )
+    }
+
+    fn repo_scope(_request: &u64) -> Option<String> {
+        None
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(transparent)]
+struct StreamingTestRequestEnvelope(TestRequestEnvelope);
+
+impl RequestEnvelope<u64> for StreamingTestRequestEnvelope {
+    fn into_parts(self) -> (u64, u64, quanta_index_contract::DiagnosticAttemptFieldV1) {
+        self.0.into_parts()
+    }
+
+    fn streaming(_request: &u64) -> bool {
+        true
     }
 
     fn repo_scope(_request: &u64) -> Option<String> {
@@ -3164,6 +3277,114 @@ fn peer_watch_repeated_arms_leave_no_thread_or_fd_behind() {
     assert_test_ok(&result);
 }
 
+fn closed_queued_peer_skips_dispatch<E>(frame: &[u8]) -> TestRes
+where
+    E: RequestEnvelope<u64>,
+{
+    let policy = ServerAdmissionPolicy::new(
+        1,
+        1,
+        1,
+        Duration::from_secs(5),
+        Duration::from_secs(2),
+        Duration::from_secs(2),
+    )
+    .map_err(|error| error.to_string())?;
+    let slots = Arc::new(DispatchSlots::for_policy(policy));
+    let held = slots
+        .acquire(Duration::ZERO, None)
+        .map_err(|error| format!("reserve dispatch slot: {error:?}"))?;
+    let (mut client, server) = UnixStream::pair().map_err(|error| error.to_string())?;
+    client.write_all(frame).map_err(|error| error.to_string())?;
+    let (queued_tx, queued_rx) = mpsc::channel();
+    let capture = DiagnosticContextV1::new(
+        DiagnosticCaptureIdV1([19; 16]),
+        Arc::new(TraceTestClock),
+        Arc::new(QueueWaitSignalSink(queued_tx)),
+    );
+    let counters = test_counters();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let worker_counters = Arc::clone(&counters);
+    let worker_calls = Arc::clone(&calls);
+    let worker_slots = Arc::clone(&slots);
+    let handle = thread::spawn(move || {
+        super::handle_connection_traced::<E, u64, TestResponseEnvelope, u64, CountingDispatcher>(
+            server,
+            &CountingDispatcher(worker_calls),
+            &worker_slots,
+            policy,
+            IpcPlane::Query,
+            PeerCredentials {
+                uid: 0,
+                gid: 0,
+                pid: None,
+            },
+            0,
+            1,
+            &AtomicBool::new(false),
+            &worker_counters,
+            Some(&capture),
+        )
+    });
+    // The only dispatch slot remains held after this queue-span signal.
+    queued_rx
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(|error| format!("request did not enter the dispatch queue: {error}"))?;
+    drop(client);
+    drop(held);
+    let reason = handle
+        .join()
+        .map_err(|panic| format!("server thread panicked: {panic:?}"))?;
+    if !matches!(reason, ConnectionCloseReason::PeerClosed) {
+        return Err(format!("closed queued peer got {reason:?}"));
+    }
+    if calls.load(Ordering::Acquire) != 0 {
+        return Err("closed queued peer reached dispatcher".into());
+    }
+    if slots.in_flight() != 0 {
+        return Err("closed queued peer retained its dispatch slot".into());
+    }
+    let snapshot = counters.snapshot();
+    if snapshot.dispatch_in_flight != 0
+        || snapshot.requests_dispatched != 0
+        || snapshot.peer_hangup_detected != 0
+    {
+        return Err(format!(
+            "pre-dispatch close changed dispatch counters: {snapshot:?}"
+        ));
+    }
+    let events = counters
+        .recent_request_events_v1()
+        .map_err(|error| error.to_string())?;
+    if !matches!(events.last(), Some(event) if event.stage == RequestEventStageV1::PeerCancelled)
+        || events
+            .iter()
+            .any(|event| event.stage == RequestEventStageV1::DispatchStarted)
+    {
+        return Err(format!(
+            "pre-dispatch close event sequence invalid: {events:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn closed_queued_one_shot_peer_never_enters_dispatcher() {
+    let result = encode_test_frame(71, 3)
+        .and_then(|frame| closed_queued_peer_skips_dispatch::<TestRequestEnvelope>(&frame));
+    assert_test_ok(&result);
+}
+
+#[test]
+fn closed_queued_stream_peer_never_enters_dispatcher() {
+    let result = encode_request(&StreamingTestRequestEnvelope(test_request(72, 3)))
+        .map_err(|error| error.to_string())
+        .and_then(|frame| {
+            closed_queued_peer_skips_dispatch::<StreamingTestRequestEnvelope>(&frame)
+        });
+    assert_test_ok(&result);
+}
+
 /// A mid-dispatch hang-up cancels the request's budget (QI-BB-002).
 ///
 /// The peer watch notices the hang-up, the dispatcher sees the
@@ -3240,6 +3461,64 @@ fn a_half_closed_peer_is_not_a_hang_up_and_still_gets_its_response() {
             .map_err(|join_err| format!("server thread panicked: {join_err:?}"))?;
         if !matches!(reason, ConnectionCloseReason::PeerClosed) {
             return Err(format!("unexpected close reason: {reason:?}"));
+        }
+        Ok(())
+    })();
+    assert_test_ok(&result);
+}
+
+#[test]
+fn a_pipelined_live_peer_passes_the_pre_dispatch_probe_twice() {
+    let result = (|| -> TestRes {
+        let (mut client, server) = UnixStream::pair().map_err(|error| error.to_string())?;
+        client
+            .write_all(&encode_test_frame(81, 3)?)
+            .map_err(|error| error.to_string())?;
+        client
+            .write_all(&encode_test_frame(82, 4)?)
+            .map_err(|error| error.to_string())?;
+        client
+            .shutdown(Shutdown::Write)
+            .map_err(|error| error.to_string())?;
+        let counters = test_counters();
+        let worker_counters = Arc::clone(&counters);
+        let handle = thread::spawn(move || {
+            handle_connection::<TestRequestEnvelope, u64, TestResponseEnvelope, u64, TestDispatcher>(
+                server,
+                &TestDispatcher,
+                &test_slots(),
+                test_policy(),
+                IpcPlane::Query,
+                PeerCredentials {
+                    uid: 0,
+                    gid: 0,
+                    pid: None,
+                },
+                0,
+                1,
+                &AtomicBool::new(false),
+                &worker_counters,
+            )
+        });
+        for (request_id, payload) in [(81, 4), (82, 5)] {
+            let response = decode_response::<TestResponseEnvelope, _>(&mut client)
+                .map_err(|error| error.to_string())?;
+            if response
+                != (TestResponseEnvelope {
+                    request_id,
+                    payload,
+                })
+            {
+                return Err(format!("pipelined response changed: {response:?}"));
+            }
+        }
+        let reason = handle
+            .join()
+            .map_err(|panic| format!("server thread panicked: {panic:?}"))?;
+        if !matches!(reason, ConnectionCloseReason::PeerClosed)
+            || counters.snapshot().requests_dispatched != 2
+        {
+            return Err(format!("live pipeline did not dispatch twice: {reason:?}"));
         }
         Ok(())
     })();
@@ -3684,6 +3963,7 @@ impl
         match self.reply {
             LateIngestReply::SearchCorpusReceipt => {
                 SearchPlaneIngestIpcResponse::SearchCorpusReceipt(SearchCorpusPublishOutcome {
+                    upload_cleanup: None,
                     publication: SourcePublicationBinding {
                         event: SourcePublicationEvent {
                             stream_id: "terminal-test".to_string(),

@@ -1,11 +1,171 @@
 //! Bounded per-packet observation of disjoint physical object-install work.
 
 use quanta_index_core::{
-    DiagnosticContextV1, DiagnosticHealthCodeV1, DiagnosticObjectInstallPhaseV1,
-    DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1, index::WorkBudget,
+    DiagnosticContextV1, DiagnosticCounterV1, DiagnosticHealthCodeV1,
+    DiagnosticObjectInstallPhaseV1, DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1,
+    index::{MemoryLease, MemoryLifetime, ObjectRef, RegisteredObject, WorkBudget},
 };
 
-use super::FileObjectStore;
+use super::{BatchReferences, FileObjectStore, InstallGateGuards, PreparedInstallGroup};
+
+// Bound the extra diagnostic work and temporary pointer backing independently
+// of the largest legal physical install group.
+const MAX_OBSERVED_CHILD_REFERENCES: usize = 16_384;
+
+fn external_child_shape(
+    budget: &WorkBudget,
+    objects: &[RegisteredObject],
+    local_refs: &BatchReferences,
+    held_gates: &InstallGateGuards<'_>,
+) -> Option<[u64; 3]> {
+    let count = objects.iter().try_fold(0usize, |count, object| {
+        count.checked_add(object.children.len())
+    })?;
+    if count == 0 || count > MAX_OBSERVED_CHILD_REFERENCES {
+        return None;
+    }
+    let backing = u64::try_from(count.checked_mul(std::mem::size_of::<&ObjectRef>())?).ok()?;
+    // The optional allocation drops before physical validation. The census
+    // never charges Work or supplies authentication evidence to the installer.
+    let Ok(Some(_memory)) =
+        budget.try_reserve_memory_for_optimization(backing, MemoryLifetime::Temporary)
+    else {
+        return None;
+    };
+    let mut external = Vec::new();
+    external.try_reserve_exact(count).ok()?;
+    if external.capacity() > count {
+        return None;
+    }
+    for object in objects {
+        for child in &object.children {
+            if !local_refs.contains(*child).ok()? {
+                external.push(child);
+            }
+        }
+    }
+    external.sort_unstable();
+    let mut repeated = 0;
+    let mut guarded_repeated = 0;
+    for (first, second) in external.iter().zip(external.iter().skip(1)) {
+        if first == second {
+            repeated += 1;
+            guarded_repeated +=
+                u64::from(held_gates[FileObjectStore::gate_index(**first)].is_some());
+        }
+    }
+    let external_count = u64::try_from(external.len()).ok()?;
+    Some([external_count, external_count - repeated, guarded_repeated])
+}
+
+#[derive(Default)]
+pub(super) struct ChildCheckCounts {
+    pub(super) reused: u64,
+    pub(super) cross_group: Option<CrossGroupChildCounts>,
+}
+
+#[derive(Default)]
+pub(super) struct CrossGroupChildCounts {
+    planned_overlap: u64,
+    pub(super) repeated_path_checks: u64,
+    pub(super) path_checks: u64,
+}
+
+/// Diagnostic join of the current group's guarded external children with
+/// those of earlier, completed physical groups under the same gate union.
+#[derive(Default)]
+pub(super) struct CrossGroupChildOverlap<'a> {
+    references: Vec<&'a ObjectRef>,
+    _memory: Option<MemoryLease>,
+}
+
+impl<'a> CrossGroupChildOverlap<'a> {
+    pub(super) fn measure(
+        budget: &WorkBudget,
+        previous: &'a [Option<PreparedInstallGroup>],
+        current: &'a PreparedInstallGroup,
+        gates: &InstallGateGuards<'_>,
+    ) -> Option<Self> {
+        if previous.is_empty() {
+            return Some(Self::default());
+        }
+        let mut groups = previous.iter().map(Option::as_ref).chain([Some(current)]);
+        let capacity = groups.try_fold(0usize, |capacity, group| {
+            let count = group?
+                .metadata
+                .as_slice()
+                .iter()
+                .try_fold(0usize, |count, object| {
+                    count.checked_add(object.children.len())
+                })?;
+            if count > MAX_OBSERVED_CHILD_REFERENCES {
+                return None;
+            }
+            capacity.checked_add(count)
+        })?;
+        if capacity == 0 {
+            return Some(Self::default());
+        }
+        let bytes = u64::try_from(capacity.checked_mul(std::mem::size_of::<&ObjectRef>())?).ok()?;
+        let memory = budget
+            .try_reserve_memory_for_optimization(bytes, MemoryLifetime::Temporary)
+            .ok()??;
+        let mut references = Vec::new();
+        references.try_reserve_exact(capacity).ok()?;
+        if references.capacity() > capacity {
+            return None;
+        }
+        for group in previous {
+            Self::visit_guarded_external(group.as_ref()?, gates, |reference| {
+                references.push(reference);
+            })?;
+        }
+        references.sort_unstable();
+        references.dedup();
+        let earlier = references.len();
+        Self::visit_guarded_external(current, gates, |reference| {
+            if references[..earlier].binary_search(&reference).is_ok() {
+                references.push(reference);
+            }
+        })?;
+        references.copy_within(earlier.., 0);
+        references.truncate(references.len() - earlier);
+        references.sort_unstable();
+        references.dedup();
+        Some(Self {
+            references,
+            _memory: Some(memory),
+        })
+    }
+
+    fn visit_guarded_external(
+        group: &'a PreparedInstallGroup,
+        gates: &InstallGateGuards<'_>,
+        mut visit: impl FnMut(&'a ObjectRef),
+    ) -> Option<()> {
+        for object in group.metadata.as_slice() {
+            for reference in &object.children {
+                if gates[FileObjectStore::gate_index(*reference)].is_some()
+                    && !group.references.contains(*reference).ok()?
+                {
+                    visit(reference);
+                }
+            }
+        }
+        Some(())
+    }
+
+    pub(super) fn counts(&self) -> CrossGroupChildCounts {
+        CrossGroupChildCounts {
+            planned_overlap: self.references.len() as u64,
+            ..CrossGroupChildCounts::default()
+        }
+    }
+
+    pub(super) fn contains(&self, reference: &ObjectRef) -> bool {
+        self.references.binary_search(&reference).is_ok()
+    }
+}
 
 #[derive(Clone, Copy)]
 struct PhaseCell {
@@ -84,6 +244,57 @@ impl PhysicalObservation {
         self.span
             .as_ref()
             .map(|span| self.context.child_context(span))
+    }
+
+    pub(super) fn observe_external_children(
+        &self,
+        budget: &WorkBudget,
+        objects: &[RegisteredObject],
+        local_refs: &BatchReferences,
+        held_gates: &InstallGateGuards<'_>,
+    ) {
+        let Some(span) = self.span.as_ref() else {
+            return;
+        };
+        let Some(values) = external_child_shape(budget, objects, local_refs, held_gates) else {
+            return;
+        };
+        let keys = [
+            DiagnosticCounterV1::ManagedObjectExternalChildReferences,
+            DiagnosticCounterV1::ManagedObjectUniqueExternalChildren,
+            DiagnosticCounterV1::ManagedObjectGuardedRepeatedExternalChildren,
+        ];
+        for (key, value) in keys.into_iter().zip(values) {
+            self.context.counter(span, key, value);
+        }
+    }
+
+    pub(super) fn observe_child_checks(&self, counts: &ChildCheckCounts) {
+        if let Some(span) = self.span.as_ref() {
+            self.context.counter(
+                span,
+                DiagnosticCounterV1::ManagedObjectReusedExternalChildValidations,
+                counts.reused,
+            );
+            if let Some(cross_group) = &counts.cross_group {
+                for (key, count) in [
+                    (
+                        DiagnosticCounterV1::ManagedObjectCrossGroupExternalChildOverlap,
+                        cross_group.planned_overlap,
+                    ),
+                    (
+                        DiagnosticCounterV1::ManagedObjectCrossGroupRepeatedChildPathChecks,
+                        cross_group.repeated_path_checks,
+                    ),
+                    (
+                        DiagnosticCounterV1::ManagedObjectChildPathChecks,
+                        cross_group.path_checks,
+                    ),
+                ] {
+                    self.context.counter(span, key, count);
+                }
+            }
+        }
     }
 
     fn record(&mut self, phase: DiagnosticObjectInstallPhaseV1, sample: &Sample) {

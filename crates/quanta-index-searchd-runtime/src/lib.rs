@@ -5,15 +5,19 @@
 
 //! Concrete runtime wiring for the search-plane daemon.
 
+#[cfg(feature = "legacy-tantivy")]
 use std::sync::Arc;
+#[cfg(feature = "legacy-tantivy")]
 use std::time::Duration;
 
+#[cfg(feature = "legacy-tantivy")]
 use anyhow::Result;
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_catalog::SqliteCatalog;
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_core::{
-    AuxiliaryAuthorityCatalogPort, DiagnosticContextV1, DiagnosticHealthCodeV1, DiagnosticLaneV1,
-    DiagnosticRootKindV1, DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticTerminalV1,
-    DiagnosticTraceErrorV1, DoorFindingQuarantinePort, FileContributorIngestPort,
+    AuxiliaryAuthorityCatalogPort, DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticStageV1,
+    DiagnosticTerminalV1, DoorFindingQuarantinePort, FileContributorIngestPort,
     FileOwnershipIngestPort, GenerationIdentityValidatePort, HistoryTextIndexPort,
     IdempotencyCatalogPort, IncompleteGenerationDiscardPort, IntegrityScrubPort,
     LexicalIndexOpenPort, MetricSourcePort, MutationCoordinatorPort, ProcessMemoryProbePort,
@@ -25,31 +29,46 @@ use quanta_index_core::{
     SemanticIndexOpenPort, SemanticScopeStreamBuildPort, TrackDiskUsagePort,
     UnboundedWriterAdmission, WriterAdmissionPort, WriterIdleSweepPort,
 };
+use quanta_index_core::{
+    DiagnosticContextV1, DiagnosticHealthCodeV1, DiagnosticSpanGuardV1, DiagnosticTraceErrorV1,
+};
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_lexical::LexicalAdapter;
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_lexical::history_text_index::HistoryTextIndexAdapter;
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_lexical::regex::RegexPolicy;
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_repomap::RepoMapGenerationStore;
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_search_plane::{
     PairIndexBytesMeasurer, SearchCorpusIndexBytesPort, SearchCorpusLifecycleOwner,
 };
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_searchd::app::KernelResidentMemoryProbe;
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_searchd::app::runtime::{SearchdRuntimeParts, StateRootAccessV1, StateRootLease};
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_searchd::app::state_format::refuse_legacy_state_root_v1;
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_searchd::{
     DEFAULT_COOPERATIVE_DRAIN_DEADLINE, DiagnosticCaptureLeaseV1, DiagnosticCaptureV1,
     HARD_DRAIN_DEADLINE, SearchdCommand, SearchdConfig, SearchdRuntime, supervise_runtime,
 };
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_semantic::SemanticAdapter;
 
 #[cfg(unix)]
 pub mod canonical_publication_admission;
 #[cfg(unix)]
+mod deployment_selection;
+#[cfg(unix)]
 pub mod durable_control_admission;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "legacy-tantivy"))]
 pub mod history_text_file_io;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "legacy-tantivy"))]
 mod legacy_physical_assembly;
-#[cfg(unix)]
+#[cfg(all(unix, feature = "legacy-tantivy"))]
 mod legacy_retirement;
 pub mod native;
 mod native_auto_signals;
@@ -83,7 +102,10 @@ mod native_query_lowering;
 mod native_read_session_transport;
 mod native_read_sessions;
 mod native_reclaim_driver;
+#[cfg(unix)]
+pub mod native_recovery;
 mod native_reply;
+mod native_repository_path_transport;
 mod native_repomap_transport;
 mod native_resources;
 mod native_result;
@@ -99,7 +121,9 @@ mod native_text_result;
 mod native_wal_reclaim;
 mod native_work_diagnostic;
 mod native_worker;
+#[cfg(feature = "legacy-tantivy")]
 mod offline_target_file_io;
+#[cfg(feature = "legacy-tantivy")]
 mod pool_write_admission;
 #[cfg(unix)]
 pub mod publication_control_files;
@@ -134,9 +158,11 @@ pub mod source_upload_file_admission;
 /// `verify-state` composition (SEP-21 P10 / S21-11).
 ///
 /// The only surface that links the legacy parsers.
+#[cfg(feature = "legacy-tantivy")]
 pub mod state_migration;
 
 /// How long a catalog write waits on a held lock before answering typed.
+#[cfg(feature = "legacy-tantivy")]
 const CATALOG_BUSY_BUDGET: Duration = Duration::from_secs(2);
 
 fn runtime_diagnostic_span(
@@ -164,11 +190,13 @@ fn runtime_diagnostic_span(
 }
 
 /// Build the runtime over the kernel's own resident-memory accounting.
+#[cfg(feature = "legacy-tantivy")]
 pub fn build_runtime(config: SearchdConfig) -> Result<SearchdRuntime> {
     build_runtime_with_memory_probe(config, Arc::new(KernelResidentMemoryProbe))
 }
 
 /// Build over a capture created before state-root lease and adapter opens.
+#[cfg(feature = "legacy-tantivy")]
 pub fn build_runtime_with_capture(
     config: SearchdConfig,
     capture: DiagnosticCaptureLeaseV1,
@@ -181,6 +209,7 @@ pub fn build_runtime_with_capture(
 }
 
 /// Harness seam: preserve the configured memory probe while tracing boot.
+#[cfg(feature = "legacy-tantivy")]
 pub fn build_runtime_with_memory_probe_and_capture(
     config: SearchdConfig,
     memory_probe: Arc<dyn ProcessMemoryProbePort>,
@@ -191,6 +220,7 @@ pub fn build_runtime_with_memory_probe_and_capture(
 
 /// Build under an explicit capture parent, or a standalone operation root.
 /// A foreign parent is refused before state-root lease and adapter opens.
+#[cfg(feature = "legacy-tantivy")]
 pub fn build_runtime_with_memory_probe_and_capture_under(
     config: SearchdConfig,
     memory_probe: Arc<dyn ProcessMemoryProbePort>,
@@ -257,6 +287,7 @@ pub fn build_runtime_with_memory_probe_and_capture_under(
 /// Build the runtime with an explicit resident-memory probe (QI-BB-016):
 /// the kernel's in production, a scripted one where a test needs to drive
 /// the writer gate.
+#[cfg(feature = "legacy-tantivy")]
 pub fn build_runtime_with_memory_probe(
     config: SearchdConfig,
     memory_probe: Arc<dyn ProcessMemoryProbePort>,
@@ -267,6 +298,7 @@ pub fn build_runtime_with_memory_probe(
 // Keep the production composition unchanged. A crate-local test can wrap the
 // real lexical build port to hold one admitted UDS publish at a precise point;
 // this is not a daemon option, environment switch, or exported API.
+#[cfg(feature = "legacy-tantivy")]
 fn build_runtime_with_lexical_builder(
     config: SearchdConfig,
     memory_probe: Arc<dyn ProcessMemoryProbePort>,
@@ -280,6 +312,7 @@ fn build_runtime_with_lexical_builder(
 // Compose the same production ports before assembly. Crate-local process
 // proofs may wrap an existing port while retaining the real state root,
 // catalog, adapters, supervisor and IPC servers. Production passes no-op.
+#[cfg(feature = "legacy-tantivy")]
 fn build_runtime_with_parts(
     config: SearchdConfig,
     memory_probe: Arc<dyn ProcessMemoryProbePort>,
@@ -297,6 +330,7 @@ fn build_runtime_with_parts(
     )
 }
 
+#[cfg(feature = "legacy-tantivy")]
 fn build_runtime_with_assembly(
     config: SearchdConfig,
     memory_probe: Arc<dyn ProcessMemoryProbePort>,
@@ -596,6 +630,7 @@ fn build_runtime_with_assembly(
 /// The lexical writer gate for a resident-memory ceiling (QI-BB-016):
 /// the probe-backed gate when one is configured, the unbounded one when
 /// not, each also as the metric source that reports it.
+#[cfg(feature = "legacy-tantivy")]
 fn writer_gate_for(
     rss_ceiling: Option<u64>,
     memory_probe: &Arc<dyn ProcessMemoryProbePort>,
@@ -618,6 +653,7 @@ fn writer_gate_for(
     clippy::print_stderr,
     reason = "the daemon entry is the one place operator-facing boot notices are written; the runtime keeps them as data"
 )]
+#[cfg(feature = "legacy-tantivy")]
 fn boot_log(line: &str) {
     eprintln!("searchd: {line}");
 }
@@ -629,6 +665,7 @@ fn boot_log(line: &str) {
 /// The fixed exit code semantics (S21-09): clean operator shutdown `0`;
 /// required-child death, startup rollback, or hard-deadline escalation
 /// `70`; a second signal `128 + signum`.
+#[cfg(feature = "legacy-tantivy")]
 pub fn run(command: SearchdCommand) -> Result<()> {
     let outcome = run_supervised(command)?;
     if outcome.is_stopped_clean() {
@@ -644,6 +681,7 @@ pub fn run(command: SearchdCommand) -> Result<()> {
 ///
 /// Signals are installed before the runtime is built, so a signal
 /// during startup still reaches the supervisor.
+#[cfg(feature = "legacy-tantivy")]
 pub fn run_supervised(command: SearchdCommand) -> Result<quanta_index_searchd::SupervisionOutcome> {
     let inherited = quanta_index_searchd::app::harden_umask();
     boot_log(&format!(
@@ -715,18 +753,18 @@ extern crate self as quanta_index_searchd_runtime;
 #[cfg(all(test, unix))]
 mod native_owned_pump_fault_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-tantivy"))]
 mod admitted_publish_timeout_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-tantivy"))]
 mod legacy_physical_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-tantivy"))]
 mod process_slow_disk_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-tantivy"))]
 mod public_cache_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-tantivy"))]
 mod publication_admission_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-tantivy"))]
 mod diagnostic_runtime_parent_tests {
     use std::sync::Arc;
     use std::time::Duration;

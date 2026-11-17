@@ -6,6 +6,9 @@ use quanta_index_searchd_runtime::native::{
     NativeReadSessionConfig, NativeRetentionConfig, NativeRetentionScope,
 };
 
+#[path = "read_sessions/query.rs"]
+mod query;
+
 fn read_session_resources(lease: Duration) -> NativeServiceResources {
     let mut resources = test_resources();
     resources.read_ticket_lease = lease;
@@ -15,7 +18,7 @@ fn read_session_resources(lease: Duration) -> NativeServiceResources {
     resources
 }
 
-fn read_session_service(
+pub(super) fn read_session_service(
     root: &std::path::Path,
     socket: &std::path::Path,
     lease: Duration,
@@ -69,8 +72,8 @@ fn read_session_service(
     Ok(service)
 }
 
-fn create_text_workspace(
-    client: &NativeUdsClient,
+fn create_text_workspace<P: AsRef<std::path::Path>>(
+    client: &NativeUdsClient<P>,
 ) -> TestResult<quanta_index_contract::index::ViewRef> {
     let NativeIndexResponse::Created(genesis) = client.request(
         NativeIndexRequest::CreateWorkspace {
@@ -100,8 +103,8 @@ fn create_text_workspace(
     )?)
 }
 
-fn publish_text_owner(
-    client: &NativeUdsClient,
+fn publish_text_owner<P: AsRef<std::path::Path>>(
+    client: &NativeUdsClient<P>,
     expected: quanta_index_contract::index::ViewRef,
     sequence: u64,
     stable_id: u8,
@@ -111,7 +114,34 @@ fn publish_text_owner(
     quanta_index_contract::index::ViewRef,
     quanta_index_contract::index::ObjectRef,
 )> {
+    let (request, source) =
+        prepare_text_owner(client, expected, sequence, stable_id, path, text)?;
+    Ok((published(&client.submit(request, &budget())?)?, source))
+}
+
+// Keep staging separate from publication so a test can hold the one funded
+// Interactive query slot while publishing an already staged update on Core.
+fn prepare_text_owner<P: AsRef<std::path::Path>>(
+    client: &NativeUdsClient<P>,
+    expected: quanta_index_contract::index::ViewRef,
+    sequence: u64,
+    stable_id: u8,
+    path: &str,
+    text: &str,
+) -> TestResult<(UpdateRequest, quanta_index_contract::index::ObjectRef)> {
     let ingress = client.begin_input(operation(sequence), &budget())?;
+    prepare_text_owner_in_ingress(client, expected, ingress, stable_id, path, text)
+}
+
+fn prepare_text_owner_in_ingress<P: AsRef<std::path::Path>>(
+    client: &NativeUdsClient<P>,
+    expected: quanta_index_contract::index::ViewRef,
+    ingress: quanta_index_contract::index::IngressRef,
+    stable_id: u8,
+    path: &str,
+    text: &str,
+) -> TestResult<(UpdateRequest, quanta_index_contract::index::ObjectRef)> {
+    let sequence = ingress.operation.sequence;
     let staged = client.stage_sources(
         ingress,
         vec![SourceInput {
@@ -157,15 +187,14 @@ fn publish_text_owner(
         sequence: event_sequence,
         payload: transition.owner_digest()?,
     });
-    let view = published(&client.submit(
+    Ok((
         UpdateRequest {
             operation: operation(sequence),
             expected_view: expected,
             kind: UpdateKind::SourceAdvance(transition),
         },
-        &budget(),
-    )?)?;
-    Ok((view, *source))
+        *source,
+    ))
 }
 
 fn view_pin_count(root: &std::path::Path, sequence: u64) -> TestResult<i64> {
@@ -450,5 +479,100 @@ fn expired_and_shutdown_read_sessions_release_real_pins() -> TestResult {
             "read-session primary failure: {primary}; service stop failure: {terminal}"
         )
         .into()),
+    }
+}
+
+#[test]
+fn retained_search_refusal_reuses_one_pin_and_shutdown_reopens_searchable_view() -> TestResult {
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let running = NativeServiceGuard::start(read_session_service(
+        root.path(),
+        &socket,
+        Duration::from_secs(30),
+    )?);
+    let primary = (|| -> TestResult<_> {
+        let client = NativeUdsClient::new(socket.clone());
+        let configured = create_text_workspace(&client)?;
+        let (view, source) =
+            publish_text_owner(&client, configured, 2, 1, "retained.rs", "alpha alpha")?;
+        let opened = client.open_read_session(ViewSelection::Exact(view), [41; 32], &budget())?;
+        assert_eq!(view_pin_count(root.path(), view.sequence)?, 1);
+
+        // A missing selected member is a query refusal, not loss of the pin.
+        match client.search_text_in_read_session(
+            &opened,
+            IndexInstanceId([255; 16]),
+            native_text_request("alpha", 2),
+            &budget(),
+        ) {
+            Err(NativeUdsError::Refused(error))
+                if error.code == NativeIndexErrorCode::SnapshotUnavailable => {}
+            other => return Err(format!("missing member returned {other:?}").into()),
+        }
+        assert_eq!(client.read_session_status(&opened, &budget())?, opened);
+        let renewed = client.renew_read_session(&opened, &budget())?;
+        assert_eq!(renewed.revision.checked_sub(opened.revision), Some(1));
+        for _ in 0..2 {
+            let result = client.search_text_in_read_session(
+                &renewed,
+                native_text_spec().instance,
+                native_text_request("alpha", 2),
+                &budget(),
+            )?;
+            assert_eq!(result.view, view);
+            assert_eq!(result.matched, 1);
+            let [hit] = result.hits.as_slice() else {
+                return Err("reused retained search lost its fixed hit".into());
+            };
+            assert_eq!(hit.source, source);
+            assert_eq!(hit.path, "retained.rs");
+            assert_eq!(hit.owner.stable_id, StableOwnerId([1; 16]));
+            assert_eq!(view_pin_count(root.path(), view.sequence)?, 1);
+        }
+        // Leave the pin active: service drain must release the original pin.
+        Ok((view, source))
+    })();
+    let terminal = running.stop();
+    let (view, source) = match (primary, terminal) {
+        (Ok(value), Ok(())) => value,
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+        (Err(primary), Err(terminal)) => {
+            return Err(
+                format!("search failed: {primary}; service stop failed: {terminal}").into(),
+            );
+        }
+    };
+    assert_eq!(view_pin_count(root.path(), view.sequence)?, 0);
+
+    let reopened = NativeServiceGuard::start(read_session_service(
+        root.path(),
+        &socket,
+        Duration::from_secs(30),
+    )?);
+    let result = (|| -> TestResult {
+        let client = NativeUdsClient::new(socket);
+        let result = client.search_text(
+            ViewSelection::Exact(view),
+            native_text_spec().instance,
+            native_text_request("alpha", 2),
+            &budget(),
+        )?;
+        assert_eq!(result.view, view);
+        assert_eq!(result.matched, 1);
+        let [hit] = result.hits.as_slice() else {
+            return Err("reopened search lost its fixed hit".into());
+        };
+        assert_eq!(hit.source, source);
+        assert_eq!(hit.path, "retained.rs");
+        Ok(())
+    })();
+    let terminal = reopened.stop();
+    match (result, terminal) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(primary), Err(terminal)) => {
+            Err(format!("reopened search failed: {primary}; stop failed: {terminal}").into())
+        }
     }
 }

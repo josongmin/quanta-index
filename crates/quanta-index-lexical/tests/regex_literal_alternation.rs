@@ -17,6 +17,7 @@
 //! candidate ids, so they stay valid regardless of how the prefilter is
 //! implemented.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/source_fixture.rs"]

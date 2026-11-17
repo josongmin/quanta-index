@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -109,9 +111,32 @@ def test_repository_disjoint_file_policy_refuses_wrong_contract(tmp_path, field,
         decision.validate_repository_disjoint_policy(policy)
 
 
-@pytest.mark.parametrize("file_policy", [False, True])
+@pytest.mark.parametrize("metric", ["file_mrr_at_10", "file_recall_at_10"])
+def test_repository_disjoint_file_policy_preserves_declared_native_metric(tmp_path, metric):
+    policy = repository_disjoint_policy(tmp_path, "c" * 64)
+    policy.update(
+        schema_version=3,
+        metric_scope="scored_distinct_file",
+        request_mode="default_file_search",
+    )
+    policy["comparison"]["primary_metric"] = metric
+    original = deepcopy(policy)
+    observed = decision.validate_repository_disjoint_policy(policy)
+    assert observed == original
+    assert observed["comparison"]["primary_metric"] == metric
+
+
+@pytest.mark.parametrize(
+    "file_policy,metric",
+    [
+        (False, "ndcg_at_10"),
+        (True, "file_ndcg_at_10"),
+        (True, "file_mrr_at_10"),
+        (True, "file_recall_at_10"),
+    ],
+)
 def test_repository_disjoint_bundle_replays_policy_bound_captures(
-    monkeypatch, tmp_path, file_policy
+    monkeypatch, tmp_path, file_policy, metric
 ):
     split_path = tmp_path / "split.json"
     split_path.write_text("{}")
@@ -121,7 +146,7 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(
         policy["schema_version"] = 3
         policy["metric_scope"] = "scored_distinct_file"
         policy["request_mode"] = "default_file_search"
-        policy["comparison"]["primary_metric"] = "file_ndcg_at_10"
+        policy["comparison"]["primary_metric"] = metric
     captures = []
     for row in policy["repository_scope"]["holdout"]:
         name = row["repository"]
@@ -173,6 +198,7 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(
         }
         if file_policy:
             for task in suite["tasks"]:
+                task["answerable"] = bool(task["gold"])
                 task["evaluation_contract"] = {
                     "request_mode": "default_file_search",
                     "gold_unit": "distinct_file",
@@ -181,6 +207,10 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(
                 task["file_judgments"] = task.get("file_judgments", [])
                 if "source_oracle" in task:
                     task["source_oracle"]["unit"] = "distinct_file"
+            if metric in {"file_mrr_at_10", "file_recall_at_10"}:
+                # A file oracle need not invent a legacy span label.
+                suite["tasks"][0]["gold"] = []
+                suite["tasks"][0]["file_judgments"] = [{"path": "file.go", "grade": 1}]
         suite_path = root / "suite.json"
         suite_path.write_bytes(ev.canonical(suite))
         row["suite_sha256"] = hashlib.sha256(suite_path.read_bytes()).hexdigest()
@@ -216,24 +246,24 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(
                 {
                     "task_id": "T1",
                     "route": "semble-hybrid",
-                    "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.25,
+                    metric: 0.25,
                 },
                 {
                     "task_id": "T1",
                     "route": "hybrid",
-                    "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.75,
+                    metric: 0.75,
                 },
                 {"task_id": "T2", "route": "semble-hybrid", "status": "ok"},
                 {"task_id": "T2", "route": "hybrid", "status": "ok"},
                 {
                     "task_id": "T3",
                     "route": "semble-hybrid",
-                    "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.25,
+                    metric: 0.25,
                 },
                 {
                     "task_id": "T3",
                     "route": "hybrid",
-                    "file_ndcg_at_10" if file_policy else "ndcg_at_10": 0.75,
+                    metric: 0.75,
                 },
             ],
         }
@@ -848,10 +878,24 @@ def test_go_trace_refuses_known_files_as_recall_gold(tmp_path):
         decision.evaluate_go_trace_file_holdout(plan, judgments)
 
 
+def test_go_trace_relative_frame_paths_match_request_path_rules():
+    paths = decision.go_trace_review_receipt.relative_frame_paths
+    assert paths("panic: source fault") == set()
+    assert paths(
+        "(./src/worker.go:12),\u2003`src/worker.go:31+0x10` src/worker_test.go:2"
+    ) == {"src/worker.go"}
+    assert paths("src/worker.go:1 src/peer.go:2") == {"src/worker.go", "src/peer.go"}
+    assert paths(
+        "../src/worker.go:1 /src/worker.go:1 C:/src/worker.go:1 src//worker.go:1 "
+        "src\\worker.go:1 src/worker.go:١ prefix\x1csrc/worker.go:1"
+    ) == set()
+    assert paths("é" * 2047 + ".go:1") == set()
+
+
 def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
     case_dir = tmp_path / "case"
     case_dir.mkdir()
-    paths = [f"src/file{i:02d}.go" for i in range(20)]
+    paths = [f"src/file{i:02d}.go" for i in range(21)]
     commit = "a" * 40
     source_head = "b" * 40
     build_binding = "c" * 64
@@ -936,24 +980,82 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
     def candidate(path):
         return {"path": path, "source_repo_id": "repo"}
 
-    def window(count):
-        return {"outcome": {"kind": "exact_exhausted"}, "returned": count}
+    def hybrid_candidate(path, candidate_id, score, rank):
+        return {
+            **candidate(path),
+            "candidate_id": candidate_id,
+            "score": score,
+            "contributions": [{"lane": "Lexical", "rank": rank, "raw_score": 1.0}],
+        }
 
-    trace_candidates = [
+    def window(count, *, continuation=False, lanes=()):
+        examined = {"kind": "exact", "value": count}
+        coverage = {
+            "examined": examined,
+            "lanes": [
+                {
+                    "lane": lane,
+                    "executed": count > 0,
+                    "contributed": count > 0,
+                    "filtered_out": 0,
+                    "candidates": {"kind": "at_least", "value": count},
+                }
+                for lane in lanes
+            ],
+        }
+        outcome = {"kind": "exact_exhausted"}
+        candidate_count = examined
+        if continuation:
+            candidate_count = {"kind": "at_least", "value": count + 1}
+            coverage["examined"] = candidate_count
+            outcome = {"kind": "lower_bound", "continuation": True}
+        else:
+            coverage["exhaustion_proof"] = {"kind": "probe_exhausted", "fetched": count}
+        result = {
+            "outcome": outcome,
+            "returned": count,
+            "candidate_count": candidate_count,
+            "coverage": coverage,
+        }
+        if count == 0:
+            result["empty_provenance"] = "available_empty"
+        return result
+
+    all_trace_candidates = [
         {
             **candidate(path),
+            "candidate_id": f"candidate-{index}",
             "file": {"repo_relative_path": path, "source_repo_id": "repo"},
             "file_rrf_score": 1 / (60 + index),
             "production_source": True,
             "source_frame": False,
-            "lexical": {"path": path, "source_repo_id": "repo"},
+            "lexical": {
+                "path": path,
+                "source_repo_id": "repo",
+                "candidate_id": f"candidate-{index}",
+                "file_rank": index,
+                "chunk_rank": index,
+                "raw_score": 1.0,
+            },
             "dense": None,
         }
         for index, path in enumerate(paths, 1)
     ]
+    trace_candidates = all_trace_candidates[:20]
+    trace_candidates[0]["dense"] = dict(trace_candidates[0]["lexical"])
+    trace_candidates[0]["file_rrf_score"] = 2.0 / 61.0
+    rank_pools = {
+        "lexical": [
+            {"file": dict(row["file"]), "candidate_id": row["candidate_id"], "score_bits": 0x3F80_0000}
+            for row in all_trace_candidates
+        ],
+        "dense": [{"file": dict(trace_candidates[0]["file"]),
+                   "candidate_id": trace_candidates[0]["candidate_id"], "score_bits": 0x3F80_0000}],
+    }
     paired = {
-        "schema_version": 2,
+        "schema_version": 4,
         "generic_execution_profile_id": "quanta-natural-language-ucd17-v4",
+        "nl_max_tokens": 2,
         "pack_sha256": hashlib.sha256(evidence.canonical_json(pack).encode()).hexdigest(),
         "lane_top_k": 100,
         "generation": {"repo_id": "repo", "revision_id": commit, "manifest_generation": 1},
@@ -963,29 +1065,36 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
                 "query_identity": {
                     "original_query_sha256": query_digest,
                     "semantic_text_sha256": query_digest,
-                    "effective_lexical_request_sha256": "f" * 64,
+                    "effective_lexical_request_sha256": decision.query_plan.derive_query_identity(
+                        "natural_language", query,
+                        {**decision.query_plan.DEFAULT_NL_CONFIG, "max_tokens": 2},
+                    )["effective_lexical_request_sha256"],
                     "generic_semantic_representation_policy": "task_query_v1",
                     "trace_semantic_representation_policy": "go_test_excerpt_v1",
                     "trace_semantic_text_sha256": excerpt_digest,
                 },
                 "lexical": {
                     "candidates": [candidate(paths[1]), candidate(paths[0])],
-                    "window": window(2),
+                    "window": window(2, lanes=("lexical",)),
                 },
-                "semantic": {"candidates": [], "window": window(0)},
+                "semantic": {"candidates": [], "window": window(0, lanes=("semantic.dense",))},
                 "hybrid": {
-                    "candidates": [candidate(paths[0]), candidate(paths[1])],
-                    "window": window(2),
+                    "candidates": [
+                        hybrid_candidate(paths[0], "hybrid-a", 1.0 / 61.0, 1),
+                        hybrid_candidate(paths[1], "hybrid-b", 1.0 / 62.0, 2),
+                    ],
+                    "window": window(2, lanes=("hybrid.lexical", "hybrid.dense")),
                 },
                 "trace_files": {
-                    "profile": "go_trace_file_rrf_v1",
+                    "profile": "go_trace_file_rrf_v2",
                     "candidates": trace_candidates,
+                    "rank_pools": rank_pools,
                     "frame_class": "unresolved",
                     "failure_excerpt_sha256": excerpt_digest,
                     "semantic_representation_policy": "go_test_excerpt_v1",
                     "semantic_text_sha256": excerpt_digest,
-                    "lexical_window": window(20),
-                    "dense_window": window(0),
+                    "lexical_window": window(21, lanes=("go_test_trace.lexical",)),
+                    "dense_window": window(1, lanes=("go_test_trace.dense",)),
                     "source_context": {
                         "mode": "explicit_pilot_owner_v1",
                         "failure_source_repo_id": "repo",
@@ -1017,6 +1126,204 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
     def store_pair():
         execution["paired_sha256"] = write(case_dir / "paired.json", paired)
         write(case_dir / "execution.json", execution)
+
+    omitted = trace_candidates.pop()
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="file page differs from lane pool replay"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    trace_candidates.append(omitted)
+
+    trace_candidates[:] = all_trace_candidates[1:]
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="file page differs from lane pool replay"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    trace_candidates[:] = all_trace_candidates[:20]
+
+    trace = paired["tasks"][0]["trace_files"]
+    promoted = deepcopy(all_trace_candidates[-1])
+    promoted["source_frame"] = True
+    promoted_trace = {**trace, "candidates": [promoted, *trace_candidates[:19]]}
+    assert decision._replay_go_trace_file_page(
+        promoted_trace, "repo", set(paths), {"lexical": 21, "dense": 1}, paths[-1], task_id
+    )[0] == {"path": paths[-1]}
+    with pytest.raises(decision.DecisionError, match="file page differs from lane pool replay"):
+        decision._replay_go_trace_file_page(
+            trace, "repo", set(paths), {"lexical": 21, "dense": 1}, paths[-1], task_id
+        )
+
+    pool = rank_pools["lexical"]
+    lexical_window = trace["lexical_window"]
+    pool.insert(1, {**pool[0], "candidate_id": "another-chunk-in-first-file"})
+    trace["lexical_window"] = window(22, lanes=("go_test_trace.lexical",))
+    for row in trace_candidates[1:]:
+        row["lexical"]["chunk_rank"] += 1
+    store_pair()
+    assert decision.evaluate_go_trace_file_holdout(plan_path, judgments_path) == scored
+    pool.pop(1)
+    trace["lexical_window"] = lexical_window
+    for row in trace_candidates[1:]:
+        row["lexical"]["chunk_rank"] -= 1
+
+    first_lexical = trace_candidates[0]["lexical"]
+    pool[0]["score_bits"] = 0x8000_0000
+    first_lexical["raw_score"] = -0.0
+    store_pair()
+    assert decision.evaluate_go_trace_file_holdout(plan_path, judgments_path) == scored
+    first_lexical["raw_score"] = 0.0
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="lexical witness drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    first_lexical["raw_score"] = 1.0
+    pool[0]["score_bits"] = 0x3F80_0000
+
+    exact_rrf = trace_candidates[0]["file_rrf_score"]
+    trace_candidates[0]["file_rrf_score"] = math.nextafter(exact_rrf, math.inf)
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="RRF score disagrees with lane ranks"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    trace_candidates[0]["file_rrf_score"] = exact_rrf
+
+    lexical_lanes = paired["tasks"][0]["lexical"]["window"]["coverage"]["lanes"]
+    lexical_lanes[0]["executed"] = False
+    lexical_lanes[0]["contributed"] = False
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="lexical window is incomplete"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    lexical_lanes[0]["executed"] = True
+    lexical_lanes[0]["contributed"] = True
+
+    semantic_lanes = paired["tasks"][0]["semantic"]["window"]["coverage"]["lanes"]
+    paired["tasks"][0]["semantic"]["window"]["coverage"]["lanes"] = []
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="semantic window is incomplete"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    paired["tasks"][0]["semantic"]["window"]["coverage"]["lanes"] = semantic_lanes
+
+    hybrid_candidates = paired["tasks"][0]["hybrid"]["candidates"]
+    valid_hybrid = deepcopy(hybrid_candidates)
+    for malformed in (
+        lambda rows: rows[0].update(score=-1.0),
+        lambda rows: rows.reverse(),
+        lambda rows: rows[1].update(candidate_id=rows[0]["candidate_id"]),
+        lambda rows: rows[0]["contributions"].append(
+            {"lane": "Lexical", "rank": 2, "raw_score": 0.5}
+        ),
+        lambda rows: rows[0]["contributions"][0].update(raw_score="not-a-score"),
+        lambda rows: rows[0]["contributions"][0].update(raw_score=1e300),
+    ):
+        malformed(hybrid_candidates)
+        store_pair()
+        with pytest.raises(decision.DecisionError, match="Go trace hybrid"):
+            decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+        hybrid_candidates[:] = deepcopy(valid_hybrid)
+
+    hybrid_candidates[1]["score"] = hybrid_candidates[0]["score"]
+    hybrid_candidates[1]["contributions"][0]["lane"] = "Dense"
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="hybrid RRF score disagrees with lane ranks"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+
+    hybrid_candidates[1]["contributions"][0]["rank"] = 1
+    store_pair()
+    assert decision.evaluate_go_trace_file_holdout(plan_path, judgments_path) == scored
+    hybrid_candidates.reverse()
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="hybrid ranking order is invalid"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    hybrid_candidates[:] = deepcopy(valid_hybrid)
+
+    for row, dense_rank in zip(hybrid_candidates, (2, 1)):
+        row["contributions"].append({"lane": "Dense", "rank": dense_rank, "raw_score": 0.5})
+        row["score"] = 1 / 61 + 1 / 62
+    store_pair()
+    assert decision.evaluate_go_trace_file_holdout(plan_path, judgments_path) == scored
+    hybrid_candidates.reverse()
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="hybrid ranking order is invalid"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    hybrid_candidates[:] = deepcopy(valid_hybrid)
+
+    hybrid_candidates[1]["contributions"][0]["rank"] = 1
+    hybrid_candidates[1]["score"] = 1 / 61
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="hybrid lane rank is repeated"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    hybrid_candidates[:] = deepcopy(valid_hybrid)
+
+    hybrid_candidates[1]["contributions"][0]["rank"] = 3
+    hybrid_candidates[1]["score"] = 1 / 63
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="hybrid lane rank exceeds the captured lane"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    hybrid_candidates[:] = deepcopy(valid_hybrid)
+
+    trace_candidates[0]["lexical"]["chunk_rank"] = 2
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="lexical witness rank is invalid"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    trace_candidates[0]["lexical"]["chunk_rank"] = 1
+
+    dense_witness = trace_candidates[0]["dense"]
+    last_candidate = trace_candidates.pop()
+    trace_candidates[0]["dense"] = None
+    trace_candidates[0]["file_rrf_score"] = 1 / 61
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="file page differs from lane pool replay"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    trace_candidates[0]["dense"] = dense_witness
+    trace_candidates[0]["file_rrf_score"] = 2 / 61
+    trace_candidates.append(last_candidate)
+
+    trace_candidates[0]["lexical"]["raw_score"] = "not-a-score"
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="lexical witness drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    trace_candidates[0]["lexical"]["raw_score"] = 1.0
+
+    trace_candidates[0]["lexical"]["raw_score"] = 1e300
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="lexical witness drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    trace_candidates[0]["lexical"]["raw_score"] = 1.0
+
+    lexical_window = paired["tasks"][0]["trace_files"]["lexical_window"]
+    paired["tasks"][0]["trace_files"]["lexical_window"] = window(
+        100, continuation=True, lanes=("go_test_trace.lexical",)
+    )
+    trace_candidates[0]["lexical"]["chunk_rank"] = 30
+    trace_candidates[1]["lexical"]["chunk_rank"] = 29
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="lexical rank pool count differs"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    trace_candidates[0]["lexical"]["chunk_rank"] = 1
+    trace_candidates[1]["lexical"]["chunk_rank"] = 2
+    paired["tasks"][0]["trace_files"]["lexical_window"] = lexical_window
+
+    lexical_digest = paired["tasks"][0]["query_identity"]["effective_lexical_request_sha256"]
+    paired["tasks"][0]["query_identity"]["effective_lexical_request_sha256"] = "f" * 64
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="query/pack identity drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    paired["tasks"][0]["query_identity"]["effective_lexical_request_sha256"] = lexical_digest
+
+    paired["schema_version"] = 3
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="query profile drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    paired["schema_version"] = 4
+
+    paired["nl_max_tokens"] = 0
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="query/pack identity drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    paired["nl_max_tokens"] = 2
+
+    original_id = trace_candidates[0]["candidate_id"]
+    trace_candidates[0]["candidate_id"] = "forged-representative"
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="representative identity drift"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    trace_candidates[0]["candidate_id"] = original_id
 
     paired["tasks"][0]["query_identity"]["semantic_text_sha256"] = excerpt_digest
     store_pair()
@@ -1061,20 +1368,89 @@ def test_go_trace_scores_only_bound_complete_sdk_files(tmp_path):
     store_pair()
     with pytest.raises(decision.DecisionError, match="promoted without exact owner"):
         decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    trace = paired["tasks"][0]["trace_files"]
+    trace["frame_class"] = "exact"
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="frame class disagrees with failure excerpt"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    trace["frame_class"] = "unresolved"
     paired["tasks"][0]["trace_files"]["candidates"][0]["source_frame"] = False
+
+    trace_candidates[0], trace_candidates[1] = trace_candidates[1], trace_candidates[0]
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="file page differs from lane pool replay"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    trace_candidates[0], trace_candidates[1] = trace_candidates[1], trace_candidates[0]
+
+    original_score = trace_candidates[0]["file_rrf_score"]
+    trace_candidates[0]["file_rrf_score"] = 1.0
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="RRF score disagrees with lane ranks"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    trace_candidates[0]["file_rrf_score"] = original_score
+
+    trace_candidates[0]["lexical"]["chunk_rank"] = 21
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="lexical witness rank is invalid"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    trace_candidates[0]["lexical"]["chunk_rank"] = 1
 
     paired["tasks"][0]["hybrid"]["window"] = []
     store_pair()
     with pytest.raises(decision.DecisionError, match="hybrid window is incomplete"):
         decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
-    paired["tasks"][0]["hybrid"]["window"] = window(2)
+    paired["tasks"][0]["hybrid"]["window"] = window(2, lanes=("hybrid.lexical", "hybrid.dense"))
+    store_pair()
+
+    task = paired["tasks"][0]
+    logical_empty = window(0)
+    logical_empty["coverage"]["exhaustion_proof"] = {"kind": "logical_empty"}
+    logical_empty["empty_provenance"] = "logical_empty"
+    task["semantic"]["window"] = logical_empty
+    store_pair()
+    with pytest.raises(decision.DecisionError, match="semantic window is incomplete"):
+        decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+    task["semantic"]["window"] = window(0, lanes=("semantic.dense",))
+
+    for capture, key, route in (
+        (task["lexical"], "window", "lexical"),
+        (task["semantic"], "window", "semantic"),
+        (task["hybrid"], "window", "hybrid"),
+        (task["trace_files"], "lexical_window", "trace lexical"),
+        (task["trace_files"], "dense_window", "trace dense"),
+    ):
+        exact = capture[key]
+        capture[key] = {
+            **exact,
+            "coverage": {"examined": exact["coverage"]["examined"], "lanes": []},
+        }
+        store_pair()
+        with pytest.raises(decision.DecisionError, match=f"{route} window is incomplete"):
+            decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+        capture[key] = window(exact["returned"], continuation=True)
+        store_pair()
+        with pytest.raises(decision.DecisionError, match=f"{route} window is incomplete"):
+            decision.evaluate_go_trace_file_holdout(plan_path, judgments_path)
+        capture[key] = exact
+
+    exact = task["trace_files"]["lexical_window"]
+    task["trace_files"]["lexical_window"] = window(
+        paired["lane_top_k"], continuation=True, lanes=("go_test_trace.lexical",)
+    )
+    exact_pool_size = len(pool)
+    pool.extend({**pool[-1], "candidate_id": f"additional-chunk-{index}"}
+                for index in range(exact_pool_size, paired["lane_top_k"]))
+    store_pair()
+    assert decision.evaluate_go_trace_file_holdout(plan_path, judgments_path) == scored
+    del pool[exact_pool_size:]
+    task["trace_files"]["lexical_window"] = exact
     store_pair()
 
     with pytest.raises(decision.DecisionError, match="output must be a new path"):
         decision.evaluate_go_trace_file_holdout(plan_path, judgments_path, judgments_path)
 
     # A qualified Go holdout must commit source-only reviews before SDK replay.
-    paired["tasks"][0]["hybrid"]["window"] = window(2)
+    paired["tasks"][0]["hybrid"]["window"] = window(2, lanes=("hybrid.lexical", "hybrid.dense"))
     denominator = {
         "genuinely_exhaustive": True,
         "scope": "all production Go files in the frozen manifest",

@@ -1,5 +1,5 @@
 //! Process-scoped test counter for Native UDS send attempts.
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 #[derive(Clone, Copy)]
 struct SendObservationV1 {
@@ -22,9 +22,18 @@ static STATE_V1: Mutex<SendObservationV1> = Mutex::new(SendObservationV1 {
     overflow: false,
 });
 
+#[expect(
+    clippy::expect_used,
+    reason = "Poisoned opt-in proof state must fail instead of reporting a valid count."
+)]
+fn lock_state_v1() -> MutexGuard<'static, SendObservationV1> {
+    STATE_V1.lock().expect("Native send observer lock")
+}
+
 /// Arm only after all earlier synchronous requests have completed.
+#[must_use]
 pub fn try_arm_v1() -> bool {
-    let mut state = STATE_V1.lock().expect("Native send observer lock");
+    let mut state = lock_state_v1();
     if state.armed {
         return false;
     }
@@ -38,7 +47,7 @@ pub fn try_arm_v1() -> bool {
 
 /// Count every send attempt in the process, including unrelated requests.
 pub(crate) fn observe_v1() {
-    let mut state = STATE_V1.lock().expect("Native send observer lock");
+    let mut state = lock_state_v1();
     if state.armed {
         if let Some(next) = state.count.checked_add(1) {
             state.count = next;
@@ -48,14 +57,16 @@ pub(crate) fn observe_v1() {
     }
 }
 
+#[must_use]
 pub fn snapshot_v1() -> u64 {
-    let observation = *STATE_V1.lock().expect("Native send observer lock");
+    let observation = *lock_state_v1();
     observation.checked_count()
 }
 
+#[must_use]
 pub fn disarm_v1() -> u64 {
     let observation = {
-        let mut state = STATE_V1.lock().expect("Native send observer lock");
+        let mut state = lock_state_v1();
         let observation = *state;
         state.armed = false;
         observation
@@ -65,9 +76,10 @@ pub fn disarm_v1() -> u64 {
 
 /// Release an owned observation during unwinding without replacing the first failure.
 pub fn abandon_v1() {
-    let mut state = STATE_V1
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut state = match STATE_V1.lock() {
+        Ok(state) => state,
+        Err(poisoned) => poisoned.into_inner(),
+    };
     state.armed = false;
 }
 

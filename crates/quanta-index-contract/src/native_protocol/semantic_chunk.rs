@@ -75,6 +75,22 @@ impl std::fmt::Display for NativeSemanticChunkValidationError {
 impl std::error::Error for NativeSemanticChunkValidationError {}
 
 impl NativeSemanticChunk {
+    /// Validate a ranked file's vector witness against its selected source.
+    /// Generic projection vectors without a source remain valid on non-file
+    /// routes through `validate_binding`.
+    pub fn validate_file_binding(
+        &self,
+        vector_id: &[u8],
+        recipe: Digest,
+        source: ObjectRef,
+    ) -> Result<(), NativeSemanticChunkValidationError> {
+        self.validate_binding(vector_id, recipe)?;
+        if self.input.source != Some(source) {
+            return Err(NativeSemanticChunkValidationError::InputPolicyMismatch);
+        }
+        Ok(())
+    }
+
     /// Validate structural binding before exposing a ranked hit.
     ///
     /// This check does not authenticate object contents. The selected-view
@@ -329,6 +345,48 @@ mod tests {
         check_eq!(invalid.validate_binding(&vector_id, recipe), Ok(()));
         invalid.input.source = Some(ObjectRef(Digest([3; 32])));
         check_eq!(invalid.validate_binding(&vector_id, recipe), Ok(()));
+        Ok(())
+    }
+
+    #[test]
+    fn file_chunk_requires_same_source_without_restricting_generic_projection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let source = ObjectRef(Digest([3; 32]));
+        let recipe = Digest([4; 32]);
+        for span in [
+            NativeSemanticChunkSpan::SourcePayload {
+                start_byte: 0,
+                end_byte: 4,
+            },
+            NativeSemanticChunkSpan::ProjectionPayload {
+                start_byte: 0,
+                end_byte: 4,
+            },
+            NativeSemanticChunkSpan::RenderedMember { ordinal: 7 },
+        ] {
+            let projection = !matches!(span, NativeSemanticChunkSpan::SourcePayload { .. });
+            let mut chunk = source_chunk();
+            chunk.span = span;
+            if projection {
+                chunk.input.projection = Some(ObjectRef(Digest([5; 32])));
+                chunk.input.producer_context = Digest([6; 32]);
+            }
+            chunk.validate_file_binding(&chunk.id.0, recipe, source)?;
+            check_eq!(
+                chunk.validate_file_binding(&chunk.id.0, recipe, ObjectRef(Digest([99; 32]))),
+                Err(NativeSemanticChunkValidationError::InputPolicyMismatch)
+            );
+            chunk.input.source = None;
+            check_eq!(
+                chunk.validate_file_binding(&chunk.id.0, recipe, source),
+                Err(NativeSemanticChunkValidationError::InputPolicyMismatch)
+            );
+            if projection {
+                // Generic projection vectors without source remain supported;
+                // only the file-hit route binds to a selected source row.
+                chunk.validate_binding(&chunk.id.0, recipe)?;
+            }
+        }
         Ok(())
     }
 }

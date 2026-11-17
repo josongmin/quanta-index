@@ -456,3 +456,43 @@ reason = "requires QUANTA_INDEX_PHYSICAL_ENOSPC_ROOT on an isolated 32..=128 MiB
 owner = "quanta-index-searchd-runtime"
 cadence = "release"
 review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-ipc/src/server/admitted_peer_tests.rs"
+test = "actual_peer_process_child_v1"
+reason = "internal child process for actual connected-peer regression"
+owner = "quanta-index-ipc"
+cadence = "release; invoked by the Linux admitted-peer parent tests"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-sdk/src/native_uds/tests/observed_peer_tests.rs"
+test = "observed_peer_child"
+reason = "internal process for observed SDK peer regression"
+owner = "quanta-index-sdk"
+cadence = "release; invoked by the Linux observed-peer SDK parent test"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-lexical/src/native/text.rs"
+test = "packed_inventory_page_row_in_process_abba"
+reason = "local CPU diagnostic; run alone with one test thread"
+owner = "quanta-index-lexical"
+cadence = "release diagnosis; explicit single-thread owning selector"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/src/native_boot/repomap_recovery_tests.rs"
+test = "legacy_active_repomap_recovery_holds_a_separate_real_root"
+reason = "admitted recovery inventory uses Linux getdents64"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; run the owning recovery test on Linux"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/src/publication_sidecar.rs"
+test = "foreign_device_staging_bind_refuses_and_keeps_ticket"
+reason = "requires QIDX_P08_TEST_IMAGE pointing to a private mountable image"
+owner = "quanta-index-searchd-runtime"
+cadence = "release; isolated macOS mount fixture"
+review_by = "2026-12-31"

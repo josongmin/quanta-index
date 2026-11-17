@@ -1,8 +1,8 @@
 # Finalizing — 웨이브 실행 계획
 
-상태·담당·다음 조건은 [README의 8개 에픽](README.md#epics), 실행 결과는 [VALIDATION](VALIDATION.md), 독점 파일/함수는 [OWNERSHIP](OWNERSHIP.md)만 갱신한다. 이 문서는 실행 순서와 입출력 계약이다. 새 티켓·상태 원장·담당을 만들지 않는다. 전체 종료 분모는 [E01–E08 / R01–R40](DOD.md#final-dod) 그대로다.
+전체 범위와 활성 원장 경로는 [README의 8개 에픽](README.md#epics), source별 실행 결과는 [VALIDATION](VALIDATION.md)와 해당 활성 티켓, 독점 파일/함수는 [OWNERSHIP](OWNERSHIP.md)이 소유한다. 이 문서는 실행 순서와 입출력 계약이다. 새 티켓·상태 원장·담당을 만들지 않는다. 전체 종료 분모는 [E01–E08 / R01–R40](DOD.md#final-dod) 그대로다.
 
-E02의 최신 코드·검증 상태는 [에픽 원장](README.md#e02)에 있다.
+E02의 현재 담당·검증 경로는 [에픽 E02](README.md#e02)에서 찾는다.
 이전 배정·회귀 수·실행 식별자는 [복구 색인](../../ARCHIVE-INDEX.md#plan-and-ticket-deduplication)에서 찾는다.
 
 ## Wave map
@@ -10,7 +10,7 @@ E02의 최신 코드·검증 상태는 [에픽 원장](README.md#e02)에 있다.
 | 웨이브 | 작업과 산출물 | 병렬 범위 / 합류 | 종료 조건 |
 | --- | --- | --- | --- |
 | W0 — 잔여·수정권 확정 | 최신 caller·dirty hunk·기존 실행 결과를 대조해 실제 미완료만 추림 | Root가 공용 접합을 소유. 기존 owner는 자신의 경계만 확인 | 실제 결손마다 단일 writer와 기존 oracle 확정. 완료 코드·동일 실행 재발급0 |
-| W1 — 독립 코드 마감 | 실제 Source/query 공급, SDK Native 소비·provider admission·unchanged typed artifact 공급, 확인된 Runtime/PUB 실패 custody, SEARCH/lexical·PHYSICAL·IDE/BOOT 수리 | 아래 독점 lane을 병렬 진행. 공급 내부는 공통 ABI 확정 후 소비자/재취득을 분리. 공용 parent·feature/export는 Root 또는 기존 SDK parent owner가 결합 | 정적 경계/서명·원인/partial/drop 계약 충족. 실제 typed 공급과 W2 연결점 제출. helper 존재만으로 공급 완료 처리0 |
+| W1 — 독립 코드 마감 | 기존 Source/Query·SDK·Native 구현을 재사용한다. 실제 생산·소비 결손 또는 owning 실패가 확인된 hunk만 수정하고 typed failure·partial/drop 수명·provider admission을 검증한다. | 확인된 독립 결손만 원 작성자가 병렬 수정한다. 완료된 A/C·D producer/receiver/Host/normal fixture·B05 guard는 재발급하지 않는다. 공용 parent·feature/export는 기존 Root/SDK parent 작성자가 결합한다. | 실제 변경의 정적 경계·typed 공급·W2 소비점과 독립 oracle 확인. 소스 존재는 compiler/본문/설치 수용을 대신하지 않음. |
 | W2 — 실제 게시·소비 연결 / CP1 | initial receipt/authority → pending/V9 → terminal Native generation/root → 기존 CAS/ACK → SDK/AST/BOOT | FULL/delta 입력 준비는 분리. 공용 writer parent는 Root, SDK parent는 PUB 한 writer | 성공과 거절 모두 실제 caller→consumer 연결. ordinary 우회·guard 재진입·합성 authority 없음 |
 | W3 — 영향 compile·owner 회귀 / CP2 | 합류 코드의 Runtime·SDK/CP·Q owning 검증 | 기존 요청 재사용. 같은 host heavy 작업은 admission 아래 직렬 | 컴파일과 실제 선택 본문 각각 통과. 실패 원인 수리 뒤 동일 rail 재검증 |
 | W4 — 제품·복구 / CP3 | 공개 FULL/delta/delete/query, 5 durable cut, 원4K, IDE/BOOT candidate | 각 기능의 영향 CP2와 입력이 준비되면 실행. SEARCH 원4K·독립 IDE/BOOT gate는 E02의 미완료를 전역 대기 조건으로 삼지 않음 | cold gold·same-operation 복구·오류/취소/환급·실제 consumer 수용. 독립 결과는 W6에서 합류 |
@@ -23,7 +23,7 @@ E02의 최신 코드·검증 상태는 [에픽 원장](README.md#e02)에 있다.
 
 - **E01.** 기존 Source/query → planner → writer와 실제 receipt/artifact를 [E01 계약](E01-producer-generation.md) 및 [W205 owning 범위](VALIDATION.md#w205-proof-20261030)로 수용한다. 실제 관리 입력·독립 cold gold와 늦은 실패·취소·환급을 확인한다.
 - **E02.** 아래 [E02 합류 순서](#e02-shared-join-order)를 사용한다. 실제 DELTA 공급과 각 owning 및 설치 회귀는 [현재 E02](README.md#e02)에서 판정한다.
-- **E03–E08.** Lexical·원4K·IDE/Auto·SDK/BOOT·성능·운영은 해당 입력이 준비된 경계에서 진행한다. [에픽 원장](README.md#epics)의 유효한 결과를 W6가 소비한다.
+- **E03–E08.** [에픽 원장](README.md#epics)과 [활성 작업 목록](README.md#활성-작업-문서)에서 각 제품·운영 게이트의 담당과 입력을 확인한다. W6는 관련 입력에 결속된 결과를 인수한다.
 
 ## E07 Native 인덱싱 RCA 전환
 
@@ -79,7 +79,7 @@ RepoMap의 전체 map 순회·해시·직렬화는 W5 비용에 포함한다.
 - 기존 E02 요청에 더해 실제 변경된 DELTA caller·member·최종 검사·ACK/restart의 영향 본문을 수용한다. [기존 결과](VALIDATION.md)는 해당 source에 결속한다. Host/Linux는 각 플랫폼의 적격 Source·feature·실행 결과를 기록한다.
 - canonical wire/digest·역순 manifest·duplicate/missing/unknown/foreign/trailing JSON·before-write/RPC 거절·stale owner/epoch/revision CAS를 독립 expected로 검증한다.
 - 성공/거절/cancel/panic/unwind·late Source·payload-before-backing·마지막 drop 환급과 Vector artifact/undo를 실제 본문으로 확인한다.
-- compile0, 선택 본문 수, 본문 결과를 분리한다. module filter는 lib(test) 전체 컴파일을 줄이지 않는다. canonical 53본문의 feature별 28/25를 구분하고 실행하지 않은 본문을 성공으로 세지 않는다.
+- compile0, 선택 본문 수, 본문 결과를 분리한다. module filter는 lib(test) 전체 컴파일을 줄이지 않는다. 과거 canonical 53본문의 feature별 28/25 결과는 당시 source에만 귀속한다. 현재 분모는 해당 owner의 등록 inventory·feature와 대조하며 미실행 본문을 성공으로 세지 않는다.
 - 새 실패는 현재 source/원인과 대조해 원 owner에 되돌린다. feature 축소·쉬운 selector·assertion 제거·private API의 무근거 확장으로 우회하지 않는다.
 
 ## W4 — CP3 제품·복구
@@ -102,7 +102,7 @@ RepoMap의 전체 map 순회·해시·직렬화는 W5 비용에 포함한다.
 ## W6 — 통합 A→default 전환→B
 
 1. A에서 E01–E07 필수 기능·5 cut·원4K·성능/운영·IDE/IntelliJ·설치 authority 결과를 대조한다. 유효한 기존 결과를 통합 명목으로 전부 재실행하지 않는다.
-2. A 수용 후 기존 E06 daemon/CLI/launcher default를 전환한다. predecessor·rollback·단일 Catalog head를 유지한다.
+2. A 수용 후 기존 E06의 설치 selection/default 전환을 수행한다. [일반 SDK/CLI Native 라우팅](E06-sdk-service-cutover.md#implemented-default-routing)은 재사용하고 predecessor·rollback·단일 Catalog head를 유지한다.
 3. B에서 post-switch smoke·rollback·cleanup·current coherent full-suite/strict/public API/module·exact-source hosted CI/release를 수용한다.
 4. [R01–R40](DOD.md#requirements)·P2I/UX/AUTO·필수 에픽 DoD를 모두 대조한다. 조건부 N/A만 원 계약의 근거로 허용한다. CODE_QUALIFIED·DEPLOYED·ACTIVATED·ROLLBACK_PROVEN은 구분한다.
 

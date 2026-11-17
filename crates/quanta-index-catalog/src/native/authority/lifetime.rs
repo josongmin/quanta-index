@@ -22,6 +22,7 @@ use rustix::fs::{Mode, OFlags, open};
 use super::*;
 
 pub(super) mod creation;
+mod read_attempt;
 use creation::{creation_lock, reap_open_intents};
 
 const MAX_RECOVERY_SESSIONS: u32 = 256;
@@ -57,6 +58,7 @@ pub(super) struct CatalogSessionLease {
     pub(super) binding: ReadSessionRef,
     catalog_path: PathBuf,
     pub(super) file: LockFile,
+    read_observations: std::sync::Mutex<Option<Arc<read_attempt::ObservationGroup>>>,
 }
 
 pub(super) enum LockFile {
@@ -454,7 +456,7 @@ pub(super) struct AuthenticatedSessionIdentity<'a> {
     pub(super) binding: ReadSessionRef,
     pub(super) inode: (Vec<u8>, Vec<u8>),
     // The checked identity must remain scoped to the original lock owner.
-    _lease: &'a CatalogSessionLease,
+    lease: &'a CatalogSessionLease,
 }
 
 pub(super) fn guard<'a>(
@@ -487,7 +489,7 @@ pub(super) fn guard<'a>(
         Err(TryLockError::WouldBlock) => Ok(AuthenticatedSessionIdentity {
             binding: concrete.binding,
             inode: held_inode,
-            _lease: concrete,
+            lease: concrete,
         }),
         Ok(()) => Err(IndexError::Storage("read session OS lock was lost".into())),
         Err(TryLockError::Error(error)) => Err(io_error("probe guard lock", &path, &error)),
@@ -808,6 +810,15 @@ fn renew_live_ticket(
 }
 
 impl CatalogReadPort for SqliteCatalog {
+    fn begin_read_attempt<'a>(
+        &'a self,
+        session: &'a dyn ReadSessionLease,
+        ticket: ReadTicketLease,
+        budget: &'a WorkBudget,
+    ) -> Result<Box<dyn quanta_index_core::index::CatalogReadAttempt + 'a>, IndexError> {
+        read_attempt::start(self, session, ticket, budget)
+    }
+
     fn open_read_session(&self) -> Result<Arc<dyn ReadSessionLease>, IndexError> {
         let directory = session_directory(self)?;
         let _creation_lock = creation_lock(self, &directory)?.ok_or(IndexError::ResourceLimited)?;
@@ -882,6 +893,7 @@ impl CatalogReadPort for SqliteCatalog {
             binding,
             catalog_path: self.path.clone(),
             file,
+            read_observations: std::sync::Mutex::default(),
         }))
     }
 

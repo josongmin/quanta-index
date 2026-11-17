@@ -172,7 +172,7 @@ fn two_owner_inventory(
     let mut inventory = Vec::new();
     let mut cursor = spool.inventory_cursor(2)?;
     while let Some(row) = cursor.next_edit(&mut work)? {
-        inventory.push((row.root, row.edit.key.clone(), row.edit.next));
+        inventory.push((row.root(), row.key().to_vec(), row.next()?));
     }
     drop(cursor);
     drop(confirmed);

@@ -304,24 +304,65 @@ impl crate::SqliteCatalog {
         &self,
         budget: &mut quanta_index_core::index::WorkBudget,
     ) -> Result<[u8; 32], CoreError> {
-        use quanta_index_core::index::WorkUsage;
-        budget
-            .charge(WorkUsage {
-                reads: 2,
-                bytes: 160,
-                ..WorkUsage::default()
-            })
-            .map_err(nonce_budget_error)?;
-        // Both result rows are fixed-width: six scalar flags, the fixed
-        // capture domain, nonce and digest. Fund their bounded hash scratch.
-        let _memory = budget
+        use quanta_index_core::index::existing_file::ExistingFileReadFailureV1 as Failure;
+        budget.checkpoint().map_err(nonce_budget_error)?;
+        let memory = budget
             .reserve_memory(1024, quanta_index_core::index::MemoryLifetime::Temporary)
             .map_err(nonce_budget_error)?;
-        let connection = self
-            .lock_native_budget(budget)
-            .map_err(nonce_budget_error)?;
+        self.read_native_root_nonce_with_memory(budget, memory)
+            .map_err(|error| match error {
+                Failure::AdmissionOrIo(error) => nonce_budget_error(error),
+                Failure::Canonical(error) => error,
+            })
+    }
+
+    /// Observe fixed incarnation DATA through the existing writer connection.
+    /// Original memory is mandatory; admission/lock failures keep IndexError.
+    /// The caller separately holds and validates its actual StateRootLease.
+    /// This does not authenticate a Source, installation, or publication permit.
+    pub fn observe_native_root_nonce_v1(
+        &self,
+        budget: &mut quanta_index_core::index::WorkBudget,
+    ) -> Result<[u8; 32], quanta_index_core::index::IndexError> {
+        use quanta_index_core::index::{
+            IndexError, MemoryLifetime, existing_file::ExistingFileReadFailureV1 as Failure,
+        };
+        budget.checkpoint()?;
+        let memory = budget
+            .reserve_memory(1024, MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        self.read_native_root_nonce_with_memory(budget, Some(memory))
+            .map_err(|error| match error {
+                Failure::AdmissionOrIo(error) => error,
+                Failure::Canonical(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
+                    ..
+                }) => IndexError::RebuildRequired,
+                Failure::Canonical(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::CatalogBusy,
+                    ..
+                }) => IndexError::Conflict,
+                Failure::Canonical(error) => IndexError::Storage(error.to_string()),
+            })
+    }
+
+    // ONE canonical admission, connection and stamp parser path. The existing
+    // Core-facing API retains its historical error/memory-scope contract; the
+    // live Original-facing observer requires an actual grant before any SQL.
+    fn read_native_root_nonce_with_memory(
+        &self,
+        budget: &mut quanta_index_core::index::WorkBudget,
+        _memory: Option<quanta_index_core::index::MemoryLease>,
+    ) -> Result<[u8; 32], quanta_index_core::index::existing_file::ExistingFileReadFailureV1> {
+        use quanta_index_core::index::WorkUsage;
+        budget.charge(WorkUsage {
+            reads: 2,
+            bytes: 160,
+            ..WorkUsage::default()
+        })?;
+        let connection = self.lock_native_budget(budget)?;
         let nonce = verify_stamp(&connection, &self.path)?;
-        budget.checkpoint().map_err(nonce_budget_error)?;
+        budget.checkpoint()?;
         drop(connection);
         Ok(nonce)
     }
@@ -476,11 +517,11 @@ mod tests {
     #[test]
     fn fixed_nonce_stamp_has_independent_golden() -> Result<(), Box<dyn Error>> {
         // Independently computed SHA-256 of the stamp domain and canonical
-        // JSON [1,19,2,byte-array hash domain,1,[7;32]] with compact separators.
+        // JSON [1,20,2,byte-array hash domain,1,[7;32]] with compact separators.
         const GOLDEN: [u8; 32] = [
-            0xca, 0x63, 0x27, 0x79, 0x0e, 0xcb, 0xf8, 0x95, 0x62, 0xa0, 0x62, 0x08, 0xa1, 0xf4,
-            0x33, 0x4f, 0xa0, 0x1b, 0x7b, 0xba, 0x50, 0xa2, 0x01, 0xcb, 0x75, 0x70, 0x57, 0xfd,
-            0x38, 0x39, 0x3b, 0x03,
+            0xc9, 0xfb, 0x42, 0x23, 0x7d, 0x0c, 0x58, 0x89, 0x3c, 0x7a, 0x0c, 0x22, 0xbf, 0x04,
+            0x99, 0xd4, 0x9e, 0x18, 0x2a, 0xee, 0xda, 0x0d, 0xac, 0x77, 0x7f, 0x29, 0xdc, 0x42,
+            0x77, 0x66, 0x2c, 0x1c,
         ];
         let actual = super::expected_digest(&[7; 32])?;
         check_eq!(actual.as_slice(), GOLDEN.as_slice());
@@ -925,6 +966,37 @@ mod tests {
             |row| row.get(0),
         )?;
         check_eq!(before, after);
+        Ok(())
+    }
+    #[test]
+    fn live_nonce_observer_refuses_unfunded_and_cancelled_before_sql() -> Result<(), Box<dyn Error>>
+    {
+        use quanta_index_core::{
+            RequestBudgetV1,
+            index::{IndexError, WorkBudget, WorkLimits},
+        };
+        let root = tempfile::tempdir()?;
+        let catalog = open(root.path())?;
+        let limits = WorkLimits {
+            reads: 2,
+            writes: 0,
+            bytes: 160,
+            mutations: 0,
+        };
+        let mut work = WorkBudget::with_request(limits, RequestBudgetV1::unbounded());
+        check!(matches!(
+            catalog.observe_native_root_nonce_v1(&mut work),
+            Err(IndexError::ResourceLimited)
+        ));
+        check_eq!(work.usage().reads, 0);
+        let request = RequestBudgetV1::unbounded();
+        request.cancel_handle().cancel();
+        let mut work = WorkBudget::with_request(limits, request);
+        check!(matches!(
+            catalog.observe_native_root_nonce_v1(&mut work),
+            Err(IndexError::Cancelled)
+        ));
+        check_eq!(work.usage().reads, 0);
         Ok(())
     }
 }

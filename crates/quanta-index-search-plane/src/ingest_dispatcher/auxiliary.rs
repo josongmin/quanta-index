@@ -13,13 +13,15 @@ use quanta_index_contract::{
 use quanta_index_core::{
     AuxiliaryAuthorityCatalogPort, CoreError, HistoryTextBuildV1, HistoryTextDocKeyV1,
     HistoryTextDocV1, HistoryTextEpochStatusV1, HistoryTextIndexPort,
+    domains::auxiliary::{HistoryReadbackRowV1, HistorySourceCutV1},
+    index::WorkBudget,
 };
 
 use crate::Ledger;
 use crate::auxiliary_authority::{
-    history_delta_rows, history_transition, runtime_catalog_delta_rows, runtime_catalog_transition,
-    runtime_dirty_delta_rows, runtime_dirty_transition, structural_delta_rows,
-    structural_transition,
+    history_delta_rows, history_transition, read_history_source_snapshot,
+    runtime_catalog_delta_rows, runtime_catalog_transition, runtime_dirty_delta_rows,
+    runtime_dirty_transition, structural_delta_rows, structural_transition,
 };
 use crate::history_text::HistoryTextIndexParts;
 use crate::ingest_dispatcher::ports::{
@@ -206,6 +208,23 @@ impl DirectHistoryMaterializer {
     pub fn with_history_text(mut self, history_text: HistoryTextIndexParts) -> Self {
         self.history_text = Some(history_text);
         self
+    }
+
+    /// Visit the latest durable History snapshot for the requested generation.
+    /// The source owner supplies the independently committed source cut and
+    /// the authenticated starting predecessor from the replay reader.
+    ///
+    /// Keep the producer fence across the read and replay handoff. The
+    /// visitor must stage its output using the same Work budget until the
+    /// complete read succeeds. It must not re-enter the Catalog.
+    pub fn read_source_snapshot(
+        catalog: &dyn AuxiliaryAuthorityCatalogPort,
+        source: &HistorySourceCutV1,
+        replay_predecessor: &HistorySourceCutV1,
+        budget: &mut WorkBudget,
+        visit: &mut dyn FnMut(HistoryReadbackRowV1, &mut WorkBudget) -> Result<(), CoreError>,
+    ) -> Result<(), CoreError> {
+        read_history_source_snapshot(catalog, source, replay_predecessor, budget, visit)
     }
 }
 

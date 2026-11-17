@@ -522,6 +522,96 @@ mod tests {
         Ok(())
     }
 
+    #[derive(Debug)]
+    struct FixedGenerationBytes;
+
+    impl quanta_index_search_plane::SearchCorpusIndexBytesPort for FixedGenerationBytes {
+        fn measurement_policy(
+            &self,
+        ) -> quanta_index_core::domains::generation::RetentionMeasurementPolicy {
+            quanta_index_core::domains::generation::RetentionMeasurementPolicy::DEFAULT
+        }
+
+        fn measure_index_bytes(
+            &self,
+            _repo_id: &quanta_index_contract::RepoId,
+            _revision_id: &quanta_index_contract::RevisionId,
+            generations: &std::collections::BTreeSet<quanta_index_contract::ManifestGeneration>,
+            _budget: &RequestBudgetV1,
+            _diagnostic: Option<&quanta_index_core::DiagnosticContextV1>,
+        ) -> Result<quanta_index_core::SealedGenerationBytesV1, CoreError> {
+            Ok(quanta_index_core::SealedGenerationBytesV1 {
+                bytes: u64::try_from(generations.len())
+                    .map_err(|error| CoreError::InvalidContract(error.to_string()))?,
+                absent: Default::default(),
+            })
+        }
+    }
+
+    #[test]
+    fn qualified_history_retention_refunds_retired_authority_files() -> TestResult {
+        use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
+        use quanta_index_search_plane::SearchCorpusLifecycleOwner;
+        use quanta_index_search_plane::readiness::{Ledger, SearchCorpusHistoryRetentionPolicyV1};
+
+        let (_directory, root, capacity, binder) = fixture()?;
+        let admission = Arc::new(CanonicalDurableControlFileAdmission::new(
+            Arc::new(PublicationFileDeletions::new(Arc::clone(&binder))),
+            256,
+        )?);
+        let open = |keep| {
+            SearchCorpusLifecycleOwner::open_with_durable_file_admission(
+                &root,
+                SearchCorpusHistoryRetentionPolicyV1::new(keep, 1024, 8, 8192)?,
+                Arc::new(FixedGenerationBytes),
+                admission.clone(),
+            )
+        };
+        let lifecycle = open(3)?;
+        let baseline = capacity.snapshot()?;
+        let store = lifecycle.authority_store();
+        let repo = RepoId::new("retention-refund")?;
+        let revision = RevisionId::new("revision")?;
+        for number in 1..=6 {
+            let receipt = store.record_sealed_search_corpus(
+                &repo,
+                &revision,
+                ManifestGeneration::new(number),
+                "fixed-generation-digest",
+            )?;
+            require(
+                receipt.retains(ManifestGeneration::new(number)),
+                "lost newest generation",
+            )?;
+            let usage = capacity.snapshot()?;
+            require_eq(
+                &actual_inventory(&root)?,
+                &(usage.used_bytes, usage.used_files),
+            )?;
+            require_eq(&usage.used_files, &(baseline.used_files + number.min(3)))?;
+        }
+        drop(store);
+        drop(lifecycle);
+
+        // Reload policy without reseeding the physical ledger. Restore and
+        // ordinary publication must reach the same deletion owner.
+        let reopened = open(2)?;
+        reopened
+            .authority_store()
+            .restore_into(&mut Ledger::new())?;
+        let usage = capacity.snapshot()?;
+        require_eq(
+            &actual_inventory(&root)?,
+            &(usage.used_bytes, usage.used_files),
+        )?;
+        require_eq(&usage.used_files, &(baseline.used_files + 2))?;
+        require(
+            binder.is_quiescent()?,
+            "retention retained a live file claim",
+        )?;
+        Ok(())
+    }
+
     #[test]
     fn exact_bound_is_from_one_canonical_ledger_and_commits_actual_fd() -> TestResult {
         let (_directory, root, authority, binder) = fixture()?;

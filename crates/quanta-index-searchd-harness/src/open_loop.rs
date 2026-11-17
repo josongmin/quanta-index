@@ -321,6 +321,7 @@ fn transport_kind(error: &IpcError) -> String {
         IpcError::IngressSaturated { .. } => "ingress_saturated".to_string(),
         IpcError::FrameMemoryLimited { .. } => "frame_memory_limited".to_string(),
         IpcError::ZeroRequestId => "zero_request_id".to_string(),
+        IpcError::PeerBindingRefused(_) => "peer_binding_refused".to_string(),
         IpcError::Timeout { .. }
         | IpcError::InvalidClientIoTimeout
         | IpcError::ClientIoDeadlineElapsed
@@ -393,6 +394,7 @@ fn dispatch(
             | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
+            | SearchPlaneQueryIpcResponse::HybridFileV1(_)
             | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
             | SearchPlaneQueryIpcResponse::History(_)
             | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
@@ -737,6 +739,7 @@ pub(crate) fn run(config: Config) -> AnyResult<Report> {
         | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::HybridFileV1(_)
         | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | SearchPlaneQueryIpcResponse::History(_)
         | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
@@ -915,6 +918,9 @@ mod tests {
     #[test]
     fn zero_request_id_keeps_its_protocol_failure_kind() {
         assert_eq!(transport_kind(&IpcError::ZeroRequestId), "zero_request_id");
+        assert_eq!(transport_kind(&IpcError::PeerBindingRefused(
+            quanta_index_ipc::PeerBindingRefusalV1::ForeignProcess,
+        )), "peer_binding_refused");
     }
 
     #[test]

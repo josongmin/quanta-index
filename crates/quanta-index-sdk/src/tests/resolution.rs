@@ -274,10 +274,13 @@ fn active_rev_at_time_keeps_ancestor_resolution_and_exact_final_binding() {
 #[test]
 fn quoted_timeref_literals_do_not_resolve_or_relax_text_response_pins() {
     let literal = "\"rev:at.time(2024-06-01T12:34:56Z)\"";
-    assert!(!crate::binding::is_rev_at_time_query(
+    for syntax in [
         quanta_index_contract::TextQuerySyntax::CodeSearch,
-        literal
-    ));
+        quanta_index_contract::TextQuerySyntax::Native,
+        quanta_index_contract::TextQuerySyntax::Sourcegraph,
+    ] {
+        assert!(!crate::binding::is_rev_at_time_query(syntax, literal));
+    }
     assert!(crate::binding::is_rev_at_time_query(
         quanta_index_contract::TextQuerySyntax::Sourcegraph,
         "rev:at.time(2024-06-01T12:34:56Z) needle"
@@ -322,6 +325,48 @@ fn quoted_timeref_literals_do_not_resolve_or_relax_text_response_pins() {
         Some(quanta_index_contract::SearchPlaneQueryIpcRequest::Text(sent)) if sent == &request
     ));
     drop(requests);
+}
+
+#[test]
+fn sourcegraph_timeref_phrase_cannot_accept_a_resolved_ancestor() {
+    let wrong = GenerationPin::new(
+        repo_id(),
+        RevisionId::new("other-revision").expect("fixture revision"),
+        ManifestGeneration::new(8),
+    );
+    let query = Arc::new(StubQueryTransport::sequence([
+        SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(wrong.clone()),
+        SearchPlaneQueryIpcResponse::Text(TextQueryResponse {
+            selected_active_head: None,
+            rank_unit: quanta_index_contract::TextRankUnit::Chunk,
+            explanation: quanta_index_contract::SearchExplanation::empty(),
+            generation: wrong,
+            results: vec![],
+            window: QueryResultWindowV2::exact_probe(0),
+            file_owner_rows: None,
+            next_cursor: None,
+        }),
+    ]));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let request = quanta_index_contract::TextQueryRequest {
+        syntax: quanta_index_contract::TextQuerySyntax::Sourcegraph,
+        query_text: "\"rev:at.time(2024-06-01T12:34:56Z)\"".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: Some(sample_generation_pin()),
+        generation_selector: None,
+        top_k: 5,
+        cursor: None,
+    };
+    assert!(matches!(
+        client.lexical().query_request(request.clone()),
+        Err(crate::SdkError::Binding { .. })
+    ));
+    let requests = ok_or_fail!(query.requests.lock()).clone();
+    assert_eq!(requests.len(), 1);
+    assert!(matches!(
+        requests.first().map(|request| &request.payload),
+        Some(quanta_index_contract::SearchPlaneQueryIpcRequest::Text(sent)) if sent == &request
+    ));
 }
 
 #[test]

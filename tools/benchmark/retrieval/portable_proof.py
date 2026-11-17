@@ -44,6 +44,7 @@ PACKAGE = "quanta-index-retrieval-bench"
 FLAGS = ["--all-features", "--locked"]
 EXECUTION_CONTEXT_VERSION = 2
 FRESH_EXECUTION_CONTEXT_VERSION = 3
+EXPLICIT_SEARCHD_EXECUTION_CONTEXT_VERSION = 4
 FRESH_BUILD_PROFILE = "release-fresh"
 FORMAT = ["--message-format", "libtest-json-plus", "--message-format-version", "0.1"]
 SOURCE_CLOSURE_SCRIPT = ROOT / "tools/ci/source_closure.py"
@@ -598,6 +599,23 @@ def _cargo(wrapper: str, *args: str) -> list[str]:
     return [wrapper, "--lane", "test-daemon-lane", *args]
 
 
+def _searchd_build_argv(wrapper: str, context_version: int) -> list[str]:
+    # SDK roundtrip exercises Legacy serve. Only archived v2 used Cargo defaults.
+    features = [] if context_version == EXECUTION_CONTEXT_VERSION else ["--all-features"]
+    profile = ["--release"] if context_version == FRESH_EXECUTION_CONTEXT_VERSION else []
+    return _cargo(
+        wrapper,
+        "build",
+        "-p",
+        "quanta-index-searchd-runtime",
+        "--bin",
+        "quanta-index-searchd",
+        *features,
+        *profile,
+        "--locked",
+    )
+
+
 def _fresh_build_environment(out: Path) -> dict[str, str]:
     """Reserve an empty target inside this proof root before any Cargo command."""
     if out != out.resolve():
@@ -748,6 +766,7 @@ def _expected_commands(
     inherited_environment: dict[str, str] | None = None,
     build_profile: str | None = None,
     workspace_root: Path | None = None,
+    context_version: int = EXPLICIT_SEARCHD_EXECUTION_CONTEXT_VERSION,
 ) -> list[tuple[str, list[str], dict[str, str]]]:
     if build_profile not in (None, FRESH_BUILD_PROFILE):
         raise ValueError("unsupported proof build profile")
@@ -840,16 +859,7 @@ def _expected_commands(
         source,
         (
             "build-searchd",
-            _cargo(
-                wrapper,
-                "build",
-                "-p",
-                "quanta-index-searchd-runtime",
-                "--bin",
-                "quanta-index-searchd",
-                *(["--all-features", "--release"] if build_profile == FRESH_BUILD_PROFILE else []),
-                "--locked",
-            ),
+            _searchd_build_argv(wrapper, context_version),
             cargo_env,
         ),
         (
@@ -890,7 +900,7 @@ def _expected_commands(
 
 
 def validated_build_profile(context: object, execution_root: Path) -> str | None:
-    """Admit the historical context or the one fresh release build profile."""
+    """Admit archived and current contexts and return their build profile."""
     keys = {
         "schema_version",
         "rail",
@@ -906,6 +916,10 @@ def validated_build_profile(context: object, execution_root: Path) -> str | None
     version = context["schema_version"]
     if version == EXECUTION_CONTEXT_VERSION:
         if set(context) != keys or context.get("rail") not in {"contract", "sdk"}:
+            raise ValueError("invalid execution context shape")
+        return None
+    if version == EXPLICIT_SEARCHD_EXECUTION_CONTEXT_VERSION:
+        if set(context) != keys or context.get("rail") != "sdk":
             raise ValueError("invalid execution context shape")
         return None
     if (
@@ -1006,6 +1020,11 @@ def _produce(
     python = tools["python"]["path"]
     wrapper = tools["cargow"]["path"]
     environment = {"NEXTEST_EXPERIMENTAL_LIBTEST_JSON": "1"}
+    context_version = EXECUTION_CONTEXT_VERSION
+    if build_profile == FRESH_BUILD_PROFILE:
+        context_version = FRESH_EXECUTION_CONTEXT_VERSION
+    elif rail == "sdk":
+        context_version = EXPLICIT_SEARCHD_EXECUTION_CONTEXT_VERSION
     if rail == "contract":
         out.mkdir(parents=True, exist_ok=False)
         _run(
@@ -1104,16 +1123,7 @@ def _produce(
         _artifact(out, "source-closure.json", raw_evidence)
         _run(
             "build-searchd",
-            _cargo(
-                wrapper,
-                "build",
-                "-p",
-                "quanta-index-searchd-runtime",
-                "--bin",
-                "quanta-index-searchd",
-                *(["--all-features", "--release"] if build_profile == FRESH_BUILD_PROFILE else []),
-                "--locked",
-            ),
+            _searchd_build_argv(wrapper, context_version),
             out,
             commands,
             env_overrides=build_env,
@@ -1205,11 +1215,7 @@ def _produce(
         )
         _write_json(out / "sdk_results.json", summary)
     context = {
-        "schema_version": (
-            FRESH_EXECUTION_CONTEXT_VERSION
-            if build_profile == FRESH_BUILD_PROFILE
-            else EXECUTION_CONTEXT_VERSION
-        ),
+        "schema_version": context_version,
         "rail": rail,
         "revision": revision,
         "os": _os_identity(),
@@ -1450,6 +1456,7 @@ def validate(
         inherited_environment=commands[0]["inherited_environment"],
         build_profile=build_profile,
         workspace_root=workspace_root,
+        context_version=context["schema_version"],
     )
     expected_names = [name for name, _, _ in expected_commands]
     if (

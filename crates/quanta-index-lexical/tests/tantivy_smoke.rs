@@ -6,6 +6,7 @@
 //! `Result<(), Box<dyn Error>>` and propagates errors via `?` (no `.unwrap()`
 //! or `.expect()` per the workspace lint policy).
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 #![expect(
     clippy::panic_in_result_fn,

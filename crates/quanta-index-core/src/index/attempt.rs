@@ -6,6 +6,53 @@ use super::{
 use quanta_index_contract::index::AttemptRef;
 
 impl AttemptContext<'_> {
+    /// The caller's retained reference slots are separate from the backend's
+    /// component bound. This query performs no write or work charge.
+    pub fn put_batch_memory_bound(
+        &self,
+        shape: ports::ObjectInstallMemoryShape,
+    ) -> Result<Option<super::MemoryCreditLimits>, IndexError> {
+        shape.validate()?;
+        let Some(backend) = self.objects.install_batch_memory_bound(shape)? else {
+            return Ok(None);
+        };
+        let references = shape
+            .maximum_inputs
+            .checked_mul(std::mem::size_of::<ObjectRef>())
+            .ok_or(IndexError::ResourceLimited)?;
+        backend
+            .checked_add(super::MemoryCreditLimits {
+                temporary_data_bytes: 0,
+                retained_data_bytes: u64::try_from(references)
+                    .map_err(|_error| IndexError::ResourceLimited)?,
+                max_live_temporary_leases: 0,
+                max_live_retained_leases: 1,
+            })
+            .map(Some)
+    }
+
+    pub fn install_prepared_object_run(
+        &mut self,
+        prepared: Box<dyn super::object_install::PreparedObjectInstallRun + '_>,
+    ) -> Result<StagedObjectReferences, IndexError> {
+        self.budget.checkpoint()?;
+        let expected = prepared.references().len();
+        if expected == 0 || expected > ports::MAX_OBJECT_INSTALL_BATCH {
+            return Err(IndexError::ResourceLimited);
+        }
+        let sink = AttemptSink {
+            attempt: self.attempt,
+            custody: self.custody,
+        };
+        let installed = prepared.install(self.attempt, &sink, self.budget)?;
+        if installed.len() != expected {
+            return Err(IndexError::BackendViolation(
+                "prepared object run lost ordinal output".into(),
+            ));
+        }
+        Ok(installed)
+    }
+
     fn install_prepared_map(
         &mut self,
         prepared: Box<dyn ports::PreparedObjectMapBatch>,

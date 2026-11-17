@@ -29,6 +29,83 @@ def _load_module():
 MODULE = _load_module()
 
 
+def test_native_file_capture_profile_resolves_registered_owner() -> None:
+    registry = MODULE.load_registry(
+        REPO_ROOT / "tools/benchmark/registry.toml", repo_root=REPO_ROOT
+    )
+    assert registry["profiles"]["native-file-capture"]["families"] == ["native-file-sdk-capture"]
+    family = registry["families"]["native-file-sdk-capture"]
+    assert (family["payload"], family["gate_tier"], family["scorer"]) == (
+        "proof",
+        "contract",
+        "none",
+    )
+    assert family["native_schema"] == "native-file-sdk-capture:v1"
+
+
+def test_native_capture_plan_requires_owned_execution_inputs(capsys) -> None:
+    assert MODULE.plan_command(REPO_ROOT, "native-file-capture") == 0
+    step = json.loads(capsys.readouterr().out)["steps"][0]
+    assert step["runnable"] is False
+    assert "command" not in step
+    assert set(step["required_options"]) == {"--native-plan", "--evidence-root"}
+
+
+def test_native_capture_cannot_run_as_a_bare_python_module() -> None:
+    registry = MODULE.load_registry(REPO_ROOT / "tools/benchmark/registry.toml")
+    with pytest.raises(RuntimeError, match="owned capture"):
+        MODULE.producer_command(
+            REPO_ROOT,
+            registry["producers"]["native-file-sdk-capture"],
+            "native-file-sdk-capture",
+        )
+
+
+def test_native_file_capture_cli_forwards_plan_to_registered_capture(tmp_path, monkeypatch):
+    import native_file_capture
+
+    calls = []
+
+    def capture(*args):
+        calls.append(args)
+        return {"profile": "native-file-capture", "runs": []}
+
+    monkeypatch.setattr(native_file_capture, "capture", capture)
+    plan = tmp_path / "plan.json"
+    evidence = tmp_path / "evidence"
+    assert (
+        MODULE.main(
+            [
+                "run",
+                "native-file-capture",
+                "--evidence-root",
+                str(evidence),
+                "--native-plan",
+                str(plan),
+                "--producer-timeout",
+                "123",
+            ]
+        )
+        == 0
+    )
+    assert len(calls) == 1
+    assert calls[0][0] == REPO_ROOT
+    assert calls[0][1] == evidence
+    assert calls[0][3:] == (123, plan)
+
+
+def test_native_file_capture_cli_refuses_missing_plan_before_execution(
+    tmp_path, monkeypatch, capsys
+):
+    import native_file_capture
+
+    monkeypatch.setattr(
+        native_file_capture, "capture", lambda *_: pytest.fail("missing plan executed")
+    )
+    assert MODULE.main(["run", "native-file-capture", "--evidence-root", str(tmp_path)]) == 2
+    assert "--native-plan" in capsys.readouterr().err
+
+
 def install_control_plane(repo_root: Path) -> None:
     """A fixture checkout owns the registry and the Justfile its producers name."""
     target = repo_root / "tools" / "benchmark"

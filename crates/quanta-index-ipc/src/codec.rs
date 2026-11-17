@@ -144,7 +144,7 @@ pub fn encode_request<T: serde::Serialize>(envelope: &T) -> Result<Vec<u8>, IpcE
             return Ok(frame);
         }
     }
-    encode_multiframe_request(&body)
+    encode_multiframe_request(body)
 }
 
 /// Admit one single-frame client request before allocating its encoded body.
@@ -166,7 +166,38 @@ pub fn encode_request_single_frame_admitted<T: serde::Serialize>(
     .map(AdmittedClientRequestFrame)
 }
 
-fn classify_client_memory_error(bytes: u64, error: IndexError) -> IpcError {
+/// Use the existing fragment wire when an admitted request exceeds one frame.
+/// Encode the counted CBOR body into the admitted wire allocation, then insert
+/// fragment headers in place before any connection is opened.
+pub(crate) fn encode_request_multiframe_admitted_v1<T: serde::Serialize>(
+    envelope: &T,
+    budget: &RequestBudgetV1,
+    memory: &MemoryScope,
+) -> Result<AdmittedClientRequestFrame, IpcError> {
+    let bytes = count_frame_body(envelope, Some(budget))?;
+    let length = usize::try_from(bytes).map_err(|_| IpcError::Oversized(bytes))?;
+    let retain = |bytes| {
+        memory
+            .reserve(bytes, MemoryLifetime::Retained)
+            .map(Some)
+            .map_err(|error| classify_client_memory_error(bytes, error))
+    };
+    if length <= MAX_FRAME_BODY_BYTES {
+        return encode_counted_frame(envelope, Some(budget), bytes, retain)
+            .map(AdmittedClientRequestFrame);
+    }
+    if length > MAX_MULTIFRAME_REQUEST_BODY_BYTES {
+        return Err(IpcError::Oversized(bytes));
+    }
+    let layout = MultiframeLayout::new(length)?;
+    let wire_bytes = u64::try_from(layout.wire_bytes)
+        .map_err(|_| IpcError::Encode("fragmented request wire bytes exceed u64".into()))?;
+    let wire = allocate_frame(layout.wire_bytes, retain(wire_bytes)?, Some(budget))?;
+    let wire = encode_frame_body(envelope, wire, length, Some(budget))?;
+    frame_multiframe_request(wire, layout, Some(budget)).map(AdmittedClientRequestFrame)
+}
+
+pub(crate) fn classify_client_memory_error(bytes: u64, error: IndexError) -> IpcError {
     if error == IndexError::ResourceLimited {
         IpcError::FrameMemoryLimited { bytes }
     } else {
@@ -174,7 +205,7 @@ fn classify_client_memory_error(bytes: u64, error: IndexError) -> IpcError {
     }
 }
 
-/// A single encoded client request whose frame and charge share one lifetime.
+/// An encoded client request whose wire bytes and charge share one lifetime.
 #[derive(Debug)]
 pub struct AdmittedClientRequestFrame(ResponseFrame);
 
@@ -186,55 +217,97 @@ impl std::ops::Deref for AdmittedClientRequestFrame {
     }
 }
 
-fn encode_multiframe_request(body: &[u8]) -> Result<Vec<u8>, IpcError> {
-    let digest = sha2::Sha256::digest(body);
-    let mut output = Vec::with_capacity(body.len().saturating_add(256));
-    let first_capacity = MAX_FRAME_BODY_BYTES - MULTIFRAME_FIRST_METADATA_BYTES;
-    let first_len = first_capacity.min(body.len());
-    let first_frame_len = MULTIFRAME_FIRST_METADATA_BYTES
-        .checked_add(first_len)
-        .ok_or_else(|| IpcError::Encode("first fragment length overflowed usize".into()))?;
-    output.extend_from_slice(
-        &u32::try_from(first_frame_len)
-            .map_err(|_overflow| IpcError::Encode("first fragment length overflowed u32".into()))?
-            .to_le_bytes(),
-    );
-    output.extend_from_slice(MULTIFRAME_REQUEST_MAGIC);
-    output.extend_from_slice(
-        &u64::try_from(body.len())
-            .map_err(|_overflow| IpcError::Encode("request body length overflowed u64".into()))?
-            .to_le_bytes(),
-    );
-    output.extend_from_slice(&digest);
-    output.extend_from_slice(
-        body.get(..first_len)
-            .ok_or_else(|| IpcError::Encode("first fragment exceeds body".into()))?,
-    );
-    let mut offset = first_len;
-    let mut sequence = 1_u32;
-    let next_capacity = MAX_FRAME_BODY_BYTES - MULTIFRAME_NEXT_METADATA_BYTES;
-    while offset < body.len() {
-        let end = body.len().min(offset.saturating_add(next_capacity));
-        let fragment_len = MULTIFRAME_NEXT_METADATA_BYTES
-            .checked_add(end.saturating_sub(offset))
-            .ok_or_else(|| IpcError::Encode("fragment length overflowed usize".into()))?;
-        output.extend_from_slice(
-            &u32::try_from(fragment_len)
-                .map_err(|_overflow| IpcError::Encode("fragment length overflowed u32".into()))?
-                .to_le_bytes(),
-        );
-        output.extend_from_slice(MULTIFRAME_REQUEST_MAGIC);
-        output.extend_from_slice(&sequence.to_le_bytes());
-        output.extend_from_slice(
-            body.get(offset..end)
-                .ok_or_else(|| IpcError::Encode("fragment exceeds body".into()))?,
-        );
-        offset = end;
-        sequence = sequence
-            .checked_add(1)
-            .ok_or_else(|| IpcError::Encode("fragment sequence overflow".into()))?;
+const MULTIFRAME_FIRST_HEADER_BYTES: usize =
+    FRAME_HEADER_BYTES + MULTIFRAME_FIRST_METADATA_BYTES;
+const MULTIFRAME_NEXT_HEADER_BYTES: usize =
+    FRAME_HEADER_BYTES + MULTIFRAME_NEXT_METADATA_BYTES;
+const MULTIFRAME_NEXT_CAPACITY: usize = MAX_FRAME_BODY_BYTES - MULTIFRAME_NEXT_METADATA_BYTES;
+
+struct MultiframeLayout {
+    body_bytes: usize,
+    first_fragment_bytes: usize,
+    next_frames: usize,
+    wire_bytes: usize,
+}
+
+impl MultiframeLayout {
+    fn new(body_bytes: usize) -> Result<Self, IpcError> {
+        let first_fragment_bytes = body_bytes
+            .min(MAX_FRAME_BODY_BYTES - MULTIFRAME_FIRST_METADATA_BYTES);
+        let next_frames = (body_bytes - first_fragment_bytes).div_ceil(MULTIFRAME_NEXT_CAPACITY);
+        let wire_bytes = next_frames
+            .checked_mul(MULTIFRAME_NEXT_HEADER_BYTES)
+            .and_then(|bytes| bytes.checked_add(MULTIFRAME_FIRST_HEADER_BYTES))
+            .and_then(|bytes| bytes.checked_add(body_bytes))
+            .ok_or_else(|| IpcError::Encode("fragmented request wire length overflow".into()))?;
+        Ok(Self { body_bytes, first_fragment_bytes, next_frames, wire_bytes })
     }
-    Ok(output)
+}
+
+fn encode_multiframe_request(mut body: Vec<u8>) -> Result<Vec<u8>, IpcError> {
+    let layout = MultiframeLayout::new(body.len())?;
+    body.try_reserve_exact(layout.wire_bytes - layout.body_bytes)
+        .map_err(|_| IpcError::Encode("fragmented request framing allocation refused".into()))?;
+    let frame = ResponseFrame { bytes: body, _memory: None };
+    frame_multiframe_request(frame, layout, None).map(|frame| frame.bytes)
+}
+
+fn frame_multiframe_request(
+    mut frame: ResponseFrame,
+    layout: MultiframeLayout,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<ResponseFrame, IpcError> {
+    if frame.bytes.len() != layout.body_bytes || frame.bytes.capacity() < layout.wire_bytes {
+        return Err(IpcError::Encode("fragmented request lost counted backing".into()));
+    }
+    let mut digest = sha2::Sha256::new();
+    for chunk in frame.bytes.chunks(MAX_FRAME_BODY_BYTES) {
+        response_checkpoint(budget).map_err(IpcError::Io)?;
+        digest.update(chunk);
+    }
+    let digest = digest.finalize();
+    let wire = &mut frame.bytes;
+    wire.resize(layout.wire_bytes, 0);
+
+    // Move fragments from the end backwards so a header or moved fragment
+    // never overwrites the unread prefix of the original CBOR body.
+    for index in (0..layout.next_frames).rev() {
+        response_checkpoint(budget).map_err(IpcError::Io)?;
+        let body_start = layout.first_fragment_bytes + index * MULTIFRAME_NEXT_CAPACITY;
+        let body_end = layout.body_bytes.min(body_start + MULTIFRAME_NEXT_CAPACITY);
+        let header_start =
+            body_start + MULTIFRAME_FIRST_HEADER_BYTES + index * MULTIFRAME_NEXT_HEADER_BYTES;
+        let fragment_start = header_start + MULTIFRAME_NEXT_HEADER_BYTES;
+        wire.copy_within(body_start..body_end, fragment_start);
+
+        let fragment_len = u32::try_from(MULTIFRAME_NEXT_METADATA_BYTES + body_end - body_start)
+            .map_err(|_| IpcError::Encode("fragment body length exceeds u32".into()))?;
+        let sequence = u32::try_from(index + 1)
+            .map_err(|_| IpcError::Encode("fragment sequence exceeds u32".into()))?;
+        let header = &mut wire[header_start..fragment_start];
+        let (length, metadata) = header.split_at_mut(FRAME_HEADER_BYTES);
+        let (magic, sequence_bytes) = metadata.split_at_mut(MULTIFRAME_REQUEST_MAGIC.len());
+        length.copy_from_slice(&fragment_len.to_le_bytes());
+        magic.copy_from_slice(MULTIFRAME_REQUEST_MAGIC);
+        sequence_bytes.copy_from_slice(&sequence.to_le_bytes());
+    }
+
+    response_checkpoint(budget).map_err(IpcError::Io)?;
+    wire.copy_within(0..layout.first_fragment_bytes, MULTIFRAME_FIRST_HEADER_BYTES);
+    let first_len = u32::try_from(MULTIFRAME_FIRST_METADATA_BYTES + layout.first_fragment_bytes)
+        .map_err(|_| IpcError::Encode("first fragment body length exceeds u32".into()))?;
+    let body_len = u64::try_from(layout.body_bytes)
+        .map_err(|_| IpcError::Encode("fragmented request body length exceeds u64".into()))?;
+    let header = &mut wire[..MULTIFRAME_FIRST_HEADER_BYTES];
+    let (length, metadata) = header.split_at_mut(FRAME_HEADER_BYTES);
+    let (magic, metadata) = metadata.split_at_mut(MULTIFRAME_REQUEST_MAGIC.len());
+    let (body_length, digest_bytes) = metadata.split_at_mut(std::mem::size_of::<u64>());
+    length.copy_from_slice(&first_len.to_le_bytes());
+    magic.copy_from_slice(MULTIFRAME_REQUEST_MAGIC);
+    body_length.copy_from_slice(&body_len.to_le_bytes());
+    digest_bytes.copy_from_slice(&digest);
+    response_checkpoint(budget).map_err(IpcError::Io)?;
+    Ok(frame)
 }
 
 pub fn encode_response<T: serde::Serialize>(envelope: &T) -> Result<Vec<u8>, IpcError> {
@@ -345,11 +418,19 @@ fn encode_owned_frame<T: serde::Serialize>(
     budget: Option<&RequestBudgetV1>,
     admit: impl FnOnce(u64) -> Result<Option<MemoryLease>, IpcError>,
 ) -> Result<ResponseFrame, IpcError> {
+    let count = count_frame_body(value, budget)?;
+    encode_counted_frame(value, budget, count, admit)
+}
+
+fn count_frame_body<T: serde::Serialize>(
+    value: &T,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<u64, IpcError> {
     response_checkpoint(budget).map_err(IpcError::Io)?;
     let mut count = ResponseLength { bytes: 0, budget };
     ciborium::into_writer(value, &mut count).map_err(encode_error)?;
     response_checkpoint(budget).map_err(IpcError::Io)?;
-    encode_counted_frame(value, budget, count.bytes, admit)
+    Ok(count.bytes)
 }
 
 fn encode_counted_frame<T: serde::Serialize>(
@@ -375,21 +456,40 @@ fn encode_counted_frame<T: serde::Serialize>(
         .ok_or_else(|| IpcError::Encode("frame length overflow".into()))?;
     let capacity_bytes = u64::try_from(total)
         .map_err(|_error| IpcError::Encode("frame capacity overflow".into()))?;
-    let memory = admit(capacity_bytes)?;
+    let mut frame = allocate_frame(total, admit(capacity_bytes)?, budget)?;
+    let body_u32 = u32::try_from(body_len)
+        .map_err(|_error| IpcError::Encode("body length overflowed u32".into()))?;
+    frame.bytes.extend_from_slice(&body_u32.to_le_bytes());
+    encode_frame_body(value, frame, total, budget)
+}
+
+fn allocate_frame(
+    total: usize,
+    memory: Option<MemoryLease>,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<ResponseFrame, IpcError> {
+    response_checkpoint(budget).map_err(IpcError::Io)?;
+    let capacity_bytes = u64::try_from(total)
+        .map_err(|_error| IpcError::Encode("frame capacity overflow".into()))?;
     let mut frame = ResponseFrame {
         bytes: Vec::new(),
         _memory: memory,
     };
-    response_checkpoint(budget).map_err(IpcError::Io)?;
     frame
         .bytes
         .try_reserve_exact(total)
         .map_err(|_error| IpcError::FrameMemoryLimited {
             bytes: capacity_bytes,
         })?;
-    let body_u32 = u32::try_from(body_len)
-        .map_err(|_error| IpcError::Encode("body length overflowed u32".into()))?;
-    frame.bytes.extend_from_slice(&body_u32.to_le_bytes());
+    Ok(frame)
+}
+
+fn encode_frame_body<T: serde::Serialize>(
+    value: &T,
+    frame: ResponseFrame,
+    total: usize,
+    budget: Option<&RequestBudgetV1>,
+) -> Result<ResponseFrame, IpcError> {
     let mut writer = ResponseWriter {
         frame,
         maximum: total,
@@ -1174,6 +1274,32 @@ mod tests {
         assert!(matches!(result, Err(IpcError::FrameMemoryLimited { .. })));
         assert_eq!(value.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(active.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn admitted_client_multiframe_uses_only_retained_wire_backing() {
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let request = "x".repeat(MAX_FRAME_BODY_BYTES);
+        let budget =
+            quanta_index_core::RequestBudgetV1::for_duration(std::time::Duration::from_secs(30));
+        let (scope, active) = client_memory_scope(false);
+        let frame = super::encode_request_multiframe_admitted_v1(&request, &budget, &scope)
+            .expect("admitted request exceeds one frame");
+        assert!(frame[4..].starts_with(MULTIFRAME_REQUEST_MAGIC));
+        assert_eq!(active.load(SeqCst), u64::try_from(frame.len()).expect("wire length"));
+        let decoded: String = decode_request(&mut std::io::Cursor::new(&*frame))
+            .expect("existing receiver decodes admitted fragments");
+        assert_eq!(decoded, request);
+        drop(frame);
+        assert_eq!(active.load(SeqCst), 0);
+
+        let (denying_scope, denied_active) = client_memory_scope(true);
+        assert!(matches!(
+            super::encode_request_multiframe_admitted_v1(&request, &budget, &denying_scope),
+            Err(IpcError::FrameMemoryLimited { .. })
+        ));
+        assert_eq!(denied_active.load(SeqCst), 0);
     }
 
     #[test]

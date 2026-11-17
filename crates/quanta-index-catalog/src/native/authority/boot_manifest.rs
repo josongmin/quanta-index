@@ -11,7 +11,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::{
     SqliteCatalog, begin, exactly_one, fields_digest, int, object_key, operation_key,
-    read_operation, read_view_row, reclaim, require_object, sql, uint, workspace_key,
+    read_operation, read_view_row, reclaim, require_object, retention, sql, uint, workspace_key,
     write_operation,
 };
 
@@ -391,6 +391,26 @@ impl SqliteCatalog {
         key: OperationKey,
         budget: &mut WorkBudget,
     ) -> Result<NativeBootManifest, IndexError> {
+        self.select_native_boot_manifest_impl(key, budget, false)
+    }
+
+    /// Candidate selection requires the current Published view and quiescence,
+    /// including on retry. The checks and selection run in the same write
+    /// transaction before any custody mutation.
+    pub fn select_native_boot_manifest_if_current(
+        &self,
+        key: OperationKey,
+        budget: &mut WorkBudget,
+    ) -> Result<NativeBootManifest, IndexError> {
+        self.select_native_boot_manifest_impl(key, budget, true)
+    }
+
+    fn select_native_boot_manifest_impl(
+        &self,
+        key: OperationKey,
+        budget: &mut WorkBudget,
+        require_current: bool,
+    ) -> Result<NativeBootManifest, IndexError> {
         budget.checkpoint()?;
         let _scratch = budget.reserve_memory(SCRATCH_BYTES, MemoryLifetime::Temporary)?;
         let mut guard = self.lock_native_budget(budget)?;
@@ -425,6 +445,14 @@ impl SqliteCatalog {
                 publication: view,
             }
         };
+        if require_current {
+            let current = retention::charged_current_view(&tx, key.workspace, budget)?
+                .ok_or(IndexError::SnapshotUnavailable)?;
+            if current != selected.publication {
+                return Err(IndexError::Conflict);
+            }
+            super::read_only::check_quiescent_rows(&tx, key.workspace, current.identity, budget)?;
+        }
         protect(&tx, &selected, budget)?;
         if previous.as_ref() != Some(&selected) {
             requeue_previous(&tx, previous.as_ref(), budget)?;

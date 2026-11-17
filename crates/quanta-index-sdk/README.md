@@ -4,6 +4,14 @@ The public Rust entry point for producers and readers. `QuantaIndex` binds
 query, control and ingest responses to their requests. Use the query-only
 profile when the caller needs no mutation authority.
 
+The `QuantaIndex` generation APIs and examples below use the Legacy transport.
+Explicit Native calls use [NativeIndexClient](src/native_index.rs) for durable
+submission and [NativeUdsClient](src/native_uds.rs) for selected-view operations,
+including [retained reads](src/native_uds/read_session.rs). The UDS client is
+blocking; async callers supply a bounded blocking executor. Native/default
+caller migration and installed acceptance remain in the
+[cutover plan](../../docs/plans/nov-12-native-cutover/README.md).
+
 ## Query an active generation
 
 Start `quanta-index-searchd` against a current-format state root and publish

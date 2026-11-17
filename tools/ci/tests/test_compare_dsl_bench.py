@@ -23,6 +23,7 @@ Covers the Layer-3 DSL query-latency regression gate over `BenchArtifactV1`
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import shlex
@@ -76,6 +77,45 @@ def test_comparator_refuses_interrupted_baseline_pair(tmp_path: Path) -> None:
     marker.write_text("interrupted", encoding="utf-8")
     with pytest.raises(COMPARE.ArtifactRefused, match="admission is incomplete"):
         COMPARE.require_no_pending_admission(baseline)
+
+
+def test_native_diagnostic_cannot_be_admitted_as_a_complete_linux_baseline(tmp_path):
+    path = tmp_path / "native-warm.json"
+    payload = _artifact("warm", [_row("lexical.keyword.native", 1.0)])
+    payload["detail"] = {"qualification": "diagnostic"}
+    path.write_text(json.dumps(payload))
+    artifact = COMPARE.load_artifact(path, role="baseline candidate")
+    with pytest.raises(COMPARE.ArtifactRefused, match="diagnostic.*baseline"):
+        COMPARE.require_complete_baseline_candidate(artifact)
+
+
+@pytest.mark.parametrize("fault", [None, "source", "mode", "matrix", "qualification", "missing"])
+def test_native_matrix_assembly_binds_the_rust_artifact_to_collected_bytes(tmp_path, monkeypatch, fault):
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "tools/benchmark"))
+    matrix = tmp_path / "matrix.json"
+    matrix.write_bytes(b'{"mode":"warm","qualification":"diagnostic"}\n')
+    assembled = tmp_path / "artifact.json"
+    matrix_sha = "sha256:" + hashlib.sha256(matrix.read_bytes()).hexdigest()
+    payload = _artifact("cold" if fault == "mode" else "warm", [_row("lexical.keyword.native", 1.0)])
+    if fault == "source":
+        payload["provenance"]["git_head"] = OTHER_HEAD
+    payload["detail"] = {
+        "qualification": "authority" if fault == "qualification" else "diagnostic",
+        "native_matrix_sha256": OTHER_DIGEST if fault == "matrix" else matrix_sha,
+    }
+
+    def run(*argv):
+        assert argv == ("--assemble-native", "--input", str(matrix), "--out", str(assembled))
+        if fault != "missing":
+            assembled.write_text(json.dumps(payload))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    if fault is None:
+        COLD_MATRIX.assemble_native(run, matrix, assembled, "warm", HEAD)
+        assert json.loads(assembled.read_text()) == payload
+    else:
+        with pytest.raises(RuntimeError, match="Native DSL artifact"):
+            COLD_MATRIX.assemble_native(run, matrix, assembled, "warm", HEAD)
 
 
 COLD_MATRIX = _load_module("run_dsl_cold_matrix", COLD_MATRIX_PATH)
@@ -316,6 +356,256 @@ def test_cold_orchestrator_refuses_a_null_latency_without_an_early_stop(tmp_path
     )
     assert result.returncode == 2, result.stdout + result.stderr
     assert "null first_query_ms without early_stop_reason" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("mode", "fault"),
+    [
+        ("cold", None),
+        ("cold", "binary"),
+        ("cold", "checkout"),
+        ("cold", "artifact"),
+        ("cold", "source-drift"),
+        ("warm", None),
+        ("warm", "wrong-mode"),
+        ("warm", "producer-exit"),
+        ("warm", "cold-samples"),
+    ],
+)
+def test_orchestrator_pins_a_frozen_legacy_producer(
+    tmp_path: Path, mode: str, fault: str | None
+) -> None:
+    repo = tmp_path / "legacy"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost",
+         "commit", "--allow-empty", "-qm", "fixture"],
+        check=True,
+    )
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    artifact = _artifact(
+        "cold" if fault == "wrong-mode" else mode,
+        [_row("lexical.keyword.native", 1.0, samples=20)],
+        head=OTHER_HEAD if fault == "artifact" else head,
+    )
+    if mode == "cold":
+        body = FAKE_BIN.split('elif args[0] == "--assemble":')[0]
+        body += 'elif args[0] == "--assemble":\n    sys.stdin.read()\n'
+    else:
+        body = 'import sys\nargs = sys.argv[1:]\nassert len(args) == 2 and args[0] == "--out"\n'
+    write_artifact = (
+        'pathlib.Path(args[args.index("--out") + 1]).write_text('
+        + repr(json.dumps(artifact))
+        + ")\n"
+    )
+    if mode == "cold":
+        write_artifact = "    " + write_artifact
+    if fault == "source-drift":
+        write_artifact += '    pathlib.Path("changed-during-capture").touch()\n'
+    if fault == "producer-exit":
+        write_artifact += "sys.exit(17)\n"
+    fake = tmp_path / "frozen-producer"
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        "import os, pathlib\n"
+        'assert os.environ["QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS"] == "1"\n'
+        f"assert pathlib.Path.cwd().resolve() == pathlib.Path({str(repo.resolve())!r})\n"
+        + body
+        + write_artifact,
+        encoding="utf-8",
+    )
+    fake.chmod(0o700)
+    digest = "sha256:" + hashlib.sha256(fake.read_bytes()).hexdigest()
+    out = tmp_path / "output.json"
+    out.write_text("previous capture")
+    sample_args = ["--samples", "1"] if mode == "cold" or fault == "cold-samples" else []
+    result = subprocess.run(
+        [
+            sys.executable, str(COLD_MATRIX_PATH), *sample_args, "--out", str(out),
+            "--bin-cmd", shlex.quote(str(fake)), "--bin-cwd", str(repo),
+            "--bin-head", OTHER_HEAD if fault == "checkout" else head,
+            "--bin-sha256", OTHER_DIGEST if fault == "binary" else digest,
+            "--bin-mode", mode,
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if fault is None:
+        assert result.returncode == 0, result.stderr
+        assert json.loads(out.read_text()) == artifact
+    else:
+        assert result.returncode == 2, result.stderr
+        assert out.read_text() == "previous capture"
+        assert {
+            "binary": "binary SHA-256 differs",
+            "checkout": "HEAD changed during benchmark run",
+            "artifact": "different commit or mode",
+            "source-drift": "worktree is dirty",
+            "wrong-mode": "different commit or mode",
+            "producer-exit": "warm producer failed (exit 17)",
+            "cold-samples": "--samples is only valid for the cold matrix",
+        }[fault] in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("mode", "fault"),
+    [
+        ("warm", None),
+        ("cold", None),
+        ("warm", "runner_digest"),
+        ("cold", "daemon_digest"),
+        ("cold", "history_digest"),
+        ("warm", "foreign_history_daemon"),
+        ("warm", "foreign_report"),
+        ("cold", "omitted_scenario"),
+        ("cold", "omitted_roster_item"),
+        ("cold", "empty_roster"),
+        ("cold", "warm_sample"),
+        ("warm", "assembled"),
+        ("cold", "foreign_assembly"),
+    ],
+)
+def test_native_dsl_matrix_uses_pinned_binaries_and_complete_roster(tmp_path, mode, fault):
+    def digest(path):
+        return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+    assembly = fault in ("assembled", "foreign_assembly")
+    source_args = []
+    produced = None
+    if assembly:
+        repo = tmp_path / "source"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost",
+             "commit", "--allow-empty", "-qm", "fixture"], check=True,
+        )
+        head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        source_args = ["--native-artifact", "--bin-cwd", str(repo), "--bin-head", head]
+        produced = _artifact(mode, [_row("text.1", 1.0)], head=OTHER_HEAD if fault == "foreign_assembly" else head)
+        produced["detail"] = {"qualification": "diagnostic"}
+
+    daemon = tmp_path / "daemon"
+    daemon.write_text("pinned Native daemon")
+    history = tmp_path / "history.json"
+    history.write_text(json.dumps({
+        "history": "pinned Published fixture",
+        "daemon": str(daemon),
+        "daemon_sha256": "a" * 64 if fault == "foreign_history_daemon" else digest(daemon)[7:],
+        "config_sha256": "b" * 64,
+    }))
+    calls = tmp_path / "calls.jsonl"
+    runner = tmp_path / "dsl-runner"
+    text_ids = [f"text.{index}" for index in range(1, 8)]
+    history_ids = [f"history.{index}" for index in range(1, 8)]
+    runner.write_text(
+        f"#!{sys.executable}\n"
+        "import hashlib, json, pathlib, sys\n"
+        "args = sys.argv[1:]\n"
+        f"with pathlib.Path({str(calls)!r}).open('a') as log:\n"
+        "    print(json.dumps(args), file=log)\n"
+        f"mode, fault = {mode!r}, {fault!r}\n"
+        f"daemon_sha = {digest(daemon).removeprefix('sha256:')!r}\n"
+        f"text_ids, history_ids = {text_ids!r}, {history_ids!r}\n"
+        f"produced = {produced!r}\n"
+        'if args[0] == "--assemble-native":\n'
+        '    assert args[1] == "--input" and args[3] == "--out"\n'
+        '    produced["detail"]["native_matrix_sha256"] = "sha256:" + hashlib.sha256(pathlib.Path(args[2]).read_bytes()).hexdigest()\n'
+        '    pathlib.Path(args[4]).write_text(json.dumps(produced))\n'
+        '    sys.exit(0)\n'
+        'if args == ["--list-native"]:\n'
+        '    if fault == "omitted_roster_item":\n'
+        '        history_ids.pop()\n'
+        '    print(json.dumps({"text": text_ids, '
+        '"history": [] if fault == "empty_roster" else history_ids}))\n'
+        '    sys.exit(0)\n'
+        "flag, source, scenario = args\n"
+        'if fault == "omitted_scenario" and scenario == history_ids[0]:\n'
+        '    sys.exit(0)\n'
+        'warm = mode == "warm" or fault == "warm_sample"\n'
+        'report = {"scenario_id": scenario, "passes": 1, "samples_per_pass": 2 if warm else 1, '
+        '"prime_queries": 1 if warm else 0, "samples_ms": [2.0, 3.0] if warm else [2.0]}\n'
+        'if flag == "--native-text":\n'
+        '    report.update(schema="native-dsl-text-samples-v1", '
+        'daemon_sha256="a" * 64 if fault == "foreign_report" else daemon_sha)\n'
+        'else:\n'
+        '    assert flag == ("--native-history-reopen" if mode == "warm" else "--native-history")\n'
+        '    report["schema"] = "native-dsl-history-samples-v1"\n'
+        '    report = {"schema": f"native-dsl-history-process-{mode}-v1", '
+        '"daemon_sha256": daemon_sha, "config_sha256": "b" * 64, "history": report}\n'
+        'print(json.dumps(report))\n',
+        encoding="utf-8",
+    )
+    runner.chmod(0o700)
+    out = tmp_path / "native.json"
+    out.write_text("previous capture")
+    result = subprocess.run(
+        [
+            sys.executable, str(COLD_MATRIX_PATH), "--out", str(out), "--bin-mode", mode,
+            "--native-runner", str(runner),
+            "--bin-sha256", OTHER_DIGEST if fault == "runner_digest" else digest(runner),
+            "--native-daemon", str(daemon),
+            "--native-daemon-sha256", OTHER_DIGEST if fault == "daemon_digest" else digest(daemon),
+            "--native-history-fixture", str(history),
+            "--native-history-sha256", OTHER_DIGEST if fault == "history_digest" else digest(history),
+            *source_args,
+            *(["--samples", "2"] if mode == "cold" else []),
+        ],
+        cwd=REPO_ROOT, check=False, capture_output=True, text=True,
+    )
+    if fault not in (None, "assembled"):
+        assert result.returncode == 2, result.stderr
+        assert {
+            "runner_digest": "runner SHA-256 differs",
+            "daemon_digest": "daemon SHA-256 differs",
+            "history_digest": "History fixture SHA-256 differs",
+            "foreign_history_daemon": "History fixture targets a different daemon",
+            "foreign_report": "daemon SHA-256 differs",
+            "omitted_scenario": "missing SDK report for history.1",
+            "omitted_roster_item": "Native DSL History roster requires exactly 7 scenarios",
+            "empty_roster": "Native DSL History roster requires exactly 7 scenarios",
+            "warm_sample": "cold sample must contain one unprimed SDK query",
+            "foreign_assembly": "Native DSL artifact differs",
+        }[fault] in result.stderr
+        assert out.read_text() == "previous capture"
+        if fault.endswith("_digest") or fault == "foreign_history_daemon":
+            assert not calls.exists()
+        if fault in ("omitted_roster_item", "empty_roster"):
+            assert [json.loads(line) for line in calls.read_text().splitlines()] == [["--list-native"]]
+        return
+
+    assert result.returncode == 0, result.stderr
+    artifact = json.loads(out.read_text())
+    if assembly:
+        assert artifact["schema_version"] == 2
+        assert artifact["provenance"]["git_head"] == head
+        assert artifact["detail"]["qualification"] == "diagnostic"
+        logged = [json.loads(line) for line in calls.read_text().splitlines()]
+        assert logged[-1][0] == "--assemble-native"
+        assert len(logged) == 16
+        return
+    assert artifact["schema"] == "native-dsl-matrix-v1"
+    assert artifact["mode"] == mode
+    assert artifact["daemon_sha256"] == digest(daemon)
+    assert artifact["runner_sha256"] == digest(runner)
+    assert artifact["history_fixture_sha256"] == digest(history)
+    assert artifact["qualification"] == "diagnostic"
+    assert [row["scenario_id"] for row in artifact["scenarios"]] == text_ids + history_ids
+    expected_count = 1 if mode == "warm" else 2
+    assert [len(row["reports"]) for row in artifact["scenarios"]] == [expected_count] * 14
+    logged = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert logged.pop(0) == ["--list-native"]
+    history_flag = "--native-history-reopen" if mode == "warm" else "--native-history"
+    expected_calls = [
+        [flag, str(path), scenario]
+        for flag, path, ids in (("--native-text", daemon, text_ids), (history_flag, history, history_ids))
+        for scenario in ids
+        for _ in range(expected_count)
+    ]
+    assert logged == expected_calls
 
 
 # ---------------------------------------------------------------------------

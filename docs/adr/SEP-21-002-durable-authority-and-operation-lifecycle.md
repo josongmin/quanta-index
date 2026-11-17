@@ -12,6 +12,12 @@ converter.
 
 Gate owner: S21-00; blocks S21-02, S21-03, S21-04, S21-05 and S21-11
 
+Scope clarification (2026-11-12): the concrete RepoMap/generation candidate and
+separate activation protocol below belongs to the Legacy family. Native
+selected-view publication uses its existing Catalog/Kernel protocol under
+[NOV-12-001](NOV-12-001-native-query-and-semantic-engine.md). This clarification
+does not relax the shared durable-authority, atomicity, replay or custody rules.
+
 ## Durable ownership
 
 - SQLite `repomap_candidate_v1` and `repomap_activation_v1` are the only RepoMap lifecycle and visibility authority.

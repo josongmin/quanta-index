@@ -33,7 +33,10 @@ use quanta_index_core::{
     CoreError, L2UnitEmbeddingProvider, RequestBudgetV1, SemanticAdmissionEngine,
     SemanticEgressGrantV1, SemanticEgressPolicyV1, SemanticInputClass, TextEmbeddingProvider,
 };
-use quanta_index_embed::{OpenAiEmbeddingProvider, OpenAiProviderConfig, ProviderAttemptPool};
+use quanta_index_embed::{
+    LOCAL_CODE_DIMENSION, LOCAL_CODE_MODEL_ID, LOCAL_CODE_MODEL_REVISION, LocalCodeBindingV1,
+    OpenAiEmbeddingProvider, OpenAiProviderConfig, ProviderAttemptPool,
+};
 use quanta_index_kernel::{AdapterDescriptor, AdapterRegistry, QueryAdapterRegistry};
 use quanta_index_lexical::native::{
     Bm25Policy, NativeLiteralIndex, NativeLiteralReader, NativeTextIndex, NativeTextReader,
@@ -44,9 +47,10 @@ use quanta_index_repomap::native::{
     NativeFileMap, NativePathReader, NativeRepoMapRankPage, NativeRepoMapRankReader,
 };
 use quanta_index_semantic::native::{
-    EmbeddingProvider, EmbeddingRecipe, NativeSemantic, NativeSemanticReadConfig,
-    NativeSemanticReader, SearchResult, SemanticCandidate, SemanticReadRequest,
-    TextEmbeddingBridge, Utf8ChunkPolicy,
+    EmbeddingInputPolicy, EmbeddingProvider, EmbeddingRecipe, NativeSemantic,
+    NativeSemanticReadConfig, NativeSemanticReader, SearchResult, SemanticCandidate,
+    SemanticReadRequest, TextEmbeddingBridge, Utf8ChunkPolicy, VectorNormalization,
+    validate_semantic_recipe_instance,
 };
 use rustix::fs::{Mode, OFlags, open};
 use serde::Deserialize;
@@ -55,6 +59,9 @@ use signal_hook::{
     iterator::{Handle as SignalHandle, Signals},
 };
 
+use crate::deployment_selection::{
+    DeploymentSelectionErrorV1, DeploymentSelectionPublishedV1, LockedDeploymentSelectionV1,
+};
 use crate::native::{
     FixedPumpPolicy, NativeIndexService, NativePhysicalProfile, NativePumpConfig, NativePumpScope,
     NativeReclaimConfig, NativeResourcePlan, NativeRetentionConfig, NativeRetentionScope,
@@ -65,6 +72,12 @@ use crate::native_effort::NativeEffortConfiguration;
 
 #[path = "native_boot.rs"]
 mod boot;
+pub(crate) use boot::{FundedInstalledHistoryV1, RestoreForwardHistoryV1};
+#[path = "history_checkpoint_export.rs"]
+pub mod history_checkpoint_export;
+
+pub(crate) use boot::RestoreForwardSourceRefusalV1;
+
 #[path = "native_product_diagnostic.rs"]
 mod diagnostic;
 
@@ -80,6 +93,10 @@ struct NativeServeConfigV1 {
     version: u32,
     state_root: PathBuf,
     socket_path: PathBuf,
+    #[serde(default)]
+    legacy_repomap_selection: Option<LegacyRepoMapSelectionConfigV1>,
+    #[serde(default)]
+    socket_access: Option<String>,
     work_limits: WorkLimitsConfig,
     resources: ResourcesConfig,
     literal: DescriptorConfig,
@@ -103,6 +120,13 @@ struct NativeServeConfigV1 {
     overlay: Option<OverlayConfig>,
     #[serde(default)]
     stub_ast: Option<StubAstConfig>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyRepoMapSelectionConfigV1 {
+    path: PathBuf,
+    sha256: [u8; 32],
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -381,6 +405,47 @@ impl SemanticInputConfig {
         Ok(())
     }
 
+    fn recipe_from_model(
+        self,
+        model_id: &str,
+        model_revision: &str,
+        dimension: u32,
+        max_source_bytes: u64,
+    ) -> Result<EmbeddingRecipe> {
+        let (input, chunks) = match self {
+            Self::SourceUtf8 => (EmbeddingInputPolicy::SourceUtf8, None),
+            Self::FileLocalChunks { max_utf8_bytes, .. } => (
+                EmbeddingInputPolicy::SourceUtf8,
+                Some(Utf8ChunkPolicy { max_utf8_bytes }),
+            ),
+            Self::CertifiedProjectionChunks {
+                projection,
+                producer,
+                schema,
+                ..
+            } => (
+                EmbeddingInputPolicy::ProjectionChunks {
+                    projection: ProjectionId(projection),
+                    producer: ProducerId(producer),
+                    schema: SchemaId(schema),
+                },
+                None,
+            ),
+        };
+        Ok(EmbeddingRecipe::from_text_model(
+            model_id,
+            model_revision,
+            dimension,
+            // The live composition also wraps every Semantic provider with
+            // L2UnitEmbeddingProvider. Metadata alone never grants execution.
+            VectorNormalization::from(EmbeddingNormalization::L2Unit),
+            input,
+            chunks,
+            self.max_vectors(),
+            max_source_bytes,
+        )?)
+    }
+
     fn bridge<P: TextEmbeddingProvider>(self, provider: P) -> Result<TextEmbeddingBridge<P>> {
         match self {
             Self::SourceUtf8 => Ok(TextEmbeddingBridge::new(provider)?),
@@ -434,9 +499,6 @@ struct SemanticReadPolicyConfig {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum SemanticProviderConfig {
-    // Local weights need a startup residency grant on the same native ledger
-    // before the decoder allocates them; only the outbound provider can be
-    // composed by this process entry until that owner exists.
     OpenAi {
         model: String,
         model_revision: String,
@@ -450,6 +512,16 @@ enum SemanticProviderConfig {
         timeout_ms: u64,
         max_response_bytes: u64,
         concurrency: usize,
+        egress: SemanticEgressConfig,
+    },
+    LocalCode {
+        origin: String,
+        manifest_path: PathBuf,
+        manifest_sha256: String,
+        max_estimated_tokens_per_request: usize,
+        max_retries: u32,
+        timeout_ms: u64,
+        max_response_bytes: u64,
         egress: SemanticEgressConfig,
     },
 }
@@ -554,6 +626,40 @@ struct ValidatedSemanticConfig {
     input: SemanticInputConfig,
     read: NativeSemanticReadConfig,
     provider_escaping_bytes: u64,
+}
+
+impl ValidatedSemanticConfig {
+    fn boot_recipe(&self) -> Result<EmbeddingRecipe> {
+        let (model_id, model_revision, dimension) = match &self.provider {
+            SemanticProviderConfig::OpenAi {
+                model,
+                model_revision,
+                dimension,
+                ..
+            } => {
+                let metadata = OpenAiProviderConfig::new(
+                    String::new(),
+                    model.clone(),
+                    model_revision.clone(),
+                    *dimension,
+                );
+                let (model_id, model_revision, dimension, _raw_normalization) =
+                    metadata.model_metadata()?;
+                (model_id, model_revision.to_string(), dimension)
+            }
+            SemanticProviderConfig::LocalCode { .. } => (
+                LOCAL_CODE_MODEL_ID.to_string(),
+                LOCAL_CODE_MODEL_REVISION.to_string(),
+                LOCAL_CODE_DIMENSION,
+            ),
+        };
+        self.input.recipe_from_model(
+            &model_id,
+            &model_revision,
+            u32::try_from(dimension)?,
+            self.max_source_bytes,
+        )
+    }
 }
 
 /// Conservative logical startup admission for a chunk owner, including the
@@ -783,6 +889,108 @@ impl SemanticConfig {
                 }
                 (policy, reader_escape.max(owner_escape))
             }
+            SemanticProviderConfig::LocalCode {
+                origin,
+                manifest_path,
+                manifest_sha256,
+                max_estimated_tokens_per_request,
+                timeout_ms,
+                max_response_bytes,
+                egress,
+                ..
+            } => {
+                LocalCodeBindingV1::validate_config_metadata(
+                    origin,
+                    manifest_path,
+                    manifest_sha256,
+                )?;
+                if scopes
+                    .iter()
+                    .any(|scope| scope.workspace.tenant != egress.tenant_id)
+                {
+                    bail!("native Semantic egress tenant differs from authorized scopes");
+                }
+                if *max_estimated_tokens_per_request == 0
+                    || *timeout_ms == 0
+                    || *max_response_bytes == 0
+                {
+                    bail!("invalid native Local Code provider configuration");
+                }
+                self.input.validate(LOCAL_CODE_DIMENSION)?;
+                if *max_response_bytes > read.need.memory_bytes
+                    || *max_response_bytes > resources.execution.enrichment.memory_bytes
+                {
+                    bail!(
+                        "native Local Code response bound exceeds reader or Enrichment memory reservation"
+                    );
+                }
+                let envelope = OpenAiProviderConfig::new(
+                    String::new(),
+                    quanta_index_embed::LOCAL_CODE_WIRE_MODEL.to_string(),
+                    LOCAL_CODE_MODEL_REVISION.to_string(),
+                    LOCAL_CODE_DIMENSION,
+                )
+                .with_base_url(origin.clone())
+                .with_max_response_bytes(*max_response_bytes);
+                let (reader_peak, reader_escape) = envelope.single_input_memory_envelope(
+                    u64::try_from(read.max_query_bytes).map_err(|_error| {
+                        anyhow!("native query bound exceeds provider envelope")
+                    })?,
+                )?;
+                let (owner_peak, owner_escape) = match self.input {
+                    SemanticInputConfig::SourceUtf8 => {
+                        let (peak, escape) =
+                            envelope.single_input_memory_envelope(self.max_source_bytes)?;
+                        quanta_index_semantic::native::chunk_owner_memory_envelope(
+                            u32::try_from(LOCAL_CODE_DIMENSION)?,
+                            1,
+                            self.max_source_bytes,
+                            peak,
+                            escape,
+                        )?
+                    }
+                    SemanticInputConfig::FileLocalChunks { .. }
+                    | SemanticInputConfig::CertifiedProjectionChunks { .. } => {
+                        chunk_owner_memory_envelope(
+                            self.input,
+                            &envelope,
+                            self.max_source_bytes,
+                            LOCAL_CODE_DIMENSION,
+                        )?
+                    }
+                };
+                if reader_peak > read.need.memory_bytes
+                    || owner_peak > resources.execution.enrichment.memory_bytes
+                {
+                    bail!(
+                        "native Local Code maximum input envelope exceeds reader or Enrichment memory reservation"
+                    );
+                }
+                if egress.endpoint != format!("{origin}/v1/embeddings") {
+                    bail!("native Local Code egress endpoint must match provider URL");
+                }
+                let policy = SemanticEgressPolicyV1::External(SemanticEgressGrantV1 {
+                    tenant_id: tenant_id_hex(egress.tenant_id)?,
+                    provider_id: "local_code".into(),
+                    endpoint: egress.endpoint.clone(),
+                    region: egress.region.clone(),
+                    retention: egress.retention.clone(),
+                    model_id: LOCAL_CODE_MODEL_ID.into(),
+                    model_revision: LOCAL_CODE_MODEL_REVISION.into(),
+                    profile: egress.profile.clone(),
+                    source_content_consent: egress.source_content_consent,
+                });
+                let _query =
+                    SemanticAdmissionEngine::admit(SemanticInputClass::QueryText, &policy)?;
+                let _source =
+                    SemanticAdmissionEngine::admit(SemanticInputClass::SourceContent, &policy)?;
+                if resources.execution.interactive.provider_units == 0
+                    || resources.execution.enrichment.provider_units == 0
+                {
+                    bail!("native Local Code owner execution requires one funded attempt slot");
+                }
+                (policy, reader_escape.max(owner_escape))
+            }
         };
         Ok(ValidatedSemanticConfig {
             scopes: Arc::new(scopes),
@@ -960,6 +1168,8 @@ impl ReadSessionsConfig {
 struct ValidatedConfig {
     state_root: PathBuf,
     socket_path: PathBuf,
+    legacy_repomap_selection: Option<LegacyRepoMapSelectionConfigV1>,
+    socket_access: quanta_index_ipc::SocketAccessPolicy,
     limits: WorkLimits,
     resources: NativeServiceResources,
     literal: AdapterDescriptor,
@@ -990,6 +1200,21 @@ impl NativeServeConfigV1 {
         if self.state_root == self.socket_path {
             bail!("native socket cannot be the state root");
         }
+        if self
+            .legacy_repomap_selection
+            .as_ref()
+            .is_some_and(|selection| !selection.path.is_absolute())
+        {
+            bail!("legacy RepoMap selection path must be absolute");
+        }
+        let socket_access = match self.socket_access.as_deref() {
+            Some(raw) => quanta_index_searchd::app::socket_access::parse_socket_access(
+                "native socket_access",
+                raw,
+                &quanta_index_searchd::app::socket_access::SystemPrincipals,
+            )?,
+            None => quanta_index_ipc::SocketAccessPolicy::Private,
+        };
         let limits = self.work_limits.validate()?;
         let resources = self.resources.validate()?;
         let owned_work = self.owned_work.map(OwnedWorkConfig::validate).transpose()?;
@@ -1087,6 +1312,8 @@ impl NativeServeConfigV1 {
         Ok(ValidatedConfig {
             state_root: self.state_root,
             socket_path: self.socket_path,
+            legacy_repomap_selection: self.legacy_repomap_selection,
+            socket_access,
             limits,
             resources,
             literal,
@@ -1356,14 +1583,6 @@ fn register_semantic_provider<P: TextEmbeddingProvider + 'static>(
     {
         bail!("native Semantic owner and reader recipes differ");
     }
-    let ann_runtime = Arc::new(
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .max_blocking_threads(2)
-            .enable_all()
-            .build()
-            .context("native Semantic ANN runtime")?,
-    );
     builders.register_owner(
         config.descriptor,
         ScopedSemanticOwner {
@@ -1375,8 +1594,7 @@ fn register_semantic_provider<P: TextEmbeddingProvider + 'static>(
         config.descriptor,
         config.read.need,
         ScopedSemanticReader {
-            inner: NativeSemanticReader::new(reader_bridge, recipe, config.read)?
-                .with_ann(ann_runtime),
+            inner: NativeSemanticReader::new(reader_bridge, recipe, config.read)?.with_ann(),
             scopes: Arc::clone(&config.scopes),
         },
     )?;
@@ -1389,31 +1607,56 @@ fn register_semantic(
     config: &ValidatedSemanticConfig,
     service_provider_units: u64,
 ) -> Result<Arc<ProviderAttemptPool>> {
-    let SemanticProviderConfig::OpenAi {
-        model,
-        model_revision,
-        dimension,
-        api_key_env,
-        base_url,
-        max_batch,
-        max_estimated_tokens_per_request,
-        max_retries,
-        timeout_ms,
-        max_response_bytes,
-        concurrency,
-        ..
-    } = &config.provider;
-    let api_key = std::env::var(api_key_env)
-        .map_err(|_missing| anyhow!("native OpenAI API key environment variable is missing"))?;
-    let provider_config =
-        OpenAiProviderConfig::new(api_key, model.clone(), model_revision.clone(), *dimension)
-            .with_base_url(base_url.clone())
-            .with_max_batch(*max_batch)
-            .with_max_estimated_tokens_per_request(*max_estimated_tokens_per_request)
-            .with_max_retries(*max_retries)
-            .with_timeout(Duration::from_millis(*timeout_ms))
-            .with_max_response_bytes(*max_response_bytes)
-            .with_concurrency(*concurrency);
+    let provider_config = match &config.provider {
+        SemanticProviderConfig::OpenAi {
+            model,
+            model_revision,
+            dimension,
+            api_key_env,
+            base_url,
+            max_batch,
+            max_estimated_tokens_per_request,
+            max_retries,
+            timeout_ms,
+            max_response_bytes,
+            concurrency,
+            ..
+        } => {
+            let api_key = std::env::var(api_key_env).map_err(|_missing| {
+                anyhow!("native OpenAI API key environment variable is missing")
+            })?;
+            OpenAiProviderConfig::new(api_key, model.clone(), model_revision.clone(), *dimension)
+                .with_base_url(base_url.clone())
+                .with_max_batch(*max_batch)
+                .with_max_estimated_tokens_per_request(*max_estimated_tokens_per_request)
+                .with_max_retries(*max_retries)
+                .with_timeout(Duration::from_millis(*timeout_ms))
+                .with_max_response_bytes(*max_response_bytes)
+                .with_concurrency(*concurrency)
+        }
+        SemanticProviderConfig::LocalCode {
+            origin,
+            manifest_path,
+            manifest_sha256,
+            max_estimated_tokens_per_request,
+            max_retries,
+            timeout_ms,
+            max_response_bytes,
+            ..
+        } => {
+            let binding = LocalCodeBindingV1::new(
+                origin.clone(),
+                manifest_path.clone(),
+                manifest_sha256.clone(),
+            )?;
+            binding.verify_health(Duration::from_millis(*timeout_ms))?;
+            OpenAiProviderConfig::new_local_code(&binding)
+                .with_max_estimated_tokens_per_request(*max_estimated_tokens_per_request)
+                .with_max_retries(*max_retries)
+                .with_timeout(Duration::from_millis(*timeout_ms))
+                .with_max_response_bytes(*max_response_bytes)
+        }
+    };
     // Owner and query calls share this physical-attempt registry. Its bound
     // follows the service ledger, independently of each call's funded fanout.
     let attempt_capacity = usize::try_from(service_provider_units)
@@ -1438,13 +1681,54 @@ struct NativeComposition {
     provider_signals: Option<Arc<crate::native_provider_signals::NativeProviderPoolSignals>>,
 }
 
+fn register_base_builders(config: &ValidatedConfig, builders: &mut AdapterRegistry) -> Result<()> {
+    if let Some(graph) = &config.graph {
+        builders.register_projection(graph.descriptor, NativeGraph)?;
+    }
+    builders.register(
+        config.literal,
+        NativeLiteralIndex,
+        |delta| Ok(delta.clone()),
+    )?;
+    builders.register(config.file_map, NativeFileMap, |delta| Ok(delta.clone()))?;
+    builders.register(
+        config.text,
+        NativeTextIndex::new(config.text_recipe),
+        |delta| Ok(delta.clone()),
+    )?;
+    builders.register_history(
+        AdapterDescriptor {
+            kind: quanta_index_search_plane::native_history::NATIVE_HISTORY_KIND_V1,
+            schema: quanta_index_search_plane::native_history::NATIVE_HISTORY_SCHEMA_V1,
+            format: quanta_index_search_plane::native_history::NATIVE_HISTORY_FORMAT_V1,
+        },
+        quanta_index_search_plane::native_history::NativeHistoryBuildV1::new(ResourceNeed {
+            provider_units: 0,
+            ..config.resources.execution.core
+        })?,
+    )?;
+    Ok(())
+}
+
+fn compose_boot_registry(config: &ValidatedConfig) -> Result<AdapterRegistry> {
+    let mut builders = AdapterRegistry::new();
+    register_base_builders(config, &mut builders)?;
+    if let Some(semantic) = &config.semantic {
+        let recipe = semantic.boot_recipe()?;
+        builders.register_owner_validator(semantic.descriptor, move |instance| {
+            validate_semantic_recipe_instance(&recipe, instance)
+        })?;
+    }
+    Ok(builders)
+}
+
 fn compose(config: &ValidatedConfig) -> Result<NativeComposition> {
     let mut builders = AdapterRegistry::new();
+    register_base_builders(config, &mut builders)?;
     let graph = config
         .graph
         .as_ref()
         .map(|graph| -> Result<_> {
-            builders.register_projection(graph.descriptor, NativeGraph)?;
             let mut readers = QueryAdapterRegistry::new();
             readers.register(
                 graph.descriptor,
@@ -1469,17 +1753,6 @@ fn compose(config: &ValidatedConfig) -> Result<NativeComposition> {
             Ok(readers)
         })
         .transpose()?;
-    builders.register(
-        config.literal,
-        NativeLiteralIndex,
-        |delta| Ok(delta.clone()),
-    )?;
-    builders.register(config.file_map, NativeFileMap, |delta| Ok(delta.clone()))?;
-    builders.register(
-        config.text,
-        NativeTextIndex::new(config.text_recipe),
-        |delta| Ok(delta.clone()),
-    )?;
     let mut text = QueryAdapterRegistry::<PlannedTextRead, TextReadResult>::new();
     text.register(
         config.text,
@@ -1550,6 +1823,7 @@ fn bind(
     composition: NativeComposition,
     authority: Option<crate::native::NativeBootAuthority>,
     request: &RequestBudgetV1,
+    candidate: bool,
 ) -> Result<NativeIndexService> {
     let NativeComposition {
         graph,
@@ -1573,14 +1847,28 @@ fn bind(
             request,
         )?,
     };
+    if candidate {
+        boot::require_unselected_candidate(&authority, config, request)?;
+    }
+    // BOOT authenticates immutable requests and profiles across the candidate
+    // publication chain. Automatic retention could retire those objects before
+    // the launcher observes the handoff or a retry reaches the same operation.
+    let retention = if candidate {
+        None
+    } else {
+        config.retention.clone()
+    };
     let service = NativeIndexService::bind_with_boot_authority(
         authority,
-        &config.socket_path,
+        crate::native::NativeSocketBinding {
+            path: &config.socket_path,
+            access: config.socket_access.clone(),
+        },
         config.limits,
         capabilities,
         &config.resources,
         config.maintenance,
-        config.retention.clone(),
+        retention,
     )?;
     if let Some(read_sessions) = config.read_sessions {
         service.configure_read_sessions(read_sessions)?;
@@ -1675,6 +1963,118 @@ pub fn run(config_path: &Path) -> Result<u8> {
     })
 }
 
+/// Validated configuration is data, not Source or publication permission.
+/// Its Control reservation is retained by `with_native_recovery_control_v1`.
+pub(crate) struct NativeRecoveryContextV1<'a> {
+    config_path: &'a Path,
+    config_digest: Digest,
+    config: ValidatedConfig,
+    registry: AdapterRegistry,
+}
+
+pub(crate) fn with_native_recovery_control_v1<T>(
+    config_path: &Path,
+    config_digest: Digest,
+    request: RequestBudgetV1,
+    coordinate: impl FnOnce(
+        &NativeRecoveryContextV1<'_>,
+        &mut quanta_index_core::index::WorkBudget,
+    ) -> Result<T>,
+) -> Result<T> {
+    let config = read_config_checked(config_path, Some(config_digest))?;
+    let registry = compose_boot_registry(&config)?;
+    let context = NativeRecoveryContextV1 {
+        config_path,
+        config_digest,
+        config,
+        registry,
+    };
+    boot::with_admitted_control_budget(&context.config, request, false, |budget, cache| {
+        anyhow::ensure!(cache.is_none(), "recovery reserved a Catalog writer cache");
+        coordinate(&context, budget)
+    })
+}
+
+impl NativeRecoveryContextV1<'_> {
+    pub(crate) fn publish_restore_forward_v1(
+        &self,
+        command: &NativeStateCommandV1,
+        evidence: &quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceV1,
+        joined: &quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1<'_>,
+        locked: &mut LockedDeploymentSelectionV1,
+        budget: &mut quanta_index_core::index::WorkBudget,
+        custody_checkpoint: &mut dyn FnMut(&mut quanta_index_core::index::WorkBudget) -> Result<()>,
+        require_history_fence: &mut dyn FnMut(&mut quanta_index_core::index::WorkBudget) -> Result<()>,
+        history: boot::RestoreForwardHistoryV1<'_>,
+    ) -> std::result::Result<DeploymentSelectionPublishedV1, DeploymentSelectionErrorV1> {
+        let validate = || -> Result<()> {
+            command.validate()?;
+            anyhow::ensure!(
+                command.mode == NativeCommandModeV1::Verify
+                    && command.config_path == self.config_path
+                    && command.config_digest == Some(self.config_digest)
+                    && locked.candidate_v1().native_command_v1() == Some(command)
+                    && locked.candidate_v1().state_root_v1() == self.config.state_root,
+                "restore-forward requires the exact locked Native candidate and Control configuration"
+            );
+            Ok(())
+        };
+        validate().map_err(DeploymentSelectionErrorV1::RefusedBeforeRename)?;
+        boot::publish_restore_forward_under_locked_selection_v1(
+            command,
+            &self.config,
+            &self.registry,
+            evidence,
+            joined,
+            locked,
+            budget,
+            custody_checkpoint,
+            require_history_fence,
+            history,
+        )
+    }
+
+    /// Only the peer-bound receiver may call this while retaining producer and
+    /// SDK custody. A locked selection alone grants no recovery permission.
+    pub(crate) fn publish_rollback_v1(
+        &self,
+        command: &NativeStateCommandV1,
+        evidence: &quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceV1,
+        joined: &quanta_index_contract::native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1<'_>,
+        locked: &mut LockedDeploymentSelectionV1,
+        budget: &mut quanta_index_core::index::WorkBudget,
+        custody_checkpoint: &mut dyn FnMut(&mut quanta_index_core::index::WorkBudget) -> Result<()>,
+    ) -> std::result::Result<DeploymentSelectionPublishedV1, DeploymentSelectionErrorV1> {
+        let validate = || -> Result<()> {
+            command.validate()?;
+            anyhow::ensure!(
+                command.mode == NativeCommandModeV1::Verify
+                    && command.config_path == self.config_path
+                    && command.config_digest == Some(self.config_digest),
+                "locked Native configuration differs from recovery Control binding"
+            );
+            anyhow::ensure!(
+                locked.current_v1().native_command_v1() == Some(command)
+                    && locked.candidate_v1().native_command_v1().is_none()
+                    && locked.current_v1().state_root_v1() == self.config.state_root,
+                "rollback requires the current Native root and saved Legacy candidate"
+            );
+            Ok(())
+        };
+        validate().map_err(DeploymentSelectionErrorV1::RefusedBeforeRename)?;
+        boot::publish_rollback_under_locked_selection_v1(
+            command,
+            &self.config,
+            &self.registry,
+            evidence,
+            joined,
+            locked,
+            budget,
+            custody_checkpoint,
+        )
+    }
+}
+
 /// Execute one typed Native selection, offline verification or service command.
 /// Selected service startup retains the verification lease into the listener.
 pub fn run_command(command: &NativeStateCommandV1) -> Result<u8> {
@@ -1705,8 +2105,19 @@ fn run_command_inner(
     let boot = diagnostic::begin(context, quanta_index_core::DiagnosticStageV1::RuntimeBoot);
     command.validate()?;
     let config = read_config_checked(&command.config_path, command.config_digest)?;
+    let candidate = command.mode == NativeCommandModeV1::ServeCandidate;
+    if candidate && config.socket_access != quanta_index_ipc::SocketAccessPolicy::Private {
+        bail!("Native candidate service requires a private socket");
+    }
     let _inherited_umask = quanta_index_searchd::app::harden_umask();
-    let composition = compose(&config)?;
+    let serving = matches!(
+        command.mode,
+        NativeCommandModeV1::Serve | NativeCommandModeV1::ServeCandidate
+    );
+    let offline_registry = (!serving)
+        .then(|| compose_boot_registry(&config))
+        .transpose()?;
+    let composition = serving.then(|| compose(&config)).transpose()?;
     let mut signals = Signals::new([SIGINT, SIGTERM])?;
     let signal_handle = signals.handle();
     let (tx, rx) = mpsc::channel();
@@ -1731,18 +2142,14 @@ fn run_command_inner(
         handle: signal_handle,
         join: Some(signal_thread),
     };
-    if command.mode != NativeCommandModeV1::Serve {
-        let authority = boot::execute(
-            command,
-            &config,
-            &composition.capabilities.builders,
-            request,
-        )?;
+    if let Some(registry) = offline_registry {
+        let authority = boot::execute(command, &config, &registry, request)?;
         if authority.is_some() {
             bail!("offline Native command returned a service authority");
         }
         return Ok(0);
     }
+    let composition = composition.ok_or_else(|| anyhow!("Native Serve composition is absent"))?;
     let authority = if command.identity.is_some() {
         Some(
             boot::execute(
@@ -1756,7 +2163,7 @@ fn run_command_inner(
     } else {
         None
     };
-    let service = bind(&config, composition, authority, &request)?;
+    let service = bind(&config, composition, authority, &request, candidate)?;
     let service = match context {
         Some(context) => service.with_diagnostic_context(context),
         None => service,
@@ -1838,6 +2245,70 @@ mod tests {
     };
     use quanta_index_core::index::Digest;
     use quanta_index_embed::OpenAiProviderConfig;
+
+    #[test]
+    fn native_local_code_boot_recipe_uses_pinned_identity_without_manifest_io()
+    -> Result<(), Box<dyn Error>> {
+        for input in [
+            SemanticInputConfig::SourceUtf8,
+            SemanticInputConfig::FileLocalChunks {
+                max_utf8_bytes: 128,
+                max_vectors: 4,
+            },
+        ] {
+            let provider: super::SemanticProviderConfig = serde_json::from_value(
+                serde_json::json!({
+                    "kind": "local_code",
+                    "origin": "http://127.0.0.1:12345",
+                    "manifest_path": "/intentionally/absent/manifest.json",
+                    "manifest_sha256": "0".repeat(64),
+                    "max_estimated_tokens_per_request": 1024,
+                    "max_retries": 0,
+                    "timeout_ms": 1000,
+                    "max_response_bytes": 65_536,
+                    "egress": {
+                        "tenant_id": vec![1_u8; 16], "endpoint": "http://127.0.0.1:12345/v1/embeddings",
+                        "region": "test", "retention": "test", "profile": "test",
+                        "source_content_consent": true
+                    }
+                }),
+            )?;
+            let config = super::ValidatedSemanticConfig {
+                scopes: std::sync::Arc::new(std::collections::BTreeSet::new()),
+                descriptor: super::DescriptorConfig {
+                    kind: [1; 16],
+                    schema: [2; 16],
+                    format: [3; 16],
+                }
+                .descriptor(),
+                provider,
+                egress_policy: quanta_index_core::SemanticEgressPolicyV1::Denied,
+                max_source_bytes: 4096,
+                input,
+                read: quanta_index_semantic::native::NativeSemanticReadConfig {
+                    page_size: 1,
+                    max_owners: 1,
+                    max_query_bytes: 1,
+                    need: super::ResourceNeed {
+                        cpu_units: 1,
+                        io_bytes: 1,
+                        memory_bytes: 1,
+                        provider_units: 1,
+                    },
+                },
+                provider_escaping_bytes: 0,
+            };
+            let recipe = config.boot_recipe()?;
+            let expected = input.recipe_from_model(
+                quanta_index_embed::LOCAL_CODE_MODEL_ID,
+                quanta_index_embed::LOCAL_CODE_MODEL_REVISION,
+                u32::try_from(quanta_index_embed::LOCAL_CODE_DIMENSION)?,
+                4096,
+            )?;
+            assert_eq!(recipe, expected);
+        }
+        Ok(())
+    }
 
     #[test]
     fn native_stub_ast_config_requires_explicit_unique_grammar_build_policy()

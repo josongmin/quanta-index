@@ -3,14 +3,165 @@
 
 use super::wire::{
     Directory, MAX_PAGES, MAX_ROWS, MIN_ROWS, PAGE_ROWS, PageFence, PostingRow, directory_payload,
-    page_payload,
+    directory_payload_bytes, page_payload, page_payload_bytes,
 };
 use crate::native::text::entry_map::EntryMap;
 use crate::native::text_memory::PreparedRows;
 use quanta_index_core::index::{
-    AttemptContext, IndexError, MemoryLease, MemoryLifetime, ObjectRef, StagedObjectBatch,
-    WorkBudget, WorkUsage, ports::MAX_OBJECT_INSTALL_BATCH,
+    AttemptContext, AttemptRef, IndexError, MemoryCreditLimits, MemoryLease, MemoryLifetime,
+    ObjectRef, RegisteredObject, StagedObjectBatch, WorkBudget, WorkUsage,
+    ports::{MAX_OBJECT_INSTALL_BATCH, ObjectInstallMemoryShape},
 };
+use sha2::{Digest as _, Sha256};
+
+/// Disposable DATA about fully confirmed cold roots. Catalog child admission
+/// remains authoritative when the caller installs the final term map.
+pub(in crate::native::text) struct ConfirmedColdRoots {
+    attempt: AttemptRef,
+    entries: Vec<Option<([u8; 32], ObjectRef)>>,
+    pending: Vec<Option<[u8; 32]>>,
+    // Entry backing must drop before its Original grant.
+    _memory: MemoryLease,
+}
+
+impl ConfirmedColdRoots {
+    pub(in crate::native::text) fn try_new(
+        attempt: AttemptRef,
+        budget: &WorkBudget,
+    ) -> Result<Option<Self>, IndexError> {
+        let bytes = MAX_OBJECT_INSTALL_BATCH
+            .checked_mul(std::mem::size_of::<Option<([u8; 32], ObjectRef)>>())
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
+                        .checked_mul(std::mem::size_of::<Option<[u8; 32]>>())?,
+                )
+            })
+            .ok_or(IndexError::ResourceLimited)?;
+        let Some(memory) = budget.try_reserve_memory_for_optimization(
+            u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+            MemoryLifetime::Temporary,
+        )?
+        else {
+            return Ok(None);
+        };
+        let mut entries = Vec::new();
+        if entries.try_reserve_exact(MAX_OBJECT_INSTALL_BATCH).is_err()
+            || entries.capacity() > MAX_OBJECT_INSTALL_BATCH
+        {
+            return Ok(None);
+        }
+        entries.resize(MAX_OBJECT_INSTALL_BATCH, None);
+        let mut pending = Vec::new();
+        if pending
+            .try_reserve_exact(quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS)
+            .is_err()
+            || pending.capacity() > quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
+        {
+            return Ok(None);
+        }
+        pending.resize(quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS, None);
+        Ok(Some(Self {
+            attempt,
+            entries,
+            pending,
+            _memory: memory,
+        }))
+    }
+
+    fn slot(key: [u8; 32]) -> usize {
+        usize::from(u16::from_be_bytes([key[0], key[1]])) % MAX_OBJECT_INSTALL_BATCH
+    }
+
+    pub(in crate::native::text) fn get(
+        &self,
+        key: [u8; 32],
+        attempt: AttemptRef,
+        budget: &WorkBudget,
+    ) -> Result<Option<ObjectRef>, IndexError> {
+        budget.checkpoint()?;
+        if attempt != self.attempt {
+            return Err(IndexError::FenceLost);
+        }
+        Ok(self.entries[Self::slot(key)]
+            .filter(|(candidate, _)| *candidate == key)
+            .map(|(_, root)| root))
+    }
+
+    /// The caller must have validated all output ordinals and references from
+    /// `install` before recording a new root. Failed prepares drop this memo.
+    pub(in crate::native::text) fn remember(
+        &mut self,
+        key: [u8; 32],
+        root: ObjectRef,
+        attempt: AttemptRef,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        if self
+            .get(key, attempt, budget)?
+            .is_some_and(|prior| prior != root)
+        {
+            return Err(IndexError::BackendViolation(
+                "cold posting identity changed".into(),
+            ));
+        }
+        self.entries[Self::slot(key)] = Some((key, root));
+        Ok(())
+    }
+
+    /// Called only after the caller authenticates the complete source page.
+    pub(in crate::native::text) fn reuse(
+        &mut self,
+        drafts: &mut [Option<Draft>],
+        outputs: &mut [EntryMap],
+        context: &mut AttemptContext<'_>,
+    ) -> Result<(), IndexError> {
+        if drafts.len() != outputs.len() || drafts.len() > self.pending.len() {
+            return Err(IndexError::BackendViolation(
+                "cold memo page shape differs".into(),
+            ));
+        }
+        self.pending.fill(None);
+        for (slot, (draft, output)) in drafts.iter_mut().zip(outputs).enumerate() {
+            let key = draft
+                .as_ref()
+                .map(|draft| draft.cold_key(context.budget))
+                .transpose()?;
+            if let Some(key) = key
+                && let Some(root) = self.get(key, context.attempt, context.budget)?
+            {
+                *output = EntryMap::PostingPages(root);
+                *draft = None;
+            }
+            self.pending[slot] = key;
+        }
+        Ok(())
+    }
+
+    pub(in crate::native::text) fn remember_installed(
+        &mut self,
+        outputs: &[EntryMap],
+        context: &AttemptContext<'_>,
+    ) -> Result<(), IndexError> {
+        if outputs.len() > self.pending.len() {
+            return Err(IndexError::BackendViolation(
+                "cold memo outputs exceed page".into(),
+            ));
+        }
+        for (slot, output) in outputs.iter().enumerate() {
+            if let Some(key) = self.pending[slot] {
+                let EntryMap::PostingPages(root) = output else {
+                    return Err(IndexError::BackendViolation(
+                        "cold posting receipt lacks directory".into(),
+                    ));
+                };
+                self.remember(key, *root, context.attempt, context.budget)?;
+            }
+        }
+        self.pending.fill(None);
+        Ok(())
+    }
+}
 
 struct PagePlan {
     start: usize,
@@ -32,6 +183,40 @@ pub(in crate::native::text) struct Draft {
 }
 
 impl Draft {
+    /// Only the fixed cold packing is a function of these rows. Warm drafts
+    /// retain historical fences and cannot use this memo key.
+    pub(in crate::native::text) fn cold_key(
+        &self,
+        budget: &mut WorkBudget,
+    ) -> Result<[u8; 32], IndexError> {
+        if !self.finished || self.local || self.prior.is_some() {
+            return Err(IndexError::BackendViolation(
+                "posting memo requires finished cold draft".into(),
+            ));
+        }
+        const DOMAIN: &[u8] = b"quanta-index/cold-dense-rows/v1\0";
+        let bytes = self
+            .rows
+            .len()
+            .checked_mul(64)
+            .and_then(|bytes| bytes.checked_add(DOMAIN.len() + 16))
+            .ok_or(IndexError::ResourceLimited)?;
+        budget.charge(WorkUsage {
+            bytes: u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        let mut hash = Sha256::new();
+        hash.update(DOMAIN);
+        hash.update((PAGE_ROWS as u64).to_be_bytes());
+        hash.update((self.rows.len() as u64).to_be_bytes());
+        for row in self.rows.as_slice() {
+            budget.checkpoint()?;
+            hash.update(row.owner);
+            hash.update(row.witness);
+        }
+        Ok(hash.finalize().into())
+    }
+
     pub(in crate::native::text) fn new(
         prior: Option<Directory>,
         count: u64,
@@ -483,6 +668,36 @@ pub(in crate::native::text) fn install(
         }
     }
 
+    // This common backing is funded by the original scope in both paths and
+    // stays live while the optional payload/backend credit is considered.
+    let batch = StagedObjectBatch::for_install_packet(MAX_OBJECT_INSTALL_BATCH, context.budget)?;
+    if let Some(limits) = coalesced_credit(drafts, context)? {
+        let attempt = context.attempt;
+        let objects = context.objects;
+        let maps = context.maps;
+        let custody = context.custody;
+        let scratch = context.scratch;
+        if let Some(mut credit) = context.budget.try_scoped_memory_credit(limits)? {
+            let mut scoped = AttemptContext {
+                attempt,
+                objects,
+                maps,
+                custody,
+                scratch,
+                budget: &mut credit,
+            };
+            return install_coalesced(drafts, outputs, batch, &mut scoped);
+        }
+    }
+    install_separate(drafts, outputs, batch, context)
+}
+
+fn install_separate(
+    drafts: &mut [Option<Draft>],
+    outputs: &mut [EntryMap],
+    mut batch: StagedObjectBatch,
+    context: &mut AttemptContext<'_>,
+) -> Result<(), IndexError> {
     let pending_bytes = MAX_OBJECT_INSTALL_BATCH
         .checked_mul(std::mem::size_of::<PendingLeaf>())
         .ok_or(IndexError::ResourceLimited)?;
@@ -494,8 +709,6 @@ pub(in crate::native::text) fn install(
     pending
         .try_reserve_exact(MAX_OBJECT_INSTALL_BATCH)
         .map_err(|_error| IndexError::ResourceLimited)?;
-    let mut batch =
-        StagedObjectBatch::for_install_packet(MAX_OBJECT_INSTALL_BATCH, context.budget)?;
     for draft_slot in 0..drafts.len() {
         let Some(page_count) = drafts
             .get(draft_slot)
@@ -656,6 +869,214 @@ pub(in crate::native::text) fn install(
             *outputs.get_mut(slot).ok_or(IndexError::ResourceLimited)? =
                 EntryMap::PostingPages(*actual);
         }
+    }
+    Ok(())
+}
+
+fn backing_bytes<T>(count: usize) -> Result<u64, IndexError> {
+    let bytes = count
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or(IndexError::ResourceLimited)?;
+    u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)
+}
+
+/// Cold windows have no confirmed prior leaves to authenticate. Warm/local
+/// drafts retain the original shared-leaf path until separately qualified.
+fn coalesced_credit(
+    drafts: &[Option<Draft>],
+    context: &AttemptContext<'_>,
+) -> Result<Option<MemoryCreditLimits>, IndexError> {
+    let mut shape = ObjectInstallMemoryShape {
+        maximum_inputs: 0,
+        maximum_total_payload_bytes: 0,
+        maximum_payload_bytes: 0,
+        maximum_total_children: 0,
+    };
+    let mut directories = 0_usize;
+    let mut max_pages = 0_usize;
+    for draft in drafts.iter().flatten() {
+        context.budget.checkpoint()?;
+        if draft.prior.is_some() || draft.plans.iter().any(|plan| plan.reference.is_some()) {
+            return Ok(None);
+        }
+        directories = directories
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        max_pages = max_pages.max(draft.plans.len());
+        shape.maximum_total_children = shape
+            .maximum_total_children
+            .checked_add(draft.plans.len())
+            .ok_or(IndexError::ResourceLimited)?;
+        for plan in &draft.plans {
+            context.budget.checkpoint()?;
+            let rows = plan
+                .end
+                .checked_sub(plan.start)
+                .ok_or(IndexError::ResourceLimited)?;
+            let bytes = page_payload_bytes(rows)?;
+            shape.maximum_total_payload_bytes = shape
+                .maximum_total_payload_bytes
+                .checked_add(bytes)
+                .ok_or(IndexError::ResourceLimited)?;
+            shape.maximum_payload_bytes = shape.maximum_payload_bytes.max(bytes);
+        }
+        let bytes = directory_payload_bytes(draft.plans.len())?;
+        shape.maximum_total_payload_bytes = shape
+            .maximum_total_payload_bytes
+            .checked_add(bytes)
+            .ok_or(IndexError::ResourceLimited)?;
+        shape.maximum_payload_bytes = shape.maximum_payload_bytes.max(bytes);
+    }
+    if directories == 0 {
+        return Ok(None);
+    }
+    let leaves = shape.maximum_total_children;
+    shape.maximum_inputs = leaves
+        .checked_add(directories)
+        .ok_or(IndexError::ResourceLimited)?;
+    if shape.maximum_inputs > MAX_OBJECT_INSTALL_BATCH {
+        return Ok(None);
+    }
+    // The backend owns physical wire limits and all of its preparation bounds.
+    let backend = match context.put_batch_memory_bound(shape) {
+        Ok(Some(bound)) => bound,
+        Ok(None) | Err(IndexError::ResourceLimited) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let temporary_data_bytes = u64::try_from(shape.maximum_total_payload_bytes)
+        .map_err(|_error| IndexError::ResourceLimited)?
+        .checked_add(backing_bytes::<ObjectRef>(leaves)?)
+        .and_then(|bytes| bytes.checked_add(backing_bytes::<PendingLeaf>(leaves).ok()?))
+        .and_then(|bytes| bytes.checked_add(backing_bytes::<(usize, ObjectRef)>(directories).ok()?))
+        .and_then(|bytes| bytes.checked_add(backing_bytes::<PageFence>(max_pages).ok()?))
+        .and_then(|bytes| bytes.checked_add(backing_bytes::<ObjectRef>(max_pages).ok()?))
+        .ok_or(IndexError::ResourceLimited)?;
+    let live_leases = shape
+        .maximum_inputs
+        .checked_add(directories)
+        .and_then(|count| count.checked_add(4))
+        .ok_or(IndexError::ResourceLimited)?;
+    backend
+        .checked_add(MemoryCreditLimits {
+            temporary_data_bytes,
+            retained_data_bytes: RegisteredObject::allocation_bytes(max_pages)?,
+            max_live_temporary_leases: u32::try_from(live_leases)
+                .map_err(|_error| IndexError::ResourceLimited)?,
+            max_live_retained_leases: 1,
+        })
+        .map(Some)
+}
+
+fn install_coalesced(
+    drafts: &mut [Option<Draft>],
+    outputs: &mut [EntryMap],
+    mut batch: StagedObjectBatch,
+    context: &mut AttemptContext<'_>,
+) -> Result<(), IndexError> {
+    let leaves = drafts.iter().flatten().map(|draft| draft.plans.len()).sum();
+    let directories = drafts.iter().flatten().count();
+    let max_pages = drafts
+        .iter()
+        .flatten()
+        .map(|draft| draft.plans.len())
+        .max()
+        .ok_or(IndexError::ResourceLimited)?;
+    let mut pending = PreparedRows::<PendingLeaf>::with_capacity(leaves, context.budget)?;
+    let mut slots = PreparedRows::<(usize, ObjectRef)>::with_capacity(directories, context.budget)?;
+    let mut fences = PreparedRows::<PageFence>::with_capacity(max_pages, context.budget)?;
+    let mut children = PreparedRows::<ObjectRef>::with_capacity(max_pages, context.budget)?;
+    // Retain predicted refs as DATA. No draft is marked confirmed until every
+    // ordinal receipt, including the last parent, has been checked.
+    for (draft_slot, draft) in drafts.iter_mut().enumerate() {
+        let Some(draft) = draft else { continue };
+        for (page_slot, plan) in draft.plans.iter_mut().enumerate() {
+            let rows = draft
+                .rows
+                .as_slice()
+                .get(plan.start..plan.end)
+                .ok_or(IndexError::ResourceLimited)?;
+            let (payload, fence) = page_payload(rows, context.budget)?;
+            if plan.fence.is_some_and(|planned| planned != fence) {
+                return Err(IndexError::BackendViolation(
+                    "posting planned page fence changed".into(),
+                ));
+            }
+            let expected = context
+                .objects
+                .identify(&payload.bytes, &[], context.budget)?
+                .reference;
+            plan.fence = Some(fence);
+            batch.push(payload, &[], context.budget)?;
+            pending.push(
+                PendingLeaf {
+                    draft: draft_slot,
+                    page: page_slot,
+                    expected,
+                },
+                context.budget,
+            )?;
+        }
+    }
+    let mut first = 0_usize;
+    for (slot, draft) in drafts.iter().enumerate() {
+        let Some(draft) = draft else { continue };
+        fences.clear();
+        children.clear();
+        let end = first
+            .checked_add(draft.plans.len())
+            .ok_or(IndexError::ResourceLimited)?;
+        let predictions = pending
+            .as_slice()
+            .get(first..end)
+            .ok_or(IndexError::ResourceLimited)?;
+        for (plan, prediction) in draft.plans.iter().zip(predictions) {
+            fences.push(
+                plan.fence.ok_or_else(|| {
+                    IndexError::BackendViolation("posting page fence missing".into())
+                })?,
+                context.budget,
+            )?;
+            children.push(prediction.expected, context.budget)?;
+        }
+        let payload = directory_payload(fences.as_slice(), context.budget)?;
+        let expected = context
+            .objects
+            .identify(&payload.bytes, children.as_slice(), context.budget)?
+            .reference;
+        batch.push(payload, children.as_slice(), context.budget)?;
+        slots.push((slot, expected), context.budget)?;
+        first = end;
+    }
+    let installed = context.put_batch(batch.inputs())?;
+    if installed.len() != leaves + directories {
+        return Err(IndexError::BackendViolation(
+            "posting combined batch lost ordinal output".into(),
+        ));
+    }
+    for (actual, expected) in installed.iter().zip(
+        pending
+            .as_slice()
+            .iter()
+            .map(|leaf| leaf.expected)
+            .chain(slots.as_slice().iter().map(|(_, reference)| *reference)),
+    ) {
+        if *actual != expected {
+            return Err(IndexError::BackendViolation(
+                "posting combined identity changed during installation".into(),
+            ));
+        }
+    }
+    for leaf in pending.as_slice() {
+        let plan = drafts
+            .get_mut(leaf.draft)
+            .and_then(Option::as_mut)
+            .and_then(|draft| draft.plans.get_mut(leaf.page))
+            .ok_or_else(|| IndexError::BackendViolation("posting leaf slot missing".into()))?;
+        plan.reference = Some(leaf.expected);
+    }
+    for &(slot, reference) in slots.as_slice() {
+        *outputs.get_mut(slot).ok_or(IndexError::ResourceLimited)? =
+            EntryMap::PostingPages(reference);
     }
     Ok(())
 }

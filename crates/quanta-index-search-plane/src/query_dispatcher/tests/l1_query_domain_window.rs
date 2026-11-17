@@ -205,13 +205,13 @@ fn contradictory_languages_do_not_hide_tokenless_phrase() -> TestResult {
 }
 
 #[test]
-fn l1_real_adapter_admits_primitives_before_language_empty_or_generation_open() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let absent_root = dir.path().join("unopened-lexical");
+fn l1_lexical_planner_admits_primitives_before_language_empty_or_generation_open() -> TestResult {
+    let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
     let dispatcher = dispatcher_with_obs(
-        Arc::new(quanta_index_lexical::LexicalAdapter::with_state_root(
-            absent_root.clone(),
-        )),
+        Arc::new(RecordingLexicalOpener {
+            state: Arc::clone(&state),
+            results: Vec::new(),
+        }),
         Arc::new(RejectSemanticOpener),
         Arc::new(NoopQueryObsSink),
     )?;
@@ -273,8 +273,13 @@ fn l1_real_adapter_admits_primitives_before_language_empty_or_generation_open() 
             return Err("logical empty acquired execution facts".into());
         }
     }
-    if absent_root.exists() {
-        return Err("pure validation materialized adapter state".into());
+    let calls = state.lock().map_err(|error| error.to_string())?;
+    let invoked = !calls.opened_pins.is_empty()
+        || !calls.symbol_top_ks.is_empty()
+        || !calls.search_top_ks.is_empty();
+    drop(calls);
+    if invoked {
+        return Err("pure validation reached generation open or search".into());
     }
     Ok(())
 }

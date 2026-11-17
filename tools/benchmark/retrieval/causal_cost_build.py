@@ -51,7 +51,7 @@ NATIVE_BUILD_ARGS = (
     "quanta-index-searchd-runtime",
     "--bin",
     "quanta-index-searchd",
-    "--all-features",
+    "--no-default-features",
     "--locked",
     "--offline",
     "--profile",

@@ -38,14 +38,15 @@ crate quanta_index_core
 │   ├── mod auxiliary: pub
 │   │   ├── trait AuxiliaryAuthorityCatalogPort: pub
 │   │   ├── enum AuxiliaryDomainV1: pub
-│   │   ├── struct AuxiliaryGenerationKeyV1: pub
 │   │   ├── struct AuxiliaryMutationBatchV1: pub
 │   │   ├── struct AuxiliaryMutationReceiptV1: pub
 │   │   ├── enum AuxiliaryRowFamilyV1: pub
 │   │   ├── struct AuxiliaryRowKeyV1: pub
 │   │   ├── enum AuxiliaryRowMutationV1: pub
 │   │   ├── struct AuxiliaryRowV1: pub
-│   │   └── struct AuxiliaryTrackRowV1: pub
+│   │   ├── struct AuxiliaryTrackRowV1: pub
+│   │   ├── enum HistoryReadbackRowV1: pub
+│   │   └── struct HistorySnapshotDigestV1: pub
 │   ├── mod generation: pub
 │   │   ├── struct DirectSealedGenerationByteSession: pub(self)
 │   │   ├── struct FinishedReclaims: pub
@@ -73,7 +74,6 @@ crate quanta_index_core
 │   │   ├── trait TrackPhysicalByteSession: pub
 │   │   ├── enum TreeCommitmentMismatchV1: pub
 │   │   ├── struct TreeCommitmentV1: pub
-│   │   ├── struct TreeEntryV1: pub(self)
 │   │   ├── struct TreeScrubStepV1: pub
 │   │   └── enum TreeScrubVerdictV1: pub
 │   ├── mod hybrid: pub
@@ -92,6 +92,14 @@ crate quanta_index_core
 │   │   │   ├── struct KeyFuseAccumulator: pub(self)
 │   │   │   └── struct LaneRows: pub(self)
 │   │   └── mod trace_file_rank: pub(self)
+│   │       ├── struct BorrowedFileHit: pub(self)
+│   │       ├── struct BorrowedFileWitness: pub(self)
+│   │       ├── enum FileLane: pub(self)
+│   │       ├── type FileLaneWitnessV1: pub
+│   │       ├── struct FileWitnesses: pub(self)
+│   │       ├── struct GenericFileHitV1: pub
+│   │       ├── struct GenericFileRankPolicyV1: pub
+│   │       ├── struct GenericFileRankedPageV1: pub
 │   │       ├── struct TraceFileEvidenceV1: pub
 │   │       ├── struct TraceFileHitV1: pub
 │   │       ├── struct TraceFileKeyV1: pub
@@ -380,6 +388,27 @@ crate quanta_index_core
 │   │   └── enum UnknownReason: pub
 │   ├── mod error: pub(self)
 │   │   └── enum IndexError: pub
+│   ├── mod existing_file: pub
+│   │   ├── struct ExistingFileBytesV1: pub
+│   │   ├── struct ExistingFileIdentityV1: pub
+│   │   ├── enum ExistingFileReadFailureV1: pub
+│   │   ├── struct Identity: pub(self)
+│   │   ├── enum ReadPolicy: pub(self)
+│   │   └── mod hash: pub(self)
+│   │       └── struct HashReader: pub(self)
+│   ├── mod existing_tree: pub(crate)
+│   │   ├── struct Admitted: pub(self)
+│   │   │   ├── type Error: pub(self)
+│   │   │   └── type Grant: pub(self)
+│   │   ├── trait Control: pub(self)
+│   │   ├── trait DirectoryControl: pub(self)
+│   │   ├── struct Grants: pub(self)
+│   │   ├── struct Observed: pub(self)
+│   │   ├── struct Ordinary: pub(self)
+│   │   │   ├── type Error: pub(self)
+│   │   │   └── type Grant: pub(self)
+│   │   ├── struct ReadOnlyTreeLayoutV1: pub
+│   │   └── struct TreeEntryV1: pub(crate)
 │   ├── mod lifetime: pub(self)
 │   │   ├── trait ReadSessionLease: pub
 │   │   ├── struct ReadSessionRecoveryPage: pub
@@ -396,11 +425,15 @@ crate quanta_index_core
 │   │   └── enum MapValue: pub
 │   ├── mod memory: pub(self)
 │   │   ├── struct Lease: pub(self)
+│   │   ├── struct MemoryCredit: pub
+│   │   ├── trait MemoryCreditClosePort: pub
+│   │   ├── struct MemoryCreditLimits: pub
 │   │   ├── struct MemoryLease: pub
 │   │   ├── trait MemoryLeaseOwner: pub
 │   │   ├── enum MemoryLifetime: pub
 │   │   ├── struct MemoryScope: pub
-│   │   └── trait MemoryScopePort: pub
+│   │   ├── trait MemoryScopePort: pub
+│   │   └── struct ScopedMemoryBudget: pub
 │   ├── mod metadata: pub(self)
 │   ├── mod mutations: pub(self)
 │   │   ├── enum MutationPosition: pub(self)
@@ -416,6 +449,8 @@ crate quanta_index_core
 │   │   └── mod source_change_diff: pub(self)
 │   │       ├── struct DiffRows: pub(self)
 │   │       └── struct SourceDiffPages: pub(super)
+│   ├── mod object_install: pub
+│   │   └── trait PreparedObjectInstallRun: pub
 │   ├── mod owned_work: pub(self)
 │   │   ├── enum OwnedReadyOutcome: pub
 │   │   ├── struct OwnedWorkAssignment: pub
@@ -437,9 +472,12 @@ crate quanta_index_core
 │   │   ├── trait CatalogReadPort: pub
 │   │   ├── trait CatalogReclaimPort: pub
 │   │   ├── trait CatalogTerminalWorkRetentionPort: pub
+│   │   ├── enum ExistingTreeEntryKindV1: pub
+│   │   ├── trait ExistingTreeMetadataIoPortV1: pub
 │   │   ├── trait ImmutableObjectPort: pub
 │   │   ├── trait IndexBuildPort: pub
 │   │   ├── type IndexFuture: pub
+│   │   ├── trait IndexHistoryBuildPort: pub
 │   │   ├── trait IndexOwnerBuildPort: pub
 │   │   ├── trait IndexProjectionBuildPort: pub
 │   │   ├── trait InputStagingPort: pub
@@ -450,11 +488,13 @@ crate quanta_index_core
 │   │   ├── trait MapDiffVisitor: pub
 │   │   ├── trait MapEditCursor: pub
 │   │   ├── trait ObjectCustodyPort: pub
+│   │   ├── struct ObjectInstallMemoryShape: pub
 │   │   ├── trait ObjectMapBatchPort: pub
 │   │   ├── trait ObjectReadFile: pub
 │   │   ├── trait ObjectReadIoPort: pub
 │   │   ├── trait ObjectWriteIoPort: pub
 │   │   ├── trait ObjectWriteSink: pub
+│   │   ├── struct ObjectWriteSyncDirectories: pub
 │   │   ├── trait ObjectWriteTicket: pub
 │   │   ├── enum OperationInspectAccess: pub
 │   │   ├── trait OperationJournalPort: pub
@@ -462,6 +502,8 @@ crate quanta_index_core
 │   │   ├── trait PersistentMapPort: pub
 │   │   ├── trait PreparedObjectMapBatch: pub
 │   │   ├── trait PreparedOwnerMapScope: pub
+│   │   ├── enum RootPackingMode: pub
+│   │   ├── struct RootPackingPlan: pub
 │   │   ├── trait SourceAuthorityPort: pub
 │   │   ├── struct TerminalCustodyCandidate: pub
 │   │   ├── struct TerminalCustodyPage: pub
@@ -476,10 +518,13 @@ crate quanta_index_core
 │   │   ├── enum QueryCoverage: pub
 │   │   ├── struct QueryOutcome: pub
 │   │   └── struct QueryReadContext: pub
+│   ├── mod read_attempt: pub(self)
+│   │   └── trait CatalogReadAttempt: pub
 │   ├── mod read_settlement: pub(self)
 │   │   ├── trait CatalogReadSettlementPort: pub
 │   │   ├── struct NativeReadReleaseObservation: pub
 │   │   ├── struct NativeReadSettlement: pub
+│   │   ├── enum NativeReadSettlementBlocker: pub
 │   │   ├── struct NativeReadSettlementScope: pub
 │   │   └── enum NativeReadSettlementStatus: pub
 │   ├── mod reclaim: pub(self)
@@ -510,7 +555,7 @@ crate quanta_index_core
 │   │   ├── struct ObjectBatchInput: pub
 │   │   ├── enum ObjectInstallScope: pub
 │   │   ├── struct OrdinalMapEdit: pub
-│   │   ├── struct OrdinalMapEditData: pub
+│   │   ├── struct OrdinalMapEditData: pub(self)
 │   │   ├── struct PlanContext: pub
 │   │   ├── enum PlanDecision: pub
 │   │   ├── struct PreparedPublication: pub
@@ -608,7 +653,8 @@ crate quanta_index_core
 │   ├── struct State: pub(self)
 │   ├── enum TicketKind: pub(self)
 │   ├── enum TicketPhase: pub(self)
-│   └── struct TicketState: pub(self)
+│   ├── struct TicketState: pub(self)
+│   └── mod memory_bounds: pub(self)
 ├── mod publication_validation: pub(crate)
 │   ├── struct PublicationBodyBinding: pub(self)
 │   ├── struct PublicationResourceState: pub(self)
@@ -635,6 +681,7 @@ crate quanta_index_core
 │   ├── trait RequestStageDiagnosticPortV1: pub
 │   └── struct SemanticWorkLedgerV1: pub(self)
 ├── mod source_upload: pub(crate)
+│   ├── enum SourcePublicationUploadCleanupDisposition: pub
 │   ├── trait SourcePublicationUploadFileAdmissionPort: pub
 │   └── trait SourcePublicationUploadPort: pub
 └── mod timeref: pub

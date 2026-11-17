@@ -24,6 +24,9 @@ host, its peak RSS, the build phase and the index's disk amplification. This
 runner keeps every artifact verbatim under ``artifacts/experiments/scan-vs-index/``
 beside the markdown report and adds only the scan timings, so the numbers in
 the table are attributable to the head the artifacts name.
+
+Run the historical binary from its frozen source checkout. The binary
+resolves its source revision relative to its working directory.
 """
 
 from __future__ import annotations
@@ -73,8 +76,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--bin-cmd",
-        default="cargo run --quiet --release -p quanta-index-scan-experiment --",
-        help="command prefix that invokes the scan_vs_index binary",
+        required=True,
+        help="command prefix for a scan_vs_index binary from a frozen Legacy checkout",
+    )
+    parser.add_argument(
+        "--bin-cwd",
+        required=True,
+        type=Path,
+        help="the frozen Legacy checkout used to build the binary",
     )
     return parser.parse_args()
 
@@ -114,7 +123,7 @@ def run_index_probe(
         "--samples",
         str(args.index_samples),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = subprocess.run(cmd, cwd=args.bin_cwd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"scan_vs_index failed:\n{proc.stderr.strip()}")
     artifact = json.loads(proc.stdout.strip().splitlines()[-1])
@@ -178,6 +187,8 @@ def render_report(rows: list[dict], crossover: str, git_head: str, host: dict) -
 def main() -> int:
     args = parse_args()
     bin_cmd = shlex.split(args.bin_cmd)
+    if not bin_cmd:
+        raise ValueError("--bin-cmd must supply an executable")
     scales = [int(s) for s in args.scales.split(",") if s.strip()]
 
     rows: list[dict] = []

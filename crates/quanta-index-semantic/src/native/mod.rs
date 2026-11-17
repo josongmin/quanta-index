@@ -1,9 +1,11 @@
 //! Native, owner-local exact vector materialization and bounded cosine oracle.
 //! The implementation lives in `embedding` while the original public paths stay stable.
 
+#[cfg(test)]
 mod ann_files;
+#[cfg(test)]
 mod ann_lance;
-mod ann_session;
+#[cfg(test)]
 mod ann_store;
 
 mod certified_chunks;
@@ -19,6 +21,7 @@ pub use embedding::{
     NativeSemanticReadConfig, NativeSemanticReader, ReadContext, SearchHit, SearchResult,
     SemanticCandidate, SemanticLexicalEligibility, SemanticLexicalEligibleSource,
     SemanticOverlayChunk, SemanticOverlayDocument, SemanticOverlayHit, SemanticReadRequest,
-    TextEmbeddingBridge, TicketSearchQuery, VectorNormalization, chunk_owner_memory_envelope,
-    max_chunk_owner_artifact_json_bytes, search_exact_acquired,
+    SemanticSourceFile, SemanticSourceFileHitParts, TextEmbeddingBridge, TicketSearchQuery,
+    VectorNormalization, chunk_owner_memory_envelope, max_chunk_owner_artifact_json_bytes,
+    search_exact_acquired, validate_semantic_recipe_instance,
 };

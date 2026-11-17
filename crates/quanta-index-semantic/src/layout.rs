@@ -27,20 +27,15 @@
     reason = "module is intentionally crate-internal; pub(crate) is the deliberate visibility — clippy normalizes to redundant but workspace `unreachable_pub = deny` blocks the alternate `pub` form"
 )]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
-use quanta_index_core::{CoreError, domains::generation::GenerationStorageKeyV1};
+use quanta_index_core::CoreError;
 
-pub(crate) const DATASET_DIR_NAME: &str = "dataset";
-pub(crate) const BUILD_CONTRACT_FILE_NAME: &str = "semantic-build-contract.cbor";
-pub(crate) const MANIFEST_FILE_NAME: &str = "semantic-manifest.cbor";
-pub(crate) const MARKER_READY_FILE_NAME: &str = "MARKER_READY";
-pub(crate) const MARKER_SEALED_FILE_NAME: &str = "MARKER_SEALED";
-pub(crate) const SCRUB_RECEIPT_FILE_NAME: &str = "semantic-scrub-receipt.cbor";
-pub(crate) const QUARANTINE_RECEIPT_FILE_NAME: &str = "semantic-quarantine.cbor";
+pub(crate) use crate::legacy::layout::{
+    BUILD_CONTRACT_FILE_NAME, DATASET_DIR_NAME, MANIFEST_FILE_NAME,
+};
 
 /// Lancedb table name for the semantic dataset.
 pub(crate) const TABLE_NAME: &str = "semantic";
@@ -166,68 +161,7 @@ pub(crate) fn dataset_dir_to_uri(dataset_dir: &Path) -> Result<String, CoreError
 }
 
 /// `{semantic_root}/{bounded_generation_storage_key}/g{generation}/`
-pub(crate) fn generation_dir(
-    semantic_root: &Path,
-    repo: &RepoId,
-    revision: &RevisionId,
-    generation: ManifestGeneration,
-) -> PathBuf {
-    GenerationStorageKeyV1::for_repo_revision(repo, revision)
-        .generation_dir(semantic_root, generation)
-}
-
-pub(crate) fn dataset_dir(generation_dir: &Path) -> PathBuf {
-    generation_dir.join(DATASET_DIR_NAME)
-}
-
-pub(crate) fn build_contract_path(generation_dir: &Path) -> PathBuf {
-    generation_dir.join(BUILD_CONTRACT_FILE_NAME)
-}
-
-pub(crate) fn manifest_path(generation_dir: &Path) -> PathBuf {
-    generation_dir.join(MANIFEST_FILE_NAME)
-}
-
-pub(crate) fn ready_marker_path(generation_dir: &Path) -> PathBuf {
-    generation_dir.join(MARKER_READY_FILE_NAME)
-}
-
-pub(crate) fn sealed_marker_path(generation_dir: &Path) -> PathBuf {
-    generation_dir.join(MARKER_SEALED_FILE_NAME)
-}
-
-pub(crate) fn scrub_receipt_path(generation_dir: &Path) -> PathBuf {
-    generation_dir.join(SCRUB_RECEIPT_FILE_NAME)
-}
-
-pub(crate) fn quarantine_receipt_path(generation_dir: &Path) -> PathBuf {
-    generation_dir.join(QUARANTINE_RECEIPT_FILE_NAME)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::Component;
-
-    use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
-
-    #[test]
-    fn generation_dir_contains_untrusted_identifiers_under_semantic_root() {
-        let root = std::path::Path::new("/state/indexes/semantic");
-        let path = super::generation_dir(
-            root,
-            &RepoId::new("../../outside").expect("static fixture ID satisfies canonical policy"),
-            &RevisionId::new("/absolute/revision")
-                .expect("static fixture ID satisfies canonical policy"),
-            ManifestGeneration::new(7),
-        );
-        let relative = path
-            .strip_prefix(root)
-            .expect("path must remain under root");
-        assert_eq!(relative.components().count(), 2);
-        assert!(
-            relative
-                .components()
-                .all(|component| matches!(component, Component::Normal(_)))
-        );
-    }
-}
+pub(crate) use crate::legacy::layout::{
+    build_contract_path, dataset_dir, generation_dir, manifest_path, quarantine_receipt_path,
+    ready_marker_path, scrub_receipt_path, sealed_marker_path,
+};

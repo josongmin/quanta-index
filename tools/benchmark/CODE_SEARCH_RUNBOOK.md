@@ -6,6 +6,11 @@ runner options. Evidence and scoring policy lives in
 [SEP-26-003](../../docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md)
 and [SEP-27-004](../../docs/adr/SEP-27-004-benchmark-capture-and-resource-custody.md).
 
+The generation SDK pair below starts Legacy `serve`. Its native/local runner
+label distinguishes owned capture from recorded imports; it does not select
+the Native index product. Explicit `serve-native` file capture is documented
+in the [Native file profile](retrieval/README.md#explicit-native-file-profile).
+
 ## Choose the rail first
 
 | Goal | Command/owner | What actually runs | Maximum claim |
@@ -325,9 +330,11 @@ Use only the requested current source/input/capture rows. The Sep-28 20/100-quer
 score tables and workflow totals are retired to
 [Git history](../../docs/ARCHIVE-INDEX.md#historical-record-recovery).
 Unadjudicated labels, unequal native rank units, missing external indexed scope
-and unlike timing layers remain explicit qualification limits. Current B01–B09
-and OCT-04 owners retain their unresolved conditions; this guide is execution
-and output interpretation, not a frozen benchmark report.
+and unlike timing layers remain explicit qualification limits. Current owners
+and unresolved comparison/product conditions belong to the
+[E07/E08 ledger](../../docs/plans/oct-22-finalizing/README.md) and
+[Native cutover plan](../../docs/plans/nov-12-native-cutover/README.md).
+This guide owns execution and output interpretation, not another status queue.
 
 ## Lexical workflow command (repeat for every repository × supported bare-symbol family)
 

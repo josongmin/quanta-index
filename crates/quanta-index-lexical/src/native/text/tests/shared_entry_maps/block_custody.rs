@@ -125,16 +125,20 @@ fn short_or_wrong_last_batch_result_cannot_publish_a_block() -> Result<(), Index
         .map(|key| row(&[key], None, Some(reference(key))))
         .collect::<Vec<_>>();
     let mut original = local.clone();
-    original.extend((b'a'..=b'i').map(|key| {
-        OrdinalMapEdit::unscoped(
-            1,
-            MapEdit {
-                key: vec![key],
-                expected: None,
-                next: Some(reference(key).into()),
-            },
-        )
-    }));
+    original.extend(
+        (b'a'..=b'i')
+            .map(|key| {
+                OrdinalMapEdit::unscoped(
+                    1,
+                    MapEdit {
+                        key: vec![key],
+                        expected: None,
+                        next: Some(reference(key).into()),
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    );
     for fault in [BatchFault::Short, BatchFault::WrongLast] {
         let objects = CanonicalObjects::default();
         objects.fault_next_batch(fault)?;
@@ -255,7 +259,7 @@ fn sixty_four_mixed_ordinals_keep_empty_small_and_block_roots_distinct() -> Resu
             expected: None,
             next: Some(reference(17).into()),
         },
-    );
+    )?;
     let block = (b'a'..=b'i')
         .map(|key| {
             OrdinalMapEdit::unscoped(
@@ -267,7 +271,7 @@ fn sixty_four_mixed_ordinals_keep_empty_small_and_block_roots_distinct() -> Resu
                 },
             )
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     let mut original = vec![small];
     original.extend(block);
     let mut counts = [0_u64; 64];
@@ -426,14 +430,19 @@ fn cold_inventory_preinstalled_alias_refuses_wrong_seal_or_anchor() -> Result<()
     for suffix in b'a'..=b'i' {
         seal.push(&[0, suffix], &mut work)?;
     }
+    let attempt = test_attempt(fixture.ticket.view.identity.workspace);
     let alias = entry_patch::ColdInventoryAlias {
         reference: packed_ref,
         terms: 9,
         key_digest: seal.finish(),
+        anchors: 1,
+        descriptor_digest: entry_patch::ColdDescriptorSeal::new().finish(),
+        layout: entry_patch::ColdAliasLayout::Inline,
+        attempt,
     };
     let mut anchor = SmallMap::default();
     check!(anchor.push(b"\x00a", packed_ref)?);
-    let mut context = AttemptContext {
+    let context = AttemptContext {
         attempt: test_attempt(fixture.ticket.view.identity.workspace),
         objects: &objects,
         maps: &maps,
@@ -442,7 +451,16 @@ fn cold_inventory_preinstalled_alias_refuses_wrong_seal_or_anchor() -> Result<()
         budget: &mut work,
     };
     check_eq!(
-        alias.verify(&EntryMap::inline(&anchor), &mut context)?,
+        alias
+            .visit_inline(
+                EntryMap::OccurrenceBlock(packed_ref),
+                &EntryMap::inline(&anchor),
+                context.objects,
+                context.attempt,
+                context.budget,
+                |_, _, _, _| Ok(()),
+            )?
+            .0,
         EntryMap::OccurrenceBlock(packed_ref)
     );
     let wrong_seal = entry_patch::ColdInventoryAlias {
@@ -450,19 +468,55 @@ fn cold_inventory_preinstalled_alias_refuses_wrong_seal_or_anchor() -> Result<()
         ..alias
     };
     check!(matches!(
-        wrong_seal.verify(&EntryMap::inline(&anchor), &mut context),
+        wrong_seal.visit_inline(
+            EntryMap::OccurrenceBlock(packed_ref),
+            &EntryMap::inline(&anchor),
+            context.objects,
+            context.attempt,
+            context.budget,
+            |_, _, _, _| Ok(()),
+        ),
+        Err(IndexError::CorruptObject(_))
+    ));
+    let wrong_descriptor = entry_patch::ColdInventoryAlias {
+        descriptor_digest: Digest([0; 32]),
+        ..alias
+    };
+    check!(matches!(
+        wrong_descriptor.visit_inline(
+            EntryMap::OccurrenceBlock(packed_ref),
+            &EntryMap::inline(&anchor),
+            context.objects,
+            context.attempt,
+            context.budget,
+            |_, _, _, _| Ok(()),
+        ),
         Err(IndexError::CorruptObject(_))
     ));
     let mut wrong_key = SmallMap::default();
     check!(wrong_key.push(b"\x00b", packed_ref)?);
     check!(matches!(
-        alias.verify(&EntryMap::inline(&wrong_key), &mut context),
+        alias.visit_inline(
+            EntryMap::OccurrenceBlock(packed_ref),
+            &EntryMap::inline(&wrong_key),
+            context.objects,
+            context.attempt,
+            context.budget,
+            |_, _, _, _| Ok(()),
+        ),
         Err(IndexError::CorruptObject(_))
     ));
     let mut wrong_reference = SmallMap::default();
     check!(wrong_reference.push(b"\x00a", reference(251))?);
     check!(matches!(
-        alias.verify(&EntryMap::inline(&wrong_reference), &mut context),
+        alias.visit_inline(
+            EntryMap::OccurrenceBlock(packed_ref),
+            &EntryMap::inline(&wrong_reference),
+            context.objects,
+            context.attempt,
+            context.budget,
+            |_, _, _, _| Ok(()),
+        ),
         Err(IndexError::CorruptObject(_))
     ));
     Ok(())

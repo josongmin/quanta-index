@@ -271,7 +271,7 @@ impl RunPostingPage {
 
     pub(crate) fn encode(&self) -> Result<Vec<u8>, CoreError> {
         self.validate()?;
-        let bytes = page_wire::encode_v2(self)?;
+        let bytes = page_wire::encode_v3(self)?;
         if bytes.len() > MAX_POSTING_PAGE_BYTES {
             return Err(invalid("page exceeds encoded-byte admission"));
         }
@@ -1962,30 +1962,34 @@ fn bootstrap_new_run_postings_with_count_cache_limit(
         page_record_encoded_bytes,
         logical_pages,
     ) = if let Some((counts, path_rows, content_rows)) = first_pass_counts.into_records() {
-        let mut packed = PackedEdits::new(store, lease, counts);
-        let root = store.map_bootstrap(lease, &mut packed)?;
-        (
-            root,
-            packed.record_encoded_bytes,
-            path_rows,
-            content_rows,
-            first_pass_page_bytes,
-            first_pass_logical_pages,
-        )
+        crate::causal_profile::timed_work("file_run_counts_cached", || {
+            let mut packed = PackedEdits::new(store, lease, counts);
+            let root = store.map_bootstrap(lease, &mut packed)?;
+            Ok::<_, CoreError>((
+                root,
+                packed.record_encoded_bytes,
+                path_rows,
+                content_rows,
+                first_pass_page_bytes,
+                first_pass_logical_pages,
+            ))
+        })?
     } else {
-        let mut counts = RunGramCountStream::new_block(store, lease, &pages)?;
-        let mut packed = PackedEdits::new(store, lease, &mut counts);
-        let root = store.map_bootstrap(lease, &mut packed)?;
-        let bytes = packed.record_encoded_bytes;
-        drop(packed);
-        (
-            root,
-            bytes,
-            counts.path_rows,
-            counts.content_rows,
-            counts.page_record_encoded_bytes,
-            counts.logical_pages,
-        )
+        crate::causal_profile::timed_work("file_run_counts_reread", || {
+            let mut counts = RunGramCountStream::new_block(store, lease, &pages)?;
+            let mut packed = PackedEdits::new(store, lease, &mut counts);
+            let root = store.map_bootstrap(lease, &mut packed)?;
+            let bytes = packed.record_encoded_bytes;
+            drop(packed);
+            Ok::<_, CoreError>((
+                root,
+                bytes,
+                counts.path_rows,
+                counts.content_rows,
+                counts.page_record_encoded_bytes,
+                counts.logical_pages,
+            ))
+        })?
     };
     let root = RunPostingRoot {
         run_id,

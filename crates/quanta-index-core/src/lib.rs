@@ -30,7 +30,10 @@ pub use repomap_file_admission::{
 mod publication_validation;
 pub use publication_validation::PublicationValidationOwner;
 mod source_upload;
-pub use source_upload::{SourcePublicationUploadFileAdmissionPort, SourcePublicationUploadPort};
+pub use source_upload::{
+    SourcePublicationUploadCleanupDisposition, SourcePublicationUploadFileAdmissionPort,
+    SourcePublicationUploadPort,
+};
 pub mod request_budget;
 pub mod timeref;
 
@@ -83,7 +86,8 @@ pub use domains::generation::{
     validate_pinned_generation_v1, verify_tree_commitment_v1, verify_tree_layout_v1,
 };
 pub use domains::hybrid::{
-    DenseAdmissionOutcomeV1, DenseLaneFilterClassV1, ExplainQueryPort, FusedKeyV1, FusedLaneRankV1,
+    DenseAdmissionOutcomeV1, DenseLaneFilterClassV1, ExplainQueryPort, FileLaneWitnessV1,
+    FusedKeyV1, FusedLaneRankV1, GenericFileHitV1, GenericFileRankPolicyV1,
     HYBRID_FILTER_UNSUPPORTED_CODE, HybridFetchFloorPolicy, HybridFilterPlanV1,
     HybridOrchestratorPolicy, HybridQueryPort, TraceFileEvidenceV1, TraceFileHitV1, TraceFileKeyV1,
     TraceFileLaneWitnessV1, TraceFileRankPolicyV1, TraceSourceFrameClassV1,
@@ -180,3 +184,6 @@ pub use domains::structural::{
     StructuralProducerPort, StructuralQueryRequest, StructuralQueryResponse, StructuralReadiness,
     StructuralService,
 };
+
+pub use index::existing_tree::{ReadOnlyTreeLayoutV1, verify_tree_layout_admitted_v1};
+pub use index::ports::{ExistingTreeEntryKindV1, ExistingTreeMetadataIoPortV1};

@@ -213,6 +213,15 @@ jobs:
             set -euo pipefail
             unset BASH_ENV ENV
             ./scripts/cargow --lane test-ciborium-no-default-lane test -p ciborium --no-default-features --test no_std --locked
+      - run:
+          name: explicit descriptor custody
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            just rust-audit-explicit-fd
+            just rust-test-explicit-fd
+            just rust-clippy-explicit-fd
       - run: *verify_unchanged_worker_source
 
   verify-rust-docs:

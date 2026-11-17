@@ -7,7 +7,7 @@ use quanta_index_core::index::{
     IndexError, MAX_WORK_ACTION_BYTES, MapEdit, MemoryLease, MemoryLifetime, OrdinalMapEdit,
     ScratchAllocation, ScratchRequest, ScratchSpacePort, WorkAction, WorkActionDigest,
     WorkActionSet, WorkBudget, WorkUsage,
-    ports::{ImmutableObjectPort, MapEditCursor, WorkActionCursor},
+    ports::{ImmutableObjectPort, MapEditCursor, RootPackingPlan, WorkActionCursor},
 };
 use rusqlite::params;
 
@@ -15,9 +15,9 @@ const SCRATCH_PAGE_SIZE: u32 = 4096;
 const SCRATCH_MAX_BYTES: u64 = 134_217_728;
 const SCRATCH_INITIAL_BYTES: u64 = 256 * 1024;
 const EDIT_PAGE_START_SQL: &str =
-    "SELECT root,key,expected,next FROM edits ORDER BY root,key LIMIT 128";
+    "SELECT key,expected,next,root FROM edits ORDER BY root,key LIMIT 128";
 const EDIT_PAGE_AFTER_SQL: &str =
-    "SELECT root,key,expected,next FROM edits WHERE (root,key)>(?1,?2) ORDER BY root,key LIMIT 128";
+    "SELECT key,expected,next,root FROM edits WHERE (root,key)>(?1,?2) ORDER BY root,key LIMIT 128";
 const WORK_PAGE_START_SQL: &str = "SELECT key,payload FROM actions ORDER BY key LIMIT 128";
 const WORK_PAGE_AFTER_SQL: &str =
     "SELECT key,payload FROM actions WHERE key>?1 ORDER BY key LIMIT 128";
@@ -100,36 +100,32 @@ struct EditPage {
     _memory: Option<MemoryLease>,
 }
 impl EditPage {
-    fn collect(
-        mut rows: impl Iterator<Item = Result<OrdinalMapEdit, IndexError>>,
-        budget: &WorkBudget,
-    ) -> Result<Self, IndexError> {
-        let Some(first) = rows.next().transpose()? else {
-            return Ok(Self::default());
-        };
-        let bytes = 128usize
-            .checked_mul(std::mem::size_of::<OrdinalMapEdit>())
-            .ok_or(IndexError::ResourceLimited)?;
-        let memory = budget.reserve_memory(
-            u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
-            MemoryLifetime::Retained,
-        )?;
-        let mut values = VecDeque::new();
-        values
-            .try_reserve_exact(128)
-            .map_err(|_error| IndexError::ResourceLimited)?;
-        for row in std::iter::once(Ok(first)).chain(rows) {
-            if values.len() == 128 {
-                return Err(IndexError::BackendViolation(
-                    "scratch edit page exceeded its declared window".into(),
-                ));
-            }
-            values.push_back(row?);
+    fn push(&mut self, edit: OrdinalMapEdit, budget: &mut WorkBudget) -> Result<(), IndexError> {
+        if self.rows.len() == 128 {
+            return Err(IndexError::BackendViolation(
+                "scratch edit page exceeded its declared window".into(),
+            ));
         }
-        Ok(Self {
-            rows: values,
-            _memory: memory,
-        })
+        if self.rows.capacity() == 0 {
+            let bytes = 128usize
+                .checked_mul(std::mem::size_of::<OrdinalMapEdit>())
+                .ok_or(IndexError::ResourceLimited)?;
+            let bytes = u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?;
+            budget.charge(WorkUsage {
+                bytes,
+                ..WorkUsage::default()
+            })?;
+            let memory = budget.reserve_memory(bytes, MemoryLifetime::Retained)?;
+            self._memory = memory;
+            self.rows
+                .try_reserve_exact(128)
+                .map_err(|_error| IndexError::ResourceLimited)?;
+            if self.rows.capacity() != 128 {
+                return Err(IndexError::ResourceLimited);
+            }
+        }
+        self.rows.push_back(edit);
+        Ok(())
     }
     fn is_empty(&self) -> bool {
         self.rows.is_empty()
@@ -237,7 +233,7 @@ impl EditSpool {
             .ok_or(IndexError::ResourceLimited)?;
         let mut reservations = [0u64; quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS];
         for (slot, edit) in edits.iter().enumerate() {
-            let bytes = u64::try_from(edit.edit.key.len())
+            let bytes = u64::try_from(edit.key().len())
                 .map_err(|_error| IndexError::ResourceLimited)?
                 .checked_add(fields)
                 .ok_or(IndexError::ResourceLimited)?;
@@ -251,7 +247,7 @@ impl EditSpool {
                 .ok_or(IndexError::ResourceLimited)? = bytes;
         }
         let db = self.connection.scoped(budget)?;
-        quanta_index_scratch_sqlite::write_map_edit_batch(
+        quanta_index_scratch_sqlite::write_ordinal_map_edit_batch(
             &db,
             self.allocation.as_ref(),
             "INSERT OR IGNORE INTO edits(root,key,expected,next) VALUES ",
@@ -262,8 +258,8 @@ impl EditSpool {
             |slot| {
                 let edit = edits.get(slot).ok_or(IndexError::ResourceLimited)?;
                 Ok((
-                    rusqlite::types::ValueRef::Integer(i64::from(edit.root)),
-                    &edit.edit,
+                    rusqlite::types::ValueRef::Integer(i64::from(edit.root())),
+                    edit,
                     0,
                 ))
             },
@@ -277,13 +273,14 @@ impl EditSpool {
             after: None,
             page: EditPage::default(),
             finished: false,
+            packing: RootPackingPlan::default(),
         }
     }
 
     fn page(
         &self,
         after: Option<(u32, &[u8])>,
-        budget: &WorkBudget,
+        budget: &mut WorkBudget,
     ) -> Result<EditPage, IndexError> {
         let io_scope = self.connection.scoped(budget)?;
         let query = if after.is_some() {
@@ -292,31 +289,23 @@ impl EditSpool {
             EDIT_PAGE_START_SQL
         };
         let mut statement = io_scope.prepare(query).map_err(|error| sql_error(&error))?;
-        let decode = |row: &rusqlite::Row<'_>| {
-            let root: u32 = row.get(0)?;
-            Ok((|| {
-                let key = quanta_index_scratch_sqlite::bounded_blob(
-                    row.get_ref(1).map_err(|error| sql_error(&error))?,
-                    4096,
-                )?;
-                let expected = quanta_index_scratch_sqlite::optional_map_value(
-                    row.get_ref(2).map_err(|error| sql_error(&error))?,
-                )?;
-                let next = quanta_index_scratch_sqlite::optional_map_value(
-                    row.get_ref(3).map_err(|error| sql_error(&error))?,
-                )?;
-                OrdinalMapEdit::copy_key(root, key, expected, next, budget)
-            })())
-        };
-        let rows = match after {
-            Some((root, key)) => statement.query_map(params![root, key], decode),
-            None => statement.query_map([], decode),
+        let mut rows = match after {
+            Some((root, key)) => statement.query(params![root, key]),
+            None => statement.query([]),
         }
         .map_err(|error| sql_error(&error))?;
-        EditPage::collect(
-            rows.map(|row| row.map_err(|error| sql_error(&error))?),
-            budget,
-        )
+        let mut page = EditPage::default();
+        while let Some(row) = rows.next().map_err(|error| sql_error(&error))? {
+            budget.charge(WorkUsage {
+                reads: 1,
+                ..WorkUsage::default()
+            })?;
+            let root: u32 = row.get(3).map_err(|error| sql_error(&error))?;
+            let edit =
+                quanta_index_scratch_sqlite::read_map_edit_budgeted(row, 4096, root, budget)?;
+            page.push(edit, budget)?;
+        }
+        Ok(page)
     }
 }
 
@@ -325,9 +314,21 @@ pub(crate) struct EditSpoolCursor<'a> {
     after: Option<OrdinalMapEdit>,
     page: EditPage,
     finished: bool,
+    packing: RootPackingPlan,
+}
+
+impl EditSpoolCursor<'_> {
+    pub(crate) fn with_packing_plan(mut self, packing: RootPackingPlan) -> Self {
+        self.packing = packing;
+        self
+    }
 }
 
 impl MapEditCursor for EditSpoolCursor<'_> {
+    fn subtree_packing(&self) -> Result<RootPackingPlan, IndexError> {
+        Ok(self.packing)
+    }
+
     fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
         budget.checkpoint()?;
         if self.finished {
@@ -337,7 +338,7 @@ impl MapEditCursor for EditSpoolCursor<'_> {
             self.page = self.spool.page(
                 self.after
                     .as_ref()
-                    .map(|position| (position.root, position.edit.key.as_slice())),
+                    .map(|position| (position.root(), position.key())),
                 budget,
             )?;
             if self.page.is_empty() {
@@ -1347,6 +1348,101 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn edit_page_charges_one_read_per_returned_row() -> Result<(), Box<dyn std::error::Error>> {
+        const TOTAL_BYTES: u64 = 1_147;
+        let home = tempfile::tempdir()?;
+        let space =
+            FileScratchSpace::open_standalone(home.path().join("scratch"), SCRATCH_MAX_BYTES)?;
+        let mut setup = work_budget()?;
+        let spool = EditSpool::open(&space, &mut setup)?;
+        let key = [7_u8; 26];
+        let next = ObjectRef(Digest([9; 32]));
+        spool.push_value_key(0, &key, None, Some(next.into()), &mut setup)?;
+
+        let read_budget = |reads| -> Result<WorkBudget, IndexError> {
+            Ok(WorkBudget::new(
+                WorkLimits {
+                    reads,
+                    writes: 500,
+                    bytes: TOTAL_BYTES,
+                    mutations: 500,
+                },
+                Instant::now()
+                    .checked_add(Duration::from_secs(30))
+                    .ok_or(IndexError::ResourceLimited)?,
+            ))
+        };
+        let mut denied = read_budget(0)?;
+        require(matches!(
+            spool.cursor().next_edit(&mut denied),
+            Err(IndexError::ResourceLimited)
+        ))?;
+
+        let mut allowed = read_budget(1)?;
+        let row = spool
+            .cursor()
+            .next_edit(&mut allowed)?
+            .ok_or("missing edit")?;
+        require(row.key() == key && row.next()? == Some(next.into()))?;
+        require(allowed.usage().reads == 1 && allowed.usage().bytes == TOTAL_BYTES)?;
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn edit_page_charges_canonical_cursor_and_pointer_backing_before_return()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Fixed 64-bit gold: cursor Arc header/data 64 + key 26 + object wire 33,
+        // then one 128-slot page of 8-byte shared positions.
+        const CURSOR_BYTES: u64 = 123;
+        const PAGE_BYTES: u64 = 1_024;
+        const TOTAL_BYTES: u64 = CURSOR_BYTES + PAGE_BYTES;
+
+        let home = tempfile::tempdir()?;
+        let space =
+            FileScratchSpace::open_standalone(home.path().join("scratch"), SCRATCH_MAX_BYTES)?;
+        let mut setup = work_budget()?;
+        let spool = EditSpool::open(&space, &mut setup)?;
+        let key = [7_u8; 26];
+        let next = ObjectRef(Digest([9; 32]));
+        spool.push_value_key(0, &key, None, Some(next.into()), &mut setup)?;
+
+        let read_budget = |bytes| -> Result<WorkBudget, IndexError> {
+            Ok(WorkBudget::new(
+                WorkLimits {
+                    reads: 500,
+                    writes: 500,
+                    bytes,
+                    mutations: 500,
+                },
+                Instant::now()
+                    .checked_add(Duration::from_secs(30))
+                    .ok_or(IndexError::ResourceLimited)?,
+            ))
+        };
+        let mut denied = read_budget(TOTAL_BYTES - 1)?;
+        require(matches!(
+            spool.cursor().next_edit(&mut denied),
+            Err(IndexError::ResourceLimited)
+        ))?;
+
+        let mut allowed = read_budget(TOTAL_BYTES)?;
+        let row = spool
+            .cursor()
+            .next_edit(&mut allowed)?
+            .ok_or("missing edit")?;
+        require(
+            row.root() == 0
+                && row.key() == key
+                && row.expected()?.is_none()
+                && row.next()? == Some(next.into()),
+        )?;
+        require(allowed.usage().bytes == TOTAL_BYTES)?;
+        Ok(())
+    }
+
+    #[test]
     fn edit_batch_preserves_mixed_root_inline_gold_and_refuses_before_sql()
     -> Result<(), Box<dyn std::error::Error>> {
         use quanta_index_core::index::{Digest, MapValue, ObjectRef};
@@ -1374,10 +1470,10 @@ mod tests {
             for number in (0..64u8).filter(|number| u32::from(number % 2) == root) {
                 let edit = cursor.next_edit(&mut work)?.ok_or("batch omitted edit")?;
                 require(
-                    edit.root == root && edit.edit.key == [number] && edit.edit.expected.is_none(),
+                    edit.root() == root && edit.key() == &[number] && edit.expected()?.is_none(),
                 )?;
                 require(
-                    edit.edit.next
+                    edit.next()?
                         == Some(MapValue::inline(
                             &[number],
                             Some(ObjectRef(Digest([number; 32]))),
@@ -1485,7 +1581,7 @@ mod tests {
         let mut first_edit_rows = first_edit_query.query([])?;
         let mut first_edits = Vec::new();
         while let Some(row) = first_edit_rows.next()? {
-            first_edits.push((row.get::<_, u32>(0)?, row.get::<_, Vec<u8>>(1)?));
+            first_edits.push((row.get::<_, u32>(3)?, row.get::<_, Vec<u8>>(0)?));
         }
         drop(first_edit_rows);
         let expected_first_edits = (0..128_u32)
@@ -1516,7 +1612,7 @@ mod tests {
         let mut edit_rows = edit_query.query(params![0_u32, edit_after.as_slice()])?;
         let mut observed_edits = Vec::new();
         while let Some(row) = edit_rows.next()? {
-            observed_edits.push((row.get::<_, u32>(0)?, row.get::<_, Vec<u8>>(1)?));
+            observed_edits.push((row.get::<_, u32>(3)?, row.get::<_, Vec<u8>>(0)?));
         }
         drop(edit_rows);
         require(observed_edits == expected_edits)?;

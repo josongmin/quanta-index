@@ -1,5 +1,6 @@
 //! Explicit name/source contracts through the real sealed adapter. Fixed IDs
 //! and cardinalities come from the fixture, never a full-search baseline.
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 #![expect(
     clippy::expect_used,

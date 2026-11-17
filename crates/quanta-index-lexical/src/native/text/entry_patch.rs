@@ -3,56 +3,36 @@
 use super::{
     MapEntries, PreparedRows,
     dense_posting::{wire as dense_wire, write as dense_write},
-    entry_map::{BlockDraft, EntryMap, EntryMapUse, INLINE_ENTRIES, SmallMap},
+    entry_map::{BlockDraft, EntryMap, EntryMapUse, INLINE_ENTRIES, SmallMap, directory},
     posting_witness::OccurrenceDigestWitness,
 };
 use crate::native::text_occurrence::block::{self as occurrence_block, CheckedBlock};
+use crate::native::text_spool::{
+    DensePostingPrepassProof, MAX_TERM_KEY_BYTES, PostingCursor, ReadyInventoryReadLease,
+};
 use quanta_index_core::index::{
-    AttemptContext, Digest, IndexError, MapPageEntry, MapRoot, MapValue, ObjectRef, OrdinalMapEdit,
-    StagedObjectBatch, WorkBudget, WorkUsage,
-    ports::{ImmutableObjectPort, MapEditCursor, PersistentMapPort},
+    AttemptContext, AttemptRef, Digest, IndexError, MapPageEntry, MapRoot, MapValue,
+    MemoryLifetime, ObjectRef, OrdinalMapEdit, StagedObjectBatch, WorkBudget, WorkUsage,
+    ports::{
+        ImmutableObjectPort, MapEditCursor, PersistentMapPort, RootPackingMode, RootPackingPlan,
+    },
 };
 use sha2::{Digest as _, Sha256};
 
 pub(super) type PostingRefResolver<'a> = dyn FnMut(usize, &[u8], OccurrenceDigestWitness, &mut WorkBudget) -> Result<ObjectRef, IndexError>
     + 'a;
 
-pub(super) const COLD_ALIAS_MIN_TERMS: u64 = 9;
-pub(super) const COLD_ALIAS_MAX_TERMS: u64 = 512;
-pub(super) const COLD_ALIAS_MAX_KEY_BYTES: usize = 32;
+pub(super) use super::entry_map::occurrence::{
+    COLD_ALIAS_MAX_TERMS, COLD_ALIAS_MIN_TERMS, COLD_INLINE_ANCHOR_KEY_BYTES, ColdDescriptorSeal,
+    ColdInventoryKeySeal,
+};
 
-/// A producer-side commitment to one complete, ordered cold inventory.
-/// This is a candidate only; the verifier authenticates the persisted block
-/// and the ordinary entry-map path independently seals its original edit.
-pub(super) struct ColdInventoryKeySeal {
-    hash: Sha256,
-}
-
-impl ColdInventoryKeySeal {
-    pub(super) fn new() -> Self {
-        let mut hash = Sha256::new();
-        hash.update(b"qidx.native.text.cold-inventory-keys.v1\0");
-        Self { hash }
-    }
-
-    pub(super) fn push(&mut self, key: &[u8], budget: &mut WorkBudget) -> Result<(), IndexError> {
-        budget.checkpoint()?;
-        if key.len() > COLD_ALIAS_MAX_KEY_BYTES {
-            return Err(IndexError::ResourceLimited);
-        }
-        let len = u64::try_from(key.len()).map_err(|_error| IndexError::ResourceLimited)?;
-        budget.charge(WorkUsage {
-            bytes: len.checked_add(8).ok_or(IndexError::ResourceLimited)?,
-            ..WorkUsage::default()
-        })?;
-        self.hash.update(len.to_be_bytes());
-        self.hash.update(key);
-        Ok(())
-    }
-
-    pub(super) fn finish(self) -> Digest {
-        Digest(self.hash.finalize().into())
-    }
+/// The alias layout is fixed by its source key and controls the persisted
+/// root shape; anchor count alone cannot identify a one-block directory.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ColdAliasLayout {
+    Inline,
+    Directory,
 }
 
 /// A packed block is an inventory alias only after persisted readback proves
@@ -62,115 +42,196 @@ pub(super) struct ColdInventoryAlias {
     pub(super) reference: ObjectRef,
     pub(super) terms: u64,
     pub(super) key_digest: Digest,
+    pub(super) anchors: u64,
+    pub(super) descriptor_digest: Digest,
+    pub(super) layout: ColdAliasLayout,
+    pub(super) attempt: AttemptRef,
+}
+
+pub(super) enum ColdInventoryDiff {
+    Inline {
+        alias: ColdInventoryAlias,
+        anchor: EntryMap,
+    },
+    Directory(ColdInventoryAlias),
 }
 
 impl ColdInventoryAlias {
-    pub(super) fn verify(
+    pub(super) fn visit_inline(
         self,
+        root: EntryMap,
         anchor: &EntryMap,
-        context: &mut AttemptContext<'_>,
+        objects: &dyn ImmutableObjectPort,
+        attempt: AttemptRef,
+        budget: &mut WorkBudget,
+        visit: impl FnMut(&[u8], ObjectRef, u64, &mut WorkBudget) -> Result<(), IndexError>,
+    ) -> Result<(EntryMap, CheckedBlock), IndexError> {
+        if self.layout != ColdAliasLayout::Inline || self.anchors != 1 || self.attempt != attempt {
+            return Err(IndexError::FenceLost);
+        }
+        if self.descriptor_digest != ColdDescriptorSeal::new().finish() {
+            return Err(IndexError::CorruptObject(
+                "cold inline inventory descriptor seal differs".into(),
+            ));
+        }
+        super::entry_map::occurrence::visit_cold_inline(
+            root,
+            self.reference,
+            self.terms,
+            self.key_digest,
+            anchor,
+            objects,
+            budget,
+            visit,
+        )
+    }
+
+    pub(super) fn visit_directory(
+        self,
+        root: EntryMap,
+        objects: &dyn ImmutableObjectPort,
+        maps: &dyn PersistentMapPort,
+        attempt: AttemptRef,
+        budget: &mut WorkBudget,
+        visit: impl FnMut(&[u8], ObjectRef, u64, &mut WorkBudget) -> Result<(), IndexError>,
     ) -> Result<EntryMap, IndexError> {
-        context.budget.checkpoint()?;
-        if !(COLD_ALIAS_MIN_TERMS..=COLD_ALIAS_MAX_TERMS).contains(&self.terms) {
-            return Err(IndexError::InvalidInput(
-                "cold inventory alias term count is out of bounds".into(),
-            ));
+        if self.layout != ColdAliasLayout::Directory || self.attempt != attempt {
+            return Err(IndexError::FenceLost);
         }
-        let EntryMap::Small(anchor) = anchor else {
-            return Err(IndexError::CorruptObject(
-                "cold inventory alias anchor is not inline".into(),
-            ));
-        };
-        anchor.validate()?;
-        if anchor.len() != 1 {
-            return Err(IndexError::CorruptObject(
-                "cold inventory alias anchor has wrong cardinality".into(),
-            ));
-        }
-        let (anchor_key, anchor_ref) = anchor.entry(0)?.ok_or_else(|| {
-            IndexError::CorruptObject("cold inventory alias anchor is missing".into())
-        })?;
-        if anchor_ref != self.reference {
-            return Err(IndexError::CorruptObject(
-                "cold inventory alias anchor reference differs".into(),
-            ));
-        }
-        let stored = context.objects.get(self.reference, context.budget)?;
-        if stored.registration.reference != self.reference {
-            return Err(IndexError::CorruptObject(
-                "cold inventory alias stored identity differs".into(),
-            ));
-        }
-        let checked = CheckedBlock::parse(stored, context.budget)?;
-        if u64::try_from(checked.term_count()).map_err(|_error| IndexError::ResourceLimited)?
-            != self.terms
-        {
-            return Err(IndexError::CorruptObject(
-                "cold inventory alias term count differs".into(),
-            ));
-        }
-        if checked.key(0)? != anchor_key {
-            return Err(IndexError::CorruptObject(
-                "cold inventory alias first key differs".into(),
-            ));
-        }
-        let mut actual = ColdInventoryKeySeal::new();
-        for slot in 0..checked.term_count() {
-            let key = checked.key(slot)?;
-            if key.len() > COLD_ALIAS_MAX_KEY_BYTES {
-                return Err(IndexError::CorruptObject(
-                    "cold inventory alias key exceeds inline bound".into(),
-                ));
-            }
-            actual.push(key, context.budget)?;
-        }
-        if actual.finish() != self.key_digest {
-            return Err(IndexError::CorruptObject(
-                "cold inventory alias key seal differs".into(),
-            ));
-        }
-        context.budget.checkpoint()?;
-        Ok(EntryMap::OccurrenceBlock(self.reference))
+        super::entry_map::occurrence::visit_cold_directory(
+            root,
+            self.terms,
+            self.anchors,
+            self.reference,
+            self.key_digest,
+            self.descriptor_digest,
+            objects,
+            maps,
+            budget,
+            visit,
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn verify_directory(
+        self,
+        root: EntryMap,
+        objects: &dyn ImmutableObjectPort,
+        maps: &dyn PersistentMapPort,
+        attempt: AttemptRef,
+        budget: &mut WorkBudget,
+    ) -> Result<EntryMap, IndexError> {
+        self.visit_directory(root, objects, maps, attempt, budget, |_, _, _, _| Ok(()))
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Stamp {
-    count: u64,
-    digest: Digest,
+pub(super) struct Stamp {
+    pub(super) count: u64,
+    pub(super) digest: Digest,
 }
-struct Edits {
+pub(super) struct Edits {
     hash: Sha256,
     count: u64,
 }
 impl Edits {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let mut hash = Sha256::new();
         hash.update(b"qidx.native.text.entry-edits.v1\0");
         Self { hash, count: 0 }
     }
-    fn push(&mut self, edit: &OrdinalMapEdit, budget: &mut WorkBudget) -> Result<(), IndexError> {
-        let len =
-            u64::try_from(edit.edit.key.len()).map_err(|_error| IndexError::ResourceLimited)?;
+    pub(super) fn push(
+        &mut self,
+        edit: &OrdinalMapEdit,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        let _references =
+            self.push_object_wires(edit.key(), [edit.expected_wire(), edit.next_wire()], budget)?;
+        Ok(())
+    }
+
+    fn push_object_wires(
+        &mut self,
+        key: &[u8],
+        wires: [Option<&[u8]>; 2],
+        budget: &mut WorkBudget,
+    ) -> Result<[Option<ObjectRef>; 2], IndexError> {
+        let len = u64::try_from(key.len()).map_err(|_error| IndexError::ResourceLimited)?;
         budget.charge(WorkUsage {
             bytes: len.checked_add(74).ok_or(IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
         self.hash.update(len.to_be_bytes());
-        self.hash.update(&edit.edit.key);
-        for value in [edit.edit.expected, edit.edit.next] {
+        self.hash.update(key);
+        let object = |wire: Option<&[u8]>| {
+            wire.map(|wire| MapValue::decode(wire)?.object_ref())
+                .transpose()
+        };
+        let [expected, next] = wires;
+        let references = [object(expected)?, object(next)?];
+        for value in references {
             self.hash.update([u8::from(value.is_some())]);
             if let Some(value) = value {
-                self.hash.update(value.object_ref()?.0.0);
+                self.hash.update(value.0.0);
             }
         }
         self.count = self
             .count
             .checked_add(1)
             .ok_or(IndexError::ResourceLimited)?;
+        Ok(references)
+    }
+    /// The complete descriptor wire is DATA in the original scratch stream.
+    /// Binding only its child would miss kind/count substitutions on replay.
+    pub(super) fn push_descriptor(
+        &mut self,
+        edit: &OrdinalMapEdit,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        self.push_descriptor_wire(edit.key(), edit.expected_wire(), edit.next_wire(), budget)
+    }
+
+    fn push_descriptor_wire(
+        &mut self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        next: Option<&[u8]>,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        if expected.is_some() {
+            return Err(IndexError::CorruptObject(
+                "directory descriptor CAS differs".into(),
+            ));
+        }
+        let wire = next.ok_or_else(|| {
+            IndexError::CorruptObject("directory descriptor next is absent".into())
+        })?;
+        // The cursor already owns the canonical value wire. Check the
+        // descriptor before sealing those exact bytes.
+        let _descriptor = directory::decode(MapValue::decode(wire)?)?;
+        let len = u64::try_from(key.len()).map_err(|_| IndexError::ResourceLimited)?;
+        let wire_len = u64::try_from(wire.len()).map_err(|_| IndexError::ResourceLimited)?;
+        budget.charge(WorkUsage {
+            bytes: len
+                .checked_add(74)
+                .and_then(|bytes| bytes.checked_add(wire_len))
+                .and_then(|bytes| bytes.checked_add(8))
+                .ok_or(IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        self.hash.update(b"directory-descriptor\0");
+        self.hash.update(len.to_be_bytes());
+        self.hash.update(key);
+        self.hash.update([0, 1]);
+        self.hash.update(wire_len.to_be_bytes());
+        self.hash.update(wire);
+        self.count = self
+            .count
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
         Ok(())
     }
-    fn finish(&self) -> Stamp {
+    pub(super) fn finish(&self) -> Stamp {
         Stamp {
             count: self.count,
             digest: Digest(self.hash.clone().finalize().into()),
@@ -188,20 +249,17 @@ impl RootInput<'_> {
         let Some(edit) = self.cursor.next_edit(budget)? else {
             return Ok(None);
         };
-        if edit.root != 0
+        if edit.root() != 0
             || self
                 .previous
                 .as_ref()
-                .is_some_and(|prior| prior.edit.key >= edit.edit.key)
+                .is_some_and(|prior| prior.key() >= edit.key())
         {
             return Err(IndexError::CorruptObject(
                 "entry-map root delta is foreign or unordered".into(),
             ));
         }
         self.digest.push(&edit, budget)?;
-        for value in [edit.edit.expected, edit.edit.next].into_iter().flatten() {
-            let _reference = value.object_ref()?;
-        }
         self.previous = Some(edit.clone());
         Ok(Some(edit))
     }
@@ -213,16 +271,35 @@ enum Shape {
     OccurrenceBlock(ObjectRef),
     PostingPages,
     Tree,
+    InventoryDirectory(ObjectRef),
 }
 
 struct Plan {
     shape: Shape,
     small: SmallMap,
     stamp: Option<Stamp>,
+    aliased_directory: bool,
     block_slot: Option<usize>,
     dense: Option<dense_write::Draft>,
 }
 
+impl Plan {
+    fn directory(reference: ObjectRef, count: u64, digest: Digest, anchored: bool) -> Self {
+        Self {
+            shape: Shape::InventoryDirectory(reference),
+            small: SmallMap::default(),
+            stamp: Some(Stamp { count, digest }),
+            aliased_directory: anchored,
+            block_slot: None,
+            dense: None,
+        }
+    }
+}
+
+#[expect(
+    clippy::integer_division,
+    reason = "The fixed MAX_ROWS is divisible by four; preserve the exact 3/4 repack threshold."
+)]
 const REPACK_TREE_ROWS: u64 = dense_wire::MAX_ROWS * 3 / 4;
 
 #[derive(Clone, Copy)]
@@ -304,15 +381,15 @@ fn posting_tree_edit(
     // The original shared edit remains immutable for ordering and stream
     // binding. This extra physical key copy has its own work and memory cost.
     budget.charge(WorkUsage {
-        bytes: u64::try_from(edit.edit.key.len())
+        bytes: u64::try_from(edit.key().len())
             .map_err(|_conversion_error| IndexError::ResourceLimited)?,
         ..WorkUsage::default()
     })?;
     tree_edit(
-        edit.root,
-        &edit.edit.key,
-        edit.edit.expected.map(MapValue::object_ref).transpose()?,
-        edit.edit.next.map(MapValue::object_ref).transpose()?,
+        edit.root(),
+        edit.key(),
+        edit.expected()?.map(MapValue::object_ref).transpose()?,
+        edit.next()?.map(MapValue::object_ref).transpose()?,
         usage,
         budget,
     )
@@ -366,7 +443,7 @@ fn resolve_packed_warm(
         context.budget.checkpoint()?;
         let (fence, reference) = directory.descriptor(slot)?;
         let in_range = |edit: &OrdinalMapEdit| {
-            slot + 1 == directory.len() || edit.edit.key.as_slice() <= fence.last.as_slice()
+            slot.checked_add(1) == Some(directory.len()) || edit.key() <= fence.last.as_slice()
         };
         if !edit.as_ref().is_some_and(in_range) {
             if !draft.keep_page(fence, reference, context.budget)? {
@@ -389,7 +466,7 @@ fn resolve_packed_warm(
                 .transpose()?;
             let change = edit.as_ref().filter(|edit| in_range(edit));
             let order = match (old, change) {
-                (Some(row), Some(edit)) => row.owner.as_slice().cmp(edit.edit.key.as_slice()),
+                (Some(row), Some(edit)) => row.owner.as_slice().cmp(edit.key()),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => break,
@@ -399,23 +476,22 @@ fn resolve_packed_warm(
                     IndexError::BackendViolation("packed page lost base row".into())
                 })?;
                 draft.push(row, context)?;
-                row_slot += 1;
+                row_slot = row_slot.checked_add(1).ok_or(IndexError::ResourceLimited)?;
                 continue;
             }
             let change = change
                 .ok_or_else(|| IndexError::BackendViolation("packed page lost edit".into()))?;
-            let owner: [u8; 32] =
-                change.edit.key.as_slice().try_into().map_err(|_| {
-                    IndexError::CorruptObject("packed posting owner key width".into())
-                })?;
+            let owner: [u8; 32] = change.key().try_into().map_err(|_width_error| {
+                IndexError::CorruptObject("packed posting owner key width".into())
+            })?;
             let expected = if order == std::cmp::Ordering::Equal {
-                row_slot += 1;
+                row_slot = row_slot.checked_add(1).ok_or(IndexError::ResourceLimited)?;
                 old.map(|row| PriorValue::Witness(OccurrenceDigestWitness::from_bytes(row.witness)))
             } else {
                 None
             };
-            require_expected(expected, change.edit.expected)?;
-            if let Some(next) = change.edit.next.map(MapValue::object_ref).transpose()? {
+            require_expected(expected, change.expected()?)?;
+            if let Some(next) = change.next()?.map(MapValue::object_ref).transpose()? {
                 draft.push(
                     dense_wire::PostingRow {
                         owner,
@@ -440,9 +516,128 @@ fn resolve_packed_warm(
         shape: Shape::PostingPages,
         small: SmallMap::default(),
         stamp: Some(input.digest.finish()),
+        aliased_directory: false,
         block_slot: None,
         dense: Some(draft),
     }))
+}
+
+struct BoundedMapDraft {
+    usage: EntryMapUse,
+    small: Option<SmallMap>,
+    block: Option<BlockDraft>,
+}
+
+impl BoundedMapDraft {
+    fn new(usage: EntryMapUse, count: u64, budget: &WorkBudget) -> Result<Self, IndexError> {
+        let block = if usage.is_inventory()
+            && count
+                > u64::try_from(INLINE_ENTRIES).map_err(|_error| IndexError::ResourceLimited)?
+        {
+            Some(BlockDraft::new(budget)?)
+        } else {
+            None
+        };
+        Ok(Self {
+            usage,
+            small: Some(SmallMap::default()),
+            block,
+        })
+    }
+
+    fn push(
+        &mut self,
+        key: &[u8],
+        value: ObjectRef,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        if let Some(map) = self.small.as_mut()
+            && !map.push(key, value)?
+        {
+            // Preserve Small's original funding envelope. A short map
+            // needs a block only when a key actually exceeds Small's shape.
+            if self.usage.is_inventory() && self.block.is_none() && key.len() <= 1024 {
+                let mut draft = BlockDraft::new(budget)?;
+                for slot in 0..map.len() {
+                    let (prior_key, prior_value) = map.entry(slot)?.ok_or_else(|| {
+                        IndexError::BackendViolation("bounded entry seed missing".into())
+                    })?;
+                    if !draft.push(prior_key, prior_value, budget)? {
+                        return Err(IndexError::BackendViolation(
+                            "Small entries exceed bounded block seed".into(),
+                        ));
+                    }
+                }
+                self.block = Some(draft);
+            }
+            self.small = None;
+        }
+        if let Some(draft) = self.block.as_mut()
+            && !draft.push(key, value, budget)?
+        {
+            self.block = None;
+        }
+        Ok(())
+    }
+
+    fn finish(self, stamp: Stamp, context: &mut AttemptContext<'_>) -> Result<Plan, IndexError> {
+        let shape = if self.small.is_some() {
+            Shape::Small
+        } else if let Some(block) = self.block {
+            if self.usage == EntryMapUse::ColdInventory
+                && let Some(reference) = cold_occurrence_alias(&block, context)?
+            {
+                Shape::OccurrenceBlock(reference)
+            } else {
+                Shape::Block(Some(block))
+            }
+        } else {
+            Shape::Tree
+        };
+        Ok(Plan {
+            shape,
+            small: self.small.unwrap_or_default(),
+            stamp: Some(stamp),
+            aliased_directory: false,
+            block_slot: None,
+            dense: None,
+        })
+    }
+}
+
+fn resolve_frozen_bounded_inventory(
+    inventory: &ReadyInventoryReadLease<'_>,
+    previous_key: &mut [u8],
+    slot: usize,
+    count: u64,
+    context: &mut AttemptContext<'_>,
+) -> Result<Plan, IndexError> {
+    let mut draft = BoundedMapDraft::new(EntryMapUse::ColdInventory, count, context.budget)?;
+    let mut digest = Edits::new();
+    let mut actual = 0_u64;
+    inventory.visit_root_edits(slot, previous_key, context.budget, |row, budget| {
+        let [expected, next] =
+            digest.push_object_wires(row.key, [row.expected, row.next], budget)?;
+        require_expected(None, expected.map(Into::into))?;
+        if let Some(reference) = next {
+            actual = actual.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+            if actual > count {
+                return Err(IndexError::CorruptObject(
+                    "entry-map final cardinality exceeds declared value".into(),
+                ));
+            }
+            draft.push(row.key, reference, budget)?;
+        }
+        Ok(())
+    })?;
+    if actual != count {
+        return Err(IndexError::CorruptObject(
+            "entry-map final cardinality differs".into(),
+        ));
+    }
+    let plan = draft.finish(digest.finish(), context)?;
+    inventory.check_epoch(context.budget)?;
+    Ok(plan)
 }
 
 fn resolve_bounded(
@@ -471,20 +666,19 @@ fn resolve_bounded(
                 *reference,
                 context.budget,
             )?),
-            _ => None,
+            EntryMap::Small(_)
+            | EntryMap::Block(_)
+            | EntryMap::Tree(_)
+            | EntryMap::OccurrenceBlock(_)
+            | EntryMap::InventoryDirectory(_) => None,
         };
         Some(dense_write::Draft::new(prior, count, context.budget)?)
     } else {
         None
     };
-    let mut small = (!pack).then(SmallMap::default);
-    let mut block = if usage.is_inventory()
-        && count > u64::try_from(INLINE_ENTRIES).map_err(|_error| IndexError::ResourceLimited)?
-    {
-        Some(BlockDraft::new(context.budget)?)
-    } else {
-        None
-    };
+    let mut compact = (!pack)
+        .then(|| BoundedMapDraft::new(usage, count, context.budget))
+        .transpose()?;
     let mut actual = 0_u64;
     while old.is_some() || delta.is_some() {
         context.budget.checkpoint()?;
@@ -499,7 +693,7 @@ fn resolve_bounded(
             })
             .transpose()?;
         let ordering = match (old_row, delta.as_ref()) {
-            (Some((key, _)), Some(edit)) => key.cmp(&edit.edit.key),
+            (Some((key, _)), Some(edit)) => key.cmp(edit.key()),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => break,
@@ -519,11 +713,10 @@ fn resolve_bounded(
                 } else {
                     None
                 };
-                require_expected(expected, edit.edit.expected)?;
+                require_expected(expected, edit.expected()?)?;
                 (
-                    edit.edit.key.as_slice(),
-                    edit.edit
-                        .next
+                    edit.key(),
+                    edit.next()?
                         .map(quanta_index_core::index::MapValue::object_ref)
                         .transpose()?
                         .map(PriorValue::Reference),
@@ -537,11 +730,11 @@ fn resolve_bounded(
                     "entry-map final cardinality exceeds declared value".into(),
                 ));
             }
-            if pack {
-                let owner = key.try_into().map_err(|_| {
+            if let Some(draft) = dense.as_mut() {
+                let owner = key.try_into().map_err(|_width_error| {
                     IndexError::CorruptObject("packed posting owner key width".into())
                 })?;
-                dense.as_mut().ok_or(IndexError::ResourceLimited)?.push(
+                draft.push(
                     dense_wire::PostingRow {
                         owner,
                         witness: value.witness().bytes(),
@@ -566,32 +759,11 @@ fn resolve_bounded(
                         reference
                     }
                 };
-                if let Some(map) = small.as_mut()
-                    && !map.push(key, value)?
-                {
-                    // Preserve Small's original funding envelope. A short map
-                    // needs a block only when a key actually exceeds Small's shape.
-                    if usage.is_inventory() && block.is_none() && key.len() <= 1024 {
-                        let mut draft = BlockDraft::new(context.budget)?;
-                        for slot in 0..map.len() {
-                            let (prior_key, prior_value) = map.entry(slot)?.ok_or_else(|| {
-                                IndexError::BackendViolation("bounded entry seed missing".into())
-                            })?;
-                            if !draft.push(prior_key, prior_value, context.budget)? {
-                                return Err(IndexError::BackendViolation(
-                                    "Small entries exceed bounded block seed".into(),
-                                ));
-                            }
-                        }
-                        block = Some(draft);
-                    }
-                    small = None;
-                }
-                if let Some(draft) = block.as_mut()
-                    && !draft.push(key, value, context.budget)?
-                {
-                    block = None;
-                }
+                compact.as_mut().ok_or(IndexError::ResourceLimited)?.push(
+                    key,
+                    value,
+                    context.budget,
+                )?;
             }
         }
         if ordering != std::cmp::Ordering::Greater {
@@ -606,31 +778,21 @@ fn resolve_bounded(
             "entry-map final cardinality differs".into(),
         ));
     }
-    if let Some(draft) = dense.as_mut() {
+    let stamp = input.digest.finish();
+    if let Some(mut draft) = dense {
         draft.finish(context)?;
+        return Ok(Plan {
+            shape: Shape::PostingPages,
+            small: SmallMap::default(),
+            stamp: Some(stamp),
+            aliased_directory: false,
+            block_slot: None,
+            dense: Some(draft),
+        });
     }
-    let shape = if dense.is_some() {
-        Shape::PostingPages
-    } else if small.is_some() {
-        Shape::Small
-    } else if let Some(block) = block {
-        if usage == EntryMapUse::ColdInventory
-            && let Some(reference) = cold_occurrence_alias(&block, context)?
-        {
-            Shape::OccurrenceBlock(reference)
-        } else {
-            Shape::Block(Some(block))
-        }
-    } else {
-        Shape::Tree
-    };
-    Ok(Plan {
-        shape,
-        small: small.unwrap_or_default(),
-        stamp: Some(input.digest.finish()),
-        block_slot: None,
-        dense,
-    })
+    compact
+        .ok_or(IndexError::ResourceLimited)?
+        .finish(stamp, context)
 }
 
 /// Revalidate the complete original stream before publishing compact metadata.
@@ -663,19 +825,27 @@ impl MapInput<'_> {
             self.eof = true;
             return Ok(());
         };
-        if usize::try_from(edit.root).map_err(|_error| IndexError::ResourceLimited)?
+        if usize::try_from(edit.root()).map_err(|_error| IndexError::ResourceLimited)?
             >= self.priors.len()
             || self.previous.as_ref().is_some_and(|prior| {
-                prior.root > edit.root
-                    || (prior.root == edit.root && prior.edit.key >= edit.edit.key)
+                prior.root() > edit.root()
+                    || (prior.root() == edit.root() && prior.key() >= edit.key())
             })
         {
             return Err(IndexError::CorruptObject(
                 "global entry-map edits are foreign or unordered".into(),
             ));
         }
-        for value in [edit.edit.expected, edit.edit.next].into_iter().flatten() {
-            let _reference = value.object_ref()?;
+        for value in [edit.expected()?, edit.next()?].into_iter().flatten() {
+            if self
+                .plans
+                .get(usize::try_from(edit.root()).map_err(|_| IndexError::ResourceLimited)?)
+                .is_some_and(|plan| plan.aliased_directory)
+            {
+                let _descriptor = directory::decode(value)?;
+            } else {
+                let _reference = value.object_ref()?;
+            }
         }
         self.previous = Some(edit.clone());
         self.head = Some(edit);
@@ -691,7 +861,15 @@ impl MapInput<'_> {
             .get(self.root)
             .is_some_and(|plan| plan.stamp.is_some())
         {
-            self.digest.push(&edit, budget)?;
+            if self
+                .plans
+                .get(self.root)
+                .is_some_and(|plan| plan.aliased_directory)
+            {
+                self.digest.push_descriptor(&edit, budget)?;
+            } else {
+                self.digest.push(&edit, budget)?;
+            }
         }
         Ok(edit)
     }
@@ -718,8 +896,87 @@ impl MapInput<'_> {
         self.digest = Edits::new();
         Ok(())
     }
+
+    fn close_compact(&mut self, budget: &mut WorkBudget) -> Result<(), IndexError> {
+        if let Some(directory) = self.old_cursor.as_mut()
+            && directory.next(budget)?.is_some()
+        {
+            return Err(IndexError::CorruptObject(
+                "inventory directory has trailing rows".into(),
+            ));
+        }
+        self.close()
+    }
+
+    fn verify_frozen_compacts(
+        &mut self,
+        inventory: &ReadyInventoryReadLease<'_>,
+        previous_key: &mut [u8],
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        inventory.visit_edits(self.plans.len(), previous_key, budget, |row, budget| {
+            let root = usize::try_from(row.root).map_err(|_width| IndexError::ResourceLimited)?;
+            while self.root < root {
+                self.close_compact(budget)?;
+            }
+            let plan = self
+                .plans
+                .get(self.root)
+                .ok_or_else(|| IndexError::BackendViolation("entry plan missing".into()))?;
+            if plan.aliased_directory {
+                return self
+                    .digest
+                    .push_descriptor_wire(row.key, row.expected, row.next, budget);
+            }
+            let [expected, next] =
+                self.digest
+                    .push_object_wires(row.key, [row.expected, row.next], budget)?;
+            if let Shape::InventoryDirectory(reference) = plan.shape {
+                let directory = self.old_cursor.get_or_insert_with(|| {
+                    MapEntries::new(
+                        self.objects,
+                        self.maps,
+                        EntryMap::InventoryDirectory(reference),
+                    )
+                });
+                let actual = directory.next(budget)?.ok_or_else(|| {
+                    IndexError::CorruptObject(
+                        "inventory directory has fewer rows than original stream".into(),
+                    )
+                })?;
+                let (key, reference) = actual.object_parts()?;
+                if key != row.key || expected.is_some() || next != Some(*reference) {
+                    return Err(IndexError::CorruptObject(
+                        "inventory directory readback differs from original stream".into(),
+                    ));
+                }
+            }
+            Ok(())
+        })?;
+        while self.root < self.plans.len() {
+            self.close_compact(budget)?;
+        }
+        inventory.check_epoch(budget)?;
+        self.finished = true;
+        Ok(())
+    }
 }
 impl MapEditCursor for MapInput<'_> {
+    fn subtree_packing(&self) -> Result<RootPackingPlan, IndexError> {
+        let mut packing = RootPackingPlan::default();
+        if self.usage == EntryMapUse::ColdInventory {
+            for (slot, (prior, plan)) in self.priors.iter().zip(self.plans).enumerate() {
+                if *prior == EntryMap::default() && matches!(&plan.shape, Shape::Tree) {
+                    packing.select(
+                        u32::try_from(slot).map_err(|_error| IndexError::ResourceLimited)?,
+                        RootPackingMode::Nested,
+                    )?;
+                }
+            }
+        }
+        Ok(packing)
+    }
+
     fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError> {
         loop {
             budget.checkpoint()?;
@@ -732,7 +989,60 @@ impl MapEditCursor for MapInput<'_> {
                 return Ok(None);
             };
             let root = u32::try_from(self.root).map_err(|_error| IndexError::ResourceLimited)?;
-            let has_delta = self.head.as_ref().is_some_and(|edit| edit.root == root);
+            let has_delta = self.head.as_ref().is_some_and(|edit| edit.root() == root);
+            if let Some(Shape::InventoryDirectory(reference)) =
+                self.plans.get(self.root).map(|plan| &plan.shape)
+            {
+                if self
+                    .plans
+                    .get(self.root)
+                    .is_some_and(|plan| plan.aliased_directory)
+                {
+                    if has_delta {
+                        let edit = self.take(budget)?;
+                        if edit.expected()?.is_some() || edit.next()?.is_none() {
+                            return Err(IndexError::CorruptObject(
+                                "cold alias anchor CAS differs".into(),
+                            ));
+                        }
+                        continue;
+                    }
+                    self.close()?;
+                    continue;
+                }
+                if self.old_cursor.is_none() {
+                    self.old_cursor = Some(MapEntries::new(
+                        self.objects,
+                        self.maps,
+                        EntryMap::InventoryDirectory(*reference),
+                    ));
+                }
+                if has_delta {
+                    let edit = self.take(budget)?;
+                    let actual = self
+                        .old_cursor
+                        .as_mut()
+                        .ok_or(IndexError::ResourceLimited)?
+                        .next(budget)?
+                        .ok_or_else(|| {
+                            IndexError::CorruptObject(
+                                "inventory directory has fewer rows than original stream".into(),
+                            )
+                        })?;
+                    let (key, reference) = actual.object_parts()?;
+                    if key != edit.key()
+                        || edit.expected()?.is_some()
+                        || edit.next()?.map(MapValue::object_ref).transpose()? != Some(*reference)
+                    {
+                        return Err(IndexError::CorruptObject(
+                            "inventory directory readback differs from original stream".into(),
+                        ));
+                    }
+                    continue;
+                }
+                self.close_compact(budget)?;
+                continue;
+            }
             if self
                 .plans
                 .get(self.root)
@@ -754,7 +1064,10 @@ impl MapEditCursor for MapInput<'_> {
             }
             if matches!(
                 prior,
-                EntryMap::Block(_) | EntryMap::OccurrenceBlock(_) | EntryMap::PostingPages(_)
+                EntryMap::Block(_)
+                    | EntryMap::OccurrenceBlock(_)
+                    | EntryMap::PostingPages(_)
+                    | EntryMap::InventoryDirectory(_)
             ) && self.old_cursor.is_none()
             {
                 self.old_cursor = Some(MapEntries::new(self.objects, self.maps, prior));
@@ -776,7 +1089,7 @@ impl MapEditCursor for MapInput<'_> {
                     .transpose()?
             };
             let order = match (old, if has_delta { self.head.as_ref() } else { None }) {
-                (Some((key, _)), Some(edit)) => key.cmp(&edit.edit.key),
+                (Some((key, _)), Some(edit)) => key.cmp(edit.key()),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => {
@@ -816,7 +1129,7 @@ impl MapEditCursor for MapInput<'_> {
                 None
             };
             let edit = self.take(budget)?;
-            require_expected(expected, edit.edit.expected)?;
+            require_expected(expected, edit.expected()?)?;
             if order == std::cmp::Ordering::Equal {
                 if small.is_some() {
                     self.old_slot = self
@@ -828,17 +1141,26 @@ impl MapEditCursor for MapInput<'_> {
                 }
             }
             if let Some(value) = edit
-                .edit
-                .next
+                .next()?
                 .map(quanta_index_core::index::MapValue::object_ref)
                 .transpose()?
             {
-                let result =
-                    tree_edit(root, &edit.edit.key, None, Some(value), self.usage, budget)?;
+                // For an empty inventory base this is already the original,
+                // ordered object-valued edit. Keep its admitted key and grant
+                // instead of copying them into a second ordinal edit.
+                if self.usage.is_inventory() && prior == EntryMap::default() {
+                    return Ok(Some(edit));
+                }
+                let result = tree_edit(root, edit.key(), None, Some(value), self.usage, budget)?;
                 return Ok(Some(result));
             }
         }
     }
+}
+
+enum OriginalInput<'a, 'spool> {
+    Cursor(&'a mut dyn MapEditCursor),
+    Inventory(&'a ReadyInventoryReadLease<'spool>),
 }
 
 pub(super) fn apply<C: MapEditCursor>(
@@ -846,10 +1168,173 @@ pub(super) fn apply<C: MapEditCursor>(
     priors: &[EntryMap],
     counts: &[u64],
     input: &mut dyn MapEditCursor,
+    root_cursor: impl FnMut(usize) -> Result<C, IndexError>,
+    context: &mut AttemptContext<'_>,
+    posting_refs: Option<&mut PostingRefResolver<'_>>,
+) -> Result<PreparedRows<EntryMap>, IndexError> {
+    apply_inner(
+        usage,
+        priors,
+        counts,
+        None,
+        OriginalInput::Cursor(input),
+        root_cursor,
+        context,
+        posting_refs,
+    )
+}
+
+/// Cold bounded postings are planned from one authenticated original stream.
+/// All page outputs are complete before any packed object is installed.
+pub(super) fn apply_cold_bounded_postings(
+    priors: &[EntryMap],
+    counts: &[u64],
+    input: &mut PostingCursor<'_>,
+    proof: &DensePostingPrepassProof,
+    mut confirmed: Option<&mut dense_write::ConfirmedColdRoots>,
+    context: &mut AttemptContext<'_>,
+) -> Result<PreparedRows<EntryMap>, IndexError> {
+    if priors.is_empty()
+        || priors.len() > quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS
+        || counts.len() != priors.len()
+        || priors.iter().any(|prior| *prior != EntryMap::default())
+        || counts.iter().any(|count| *count > dense_wire::MAX_ROWS)
+    {
+        return Err(IndexError::InvalidInput(
+            "cold bounded posting page differs from its declared roots".into(),
+        ));
+    }
+    input.check_cardinalities(proof, context.budget)?;
+    let mut result = PreparedRows::with_capacity(priors.len(), context.budget)?;
+    let mut drafts = PreparedRows::with_capacity(priors.len(), context.budget)?;
+    let mut next = input.next_edit(context.budget)?;
+    for (slot, count) in counts.iter().copied().enumerate() {
+        let root = u32::try_from(slot).map_err(|_error| IndexError::ResourceLimited)?;
+        let mut small = SmallMap::default();
+        let mut draft = if count >= dense_wire::MIN_ROWS {
+            Some(dense_write::Draft::new(None, count, context.budget)?)
+        } else {
+            None
+        };
+        while next.as_ref().is_some_and(|edit| edit.root() == root) {
+            let edit = next.take().ok_or(IndexError::ResourceLimited)?;
+            if edit.key().len() != 32 {
+                return Err(IndexError::CorruptObject(
+                    "cold bounded posting owner key width".into(),
+                ));
+            }
+            require_expected(None, edit.expected()?)?;
+            if let Some(reference) = edit.next()?.map(MapValue::object_ref).transpose()? {
+                if let Some(draft) = draft.as_mut() {
+                    let owner: [u8; 32] = edit.key().try_into().map_err(|_error| {
+                        IndexError::CorruptObject("cold bounded posting owner key width".into())
+                    })?;
+                    draft.push(
+                        dense_wire::PostingRow {
+                            owner,
+                            witness: OccurrenceDigestWitness::from_reference(reference).bytes(),
+                        },
+                        context,
+                    )?;
+                } else if !small.push(edit.key(), reference)? {
+                    return Err(IndexError::CorruptObject(
+                        "cold small posting exceeds inline shape".into(),
+                    ));
+                }
+            }
+            next = input.next_edit(context.budget)?;
+        }
+        if draft.is_none()
+            && u64::try_from(small.len()).map_err(|_error| IndexError::ResourceLimited)? != count
+        {
+            return Err(IndexError::CorruptObject(
+                "cold bounded posting cardinality differs".into(),
+            ));
+        }
+        if let Some(draft) = draft.as_mut() {
+            draft.finish(context)?;
+        }
+        result.push(EntryMap::inline(&small), context.budget)?;
+        drafts.push(draft, context.budget)?;
+    }
+    if next.is_some() {
+        return Err(IndexError::CorruptObject(
+            "cold bounded posting stream has trailing root".into(),
+        ));
+    }
+    input.check_cardinalities(proof, context.budget)?;
+    // Hints are consulted only after the entire original stream authenticated.
+    // No leaf from a partially validated page can seed a later page.
+    if let Some(confirmed) = confirmed.as_deref_mut() {
+        confirmed.reuse(drafts.as_mut_slice(), result.as_mut_slice(), context)?;
+    }
+    if drafts.as_slice().iter().any(Option::is_some) {
+        dense_write::install(drafts.as_mut_slice(), result.as_mut_slice(), context)?;
+    }
+    if let Some(confirmed) = confirmed {
+        confirmed.remember_installed(result.as_slice(), context)?;
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+pub(super) fn apply_with_cold_aliases<C: MapEditCursor>(
+    usage: EntryMapUse,
+    priors: &[EntryMap],
+    counts: &[u64],
+    aliases: &[Option<ColdInventoryAlias>],
+    input: &mut dyn MapEditCursor,
+    root_cursor: impl FnMut(usize) -> Result<C, IndexError>,
+    context: &mut AttemptContext<'_>,
+    posting_refs: Option<&mut PostingRefResolver<'_>>,
+) -> Result<PreparedRows<EntryMap>, IndexError> {
+    apply_inner(
+        usage,
+        priors,
+        counts,
+        Some(aliases),
+        OriginalInput::Cursor(input),
+        root_cursor,
+        context,
+        posting_refs,
+    )
+}
+
+pub(super) fn apply_frozen_inventory(
+    usage: EntryMapUse,
+    priors: &[EntryMap],
+    counts: &[u64],
+    aliases: &[Option<ColdInventoryAlias>],
+    inventory: &ReadyInventoryReadLease<'_>,
+    context: &mut AttemptContext<'_>,
+) -> Result<PreparedRows<EntryMap>, IndexError> {
+    apply_inner(
+        usage,
+        priors,
+        counts,
+        Some(aliases),
+        OriginalInput::Inventory(inventory),
+        |slot| inventory.root_cursor(slot),
+        context,
+        None,
+    )
+}
+
+fn apply_inner<C: MapEditCursor>(
+    usage: EntryMapUse,
+    priors: &[EntryMap],
+    counts: &[u64],
+    aliases: Option<&[Option<ColdInventoryAlias>]>,
+    input: OriginalInput<'_, '_>,
     mut root_cursor: impl FnMut(usize) -> Result<C, IndexError>,
     context: &mut AttemptContext<'_>,
     mut posting_refs: Option<&mut PostingRefResolver<'_>>,
 ) -> Result<PreparedRows<EntryMap>, IndexError> {
+    if aliases.is_some_and(|aliases| aliases.len() != priors.len()) {
+        return Err(IndexError::InvalidInput(
+            "cold alias plan count differs".into(),
+        ));
+    }
     let empty_priors = priors.iter().all(|prior| *prior == EntryMap::default());
     let cold_inventory = usage.is_inventory() && empty_priors;
     let usage = if usage == EntryMapUse::ColdInventory && !empty_priors {
@@ -870,6 +1355,16 @@ pub(super) fn apply<C: MapEditCursor>(
     let mut plans = PreparedRows::new(priors.len())?;
     let mut bases = PreparedRows::new(priors.len())?;
     let mut result = PreparedRows::new(priors.len())?;
+    let mut directories = PreparedRows::new(priors.len())?;
+    let frozen = match &input {
+        OriginalInput::Cursor(_) => None,
+        OriginalInput::Inventory(inventory) => Some(*inventory),
+    };
+    let diagnostic = if usage.is_inventory() {
+        context.budget.request().diagnostic_context().cloned()
+    } else {
+        None
+    };
     // Admit every retained slot before reading a base or creating any map.
     for prior in priors {
         prior.validate_for(usage)?;
@@ -878,6 +1373,7 @@ pub(super) fn apply<C: MapEditCursor>(
                 shape: Shape::Tree,
                 small: SmallMap::default(),
                 stamp: None,
+                aliased_directory: false,
                 block_slot: None,
                 dense: None,
             },
@@ -886,17 +1382,82 @@ pub(super) fn apply<C: MapEditCursor>(
         bases.push(prior.tree_base(), context.budget)?;
         result.push(EntryMap::default(), context.budget)?;
     }
+    let planning_memory = if usage == EntryMapUse::ColdInventory && frozen.is_some() {
+        context
+            .budget
+            .try_reserve_memory_for_optimization(MAX_TERM_KEY_BYTES, MemoryLifetime::Temporary)?
+    } else {
+        None
+    };
+    let mut planning_key = [0; 1024];
     for (slot, (prior, count)) in priors.iter().zip(counts).enumerate() {
+        let alias = aliases
+            .and_then(|aliases| aliases.get(slot))
+            .copied()
+            .flatten();
+        if let Some(alias) = alias {
+            if usage != EntryMapUse::ColdInventory
+                || *prior != EntryMap::default()
+                || alias.anchors != *count
+                || alias.attempt != context.attempt
+            {
+                return Err(IndexError::InvalidInput(
+                    "cold alias plan differs from root".into(),
+                ));
+            }
+        }
         let bound = match usage {
             EntryMapUse::Inventory | EntryMapUse::ColdInventory => 512,
             EntryMapUse::PackedPosting if matches!(prior, EntryMap::Tree(_)) => REPACK_TREE_ROWS,
             EntryMapUse::PackedPosting => dense_wire::MAX_ROWS,
             EntryMapUse::Posting => {
-                u64::try_from(INLINE_ENTRIES).map_err(|_| IndexError::ResourceLimited)?
+                u64::try_from(INLINE_ENTRIES).map_err(|_error| IndexError::ResourceLimited)?
             }
         };
-        if *count <= bound {
-            let local = if usage == EntryMapUse::PackedPosting
+        let anchored = alias.is_some_and(|alias| alias.layout == ColdAliasLayout::Directory);
+        if usage == EntryMapUse::ColdInventory
+            && *prior == EntryMap::default()
+            && (*count > bound || anchored)
+        {
+            if frozen.is_some() {
+                directories.push(
+                    directory::BuildRequest {
+                        slot,
+                        count: *count,
+                        anchored,
+                    },
+                    context.budget,
+                )?;
+                continue;
+            }
+            let (reference, digest) = super::observe_text_step(
+                diagnostic.as_ref(),
+                quanta_index_core::DiagnosticStageV1::NativeTextInventoryMapApply,
+                40,
+                context,
+                |context| {
+                    if anchored {
+                        directory::build_anchors(&mut root_cursor(slot)?, *count, context)
+                    } else {
+                        directory::build(&mut root_cursor(slot)?, *count, context)
+                    }
+                },
+            )?;
+            *plans
+                .as_mut_slice()
+                .get_mut(slot)
+                .ok_or(IndexError::ResourceLimited)? =
+                Plan::directory(reference, *count, digest, anchored);
+        } else if *count <= bound {
+            let local = if let (Some(inventory), Some(_memory)) = (frozen, &planning_memory) {
+                Some(resolve_frozen_bounded_inventory(
+                    inventory,
+                    &mut planning_key,
+                    slot,
+                    *count,
+                    context,
+                )?)
+            } else if usage == EntryMapUse::PackedPosting
                 && *count >= dense_wire::MIN_ROWS
                 && let EntryMap::PostingPages(reference) = prior
             {
@@ -928,10 +1489,42 @@ pub(super) fn apply<C: MapEditCursor>(
                 .ok_or(IndexError::ResourceLimited)? = plan;
         }
     }
+    drop(planning_memory);
+    if let Some(inventory) = frozen
+        && !directories.as_slice().is_empty()
+    {
+        let requests = directories.as_slice();
+        let (roots, digests) = super::observe_text_step(
+            diagnostic.as_ref(),
+            quanta_index_core::DiagnosticStageV1::NativeTextInventoryMapApply,
+            40,
+            context,
+            |context| directory::build_batch(requests, inventory, context),
+        )?;
+        for (index, (request, digest)) in requests.iter().zip(digests.as_slice()).enumerate() {
+            let root = roots.get(index).and_then(|root| root.0).ok_or_else(|| {
+                IndexError::CorruptObject("directory batch map root absent".into())
+            })?;
+            *plans
+                .as_mut_slice()
+                .get_mut(request.slot)
+                .ok_or(IndexError::ResourceLimited)? =
+                Plan::directory(root, request.count, *digest, request.anchored);
+        }
+    }
+    drop(directories);
     let needs_tree = plans
         .as_slice()
         .iter()
         .any(|plan| matches!(&plan.shape, Shape::Tree));
+    let mut inventory_cursor;
+    let input: &mut dyn MapEditCursor = match input {
+        OriginalInput::Cursor(input) => input,
+        OriginalInput::Inventory(inventory) => {
+            inventory_cursor = inventory.cursor(priors.len())?;
+            &mut inventory_cursor
+        }
+    };
     let mut checked = MapInput {
         input,
         usage,
@@ -949,21 +1542,42 @@ pub(super) fn apply<C: MapEditCursor>(
         eof: false,
         finished: false,
     };
-    let roots = if needs_tree {
-        Some(context.apply_stream(bases.as_slice(), &mut checked)?)
-    } else {
-        if checked.next_edit(context.budget)?.is_some() {
-            return Err(IndexError::BackendViolation(
-                "inline batch produced a map edit".into(),
-            ));
-        }
-        None
-    };
-    if !checked.finished {
-        return Err(IndexError::BackendViolation(
-            "map consumer did not complete original entry edits".into(),
-        ));
-    }
+    let roots = super::observe_text_step(
+        diagnostic.as_ref(),
+        quanta_index_core::DiagnosticStageV1::NativeTextInventoryMapApply,
+        41,
+        context,
+        |context| {
+            if usage == EntryMapUse::ColdInventory
+                && !needs_tree
+                && let Some(inventory) = frozen
+                && let Some(_key_memory) = context.budget.try_reserve_memory_for_optimization(
+                    MAX_TERM_KEY_BYTES,
+                    MemoryLifetime::Temporary,
+                )?
+            {
+                let mut previous_key = [0; 1024];
+                checked.verify_frozen_compacts(inventory, &mut previous_key, context.budget)?;
+                return Ok(None);
+            }
+            let roots = if needs_tree {
+                Some(context.apply_stream(bases.as_slice(), &mut checked)?)
+            } else {
+                if checked.next_edit(context.budget)?.is_some() {
+                    return Err(IndexError::BackendViolation(
+                        "inline batch produced a map edit".into(),
+                    ));
+                }
+                None
+            };
+            if !checked.finished {
+                return Err(IndexError::BackendViolation(
+                    "map consumer did not complete original entry edits".into(),
+                ));
+            }
+            Ok(roots)
+        },
+    )?;
     drop(checked);
     let block_count = plans
         .as_slice()
@@ -1044,6 +1658,7 @@ pub(super) fn apply<C: MapEditCursor>(
                 EntryMap::Block(reference)
             }
             Shape::OccurrenceBlock(reference) => EntryMap::OccurrenceBlock(*reference),
+            Shape::InventoryDirectory(reference) => EntryMap::InventoryDirectory(*reference),
             Shape::PostingPages => EntryMap::default(),
             Shape::Tree => {
                 let root = roots

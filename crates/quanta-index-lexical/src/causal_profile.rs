@@ -4,19 +4,29 @@
 //! kernel wait. They do not establish physical device completion or crash
 //! consistency. A profiling run must retain stderr and the matching source.
 
+#[cfg(feature = "legacy-tantivy")]
 use std::io;
+#[cfg(feature = "legacy-tantivy")]
 use std::sync::Arc;
+#[cfg(feature = "legacy-tantivy")]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(feature = "legacy-tantivy")]
 use std::time::Instant;
 
 use quanta_index_core::{
-    DiagnosticAdoptionFlushReasonV1, DiagnosticContextV1, DiagnosticCounterV1,
-    DiagnosticHealthCodeV1, DiagnosticLaneV1, DiagnosticObjectKindV1, DiagnosticOccupancyBucketV1,
-    DiagnosticSpanGuardV1, DiagnosticStageV1, DiagnosticSyncLabelV1, DiagnosticTerminalV1,
+    DiagnosticContextV1, DiagnosticHealthCodeV1, DiagnosticLaneV1, DiagnosticSpanGuardV1,
+    DiagnosticStageV1, DiagnosticTerminalV1,
+};
+
+#[cfg(feature = "legacy-tantivy")]
+use quanta_index_core::{
+    DiagnosticAdoptionFlushReasonV1, DiagnosticCounterV1, DiagnosticObjectKindV1,
+    DiagnosticOccupancyBucketV1, DiagnosticSyncLabelV1,
 };
 
 /// Local to one retention measurement; concurrent object store users have
 /// independent work accounting.
+#[cfg(feature = "legacy-tantivy")]
 #[derive(Default)]
 pub(crate) struct ClosureReadTotalsV1 {
     pub(crate) objects_read: u64,
@@ -32,6 +42,7 @@ pub(crate) struct ClosureReadTotalsV1 {
     pub(crate) overflowed: u16,
 }
 
+#[cfg(feature = "legacy-tantivy")]
 impl ClosureReadTotalsV1 {
     pub(crate) const SQLITE_ELAPSED: u16 = 1 << 0;
     pub(crate) const READ_ELAPSED: u16 = 1 << 1;
@@ -113,6 +124,7 @@ impl ClosureReadTotalsV1 {
 }
 /// Request-owned aggregate. It is passed only into one publication's local
 /// storage handles and flushed once at the owner boundary.
+#[cfg(feature = "legacy-tantivy")]
 #[derive(Debug, Default)]
 pub(crate) struct SyncTotalsV1 {
     calls: AtomicU64,
@@ -131,12 +143,14 @@ pub(crate) struct SyncTotalsV1 {
     adoption: [[[AdoptionStat; 6]; 6]; 3],
 }
 
+#[cfg(feature = "legacy-tantivy")]
 #[derive(Debug, Default)]
 struct ObjectKindStat {
     new_objects: AtomicU64,
     reused_objects: AtomicU64,
 }
 
+#[cfg(feature = "legacy-tantivy")]
 #[derive(Debug, Default)]
 struct SyncStat {
     calls: AtomicU64,
@@ -145,17 +159,20 @@ struct SyncStat {
     elapsed_max_ns: AtomicU64,
 }
 
+#[cfg(feature = "legacy-tantivy")]
 #[derive(Debug, Default)]
 struct AdoptionStat {
     groups: AtomicU64,
     failed_groups: AtomicU64,
 }
 
+#[cfg(feature = "legacy-tantivy")]
 const REASONS: [DiagnosticAdoptionFlushReasonV1; 3] = [
     DiagnosticAdoptionFlushReasonV1::RefLimit,
     DiagnosticAdoptionFlushReasonV1::ByteLimit,
     DiagnosticAdoptionFlushReasonV1::Explicit,
 ];
+#[cfg(feature = "legacy-tantivy")]
 const BUCKETS: [DiagnosticOccupancyBucketV1; 6] = [
     DiagnosticOccupancyBucketV1::Zero,
     DiagnosticOccupancyBucketV1::UpTo25Percent,
@@ -165,6 +182,7 @@ const BUCKETS: [DiagnosticOccupancyBucketV1; 6] = [
     DiagnosticOccupancyBucketV1::Over100Percent,
 ];
 
+#[cfg(feature = "legacy-tantivy")]
 fn bucket_index(bucket: DiagnosticOccupancyBucketV1) -> usize {
     match bucket {
         DiagnosticOccupancyBucketV1::Zero => 0,
@@ -176,6 +194,7 @@ fn bucket_index(bucket: DiagnosticOccupancyBucketV1) -> usize {
     }
 }
 
+#[cfg(feature = "legacy-tantivy")]
 fn increment(counter: &AtomicU64, amount: u64, overflow: &AtomicBool) {
     let _previous = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         let result = current.checked_add(amount);
@@ -220,6 +239,7 @@ pub(crate) fn enter_span_on_lane(
     )
 }
 
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn occupancy_bucket(value: u64, cap: u64) -> DiagnosticOccupancyBucketV1 {
     if value == 0 {
         DiagnosticOccupancyBucketV1::Zero
@@ -236,6 +256,7 @@ pub(crate) fn occupancy_bucket(value: u64, cap: u64) -> DiagnosticOccupancyBucke
     }
 }
 
+#[cfg(feature = "legacy-tantivy")]
 impl SyncTotalsV1 {
     pub(crate) fn record_new_object(&self, kind: DiagnosticObjectKindV1) {
         increment(&self.new_objects, 1, &self.overflow);
@@ -426,6 +447,7 @@ impl SyncTotalsV1 {
     }
 }
 
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn observed_sync(
     meter: Option<&SyncTotalsV1>,
     label: DiagnosticSyncLabelV1,
@@ -444,6 +466,7 @@ pub(crate) fn observed_sync(
 
 /// Keep the strict legacy marker until its parser is migrated, while also
 /// charging the request-local aggregate when a diagnostic context exists.
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn observed_sync_legacy(
     meter: Option<&SyncTotalsV1>,
     label: DiagnosticSyncLabelV1,
@@ -454,6 +477,7 @@ pub(crate) fn observed_sync_legacy(
 
 /// Observe one owner operation with explicit custody. The guard records an
 /// error even when the operation returns early; capture failure is fail-open.
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn observe_result<T, E>(
     diagnostic: Option<&DiagnosticContextV1>,
     stage: DiagnosticStageV1,
@@ -462,6 +486,7 @@ pub(crate) fn observe_result<T, E>(
     observe_result_on_lane(diagnostic, stage, DiagnosticLaneV1(2), operation)
 }
 
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn observe_result_on_lane<T, E>(
     diagnostic: Option<&DiagnosticContextV1>,
     stage: DiagnosticStageV1,
@@ -490,6 +515,7 @@ pub(crate) fn observe_result_with_span_on_lane<T, E>(
     result
 }
 
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn observe_result_with_sync<T, E>(
     diagnostic: Option<&DiagnosticContextV1>,
     stage: DiagnosticStageV1,
@@ -511,6 +537,7 @@ pub(crate) fn observe_result_with_sync<T, E>(
     result
 }
 
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn enabled() -> bool {
     std::env::var_os("QUANTA_INDEX_CAUSAL_PROFILE_V1")
         .is_some_and(|value| value == std::ffi::OsStr::new("1"))
@@ -520,6 +547,7 @@ pub(crate) fn enabled() -> bool {
     clippy::print_stderr,
     reason = "The opt-in causal capture contract consumes these diagnostic markers from stderr."
 )]
+#[cfg(feature = "legacy-tantivy")]
 fn timed_sync_marker(
     label: DiagnosticSyncLabelV1,
     operation: impl FnOnce() -> io::Result<()>,
@@ -542,6 +570,7 @@ fn timed_sync_marker(
     clippy::print_stderr,
     reason = "Opt-in ingest diagnosis writes source-bound span markers."
 )]
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn timed_work<T, E>(
     label: &'static str,
     operation: impl FnOnce() -> Result<T, E>,
@@ -560,6 +589,7 @@ pub(crate) fn timed_work<T, E>(
 
 /// Mark bounded publication phases even when the process stops inside one.
 #[expect(clippy::print_stderr, reason = "Opt-in publication phase diagnosis.")]
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn begin_phase(label: &'static str) -> Option<Instant> {
     let started = enabled().then(Instant::now);
     if started.is_some() {
@@ -569,6 +599,7 @@ pub(crate) fn begin_phase(label: &'static str) -> Option<Instant> {
 }
 
 #[expect(clippy::print_stderr, reason = "Opt-in publication phase diagnosis.")]
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn finish_phase(label: &'static str, started: Option<Instant>) {
     if let Some(started) = started {
         eprintln!(
@@ -580,6 +611,7 @@ pub(crate) fn finish_phase(label: &'static str, started: Option<Instant>) {
 
 /// Report sparse progress from a completed prefix of a diagnostic phase.
 #[expect(clippy::print_stderr, reason = "Opt-in publication phase diagnosis.")]
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn phase_progress(
     label: &'static str,
     started: Option<Instant>,
@@ -600,7 +632,7 @@ pub(crate) fn phase_progress(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-tantivy"))]
 mod tests {
     use std::sync::atomic::Ordering;
 

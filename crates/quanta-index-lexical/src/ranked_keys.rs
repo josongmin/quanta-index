@@ -24,8 +24,8 @@ const COLUMNS: [&str; 3] = [
 /// unbounded fallback. The snapshot registry separately admits the full
 /// generation estimate, including these bytes and the Tantivy index.
 pub(crate) const MAX_RANKED_KEYS_BYTES: usize = 64 * 1024 * 1024;
-const PREFIX: &str = "ranked-keys-";
-const SUFFIX: &str = ".bin";
+use crate::legacy::names::RANKED_KEYS_PREFIX as PREFIX;
+use crate::legacy::names::RANKED_KEYS_SUFFIX as SUFFIX;
 
 fn corrupt(name: &str, reason: &str) -> CoreError {
     CoreError::Typed {
@@ -36,12 +36,6 @@ fn corrupt(name: &str, reason: &str) -> CoreError {
 
 pub(crate) fn file_name(reader: &SegmentReader) -> String {
     format!("{PREFIX}{}{SUFFIX}", reader.segment_id().uuid_string())
-}
-
-pub(crate) fn is_file_name(name: &str) -> bool {
-    name.strip_prefix(PREFIX)
-        .and_then(|id| id.strip_suffix(SUFFIX))
-        .is_some_and(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 pub(crate) fn is_ranked_key_entry(name: &str) -> bool {

@@ -22,15 +22,15 @@ use quanta_index_core::CoreError;
 
 /// One page of history results, in the order it was cut under.
 #[derive(Debug)]
-pub(super) struct HistoryPage {
-    pub(super) commits: Vec<CommitCandidate>,
-    pub(super) diffs: Vec<DiffCandidate>,
-    pub(super) window: QueryResultWindowV1,
-    pub(super) examined: u64,
-    pub(super) next_cursor: Option<HistoryCursor>,
+pub(crate) struct HistoryPage {
+    pub(crate) commits: Vec<CommitCandidate>,
+    pub(crate) diffs: Vec<DiffCandidate>,
+    pub(crate) window: QueryResultWindowV1,
+    pub(crate) examined: u64,
+    pub(crate) next_cursor: Option<HistoryCursor>,
 }
 
-pub(super) fn history_query_type(query: &LqQuery) -> Option<LqType> {
+pub(crate) fn history_query_type(query: &LqQuery) -> Option<LqType> {
     for filter in &query.filters {
         if let LqFilter::Type { kind } = filter {
             return Some(*kind);
@@ -41,7 +41,7 @@ pub(super) fn history_query_type(query: &LqQuery) -> Option<LqType> {
 
 /// A commit page continues from a commit cursor and a diff page from a
 /// diff cursor, whatever the order.
-pub(super) fn ensure_cursor_kind(
+pub(crate) fn ensure_cursor_kind(
     kind: HistoryQueryKind,
     cursor: Option<&HistoryCursor>,
 ) -> Result<(), CoreError> {
@@ -57,12 +57,12 @@ pub(super) fn ensure_cursor_kind(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum HistoryQueryKind {
+pub(crate) enum HistoryQueryKind {
     Commit,
     Diff,
 }
 
-pub(super) fn resolve_history_query_kind(query: &LqQuery) -> Result<HistoryQueryKind, CoreError> {
+pub(crate) fn resolve_history_query_kind(query: &LqQuery) -> Result<HistoryQueryKind, CoreError> {
     let has_diff_only_filters = query.filters.iter().any(|filter| {
         matches!(
             filter,
@@ -96,7 +96,7 @@ pub(super) fn resolve_history_query_kind(query: &LqQuery) -> Result<HistoryQuery
 /// This is the row predicate of both orders: `recency` runs it over every
 /// record, `relevance` over every record the text index enumerates
 /// (QI-BB-023 보완 #3).
-pub(super) fn history_commit_matches(
+pub(crate) fn history_commit_matches(
     query: &LqQuery,
     state: &HistoryAuthorityState,
     record: &quanta_index_contract::lex::CommitRecord,
@@ -201,7 +201,7 @@ fn history_commit_filters_match(
 /// The expression runs over the hunk's search text — the text the history
 /// text index scores. The row predicate of both orders, as
 /// [`history_commit_matches`] is for commits.
-pub(super) fn history_diff_matches(
+pub(crate) fn history_diff_matches(
     query: &LqQuery,
     state: &HistoryAuthorityState,
     key: &crate::readiness::HistoryDiffKey,
@@ -344,7 +344,7 @@ fn history_rev_matches(state: &HistoryAuthorityState, spec: &str, sha: &CommitSh
 
 /// The commit row of a page; `score` is its relevance score under that
 /// order and absent under recency.
-pub(super) fn commit_candidate_from_record(
+pub(crate) fn commit_candidate_from_record(
     record: &quanta_index_contract::lex::CommitRecord,
     score: Option<HistoryScoreV1>,
 ) -> CommitCandidate {
@@ -362,7 +362,7 @@ pub(super) fn commit_candidate_from_record(
 }
 
 /// The diff row of a page; `score` as for [`commit_candidate_from_record`].
-pub(super) fn diff_candidate_from_record(
+pub(crate) fn diff_candidate_from_record(
     key: &crate::readiness::HistoryDiffKey,
     record: &quanta_index_contract::lex::DiffHunkRecord,
     score: Option<HistoryScoreV1>,
@@ -415,7 +415,7 @@ fn history_committer_time_until(committer_time_ms: u64, timeref: &str) -> Result
     Ok(committer_time_ms <= boundary_ms)
 }
 
-pub(super) fn validate_history_since_timeref(timeref: &str) -> Result<(), CoreError> {
+pub(crate) fn validate_history_since_timeref(timeref: &str) -> Result<(), CoreError> {
     if let Some(spec) = timeref.strip_prefix("commit:") {
         if spec.is_empty() {
             return Err(history_invalid_timeref(

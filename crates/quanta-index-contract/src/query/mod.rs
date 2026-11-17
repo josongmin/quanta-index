@@ -6,6 +6,7 @@ mod filters;
 mod go_test_trace_file;
 mod history_cursor;
 mod history_order;
+mod hybrid_file;
 mod native_content;
 mod options;
 mod requests;
@@ -20,6 +21,7 @@ pub use filters::*;
 pub use go_test_trace_file::*;
 pub use history_cursor::*;
 pub use history_order::*;
+pub use hybrid_file::*;
 pub use native_content::*;
 pub use options::*;
 pub use quanta_index_contract_base::query::{

@@ -5,7 +5,7 @@ Quanta's `potion-code` profile uses Semble's default
 `e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b` (256 dimensions, MIT).
 The daemon loads the model locally at boot; it does not download at query time.
 
-`potion-code` is the daemon default when `QUANTA_INDEX_EMBEDDER` is unset.
+`potion-code` is the Legacy `serve` default when `QUANTA_INDEX_EMBEDDER` is unset.
 Its default model directory is
 `$QUANTA_INDEX_CACHE_ROOT/models/potion-code-16M-v2-e9d2a44` (or the platform
 Quanta cache root when the override is unset). Provision `config.json`,
@@ -33,6 +33,9 @@ Set `QUANTA_INDEX_EMBED_MODEL_DIR` to an absolute directory only when using a
 non-default model location. `hash-dev` remains explicit test/development opt-in.
 Boot verifies SHA-256 of all three files and fails on missing/modified assets;
 there is no hash fallback.
+Native `serve-native` selects its provider through the admitted
+[Native product configuration](../crates/quanta-index-searchd-runtime/src/native_product.rs).
+This Legacy environment selector does not configure the Native provider.
 Query and corpus paths share the same model instance and L2 normalization.
 Switching from `hash-dev` or `openai` requires re-ingesting and sealing a new
 semantic generation; old vectors cannot be mixed with the new model identity.

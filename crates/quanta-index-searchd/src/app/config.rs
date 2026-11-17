@@ -13,8 +13,8 @@ use quanta_index_core::{
 };
 use quanta_index_embed::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,
-    DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, EmbeddingCacheRetentionPolicy, MAX_CONCURRENCY,
-    OpenAiProviderConfig,
+    DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT, EmbeddingCacheRetentionPolicy, LocalCodeBindingV1,
+    MAX_CONCURRENCY, OpenAiProviderConfig,
 };
 use quanta_index_ipc::ServerAdmissionPolicy;
 use quanta_index_search_plane::readiness::SearchCorpusHistoryRetentionPolicyV1;
@@ -223,6 +223,11 @@ pub enum SemanticEmbedderProfile {
         model_dir: PathBuf,
         encoding: quanta_index_embed::PotionCodeEncodingPolicy,
     },
+    /// Pinned local code model served by an explicitly granted loopback HTTP process.
+    LocalCode {
+        binding: LocalCodeBindingV1,
+        tuning: OpenAiEmbedderTuning,
+    },
     /// Network-backed `OpenAI` embeddings. `api_key` is held here but redacted in
     /// `Debug` (R-SEC-01) and never logged. `tuning` carries the env-resolved
     /// operational knobs threaded into the provider/cache at the composition root.
@@ -272,6 +277,11 @@ impl std::fmt::Debug for SemanticEmbedderProfile {
                 .field("model_dir", model_dir)
                 .field("encoding", encoding)
                 .finish(),
+            Self::LocalCode { binding, tuning } => f
+                .debug_struct("LocalCode")
+                .field("binding", binding)
+                .field("tuning", tuning)
+                .finish(),
             Self::Unavailable => f.write_str("Unavailable"),
         }
     }
@@ -305,6 +315,7 @@ impl SemanticEmbedderProfile {
         match self {
             Self::Hash { .. } => DEV_HASH_EMBEDDER_SELECTOR,
             Self::PotionCode { encoding, .. } => encoding.selector(),
+            Self::LocalCode { .. } => "local-code-jina-v2",
             Self::OpenAi { .. } => "openai",
             Self::Unavailable => "unavailable",
         }
@@ -497,6 +508,9 @@ pub(crate) const ENV_POLICY_FAMILIES: &[EnvPolicyFamily] = &[
             "QUANTA_INDEX_EMBED_DIM",
             "QUANTA_INDEX_EMBED_MODEL",
             "QUANTA_INDEX_EMBED_MODEL_REVISION",
+            "QUANTA_INDEX_LOCAL_CODE_ORIGIN",
+            "QUANTA_INDEX_LOCAL_CODE_MANIFEST",
+            "QUANTA_INDEX_LOCAL_CODE_MANIFEST_SHA256",
             "OPENAI_API_KEY",
             "QUANTA_INDEX_EMBED_BATCH",
             "QUANTA_INDEX_EMBED_MAX_EST_TOKENS",
@@ -792,13 +806,24 @@ impl SearchdConfig {
         config
     }
 
+    /// Canonical service sockets for an explicitly selected state root.
+    #[must_use]
+    pub fn socket_paths_for_state_root_v1(state_root: &Path) -> [PathBuf; 3] {
+        let directory = state_root.join("search-plane");
+        [
+            directory.join("query.sock"),
+            directory.join("control.sock"),
+            directory.join("ingest.sock"),
+        ]
+    }
     fn base_with_state_root(state_root: PathBuf) -> Self {
-        let socket_dir = state_root.join("search-plane");
+        let [query_socket_path, control_socket_path, ingest_socket_path] =
+            Self::socket_paths_for_state_root_v1(&state_root);
         Self {
             state_root,
-            query_socket_path: socket_dir.join("query.sock"),
-            control_socket_path: socket_dir.join("control.sock"),
-            ingest_socket_path: socket_dir.join("ingest.sock"),
+            query_socket_path,
+            control_socket_path,
+            ingest_socket_path,
             semantic_embedder_profile: SemanticEmbedderProfile::hash_dev(),
             search_corpus_history_retention_policy: None,
             snapshot_registry_policy: SnapshotRegistryPolicy::DEFAULT,
@@ -1169,7 +1194,13 @@ impl SearchdConfig {
                 .max_entries()
                 .checked_mul(EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY)
                 .ok_or_else(|| overflow("embedding cache ledger"))?,
+            SemanticEmbedderProfile::LocalCode { tuning, .. } if tuning.cache_enabled => tuning
+                .cache_retention
+                .max_entries()
+                .checked_mul(EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY)
+                .ok_or_else(|| overflow("embedding cache ledger"))?,
             SemanticEmbedderProfile::OpenAi { .. }
+            | SemanticEmbedderProfile::LocalCode { .. }
             | SemanticEmbedderProfile::PotionCode { .. }
             | SemanticEmbedderProfile::Hash { .. }
             | SemanticEmbedderProfile::Unavailable => 0,
@@ -1811,6 +1842,33 @@ fn semantic_embedder_profile_from_lookup(
             "QUANTA_INDEX_EMBEDDER=hash is retired: the hash embedder is a development profile and is selected as {DEV_HASH_EMBEDDER_SELECTOR}"
         )),
         Some("unavailable") => Ok(SemanticEmbedderProfile::Unavailable),
+        Some("local-code-jina-v2") => {
+            let required_local = |name| -> Result<String> {
+                lookup(name)?
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("QUANTA_INDEX_EMBEDDER=local-code-jina-v2 requires {name}")
+                    })
+            };
+            let binding = LocalCodeBindingV1::new(
+                required_local("QUANTA_INDEX_LOCAL_CODE_ORIGIN")?,
+                PathBuf::from(required_local("QUANTA_INDEX_LOCAL_CODE_MANIFEST")?),
+                required_local("QUANTA_INDEX_LOCAL_CODE_MANIFEST_SHA256")?,
+            )?;
+            let mut tuning = openai_tuning_from_env_with(lookup)?;
+            if lookup("QUANTA_INDEX_EMBED_BATCH")?.is_none() {
+                tuning.max_batch = 8;
+            }
+            if lookup("QUANTA_INDEX_EMBED_CONCURRENCY")?.is_none() {
+                tuning.concurrency = 1;
+            }
+            if tuning.max_batch > 64 || tuning.concurrency != 1 {
+                return Err(anyhow::anyhow!(
+                    "local code batch must be <=64 and concurrency must be 1"
+                ));
+            }
+            Ok(SemanticEmbedderProfile::LocalCode { binding, tuning })
+        }
         Some("openai") => {
             let Some(api_key) = lookup("OPENAI_API_KEY")? else {
                 return Err(anyhow::anyhow!(
@@ -1832,7 +1890,7 @@ fn semantic_embedder_profile_from_lookup(
             })
         }
         Some(other) => Err(anyhow::anyhow!(
-            "unknown QUANTA_INDEX_EMBEDDER '{other}' (expected potion-code|potion-code-full-v2|openai|unavailable|{DEV_HASH_EMBEDDER_SELECTOR})"
+            "unknown QUANTA_INDEX_EMBEDDER '{other}' (expected potion-code|potion-code-full-v2|local-code-jina-v2|openai|unavailable|{DEV_HASH_EMBEDDER_SELECTOR})"
         )),
     }
 }
@@ -2935,6 +2993,22 @@ mod tests {
             unknown
                 .to_string()
                 .contains("unknown QUANTA_INDEX_EMBEDDER")
+        );
+    }
+
+    #[test]
+    fn local_code_profile_requires_explicit_binding_even_with_openai_key() {
+        let error = semantic_embedder_profile_from_lookup(&|name| {
+            Ok(match name {
+                "QUANTA_INDEX_EMBEDDER" => Some("local-code-jina-v2".to_string()),
+                "OPENAI_API_KEY" => Some("unrelated-key".to_string()),
+                _ => None,
+            })
+        })
+        .expect_err("local model requires its own artifact and endpoint binding");
+        assert!(
+            error.to_string().contains("QUANTA_INDEX_LOCAL_CODE_ORIGIN"),
+            "{error}"
         );
     }
 

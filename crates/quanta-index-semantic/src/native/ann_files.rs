@@ -203,21 +203,12 @@ cbor_serde!(AnnFileSet {
 });
 
 pub(super) struct LoadedAnnChunk {
-    pub length: u32,
     pub object: StoredObject,
 }
 
 pub(super) struct LoadedAnnFile {
     pub path: String,
-    pub length: u64,
     pub chunks: Vec<LoadedAnnChunk>,
-}
-
-/// Manifest authority only; physical chunk bodies have not been opened.
-pub(super) struct LoadedAnnFileSetSeal {
-    pub seal: RegionSeal,
-    _descriptor: StoredObject,
-    _metadata_memory: Option<MemoryLease>,
 }
 
 struct LoadedAnnManifest {
@@ -227,7 +218,6 @@ struct LoadedAnnManifest {
 }
 
 pub(super) struct LoadedAnnFileSet {
-    pub seal: RegionSeal,
     pub total_length: u64,
     pub files: Vec<LoadedAnnFile>,
     // The descriptor and decoded metadata remain funded alongside file data.
@@ -470,7 +460,7 @@ pub(super) fn install_fileset(
     seal: RegionSeal,
     files: &[AnnFileInput<'_>],
 ) -> Result<ObjectRef, IndexError> {
-    let span = crate::build::begin_build_stage(
+    let span = crate::build_diagnostic::begin_build_stage(
         context.budget.request().diagnostic_context(),
         quanta_index_core::DiagnosticStageV1::SemanticSeal,
     );
@@ -658,7 +648,7 @@ pub(super) fn install_fileset(
         }
         Ok(reference)
     })();
-    crate::build::finish_build_stage(span, result.is_ok());
+    crate::build_diagnostic::finish_build_stage(span, result.is_ok());
     result
 }
 
@@ -702,27 +692,6 @@ fn load_manifest(
     })
 }
 
-/// Authenticate bounded manifest authority for region retirement.
-///
-/// This does not open or hash physical chunk bodies. Selected reads still require
-/// `load_fileset`; this seal alone is not physical-integrity evidence.
-pub(super) fn load_fileset_seal(
-    objects: &dyn ImmutableObjectPort,
-    reference: ObjectRef,
-    budget: &mut WorkBudget,
-) -> Result<LoadedAnnFileSetSeal, IndexError> {
-    let LoadedAnnManifest {
-        manifest,
-        descriptor,
-        metadata_memory,
-    } = load_manifest(objects, reference, budget)?;
-    Ok(LoadedAnnFileSetSeal {
-        seal: manifest.seal,
-        _descriptor: descriptor,
-        _metadata_memory: metadata_memory,
-    })
-}
-
 /// Verify a selected immutable descriptor and retain each chunk's original
 /// storage grant. A caller may replay the ordered chunks into its admitted
 /// filesystem without assembling a second dataset buffer.
@@ -762,22 +731,17 @@ pub(super) fn load_fileset(
                 ..WorkUsage::default()
             })?;
             hash.update(&object.payload);
-            chunks.push(LoadedAnnChunk {
-                length: chunk.length,
-                object,
-            });
+            chunks.push(LoadedAnnChunk { object });
         }
         if Digest(hash.finalize().into()) != file.sha256 {
             return Err(corrupt("Native ANN file-set file digest mismatch"));
         }
         loaded.push(LoadedAnnFile {
             path: file.path,
-            length: file.length,
             chunks,
         });
     }
     Ok(LoadedAnnFileSet {
-        seal: manifest.seal,
         total_length: manifest.total_length,
         files: loaded,
         _descriptor: descriptor,

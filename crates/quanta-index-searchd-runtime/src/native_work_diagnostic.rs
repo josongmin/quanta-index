@@ -83,7 +83,9 @@ impl SessionCustodyPart {
     }
 }
 
-/// Optional timing for retained SearchText requests. The publisher reuses its
+/// Optional timing for retained SearchText requests.
+///
+/// The publisher reuses its
 /// client request counter; offered queries start new counters. Later requests
 /// retain failure-prefix timing: reserving those before execution would let
 /// high-volume successes exhaust slots before a later failure occurs.
@@ -134,13 +136,27 @@ impl RetainedSearchTimer {
 
     pub(super) fn record_ticket_validation_timings(
         &self,
-        timings: quanta_index_catalog::TicketValidationTimings,
+        timings: &quanta_index_catalog::TicketValidationTimings,
     ) {
-        self.ticket_validation_timings.set(Some(timings));
+        self.ticket_validation_timings.set(Some(*timings));
     }
 
     fn ticket_validation_detail_us(&self) -> Option<serde_json::Value> {
         let timings = self.ticket_validation_timings.get()?;
+        let cpu_elapsed_us: [Option<u64>; 6] = std::array::from_fn(|index| {
+            match (
+                timings.calls.get(index),
+                timings.cpu_calls.get(index),
+                timings.cpu_elapsed.get(index),
+            ) {
+                (Some(&calls), Some(&cpu_calls), Some(&Some(elapsed)))
+                    if calls > 0 && cpu_calls == calls =>
+                {
+                    Some(duration_us(elapsed))
+                }
+                _ => None,
+            }
+        });
         Some(serde_json::json!({
             "phases": [
                 "session_guard", "connection_acquisition", "begin",
@@ -149,6 +165,8 @@ impl RetainedSearchTimer {
             "elapsed_us": timings.elapsed.map(duration_us),
             "calls": timings.calls,
             "failed": timings.failed,
+            "cpu_elapsed_us": cpu_elapsed_us,
+            "cpu_calls": timings.cpu_calls,
             "connection_busy_polls": timings.connection_busy_polls,
             "connection_retry_sleep_us": duration_us(timings.connection_retry_sleep),
         }))
@@ -717,6 +735,30 @@ pub(super) fn record_if_enabled(
     let _written = std::io::stderr().lock().write_all(&line);
 }
 
+/// Observe the original refusal before its execution/credit custody unwinds.
+/// This is local allocator context, not an operation-bound receipt or RSS.
+pub(super) fn record_memory_scope_refusal_if_enabled(
+    reservation: u64,
+    bytes: u64,
+    lifetime: quanta_index_core::index::MemoryLifetime,
+    scope: &'static str,
+    observe: impl FnOnce() -> Result<String, IndexError>,
+) {
+    if std::env::var_os(ENV).as_deref() != Some(OsStr::new("1")) {
+        return;
+    }
+    let diagnostic = observe();
+    write_diagnostic_event(&serde_json::json!({
+        "event": "native_memory_scope_refusal",
+        "reservation": reservation,
+        "requested_bytes": bytes,
+        "lifetime": format!("{lifetime:?}"),
+        "scope": scope,
+        "allocation_diagnostic": diagnostic.as_ref().ok(),
+        "observation_error": diagnostic.as_ref().err().map(ToString::to_string),
+    }));
+}
+
 /// A process-local prefix sample. Missing records after the first eight do
 /// not prove that owned work stopped failing.
 fn owned_failure_sample_slot(counter: &AtomicUsize) -> Option<usize> {
@@ -917,8 +959,11 @@ fn encode_owned(
             let claim = match &grant.assignment.request.kind {
                 UpdateKind::Materialize { claim } => Some(claim),
                 UpdateKind::SourceAdvance(_)
+                | UpdateKind::SourceHistoryAdvance(_)
                 | UpdateKind::SourceResync { .. }
                 | UpdateKind::ProjectionAdvance(_)
+                | UpdateKind::HistoryAdvance(_)
+                | UpdateKind::HistoryAppend(_)
                 | UpdateKind::Reconfigure { .. } => None,
             };
             (
@@ -1400,7 +1445,7 @@ mod tests {
             *calls = 2;
             *failed = 1;
         }
-        timer.record_ticket_validation_timings(ticket);
+        timer.record_ticket_validation_timings(&ticket);
         assert_eq!(
             timer.ticket_validation_detail_us(),
             Some(serde_json::json!({
@@ -1411,9 +1456,47 @@ mod tests {
                 "elapsed_us": [0, 37, 0, 0, 0, 0],
                 "calls": [0, 2, 0, 0, 0, 0],
                 "failed": [0, 1, 0, 0, 0, 0],
+                "cpu_elapsed_us": [null, null, null, null, null, null],
+                "cpu_calls": [0, 0, 0, 0, 0, 0],
                 "connection_busy_polls": 0,
                 "connection_retry_sleep_us": 0,
             }))
+        );
+        ticket.cpu_elapsed = [
+            None,
+            Some(Duration::from_micros(23)),
+            None,
+            None,
+            None,
+            None,
+        ];
+        ticket.cpu_calls = [0, 2, 0, 0, 0, 0];
+        timer.record_ticket_validation_timings(&ticket);
+        assert_eq!(
+            timer
+                .ticket_validation_detail_us()
+                .and_then(|value| value.get("cpu_elapsed_us").cloned()),
+            Some(serde_json::json!([null, 23, null, null, null, null]))
+        );
+        assert_eq!(
+            timer
+                .ticket_validation_detail_us()
+                .and_then(|value| value.get("cpu_calls").cloned()),
+            Some(serde_json::json!([0, 2, 0, 0, 0, 0]))
+        );
+        ticket.cpu_calls = [0, 1, 0, 0, 0, 0];
+        timer.record_ticket_validation_timings(&ticket);
+        assert_eq!(
+            timer
+                .ticket_validation_detail_us()
+                .and_then(|value| value.get("cpu_elapsed_us").cloned()),
+            Some(serde_json::json!([null, null, null, null, null, null]))
+        );
+        assert_eq!(
+            timer
+                .ticket_validation_detail_us()
+                .and_then(|value| value.get("cpu_calls").cloned()),
+            Some(serde_json::json!([0, 1, 0, 0, 0, 0]))
         );
     }
 

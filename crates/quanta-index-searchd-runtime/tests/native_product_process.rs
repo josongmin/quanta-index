@@ -4,6 +4,10 @@
 mod ann_quality;
 #[path = "native_product_process/ann_regions.rs"]
 mod ann_regions;
+#[path = "../../quanta-index-searchd-harness/src/scale/source_fixture.rs"]
+pub mod scale_source_fixture;
+#[path = "native_product_process/large_restart.rs"]
+mod large_restart;
 #[path = "native_product_process/native_boot.rs"]
 mod native_boot;
 #[path = "common/native_physical_profile.rs"]
@@ -166,6 +170,22 @@ impl Daemon {
         api_key: Option<&str>,
         trace: Option<&Path>,
     ) -> TestResult<Self> {
+        Self::start_binary(
+            Path::new(env!("CARGO_BIN_EXE_quanta-index-searchd")),
+            config,
+            socket,
+            api_key,
+            trace,
+        )
+    }
+
+    fn start_binary(
+        binary: &Path,
+        config: &Path,
+        socket: &Path,
+        api_key: Option<&str>,
+        trace: Option<&Path>,
+    ) -> TestResult<Self> {
         let trace_max_output_bytes = if trace.is_some() {
             parse_native_trace_max_output_bytes(
                 std::env::var_os("QIDX_NATIVE_TRACE_MAX_OUTPUT_BYTES").as_deref(),
@@ -178,7 +198,7 @@ impl Daemon {
                 .parent()
                 .ok_or("native config has no parent directory")?,
         )?;
-        let mut command = Command::new(env!("CARGO_BIN_EXE_quanta-index-searchd"));
+        let mut command = Command::new(binary);
         let _args = command
             .arg("serve-native")
             .arg("--config")
@@ -885,6 +905,68 @@ fn native_object_file(root: &Path, reference: ObjectRef) -> TestResult<std::path
 #[test]
 fn product_daemon_serves_native_publish_query_and_reopen() -> TestResult {
     check_product_daemon_publish_query_and_reopen(false)
+}
+
+#[test]
+fn product_native_shared_socket_preserves_private_state_and_kernel_peer_admission() -> TestResult {
+    let state = tempfile::tempdir()?;
+    fs::set_permissions(state.path(), fs::Permissions::from_mode(0o700))?;
+    let peers = tempfile::tempdir()?;
+    fs::set_permissions(peers.path(), fs::Permissions::from_mode(0o711))?;
+    let root = state.path().join("state");
+    let socket = peers.path().join("native.sock");
+    let config_path = state.path().join("native-shared.json");
+    let mut configuration = config(&root, &socket);
+    let observer_uid = if fs::metadata(state.path())?.uid() == 65534 {
+        65533
+    } else {
+        65534
+    };
+    configuration["socket_access"] = serde_json::json!(format!("shared:uid={observer_uid}"));
+    fs::write(&config_path, serde_json::to_vec(&configuration)?)?;
+    let daemon = Daemon::start(&config_path, &socket)?;
+    require_equal(
+        &(fs::metadata(&socket)?.mode() & 0o777),
+        &0o666,
+        "explicit shared socket mode",
+    )?;
+    require_equal(
+        &(fs::metadata(&root)?.mode() & 0o777),
+        &0o700,
+        "shared endpoint must preserve private state root",
+    )?;
+    // The owner is admitted using actual kernel peer credentials even though
+    // only the additional observer UID appears in the configured allow-list.
+    // Acceptance by that different UID requires its own OS process proof.
+    let client = NativeUdsClient::new(socket.clone());
+    let NativeIndexResponse::Created(view) = client.request(
+        NativeIndexRequest::CreateWorkspace {
+            workspace: workspace(),
+            epoch: 1,
+        },
+        &budget(),
+    )?
+    else {
+        return Err("shared Native endpoint did not admit its actual owner".into());
+    };
+    require_equal(
+        &client
+            .read_view(ViewSelection::Exact(view), &budget())?
+            .identity,
+        &view,
+        "shared endpoint selected view",
+    )?;
+    daemon.stop()?;
+    require(!socket.exists(), "shared endpoint remained after drain")?;
+    let daemon = Daemon::start(&config_path, &socket)?;
+    require_equal(
+        &client
+            .read_view(ViewSelection::Exact(view), &budget())?
+            .identity,
+        &view,
+        "shared endpoint exact view after process reopen",
+    )?;
+    daemon.stop()
 }
 
 #[test]
@@ -1608,11 +1690,24 @@ fn check_product_daemon_publish_query_and_reopen(retention: bool) -> TestResult 
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     let socket = temp.path().join("native.sock");
     let config_path = temp.path().join("native-config.json");
-    let mut configuration = if retention {
-        config_with_reclaim(&root, &socket)?
-    } else {
-        config(&root, &socket)
-    };
+    // Read sessions require funded automatic maintenance. This functional
+    // fixture uses its existing maintenance-capable resource profile for both
+    // retention modes; it does not qualify the minimal product defaults.
+    let mut configuration = config_with_reclaim(&root, &socket)?;
+    // One retained SDK reader is live at a time. Use the existing bounded
+    // product read-session configuration without changing work/resource caps.
+    let _previous_read_sessions = configuration
+        .as_object_mut()
+        .ok_or("invalid product config fixture")?
+        .insert(
+            "read_sessions".into(),
+            serde_json::json!({
+                "global_limit": 1,
+                "per_uid_limit": 1,
+                "terminal_ttl_millis": 300_000_u64,
+                "sweep_limit": 1
+            }),
+        );
     if retention {
         let object = configuration
             .as_object_mut()
@@ -1724,6 +1819,35 @@ fn check_product_daemon_publish_query_and_reopen(retention: bool) -> TestResult 
     };
     require_equal(&hit.path.as_str(), &"a.rs", "native query hit path")?;
     require_equal(&hit.source, source, "native query hit source")?;
+    // The maintained ordinary SDK front door must reach this Native daemon,
+    // without a Legacy query/control/ingest listener or a generation mapping.
+    let sdk = quanta_index_sdk::QuantaIndex::connect_query_only(
+        quanta_index_sdk::ConnectOptions::from_native_socket(&socket, ViewSelection::Exact(view)),
+    )?;
+    require(
+        matches!(
+            sdk.producer().native(),
+            Err(quanta_index_sdk::SdkError::PlaneUnavailable {
+                plane: "native-write"
+            })
+        ),
+        "query-only SDK exposed the Native write sender",
+    )?;
+    let native_reader = sdk.reader().native()?;
+    let mut sdk_session = native_reader.open([81; 32], &budget())?;
+    let _sdk_profile = sdk_session.load_profile(&budget())?;
+    require_equal(
+        &sdk_session.text(&text_spec(), query.clone(), &budget())?,
+        &ranked,
+        "ordinary SDK Native Text DTO",
+    )?;
+    let sdk_page = sdk_session.text_page(&text_spec(), query.clone(), None, &budget())?;
+    require_equal(
+        &sdk_page.hits,
+        &ranked.hits,
+        "ordinary SDK Native file page",
+    )?;
+    require_equal(&sdk_page.view, &view, "ordinary SDK captured view")?;
     let workspace_id = format!(
         "{}{}{}{}",
         "01".repeat(16),
@@ -1732,7 +1856,6 @@ fn check_product_daemon_publish_query_and_reopen(retention: bool) -> TestResult 
         "04".repeat(16)
     );
     let cli_view = native_cli(vec![
-        "native".into(),
         "read-view".into(),
         "--socket".into(),
         socket.to_string_lossy().into_owned(),
@@ -1746,7 +1869,6 @@ fn check_product_daemon_publish_query_and_reopen(retention: bool) -> TestResult 
     let cli_view: quanta_index_contract::index::CatalogView = serde_json::from_slice(&cli_view)?;
     require_equal(&cli_view.identity, &view, "CLI read-view identity")?;
     let cli_ranked = native_cli(vec![
-        "native".into(),
         "search-text".into(),
         "--socket".into(),
         socket.to_string_lossy().into_owned(),
@@ -1816,6 +1938,22 @@ fn check_product_daemon_publish_query_and_reopen(retention: bool) -> TestResult 
     let restored = NativeUdsClient::new(socket);
     let reopened_view = restored.read_view(ViewSelection::Exact(view), &budget())?;
     require_equal(&reopened_view.identity, &view, "reopened view identity")?;
+    require(
+        matches!(
+            sdk_session.text(&text_spec(), query.clone(), &budget()),
+            Err(quanta_index_sdk::NativeQueryError::Transport(NativeUdsError::Refused(error)))
+                if error.code == NativeIndexErrorCode::SnapshotUnavailable
+        ),
+        "ordinary SDK reused a pre-restart session",
+    )?;
+    let mut reopened_session = native_reader.open([82; 32], &budget())?;
+    let _reopened_sdk_profile = reopened_session.load_profile(&budget())?;
+    require_equal(
+        &reopened_session.text(&text_spec(), query.clone(), &budget())?,
+        &ranked,
+        "ordinary SDK after real daemon restart",
+    )?;
+    let _has_remaining_target_pins = reopened_session.release(&budget())?;
     let after = restored.search_text(
         ViewSelection::Exact(view),
         text_spec().instance,
@@ -2339,6 +2477,109 @@ fn native_semantic_provider_contract_refuses_before_state_creation() -> TestResu
 }
 
 #[test]
+fn native_local_code_config_and_binding_refuse_without_state_creation() -> TestResult {
+    for case in [
+        "wrong_origin",
+        "wrong_manifest_hash",
+        "source_consent_missing",
+        "endpoint_mismatch",
+        "missing_provider_units",
+        "invalid_tuning",
+        "model_override",
+        "missing_manifest",
+    ] {
+        let temp = tempfile::tempdir()?;
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+        let root = temp.path().join("state");
+        let socket = temp.path().join("native.sock");
+        let mut value = config_with_openai_semantic(&root, &socket)?;
+        let provider = serde_json::json!({
+            "kind": "local_code",
+            "origin": "http://127.0.0.1:12345",
+            "manifest_path": temp.path().join("absent-manifest.json"),
+            "manifest_sha256": "0".repeat(64),
+            "max_estimated_tokens_per_request": 1024,
+            "max_retries": 0,
+            "timeout_ms": 1000,
+            "max_response_bytes": 65_536,
+            "egress": {
+                "tenant_id": workspace().tenant,
+                "endpoint": "http://127.0.0.1:12345/v1/embeddings",
+                "region": "test-region",
+                "retention": "test-retention",
+                "profile": "native-local-code-test",
+                "source_content_consent": true
+            }
+        });
+        set_fixture_json(&mut value, "/semantic/provider", provider)?;
+        let expected = match case {
+            "wrong_origin" => {
+                set_fixture_json(
+                    &mut value,
+                    "/semantic/provider/origin",
+                    serde_json::json!("http://localhost:12345"),
+                )?;
+                "local code origin must be an explicit 127.0.0.1 HTTP origin"
+            }
+            "wrong_manifest_hash" => {
+                set_fixture_json(
+                    &mut value,
+                    "/semantic/provider/manifest_sha256",
+                    serde_json::json!("ABC"),
+                )?;
+                "local code manifest SHA256 must be lowercase hex"
+            }
+            "source_consent_missing" => {
+                set_fixture_json(
+                    &mut value,
+                    "/semantic/provider/egress/source_content_consent",
+                    serde_json::json!(false),
+                )?;
+                "source content consent was not granted"
+            }
+            "endpoint_mismatch" => {
+                set_fixture_json(
+                    &mut value,
+                    "/semantic/provider/egress/endpoint",
+                    serde_json::json!("http://127.0.0.1:9999/v1/embeddings"),
+                )?;
+                "native Local Code egress endpoint must match provider URL"
+            }
+            "missing_provider_units" => {
+                set_fixture_json(
+                    &mut value,
+                    "/semantic/read/need/provider_units",
+                    serde_json::json!(0),
+                )?;
+                "native semantic read policy exceeds bounded service limits"
+            }
+            "invalid_tuning" => {
+                set_fixture_json(
+                    &mut value,
+                    "/semantic/provider/timeout_ms",
+                    serde_json::json!(0),
+                )?;
+                "invalid native Local Code provider configuration"
+            }
+            "model_override" => {
+                let _previous_model = value
+                    .pointer_mut("/semantic/provider")
+                    .and_then(serde_json::Value::as_object_mut)
+                    .ok_or("local provider fixture is not an object")?
+                    .insert("model".into(), serde_json::json!("other-model"));
+                "unknown field"
+            }
+            "missing_manifest" => "local code manifest metadata",
+            _ => return Err("unknown Local Code refusal case".into()),
+        };
+        let path = temp.path().join(format!("native-local-code-{case}.json"));
+        fs::write(&path, serde_json::to_vec(&value)?)?;
+        expect_native_config_refusal(&root, &socket, &path, expected)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn native_effort_policy_and_signal_ttl_refuse_before_state_creation() -> TestResult {
     for case in [
         "inverted_pressure",
@@ -2661,7 +2902,7 @@ fn occupied_native_socket_is_preserved_and_initialized_root_reopens() -> TestRes
     let foreign_connection = UnixStream::connect(&socket)?;
     drop(foreign_connection);
     require(
-        fs::read(root.join(".native-index-v19"))? == b"quanta-index-native-state-v19\n",
+        fs::read(root.join(".native-index-v20"))? == b"quanta-index-native-state-v20\n",
         "bind failure did not leave the current initialized format",
     )?;
     drop(foreign);

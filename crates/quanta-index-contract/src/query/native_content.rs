@@ -12,6 +12,11 @@ use quanta_index_lq_norm::{
 
 use super::LqQuery;
 
+pub use quanta_index_lq_bridge::{
+    lower_sourcegraph_query as parse_sourcegraph_content_query,
+    syntax::sourcegraph_query_backing_bytes,
+};
+
 /// Canonical maximum raw content-query length, checked before tokenization.
 pub const MAX_NATIVE_CONTENT_INPUT_BYTES: usize = limits::MAX_INPUT_BYTES;
 

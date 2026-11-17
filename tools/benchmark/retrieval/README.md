@@ -32,6 +32,17 @@ acceptance gates;an unsampled functional result does not waive them.
 
 ## Worker RCA without repeated trace decoding
 
+For an already captured Native run or its control directory, start with:
+
+```sh
+python3 -m tools.benchmark.retrieval.causal_cost_diagnostic native-triage \
+  --run-dir /absolute/saved-run --json
+```
+
+This reads saved product/refusal/staging evidence. Add `--trace` for trace
+replay; it does not launch a product run. For repeated worker-level queries,
+build the index below once.
+
 Build a worker index once from a complete, lossless schema-v4 or schema-v5 daemon capture.
 Use an external output path. The optional stderr input joins bounded refusal
 records by the exact capture/span reference; no timestamp matching is used.
@@ -121,7 +132,12 @@ addresses remain unresolved. Reported frame-line counts are neither CPU percenta
 representative request timing; this diagnostic cannot qualify an Off/Record
 comparison or the original 4K performance gate.
 
-## Native Quanta capture and recorded evaluation
+<a id="native-quanta-capture-and-recorded-evaluation"></a>
+## Generation SDK capture and recorded evaluation
+
+The `run` command below uses the generation SDK and starts Legacy `serve`
+through [the SDK harness](../../../benchmarks/retrieval/src/sdk.rs).
+Explicit Native selected-view capture uses the separate file profile below.
 
 Use a clean corpus checkout pinned at the suite's `repository_commit`. Keep
 suite, query pack, manifest, state and output outside it. Existing output,
@@ -173,7 +189,25 @@ python3 -m tools.benchmark.retrieval evaluate \
 Symbol phrase/regex/raw-string refuses with `LEX_PLANNER_UNSUPPORTED_FILTER_COMBO`.
 A literal policy does not turn it into symbol keyword search.
 
-## Native scale capacity profile
+## Explicit Native file profile
+
+`quanta-index-retrieval-bench native-file-profile` consumes an existing Native
+endpoint and retained selected view. Its `--native-socket`, `--view-json`,
+`--open-key`, `--text-instance` and `--semantic-instance` bind the actual
+admitted producer/configuration identities. `--lane-top-k` and `--file-top-k`
+control the declared candidate windows. See the
+[command](../../../benchmarks/retrieval/src/native_file_profile.rs) and
+[recorded evaluator](native_file_evidence.py).
+
+File pool hashes and replayable ranks do not establish the actual indexed
+universe, runtime qualification or a default-product decision. Those acceptance
+gaps remain with the [Native owner](../../../docs/plans/nov-12-native-cutover/README.md).
+
+<a id="native-scale-capacity-profile"></a>
+## Generation scale and Native indexing fixtures
+
+The default `scale-supported-v1` examples below exercise generation serving.
+The separate `index-native` fixture described at the end uses the Native path.
 
 `scale_matrix` keeps the fixed small/medium/large/xlarge shapes (16/256/4,096/32,768
 files). Its default `scale-supported-v1` profile uses a 600-second client timeout,

@@ -3452,6 +3452,14 @@ mod fairness_tests {
         check_eq!(no_op.compaction_due.entries, 0);
         check_eq!(no_op_receipt.compaction_rederived_docs, 1);
         check_eq!(no_op_receipt.docs_derived, 0);
+        let prior_survivor = read_current(&store, &next, 2)?
+            .ok_or("survivor missing before compaction")?;
+        let moved_survivor = read_current(&store, &no_op, 2)?
+            .ok_or("survivor missing after compaction")?;
+        check_ne!(prior_survivor.body.root, moved_survivor.body.root);
+        check_eq!(prior_survivor.body.bytes, moved_survivor.body.bytes);
+        check_eq!(prior_survivor.body.sha256, moved_survivor.body.sha256);
+        check!(moved_survivor.segment_key >= next.next_segment_id);
         let _paid_debt = verify_transition_for_seal_with_policy(
             &store,
             &no_op,
@@ -3466,6 +3474,59 @@ mod fairness_tests {
             None,
             None,
         )?;
+        // The transition proof must still reject changed logical body identity
+        // and a replacement row that points back into the old segment range.
+        for forged_field in ["body_bytes", "body_digest", "old_locator"] {
+            let mut altered = moved_survivor.clone();
+            match forged_field {
+                "body_bytes" => altered.body.bytes += 1,
+                "body_digest" => altered.body.sha256[0] ^= 1,
+                "old_locator" => altered.segment_key = next.next_segment_id - 1,
+                _ => return Err("unknown forged current field".into()),
+            }
+            let altered_ref = store.put_blob(
+                &third_lease,
+                ObjectKind::Record,
+                std::slice::from_ref(&altered.body.root),
+                &altered.encode()?,
+            )?;
+            let mut forged = no_op.clone();
+            forged.current = store.map_apply(
+                &third_lease,
+                &no_op.current,
+                std::iter::once(Ok(MapEdit {
+                    key: current_key(2).to_vec(),
+                    value: Some(altered_ref.clone()),
+                })),
+            )?;
+            forged.membership = store.map_apply(
+                &third_lease,
+                &no_op.membership,
+                std::iter::once(Ok(MapEdit {
+                    key: membership_key(&source_digest(&source_two)?, 2),
+                    value: Some(altered_ref),
+                })),
+            )?;
+            check!(matches!(
+                verify_transition_for_seal_with_policy(
+                    &store,
+                    &forged,
+                    Some(&next),
+                    &reservation,
+                    &[],
+                    &[],
+                    &[],
+                    false,
+                    next.next_segment_id,
+                    None,
+                    None,
+                    None,
+                ),
+                Err(CoreError::Typed { code, message })
+                    if code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt
+                        && message == "lexical: Native transition: compaction changed document identity or old locator"
+            ), "forged {forged_field} must be refused by the transition proof");
+        }
         verify_all_for_scrub(&store, &no_op, None)?;
         third_lease.finish_published(&no_op.root_objects())?;
         let authority = NativeAuthority::open(store, no_op)?;

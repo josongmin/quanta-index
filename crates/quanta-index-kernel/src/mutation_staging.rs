@@ -55,7 +55,7 @@ impl<I: Iterator<Item = Result<OwnerMutation, IndexError>>> StageMutationCursor<
         let key = owner_map_key(mutation.owner);
         let value = owner_mutation_value(&mutation)?;
         budget.charge(WorkUsage {
-            bytes: OrdinalMapEdit::allocation_bytes(key.len())?,
+            bytes: OrdinalMapEdit::allocation_bytes(key.len(), None, Some(value))?,
             ..WorkUsage::default()
         })?;
         let edit = OrdinalMapEdit::copy_key(0, &key, None, Some(value), budget)?;
@@ -232,10 +232,10 @@ mod tests {
             let edit = cursor
                 .next_edit(&mut work)?
                 .ok_or("missing inline mutation")?;
-            check_eq!(edit.root, 0);
-            check_eq!(edit.edit.key, owner_map_key(row.owner));
-            check_eq!(edit.edit.expected, None);
-            let Some(quanta_index_core::index::MapValue::Inline(value)) = edit.edit.next else {
+            check_eq!(edit.root(), 0);
+            check_eq!(edit.key(), owner_map_key(row.owner));
+            check_eq!(edit.expected()?, None);
+            let Some(quanta_index_core::index::MapValue::Inline(value)) = edit.next()? else {
                 return Err("mutation wrapper remains".into());
             };
             check_eq!(
@@ -248,7 +248,7 @@ mod tests {
             // Exactly one escaping key/record allocation; no batch or JSON buffer.
             check_eq!(
                 charges.live.load(Ordering::Relaxed),
-                OrdinalMapEdit::allocation_bytes(38)?
+                OrdinalMapEdit::allocation_bytes(38, edit.expected()?, edit.next()?)?
             );
             drop(edit);
             check_eq!(charges.live.load(Ordering::Relaxed), 0);
@@ -290,7 +290,7 @@ mod tests {
             drop(cursor);
             check_eq!(
                 charges.live.load(Ordering::Relaxed),
-                OrdinalMapEdit::allocation_bytes(38)?
+                OrdinalMapEdit::allocation_bytes(38, first.expected()?, first.next()?)?
             );
             drop(first);
             check_eq!(charges.live.load(Ordering::Relaxed), 0);
@@ -321,7 +321,12 @@ mod tests {
     fn canonical_byte_denial_refunds_admitted_key_before_any_escape() -> TestResult {
         let (mut work, charges) = budget(1_048_576)?;
         work.charge(WorkUsage {
-            bytes: 64 * 1024 * 1024 - OrdinalMapEdit::allocation_bytes(38)?,
+            bytes: 64 * 1024 * 1024
+                - OrdinalMapEdit::allocation_bytes(
+                    38,
+                    None,
+                    Some(owner_mutation_value(&mutation(1))?),
+                )?,
             ..WorkUsage::default()
         })?;
         let mut cursor = StageMutationCursor::new(std::iter::once(Ok(mutation(1))));

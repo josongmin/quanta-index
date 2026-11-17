@@ -63,4 +63,4 @@ macro_rules! impl_struct_serde {
     };
 }
 
-pub(super) use impl_struct_serde;
+pub(crate) use impl_struct_serde;

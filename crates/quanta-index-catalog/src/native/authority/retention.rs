@@ -4,7 +4,7 @@ use quanta_index_core::index::ports::{CatalogExactHistoryPort, ViewRetirementPag
 use quanta_index_core::index::{
     CatalogView, Digest, IndexError, ViewRef, WorkBudget, WorkUsage, WorkspaceKey,
 };
-use rusqlite::{Connection, OptionalExtension as _, params};
+use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params, types::ValueRef};
 
 use super::{
     SqliteCatalog, begin, current_view, distinct_roots, exactly_one, fields_digest, int,
@@ -83,6 +83,56 @@ fn floor_row(
         ));
     }
     Ok(Some(floor))
+}
+
+/// Check every retained floor through the same canonical digest/head validator
+/// used by Exact admission. Old epochs may retain valid history after the
+/// workspace advances; only a foreign or malformed workspace is refused.
+pub(super) fn verify_source_floors(
+    connection: &Connection,
+    expected_workspace: WorkspaceKey,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    let expected = workspace_key(expected_workspace)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT workspace,epoch FROM native_exact_history_floor_v1
+             ORDER BY workspace,epoch",
+        )
+        .map_err(|error| sql(&error))?;
+    let mut rows = statement.query([]).map_err(|error| sql(&error))?;
+    loop {
+        budget.charge(WorkUsage {
+            reads: 1,
+            ..WorkUsage::default()
+        })?;
+        let Some(row) = rows.next().map_err(|error| sql(&error))? else {
+            break;
+        };
+        let ValueRef::Blob(workspace) = row.get_ref(0).map_err(|error| sql(&error))? else {
+            return Err(IndexError::Storage(
+                "exact floor workspace is not a BLOB".into(),
+            ));
+        };
+        if workspace != expected.as_slice() {
+            return Err(IndexError::Conflict);
+        }
+        let epoch = uint(row.get(1).map_err(|error| sql(&error))?)?;
+        budget.charge(WorkUsage {
+            reads: 2,
+            bytes: u64::try_from(expected.len())
+                .map_err(|_error| IndexError::ResourceLimited)?
+                .checked_add(32)
+                .ok_or(IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        if floor_row(connection, expected_workspace, epoch)?.is_none() {
+            return Err(IndexError::Storage(
+                "exact floor disappeared in read snapshot".into(),
+            ));
+        }
+    }
+    budget.checkpoint()
 }
 
 /// Used by Exact acquisition in the same transaction that installs its pin.
@@ -438,6 +488,37 @@ fn write_floor(
     exactly_one(changed, "advance exact history floor")
 }
 
+fn tail_floor_snapshot(
+    connection: &Connection,
+    workspace: WorkspaceKey,
+    epoch: u64,
+    preceding: u64,
+    budget: &mut WorkBudget,
+) -> Result<(Option<u64>, u64), IndexError> {
+    let current = charged_current_view(connection, workspace, budget)?
+        .ok_or(IndexError::SnapshotUnavailable)?;
+    if current.identity.epoch != epoch {
+        return Err(IndexError::SnapshotUnavailable);
+    }
+    budget.charge(WorkUsage {
+        reads: 2,
+        bytes: 32,
+        ..WorkUsage::default()
+    })?;
+    let prior = floor_row(connection, workspace, epoch)?;
+    if prior.is_some_and(|floor| floor > current.identity.sequence) {
+        return Err(IndexError::Storage(
+            "exact floor exceeds current view".into(),
+        ));
+    }
+    let floor = current
+        .identity
+        .sequence
+        .saturating_sub(preceding)
+        .max(prior.unwrap_or(0));
+    Ok((prior, floor))
+}
+
 impl CatalogExactHistoryPort for SqliteCatalog {
     fn retain_exact_history_tail(
         &self,
@@ -452,28 +533,22 @@ impl CatalogExactHistoryPort for SqliteCatalog {
         let _window_integer = int(sequence_window)?;
         budget.checkpoint()?;
         let mut guard = self.lock_native_budget(budget)?;
+        // The common no-op round needs one consistent head/floor snapshot, not
+        // a SQLite writer reservation. A later writer may still advance the
+        // head; the advancing path rechecks both rows under BEGIN IMMEDIATE.
+        let read = guard
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(|error| sql(&error))?;
+        let (prior, floor) = tail_floor_snapshot(&read, workspace, epoch, preceding, budget)?;
+        if prior.unwrap_or(0) == floor {
+            budget.checkpoint()?;
+            read.commit().map_err(|error| sql(&error))?;
+            drop(guard);
+            return Ok(floor);
+        }
+        drop(read);
         let tx = begin(&mut guard)?;
-        let current =
-            charged_current_view(&tx, workspace, budget)?.ok_or(IndexError::SnapshotUnavailable)?;
-        if current.identity.epoch != epoch {
-            return Err(IndexError::SnapshotUnavailable);
-        }
-        budget.charge(WorkUsage {
-            reads: 2,
-            bytes: 32,
-            ..WorkUsage::default()
-        })?;
-        let prior = floor_row(&tx, workspace, epoch)?;
-        if prior.is_some_and(|floor| floor > current.identity.sequence) {
-            return Err(IndexError::Storage(
-                "exact floor exceeds current view".into(),
-            ));
-        }
-        let floor = current
-            .identity
-            .sequence
-            .saturating_sub(preceding)
-            .max(prior.unwrap_or(0));
+        let (prior, floor) = tail_floor_snapshot(&tx, workspace, epoch, preceding, budget)?;
         write_floor(&tx, workspace, epoch, prior, floor, budget)?;
         budget.checkpoint()?;
         tx.commit().map_err(|error| sql(&error))?;

@@ -268,6 +268,7 @@ mod tests {
             .to_wire_batch()
             .map_err(|error| error.to_string())?;
         Ok(quanta_index_contract::SearchCorpusPublishOutcome {
+            upload_cleanup: None,
             publication: quanta_index_contract::SourcePublicationBinding::for_batch(&batch),
             receipt: fixture_receipt()?,
             observation: None,

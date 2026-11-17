@@ -9,6 +9,7 @@
 
 use std::cell::{Cell, RefCell};
 
+use quanta_index_core::index::ports::{RootPackingMode, RootPackingPlan};
 use quanta_index_core::index::{IndexError, ObjectRef, WorkBudget, WorkUsage};
 
 use super::{MAX_NODE_CHILDREN, MAX_NODE_PAYLOAD, MapBuffer, MapStage, Node, decode_node};
@@ -38,8 +39,8 @@ struct State {
 
 pub(super) struct ResidentStage {
     state: RefCell<State>,
-    packed_root: Option<usize>,
-    pack_terminal_subtrees: Cell<bool>,
+    packing: RootPackingPlan,
+    packing_mode: Cell<RootPackingMode>,
     node_limit: usize,
     wire_limit: usize,
     object_wire_allowance_added: bool,
@@ -52,19 +53,18 @@ impl ResidentStage {
 
     /// Two original short-key paths contribute at most twice the single-root
     /// bound. One shared stage still deduplicates their reachable DAG/installs.
-    pub(super) fn pair(packed_root: Option<usize>) -> Self {
+    pub(super) fn pair(packing: RootPackingPlan) -> Self {
         let mut stage = Self::with_bounds(2 * MAX_RESIDENT_NODES, 2 * MAX_RESIDENT_WIRE_BYTES);
-        stage.packed_root = packed_root;
+        stage.packing = packing;
         stage
     }
 
     pub(super) fn select_root(&self, ordinal: usize) {
-        self.pack_terminal_subtrees
-            .set(self.packed_root == Some(ordinal));
+        self.packing_mode.set(self.packing.mode(ordinal));
     }
 
     pub(super) fn shares_pair_layout(&self) -> bool {
-        self.packed_root.is_none()
+        self.packing.mode(0) == self.packing.mode(1)
     }
 
     pub(super) fn with_objects(count: usize, bytes: usize) -> Result<Self, IndexError> {
@@ -152,8 +152,8 @@ impl ResidentStage {
                 entries: MapBuffer::new(node_limit),
                 wire_bytes: 0,
             }),
-            packed_root: None,
-            pack_terminal_subtrees: Cell::new(false),
+            packing: RootPackingPlan::default(),
+            packing_mode: Cell::new(RootPackingMode::None),
             node_limit,
             wire_limit,
             object_wire_allowance_added: false,
@@ -218,8 +218,8 @@ impl ResidentStage {
 }
 
 impl MapStage for ResidentStage {
-    fn pack_terminal_subtrees(&self) -> bool {
-        self.pack_terminal_subtrees.get()
+    fn packing_mode(&self) -> RootPackingMode {
+        self.packing_mode.get()
     }
 
     fn read_node(

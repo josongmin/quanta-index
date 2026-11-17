@@ -113,8 +113,20 @@ impl MapValue {
     /// Measure the current wire format without encoding the value.
     pub fn encoded_len(&self) -> Result<usize, IndexError> {
         match self {
-            Self::Object(reference) => Ok(1 + reference.0.0.len()),
-            Self::Inline(value) => Ok(3 + value.data()?.len() + 32 * value.children()?.len()),
+            Self::Object(reference) => 1_usize
+                .checked_add(reference.0.0.len())
+                .ok_or(IndexError::ResourceLimited),
+            Self::Inline(value) => {
+                let data_len = value.data()?.len();
+                let child_count = value.children()?.len();
+                let child_bytes = child_count
+                    .checked_mul(32)
+                    .ok_or(IndexError::ResourceLimited)?;
+                3_usize
+                    .checked_add(data_len)
+                    .and_then(|bytes| bytes.checked_add(child_bytes))
+                    .ok_or(IndexError::ResourceLimited)
+            }
         }
     }
     pub fn encoded(self) -> Result<EncodedMapValue, IndexError> {
@@ -221,6 +233,7 @@ mod tests {
             gold.extend_from_slice(&[byte; 32]);
         }
         if gold.len() != 195
+            || value.encoded_len()? != 195
             || value.encoded()?.as_slice()? != gold
             || MapValue::decode(&gold)? != value
             || value.children()? != children
@@ -278,7 +291,10 @@ mod tests {
             (compound, compound_gold),
             (MapValue::inline(&[], None)?, vec![1, 0, 0]),
         ] {
-            if value.encoded()?.as_slice()? != gold || MapValue::decode(&gold)? != value {
+            if value.encoded_len()? != gold.len()
+                || value.encoded()?.as_slice()? != gold
+                || MapValue::decode(&gold)? != value
+            {
                 return Err(IndexError::BackendViolation(
                     "fixed map value wire changed".into(),
                 ));

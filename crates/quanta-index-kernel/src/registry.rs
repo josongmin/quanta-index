@@ -13,6 +13,8 @@ use quanta_index_core::index::{
 };
 
 use crate::build_staging::{self, BuildFuture};
+mod history;
+use history::ErasedHistoryAdapter;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AdapterDescriptor {
@@ -308,11 +310,49 @@ pub(crate) fn validate_owner_member(
     Ok(())
 }
 
+type OwnerValidator = dyn Fn(&InstanceSpec) -> Result<(), IndexError> + Send + Sync;
+
+enum OwnerRegistration {
+    Executable(Arc<dyn ErasedOwnerAdapter>),
+    ValidationOnly {
+        descriptor: AdapterDescriptor,
+        validate_instance: Arc<OwnerValidator>,
+    },
+}
+
+impl OwnerRegistration {
+    fn descriptor(&self) -> AdapterDescriptor {
+        match self {
+            Self::Executable(adapter) => adapter.descriptor(),
+            Self::ValidationOnly { descriptor, .. } => *descriptor,
+        }
+    }
+
+    fn validate_instance(&self, instance: &InstanceSpec) -> Result<(), IndexError> {
+        match self {
+            Self::Executable(adapter) => adapter.validate_instance(instance),
+            Self::ValidationOnly {
+                validate_instance, ..
+            } => validate_instance(instance),
+        }
+    }
+
+    fn executable(&self) -> Result<&dyn ErasedOwnerAdapter, IndexError> {
+        match self {
+            Self::Executable(adapter) => Ok(adapter.as_ref()),
+            Self::ValidationOnly { .. } => Err(IndexError::InvalidInput(
+                "validation-only owner descriptor cannot execute".into(),
+            )),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct AdapterRegistry {
     core: BTreeMap<IndexKind, Arc<dyn ErasedAdapter>>,
     projection: BTreeMap<IndexKind, Arc<dyn ErasedProjectionAdapter>>,
-    owners: BTreeMap<IndexKind, Arc<dyn ErasedOwnerAdapter>>,
+    history: BTreeMap<IndexKind, Arc<dyn ErasedHistoryAdapter>>,
+    owners: BTreeMap<IndexKind, OwnerRegistration>,
 }
 
 impl AdapterRegistry {
@@ -321,10 +361,9 @@ impl AdapterRegistry {
         Self::default()
     }
 
-    /// Serial builders can execute any registered descriptor. Each class
-    /// therefore reserves the componentwise maximum declared by its adapters.
-    #[must_use]
-    pub fn resource_demands(&self) -> (ResourceNeed, ResourceNeed) {
+    /// Serial builders reserve the componentwise maximum for executable adapters.
+    /// Validation-only owners cannot be served and make startup demand validation fail.
+    pub fn resource_demands(&self) -> Result<(ResourceNeed, ResourceNeed), IndexError> {
         fn maximum(current: ResourceNeed, next: ResourceNeed) -> ResourceNeed {
             ResourceNeed {
                 cpu_units: current.cpu_units.max(next.cpu_units),
@@ -342,13 +381,17 @@ impl AdapterRegistry {
         let core = self.projection.values().fold(core, |need, adapter| {
             maximum(need, adapter.resource_demand())
         });
-        let enrichment = self
-            .owners
-            .values()
-            .fold(ResourceNeed::default(), |need, adapter| {
-                maximum(need, adapter.resource_demand())
-            });
-        (core, enrichment)
+        let core = self.history.values().fold(core, |need, adapter| {
+            maximum(need, adapter.resource_demand())
+        });
+        let enrichment =
+            self.owners
+                .values()
+                .try_fold(ResourceNeed::default(), |need, registration| {
+                    let adapter = registration.executable()?;
+                    Ok::<ResourceNeed, IndexError>(maximum(need, adapter.resource_demand()))
+                })?;
+        Ok((core, enrichment))
     }
 
     pub fn register<A, F>(
@@ -363,6 +406,7 @@ impl AdapterRegistry {
     {
         if self.owners.contains_key(&descriptor.kind)
             || self.projection.contains_key(&descriptor.kind)
+            || self.history.contains_key(&descriptor.kind)
         {
             return Err(IndexError::InvalidInput("duplicate adapter kind".into()));
         }
@@ -389,6 +433,7 @@ impl AdapterRegistry {
     ) -> Result<(), IndexError> {
         if self.core.contains_key(&descriptor.kind)
             || self.projection.contains_key(&descriptor.kind)
+            || self.history.contains_key(&descriptor.kind)
         {
             return Err(IndexError::InvalidInput("duplicate adapter kind".into()));
         }
@@ -397,11 +442,41 @@ impl AdapterRegistry {
                 Err(IndexError::InvalidInput("duplicate adapter kind".into()))
             }
             std::collections::btree_map::Entry::Vacant(slot) => {
-                let _registered = slot.insert(Arc::new(OwnerAdapter {
+                let _registered =
+                    slot.insert(OwnerRegistration::Executable(Arc::new(OwnerAdapter {
+                        descriptor,
+                        resource_demand: backend.resource_demand(),
+                        backend,
+                    })));
+                Ok(())
+            }
+        }
+    }
+
+    /// Register a pure profile validator without an executable owner backend.
+    pub fn register_owner_validator<F>(
+        &mut self,
+        descriptor: AdapterDescriptor,
+        validate_instance: F,
+    ) -> Result<(), IndexError>
+    where
+        F: Fn(&InstanceSpec) -> Result<(), IndexError> + Send + Sync + 'static,
+    {
+        if self.core.contains_key(&descriptor.kind)
+            || self.projection.contains_key(&descriptor.kind)
+            || self.history.contains_key(&descriptor.kind)
+        {
+            return Err(IndexError::InvalidInput("duplicate adapter kind".into()));
+        }
+        match self.owners.entry(descriptor.kind) {
+            std::collections::btree_map::Entry::Occupied(_) => {
+                Err(IndexError::InvalidInput("duplicate adapter kind".into()))
+            }
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                let _registered = slot.insert(OwnerRegistration::ValidationOnly {
                     descriptor,
-                    resource_demand: backend.resource_demand(),
-                    backend,
-                }));
+                    validate_instance: Arc::new(validate_instance),
+                });
                 Ok(())
             }
         }
@@ -415,6 +490,7 @@ impl AdapterRegistry {
         if self.core.contains_key(&descriptor.kind)
             || self.owners.contains_key(&descriptor.kind)
             || self.projection.contains_key(&descriptor.kind)
+            || self.history.contains_key(&descriptor.kind)
         {
             return Err(IndexError::InvalidInput("duplicate adapter kind".into()));
         }
@@ -447,6 +523,10 @@ impl AdapterRegistry {
 
     pub(crate) fn supports(&self, instance: &InstanceSpec) -> bool {
         let descriptor = match instance.activation {
+            GroupActivation::CoreRequired if instance.input_domain == InputDomain::History => self
+                .history
+                .get(&instance.kind)
+                .map(|adapter| adapter.descriptor()),
             GroupActivation::CoreRequired
                 if matches!(instance.input_domain, InputDomain::Projection { .. }) =>
             {
@@ -461,7 +541,7 @@ impl AdapterRegistry {
             GroupActivation::AsyncCoverage => self
                 .owners
                 .get(&instance.kind)
-                .map(|adapter| adapter.descriptor()),
+                .map(OwnerRegistration::descriptor),
         };
         descriptor.is_some_and(|registered| {
             registered.schema == instance.schema && registered.format == instance.format
@@ -477,9 +557,9 @@ impl AdapterRegistry {
         attempt: &'a mut AttemptContext<'_>,
     ) -> Result<BuildFuture<'a, OwnerMemberBinding>, IndexError> {
         match self.owners.get(&instance.kind) {
-            Some(adapter) if self.supports(instance) => {
-                adapter.build(instance, owner, input, prior, attempt)
-            }
+            Some(adapter) if self.supports(instance) => adapter
+                .executable()?
+                .build(instance, owner, input, prior, attempt),
             _ => Err(IndexError::InvalidInput(
                 "unregistered owner index descriptor".into(),
             )),
@@ -496,14 +576,9 @@ impl AdapterRegistry {
         attempt: &'a mut AttemptContext<'_>,
     ) -> Result<IndexFuture<'a, quanta_index_core::index::SearchablePreparation>, IndexError> {
         match self.owners.get(&instance.kind) {
-            Some(adapter) if self.supports(instance) => Ok(adapter.prepare_searchable(
-                instance,
-                prior,
-                owners,
-                materialized,
-                object_maps,
-                attempt,
-            )),
+            Some(adapter) if self.supports(instance) => Ok(adapter
+                .executable()?
+                .prepare_searchable(instance, prior, owners, materialized, object_maps, attempt)),
             _ => Err(IndexError::InvalidInput(
                 "unregistered owner index descriptor".into(),
             )),
@@ -516,7 +591,9 @@ impl AdapterRegistry {
         coverage: &CoverageBinding,
     ) -> Result<(), IndexError> {
         match self.owners.get(&instance.kind) {
-            Some(adapter) if self.supports(instance) => adapter.validate_coverage(coverage),
+            Some(adapter) if self.supports(instance) => {
+                adapter.executable()?.validate_coverage(coverage)
+            }
             _ => Err(IndexError::InvalidInput(
                 "unregistered owner index descriptor".into(),
             )),
@@ -565,6 +642,14 @@ impl AdapterRegistry {
                 ));
             }
             match instance.activation {
+                GroupActivation::CoreRequired if instance.input_domain == InputDomain::History => {
+                    self.history
+                        .get(&instance.kind)
+                        .ok_or_else(|| {
+                            IndexError::InvalidInput("unregistered History adapter".into())
+                        })?
+                        .validate_instance(instance)?;
+                }
                 GroupActivation::CoreRequired
                     if matches!(instance.input_domain, InputDomain::Projection { .. }) =>
                 {
@@ -1103,7 +1188,7 @@ pub(crate) mod tests {
                     },
                     |_delta: &SourceDelta| Ok(()),
                 )?;
-                check_eq!(registry.resource_demands().0.provider_units, 0)?;
+                check_eq!(registry.resource_demands()?.0.provider_units, 0)?;
                 if !drift_during_prepare {
                     demand.store(1, Ordering::SeqCst);
                 }
@@ -1142,7 +1227,7 @@ pub(crate) mod tests {
                     prepare_calls.load(Ordering::SeqCst),
                     u64::from(drift_during_prepare)
                 )?;
-                check_eq!(registry.resource_demands().0.provider_units, 0)?;
+                check_eq!(registry.resource_demands()?.0.provider_units, 0)?;
             }
             Ok(())
         })
@@ -1164,7 +1249,7 @@ pub(crate) mod tests {
                         drift_during_prepare,
                     },
                 )?;
-                check_eq!(registry.resource_demands().1.provider_units, 0)?;
+                check_eq!(registry.resource_demands()?.1.provider_units, 0)?;
                 if !drift_during_prepare {
                     demand.store(1, Ordering::SeqCst);
                 }
@@ -1196,7 +1281,7 @@ pub(crate) mod tests {
                     prepare_calls.load(Ordering::SeqCst),
                     u64::from(drift_during_prepare)
                 )?;
-                check_eq!(registry.resource_demands().1.provider_units, 0)?;
+                check_eq!(registry.resource_demands()?.1.provider_units, 0)?;
             }
             Ok(())
         })
@@ -1603,5 +1688,113 @@ pub(crate) mod tests {
             )?;
             Ok(())
         })
+    }
+    #[test]
+    fn validation_only_owner_admits_profile_and_runs_policy_validator() -> Result<(), IndexError> {
+        let calls = Arc::new(AtomicU64::new(0));
+        let observer = Arc::clone(&calls);
+        let mut registry = AdapterRegistry::new();
+        registry.register_owner_validator(descriptor(21), move |instance| {
+            let _previous = observer.fetch_add(1, Ordering::SeqCst);
+            if instance.policy == Digest([21; 32]) {
+                Ok(())
+            } else {
+                Err(IndexError::InvalidInput("owner policy refused".into()))
+            }
+        })?;
+        let mut instance = spec(21, 22);
+        instance.activation = GroupActivation::AsyncCoverage;
+        registry.validate_profile(&[instance.clone()], &demand_test_budget()?)?;
+        instance.policy = Digest([0; 32]);
+        check_eq!(
+            registry.validate_profile(&[instance], &demand_test_budget()?),
+            Err(IndexError::InvalidInput("owner policy refused".into()))
+        )?;
+        check_eq!(calls.load(Ordering::SeqCst), 2)?;
+        Ok(())
+    }
+
+    #[test]
+    fn validation_only_owner_reserves_kind_across_owner_and_core() -> Result<(), IndexError> {
+        let mut registry = AdapterRegistry::new();
+        registry.register_owner_validator(descriptor(22), |_instance| Ok(()))?;
+        check!(matches!(
+            registry.register_owner(descriptor(22), OwnerBackend),
+            Err(IndexError::InvalidInput(_))
+        ))?;
+        check!(matches!(
+            registry.register(descriptor(22), NumberBackend, |_delta| Ok(1)),
+            Err(IndexError::InvalidInput(_))
+        ))?;
+        check!(matches!(
+            registry.register_owner_validator(descriptor(22), |_instance| Ok(())),
+            Err(IndexError::InvalidInput(_))
+        ))?;
+        registry.register(descriptor(23), NumberBackend, |_delta| Ok(1))?;
+        check!(matches!(
+            registry.register_owner_validator(descriptor(23), |_instance| Ok(())),
+            Err(IndexError::InvalidInput(_))
+        ))?;
+        registry.register_owner(descriptor(24), OwnerBackend)?;
+        check!(matches!(
+            registry.register_owner_validator(descriptor(24), |_instance| Ok(())),
+            Err(IndexError::InvalidInput(_))
+        ))?;
+        Ok(())
+    }
+
+    #[test]
+    fn validation_only_owner_refuses_resource_and_execution_routes() -> Result<(), IndexError> {
+        let mut registry = AdapterRegistry::new();
+        registry.register_owner_validator(descriptor(25), |_instance| Ok(()))?;
+        let mut instance = spec(25, 26);
+        instance.activation = GroupActivation::AsyncCoverage;
+        registry.validate_profile(&[instance.clone()], &demand_test_budget()?)?;
+        check!(matches!(
+            registry.resource_demands(),
+            Err(IndexError::InvalidInput(_))
+        ))?;
+        let desired = InputBinding {
+            root: MapRoot(None),
+            schema: instance.schema,
+            policy: instance.policy,
+            context: Digest([0; 32]),
+        };
+        let coverage = CoverageBinding {
+            instance: instance.instance,
+            desired,
+            covered: None,
+            searchable: None,
+            status: quanta_index_core::index::CoverageStatus::Pending {
+                previous_missing: MapRoot(None),
+            },
+            owners: MapRoot(None),
+        };
+        check!(matches!(
+            registry.validate_coverage(&instance, &coverage),
+            Err(IndexError::InvalidInput(_))
+        ))?;
+        let io = NoIo;
+        let mut budget = demand_test_budget()?;
+        let mut attempt = demand_test_context(&io, &mut budget);
+        check!(matches!(
+            registry.prepare_searchable(&instance, None, MapRoot(None), None, None, &mut attempt),
+            Err(IndexError::InvalidInput(_))
+        ))?;
+        let owner = OwnerKey {
+            producer: quanta_index_core::index::ProducerId(id(1)),
+            stable_id: quanta_index_core::index::StableOwnerId(id(1)),
+        };
+        let input = OwnerInputBinding {
+            source: None,
+            projection: None,
+            producer_context: Digest([0; 32]),
+            derivation_policy: instance.policy,
+        };
+        check!(matches!(
+            registry.build_owner(&instance, owner, input, None, &mut attempt),
+            Err(IndexError::InvalidInput(_))
+        ))?;
+        Ok(())
     }
 }

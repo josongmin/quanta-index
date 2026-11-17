@@ -1,8 +1,9 @@
 use super::IndexError;
 use std::{
+    any::Any,
     fmt,
     sync::{
-        OnceLock,
+        Mutex, OnceLock,
         atomic::{AtomicU8, Ordering},
     },
     time::Instant,
@@ -161,6 +162,11 @@ pub struct WorkBudget {
     usage: WorkUsage,
     request: crate::RequestBudgetV1,
     memory: Option<super::MemoryScope>,
+    // During scoped credit, optional allocations use only the original
+    // authority's unreserved capacity, never the mandatory child credit.
+    optional_memory: Option<super::MemoryScope>,
+    // One revocable, privately owned optimization. It never owns work usage.
+    discardable_memory: Mutex<Option<Box<dyn Any + Send>>>,
     // This is a bounded diagnostic for the first local refusal, not a claim
     // about the terminal cause of the enclosing operation.
     first_denial: AtomicU8,
@@ -206,6 +212,8 @@ impl WorkBudget {
             usage: WorkUsage::default(),
             request,
             memory: None,
+            optional_memory: None,
+            discardable_memory: Mutex::new(None),
             first_denial: AtomicU8::new(DENIAL_NONE),
             denied_checkpoint: OnceLock::new(),
             denied_charge: OnceLock::new(),
@@ -343,6 +351,63 @@ impl WorkBudget {
         self.memory = memory;
     }
 
+    /// Lend one owned, funded optimization to synchronous work. A memory
+    /// refusal may discard it before the original allocation is refused.
+    /// The owner must keep any borrowed callback data outside this state.
+    /// Nesting discards the outer optimization; it cannot be resurrected.
+    /// The state is also discarded if `run` unwinds.
+    pub fn with_discardable_memory<T: Any + Send, R>(
+        &mut self,
+        state: Box<T>,
+        run: impl FnOnce(&mut Self) -> R,
+    ) -> (R, Option<Box<T>>) {
+        struct Clear<'a>(&'a mut WorkBudget);
+        impl Drop for Clear<'_> {
+            fn drop(&mut self) {
+                let state = self
+                    .0
+                    .discardable_memory
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .take();
+                drop(state);
+            }
+        }
+
+        let guard = Clear(self);
+        let prior = guard
+            .0
+            .discardable_memory
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .replace(state);
+        drop(prior);
+        let result = run(&mut *guard.0);
+        let state = guard
+            .0
+            .discardable_memory
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take();
+        let state = state.map(|state| {
+            state.downcast::<T>().unwrap_or_else(|_other| {
+                unreachable!("discardable memory type changed inside its scope")
+            })
+        });
+        (result, state)
+    }
+
+    fn discard_optional_memory(&self) -> bool {
+        let state = self
+            .discardable_memory
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .take();
+        let discarded = state.is_some();
+        drop(state);
+        discarded
+    }
+
     /// Reserve before allocation. A retained lease owns data until its last
     /// shared owner; a temporary lease must end before its execution guard.
     #[track_caller]
@@ -352,11 +417,19 @@ impl WorkBudget {
         lifetime: super::MemoryLifetime,
     ) -> Result<Option<super::MemoryLease>, IndexError> {
         self.checkpoint()?;
-        let result = self
+        let mut result = self
             .memory
             .as_ref()
             .map(|scope| scope.reserve(bytes, lifetime))
             .transpose();
+        if matches!(&result, Err(IndexError::ResourceLimited)) && self.discard_optional_memory() {
+            self.checkpoint()?;
+            result = self
+                .memory
+                .as_ref()
+                .map(|scope| scope.reserve(bytes, lifetime))
+                .transpose();
+        }
         let lease = match result {
             Ok(lease) => lease,
             Err(error) => {
@@ -366,6 +439,9 @@ impl WorkBudget {
                         lifetime,
                         caller: std::panic::Location::caller(),
                     });
+                    if let Some(scope) = &self.memory {
+                        scope.observe_refusal(bytes, lifetime);
+                    }
                 }
                 return Err(error);
             }
@@ -379,7 +455,8 @@ impl WorkBudget {
     /// Missing or insufficient live memory selects the original implementation
     /// without recording a terminal memory denial. That implementation must
     /// fund all of its own allocations. Cancellation and hard scope errors
-    /// still refuse the original request.
+    /// still refuse the original request. An active scoped credit protects
+    /// mandatory work; optional work uses the original parent's spare capacity.
     #[track_caller]
     pub fn try_reserve_memory_for_optimization(
         &self,
@@ -387,17 +464,73 @@ impl WorkBudget {
         lifetime: super::MemoryLifetime,
     ) -> Result<Option<super::MemoryLease>, IndexError> {
         self.checkpoint()?;
-        let lease = match self
-            .memory
+        let mut result = self
+            .optional_memory
             .as_ref()
+            .or(self.memory.as_ref())
             .map(|scope| scope.reserve(bytes, lifetime))
-        {
-            Some(Ok(lease)) => Some(lease),
-            Some(Err(IndexError::ResourceLimited)) | None => None,
-            Some(Err(error)) => return Err(error),
+            .transpose();
+        if matches!(&result, Err(IndexError::ResourceLimited)) && self.discard_optional_memory() {
+            self.checkpoint()?;
+            result = self
+                .optional_memory
+                .as_ref()
+                .or(self.memory.as_ref())
+                .map(|scope| scope.reserve(bytes, lifetime))
+                .transpose();
+        }
+        let lease = match result {
+            Ok(lease) => lease,
+            Err(IndexError::ResourceLimited) => None,
+            Err(error) => return Err(error),
         };
         self.checkpoint()?;
         Ok(lease)
+    }
+
+    /// Temporarily route canonical allocations through a pre-funded child
+    /// scope. Optional resource refusal leaves the original budget untouched.
+    pub fn try_scoped_memory_credit(
+        &mut self,
+        limits: super::MemoryCreditLimits,
+    ) -> Result<Option<super::ScopedMemoryBudget<'_>>, IndexError> {
+        self.checkpoint()?;
+        limits.validate()?;
+        let Some(parent) = self.memory.as_ref() else {
+            return Ok(None);
+        };
+        let mut result = parent.try_reserve_credit(limits);
+        if matches!(&result, Ok(None) | Err(IndexError::ResourceLimited))
+            && self.discard_optional_memory()
+        {
+            self.checkpoint()?;
+            result = parent.try_reserve_credit(limits);
+        }
+        let credit = match result {
+            Ok(Some(credit)) => credit,
+            Ok(None) | Err(IndexError::ResourceLimited) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        self.checkpoint()?;
+        let child = credit.scope();
+        let previous = self.memory.replace(child);
+        let previous_optional = self.optional_memory.take();
+        self.optional_memory = previous_optional.clone().or_else(|| previous.clone());
+        Ok(Some(super::ScopedMemoryBudget {
+            budget: self,
+            previous,
+            previous_optional,
+            _credit: credit,
+        }))
+    }
+
+    pub(super) fn restore_scoped_memory_credit(
+        &mut self,
+        mandatory: Option<super::MemoryScope>,
+        optional: Option<super::MemoryScope>,
+    ) {
+        self.memory = mandatory;
+        self.optional_memory = optional;
     }
 
     #[must_use]
@@ -442,6 +575,12 @@ impl WorkBudget {
     #[must_use]
     pub const fn request(&self) -> &crate::RequestBudgetV1 {
         &self.request
+    }
+
+    /// Tighten the original request deadline without resetting work, backing,
+    /// cancellation, or diagnostics. A later cap cannot extend an earlier one.
+    pub fn cap_deadline(&mut self, deadline: Instant) {
+        self.request = self.request.capped_at(deadline);
     }
 
     fn scoped_request(
@@ -565,7 +704,7 @@ impl WorkBudget {
 mod tests {
     use std::{
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicU64, Ordering},
         },
         time::Duration,
@@ -993,6 +1132,35 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn deadline_cap_preserves_usage_cancellation_and_original_upper_bound() -> Result<(), IndexError>
+    {
+        let now = Instant::now();
+        let original_deadline = now
+            .checked_add(Duration::from_secs(60))
+            .ok_or(IndexError::ResourceLimited)?;
+        let earlier = now
+            .checked_add(Duration::from_secs(30))
+            .ok_or(IndexError::ResourceLimited)?;
+        let original = crate::RequestBudgetV1::until(original_deadline);
+        let mut budget = WorkBudget::with_request(limits(), original.clone());
+        budget.charge(WorkUsage {
+            reads: 1,
+            bytes: 3,
+            ..WorkUsage::default()
+        })?;
+        let accepted = budget.usage();
+        budget.cap_deadline(earlier);
+        budget.cap_deadline(original_deadline);
+        check_eq!(budget.request().deadline(), earlier);
+        check_eq!(budget.usage(), accepted);
+        check_eq!(original.deadline(), original_deadline);
+        original.cancel_handle().cancel();
+        check_eq!(budget.checkpoint(), Err(IndexError::Cancelled));
+        check_eq!(budget.usage(), accepted);
+        Ok(())
+    }
+
     #[derive(Debug)]
     struct ProviderPortProbe;
 
@@ -1337,6 +1505,353 @@ mod tests {
         }
     }
 
+    struct PressureMemoryScope {
+        used: Arc<AtomicU64>,
+        calls: Arc<AtomicU64>,
+        limit: u64,
+    }
+
+    struct PressureRelease(Arc<AtomicU64>);
+
+    impl super::super::MemoryLeaseOwner for PressureRelease {
+        fn release(&self, bytes: u64) {
+            let _previous = self.0.fetch_sub(bytes, Ordering::SeqCst);
+        }
+    }
+
+    impl super::super::MemoryScopePort for PressureMemoryScope {
+        fn reserve(
+            &self,
+            bytes: u64,
+            _lifetime: super::super::MemoryLifetime,
+        ) -> Result<super::super::MemoryLease, IndexError> {
+            let _previous = self.calls.fetch_add(1, Ordering::SeqCst);
+            let _previous = self
+                .used
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                    used.checked_add(bytes).filter(|next| *next <= self.limit)
+                })
+                .map_err(|_used| IndexError::ResourceLimited)?;
+            Ok(super::super::MemoryLease::new(
+                bytes,
+                Arc::new(PressureRelease(Arc::clone(&self.used))),
+            ))
+        }
+    }
+
+    #[test]
+    fn discardable_memory_retries_only_the_unfunded_allocation_without_work_or_denial()
+    -> Result<(), IndexError> {
+        let used = Arc::new(AtomicU64::new(0));
+        let calls = Arc::new(AtomicU64::new(0));
+        let mut budget = WorkBudget::new(
+            limits(),
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        budget.bind_memory_scope(Some(super::super::MemoryScope::new(Arc::new(
+            PressureMemoryScope {
+                used: Arc::clone(&used),
+                calls: Arc::clone(&calls),
+                limit: 10,
+            },
+        ))));
+        budget.charge(WorkUsage {
+            reads: 1,
+            ..WorkUsage::default()
+        })?;
+        let cache = budget
+            .reserve_memory(7, super::super::MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let (result, cache) = budget.with_discardable_memory(Box::new(cache), |budget| {
+            budget.reserve_memory(4, super::super::MemoryLifetime::Temporary)
+        });
+        check!(cache.is_none());
+        let mandatory = result?.ok_or(IndexError::ResourceLimited)?;
+        check_eq!(used.load(Ordering::SeqCst), 4);
+        check_eq!(calls.load(Ordering::SeqCst), 3);
+        check_eq!(budget.usage().reads, 1);
+        check_eq!(budget.first_denial(), None);
+        drop(mandatory);
+        check_eq!(used.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn discardable_memory_preserves_genuine_refusal_and_optional_miss_semantics()
+    -> Result<(), IndexError> {
+        let used = Arc::new(AtomicU64::new(0));
+        let calls = Arc::new(AtomicU64::new(0));
+        let mut budget = WorkBudget::new(
+            limits(),
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        budget.bind_memory_scope(Some(super::super::MemoryScope::new(Arc::new(
+            PressureMemoryScope {
+                used: Arc::clone(&used),
+                calls: Arc::clone(&calls),
+                limit: 10,
+            },
+        ))));
+        let cache = budget
+            .reserve_memory(7, super::super::MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let (optional, remaining) = budget.with_discardable_memory(Box::new(cache), |budget| {
+            budget.try_reserve_memory_for_optimization(11, super::super::MemoryLifetime::Temporary)
+        });
+        check!(optional?.is_none());
+        check!(remaining.is_none());
+        check_eq!(budget.first_denial(), None);
+        check_eq!(used.load(Ordering::SeqCst), 0);
+        let cache = budget
+            .reserve_memory(7, super::super::MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let (mandatory, remaining) = budget.with_discardable_memory(Box::new(cache), |budget| {
+            budget.reserve_memory(11, super::super::MemoryLifetime::Retained)
+        });
+        check!(matches!(mandatory, Err(IndexError::ResourceLimited)));
+        check!(remaining.is_none());
+        check_eq!(used.load(Ordering::SeqCst), 0);
+        check_eq!(budget.first_denial(), Some(WorkBudgetDenial::Memory));
+        check_eq!(calls.load(Ordering::SeqCst), 6);
+        check_eq!(budget.usage(), WorkUsage::default());
+        Ok(())
+    }
+
+    #[test]
+    fn discardable_memory_nested_and_unwind_release_owned_state() -> Result<(), IndexError> {
+        let used = Arc::new(AtomicU64::new(0));
+        let calls = Arc::new(AtomicU64::new(0));
+        let mut budget = WorkBudget::new(
+            limits(),
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        budget.bind_memory_scope(Some(super::super::MemoryScope::new(Arc::new(
+            PressureMemoryScope {
+                used: Arc::clone(&used),
+                calls,
+                limit: 10,
+            },
+        ))));
+        let outer = budget
+            .reserve_memory(7, super::super::MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let ((), outer) = budget.with_discardable_memory(Box::new(outer), |budget| {
+            let inner = budget
+                .reserve_memory(2, super::super::MemoryLifetime::Temporary)
+                .expect("inner state fits alongside the outer state")
+                .expect("test scope is bound");
+            let ((), inner) = budget.with_discardable_memory(Box::new(inner), |_budget| ());
+            drop(inner);
+        });
+        check!(outer.is_none());
+        check_eq!(used.load(Ordering::SeqCst), 0);
+        let cache = budget
+            .reserve_memory(7, super::super::MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(
+                budget.with_discardable_memory(Box::new(cache), |_budget| -> () {
+                    panic!("discardable owner unwind")
+                }),
+            );
+        }));
+        check!(unwound.is_err());
+        check_eq!(used.load(Ordering::SeqCst), 0);
+        check_eq!(budget.first_denial(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn discardable_memory_keeps_cancellation_typed_and_returns_unspent_cache()
+    -> Result<(), IndexError> {
+        let request = crate::RequestBudgetV1::for_duration(Duration::from_secs(30));
+        let used = Arc::new(AtomicU64::new(0));
+        let mut budget = WorkBudget::with_request(limits(), request.clone());
+        budget.bind_memory_scope(Some(super::super::MemoryScope::new(Arc::new(
+            PressureMemoryScope {
+                used: Arc::clone(&used),
+                calls: Arc::new(AtomicU64::new(0)),
+                limit: 10,
+            },
+        ))));
+        let cache = budget
+            .reserve_memory(7, super::super::MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let (result, cache) = budget.with_discardable_memory(Box::new(cache), |budget| {
+            request.cancel_handle().cancel();
+            budget.reserve_memory(4, super::super::MemoryLifetime::Temporary)
+        });
+        check!(matches!(result, Err(IndexError::Cancelled)));
+        check!(cache.is_some());
+        check_eq!(used.load(Ordering::SeqCst), 7);
+        check_eq!(budget.first_denial(), Some(WorkBudgetDenial::Cancelled));
+        drop(cache);
+        check_eq!(used.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    struct ObservedRefusalScope(Arc<AtomicU64>);
+
+    impl super::super::MemoryScopePort for ObservedRefusalScope {
+        fn reserve(
+            &self,
+            _bytes: u64,
+            _lifetime: super::super::MemoryLifetime,
+        ) -> Result<super::super::MemoryLease, IndexError> {
+            Err(IndexError::ResourceLimited)
+        }
+
+        fn observe_refusal(&self, _bytes: u64, _lifetime: super::super::MemoryLifetime) {
+            let _previous = self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn memory_refusal_observer_excludes_optional_misses_repeats_and_cancellation()
+    -> Result<(), IndexError> {
+        let observed = Arc::new(AtomicU64::new(0));
+        let scope =
+            super::super::MemoryScope::new(Arc::new(ObservedRefusalScope(Arc::clone(&observed))));
+        let mut work = WorkBudget::with_request(
+            limits(),
+            crate::RequestBudgetV1::for_duration(Duration::from_secs(30)),
+        );
+        work.bind_memory_scope(Some(scope.clone()));
+        check!(
+            work.try_reserve_memory_for_optimization(88, super::super::MemoryLifetime::Retained)?
+                .is_none()
+        );
+        check_eq!(observed.load(Ordering::SeqCst), 0);
+        for _ in 0..2 {
+            check!(matches!(
+                work.reserve_memory(88, super::super::MemoryLifetime::Retained),
+                Err(IndexError::ResourceLimited)
+            ));
+        }
+        check_eq!(observed.load(Ordering::SeqCst), 1);
+        let mut cancelled = WorkBudget::with_request(
+            limits(),
+            crate::RequestBudgetV1::for_duration(Duration::from_secs(30)),
+        );
+        cancelled.bind_memory_scope(Some(scope));
+        cancelled.request().cancel_handle().cancel();
+        check!(matches!(
+            cancelled.reserve_memory(88, super::super::MemoryLifetime::Retained),
+            Err(IndexError::Cancelled)
+        ));
+        check_eq!(observed.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    struct CreditRouteScope {
+        depth: u8,
+        observed: Arc<Mutex<Vec<u8>>>,
+        released: Arc<AtomicU64>,
+    }
+
+    struct NoopCreditClose;
+
+    impl super::super::MemoryCreditClosePort for NoopCreditClose {
+        fn close(&self) {}
+    }
+
+    impl super::super::MemoryScopePort for CreditRouteScope {
+        fn reserve(
+            &self,
+            bytes: u64,
+            _lifetime: super::super::MemoryLifetime,
+        ) -> Result<super::super::MemoryLease, IndexError> {
+            self.observed
+                .lock()
+                .map_err(|_poison| IndexError::BackendViolation("credit route lock".into()))?
+                .push(self.depth);
+            Ok(super::super::MemoryLease::new(
+                bytes,
+                Arc::new(ReleasedBytes(Arc::clone(&self.released))),
+            ))
+        }
+
+        fn try_reserve_credit(
+            &self,
+            _limits: super::super::MemoryCreditLimits,
+        ) -> Result<Option<super::super::MemoryCredit>, IndexError> {
+            let depth = self
+                .depth
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?;
+            Ok(Some(super::super::MemoryCredit::new(
+                super::super::MemoryScope::new(Arc::new(Self {
+                    depth,
+                    observed: Arc::clone(&self.observed),
+                    released: Arc::clone(&self.released),
+                })),
+                Arc::new(NoopCreditClose),
+            )))
+        }
+    }
+
+    #[test]
+    fn nested_credit_routes_optional_to_original_scope_and_restores_both_scopes()
+    -> Result<(), IndexError> {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let released = Arc::new(AtomicU64::new(0));
+        let mut budget = WorkBudget::new(
+            limits(),
+            Instant::now()
+                .checked_add(Duration::from_secs(30))
+                .ok_or(IndexError::ResourceLimited)?,
+        );
+        budget.bind_memory_scope(Some(super::super::MemoryScope::new(Arc::new(
+            CreditRouteScope {
+                depth: 0,
+                observed: Arc::clone(&observed),
+                released,
+            },
+        ))));
+        let limit = super::super::MemoryCreditLimits {
+            temporary_data_bytes: 1,
+            retained_data_bytes: 0,
+            max_live_temporary_leases: 1,
+            max_live_retained_leases: 0,
+        };
+        let mut outer = budget
+            .try_scoped_memory_credit(limit)?
+            .ok_or(IndexError::ResourceLimited)?;
+        {
+            let inner = outer
+                .try_scoped_memory_credit(limit)?
+                .ok_or(IndexError::ResourceLimited)?;
+            drop(
+                inner.try_reserve_memory_for_optimization(
+                    1,
+                    super::super::MemoryLifetime::Temporary,
+                )?,
+            );
+            drop(inner.reserve_memory(1, super::super::MemoryLifetime::Temporary)?);
+        }
+        drop(outer.reserve_memory(1, super::super::MemoryLifetime::Temporary)?);
+        drop(
+            outer
+                .try_reserve_memory_for_optimization(1, super::super::MemoryLifetime::Temporary)?,
+        );
+        drop(outer);
+        drop(budget.reserve_memory(1, super::super::MemoryLifetime::Temporary)?);
+        check_eq!(
+            *observed
+                .lock()
+                .map_err(|_poison| IndexError::BackendViolation("credit route lock".into()))?,
+            [0, 2, 1, 0, 0]
+        );
+        check_eq!(budget.first_denial(), None);
+        Ok(())
+    }
+
     #[test]
     fn memory_refusal_records_first_denial_without_charging_work() -> Result<(), IndexError> {
         let mut budget = WorkBudget::new(
@@ -1348,6 +1863,16 @@ mod tests {
         budget.bind_memory_scope(Some(super::super::MemoryScope::new(Arc::new(
             RefusingMemoryScope,
         ))));
+        check!(
+            budget
+                .try_scoped_memory_credit(super::super::MemoryCreditLimits {
+                    temporary_data_bytes: 7,
+                    retained_data_bytes: 0,
+                    max_live_temporary_leases: 1,
+                    max_live_retained_leases: 0,
+                })?
+                .is_none()
+        );
         check!(
             budget
                 .try_reserve_memory_for_optimization(7, super::super::MemoryLifetime::Temporary)?

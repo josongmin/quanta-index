@@ -18,6 +18,7 @@
 //! bytes*, computed by excluding storage the target shares with its base, so it
 //! measures the property rather than the mechanism that achieves it.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/publication_fixture.rs"]

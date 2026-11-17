@@ -1,12 +1,10 @@
 //! One changed Native segment, split into independently readable bodies and postings.
 
-use std::path::Path;
-
 use quanta_index_contract::ManifestGeneration;
 use quanta_index_core::CoreError;
 use sha2::{Digest as _, Sha256};
 
-use crate::normalize::{self, CaseMode};
+use crate::normalize;
 use crate::text_authority::paged_wire::{MAX_BODY_BYTES, SEGMENT_DOCS, SegmentDescriptor};
 use crate::text_authority::shard::ShardBuilders;
 use crate::text_authority::types::AddedTextDoc;
@@ -69,20 +67,34 @@ impl BuiltSegment {
             builder.append(local, doc.candidate_id.clone(), &doc.text)?;
         }
         let proved = builder.finish()?;
-        // This verifier derives exact gram and position relations from raw
-        // normalized bodies, without using the posting builder as an oracle.
+        // Seal independently derives all four posting relations from the
+        // persisted bodies. Publication emits the builder's canonical term
+        // bytes without repeating that raw-document oracle here.
         let mut terms = Vec::new();
-        proved.verify_semantics_with_verified_terms(
-            0,
-            Path::new("text-authority-segment"),
-            "changed-segment",
-            |mode, term, entries| {
-                let (surface, index) = match mode {
-                    CaseMode::Sensitive => (TERM_RAW, &proved.positions),
-                    CaseMode::Folded => (TERM_FOLDED, &proved.positions_folded),
-                };
-                let locals =
-                    posting_locals(entries.iter().map(|(id, _positions)| *id), docs.len())?;
+        for (surface, index) in [
+            (TERM_RAW, &proved.positions),
+            (TERM_FOLDED, &proved.positions_folded),
+        ] {
+            for term in index.terms() {
+                let postings = index.term_postings(term).ok_or_else(|| {
+                    CoreError::InvalidContract("lexical: Native term lacks postings".into())
+                })?;
+                let locals = posting_locals(
+                    postings.map(|entry| {
+                        entry.map(|entry| entry.doc_id.0).map_err(|error| {
+                            crate::query_errors::map_positions_error(
+                                "decode Native term postings",
+                                &error,
+                            )
+                        })
+                    }),
+                    docs.len(),
+                )?;
+                if locals.is_empty() {
+                    return Err(CoreError::InvalidContract(
+                        "lexical: Native term has no local postings".into(),
+                    ));
+                }
                 let raw = index.raw_postings(term).ok_or_else(|| {
                     CoreError::InvalidContract("lexical: Native term lacks positions".into())
                 })?;
@@ -91,9 +103,8 @@ impl BuiltSegment {
                     key: term.as_bytes().to_vec(),
                     bytes: encode_posting(segment_key, surface, &locals, Some(raw))?,
                 });
-                Ok(())
-            },
-        )?;
+            }
+        }
         let descriptor = SegmentDescriptor {
             id: segment_key,
             logical_ids: docs.iter().map(|doc| doc.doc_id).collect(),
@@ -141,7 +152,7 @@ impl BuiltSegment {
             (GRAM_FOLDED, &proved.trigram_folded),
         ] {
             for (gram, postings) in index.iter() {
-                let locals = posting_locals(postings.iter().map(|id| id.0), docs.len())?;
+                let locals = posting_locals(postings.iter().map(|id| Ok(id.0)), docs.len())?;
                 grams.push(BuiltPosting {
                     surface,
                     key: gram.to_vec(),
@@ -162,7 +173,7 @@ impl BuiltSegment {
 mod verified_term_tests {
     use quanta_index_contract::{ManifestGeneration, RepoId, RepoRelativePath, SourceFileKey};
 
-    use super::{BuiltPosting, BuiltSegment, TERM_FOLDED, TERM_RAW};
+    use super::{BuiltPosting, BuiltSegment, GRAM_FOLDED, GRAM_RAW, TERM_FOLDED, TERM_RAW};
     use crate::text_authority::types::AddedTextDoc;
 
     fn posting<'a>(segment: &'a BuiltSegment, surface: u8, term: &str) -> &'a BuiltPosting {
@@ -228,15 +239,35 @@ mod verified_term_tests {
                 .iter()
                 .any(|row| row.surface == TERM_FOLDED && row.key == "CAFÉ".as_bytes())
         );
+        assert_eq!(
+            posting(&segment, TERM_RAW, "CAFÉ").bytes.as_slice(),
+            &[0x85, 1, 7, 3, 0x81, 0, 0x84, 1, 0, 1, 0]
+        );
+        assert_eq!(
+            posting(&segment, TERM_FOLDED, "red").bytes.as_slice(),
+            &[0x85, 1, 7, 4, 0x82, 0, 1, 0x88, 2, 0, 2, 2, 1, 1, 1, 1]
+        );
+        for surface in [GRAM_RAW, GRAM_FOLDED] {
+            let gram = segment
+                .grams
+                .iter()
+                .find(|row| row.surface == surface && row.key == b"caf")
+                .expect("fixed Unicode gram");
+            assert_eq!(
+                gram.bytes.as_slice(),
+                &[0x85, 1, 7, surface, 0x82, 0, 1, 0xf6]
+            );
+        }
     }
 }
 
 fn posting_locals(
-    ids: impl Iterator<Item = u64>,
+    ids: impl Iterator<Item = Result<u64, CoreError>>,
     document_count: usize,
 ) -> Result<Vec<u32>, CoreError> {
     let mut locals = Vec::new();
     for id in ids {
+        let id = id?;
         let local = u32::try_from(id).map_err(|error| {
             CoreError::InvalidContract(format!("lexical: Native posting local ID width: {error}"))
         })?;
@@ -289,7 +320,10 @@ pub(crate) fn decode_posting(
             "lexical: Native posting row differs".into(),
         ));
     }
-    posting_locals(locals.into_iter().map(u64::from), document_count)
+    posting_locals(
+        locals.into_iter().map(|id| Ok(u64::from(id))),
+        document_count,
+    )
 }
 
 pub(crate) fn decode_body(bytes: &[u8]) -> Result<(String, String, String), CoreError> {

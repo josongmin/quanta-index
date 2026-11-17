@@ -1804,8 +1804,11 @@ mod tests {
             UpdateKind::Reconfigure { profile } => vec![*profile],
             UpdateKind::Materialize { .. } => Vec::new(),
             UpdateKind::SourceAdvance(_)
+            | UpdateKind::SourceHistoryAdvance(_)
             | UpdateKind::SourceResync { .. }
-            | UpdateKind::ProjectionAdvance(_) => {
+            | UpdateKind::ProjectionAdvance(_)
+            | UpdateKind::HistoryAdvance(_)
+            | UpdateKind::HistoryAppend(_) => {
                 return Err("fixture request kind has no test input staging".into());
             }
         };

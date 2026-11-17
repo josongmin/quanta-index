@@ -15,7 +15,10 @@ use quanta_index_semantic::native::SearchResult;
 
 use crate::native_result::{ResultValue, ScopedNativeResult, shared_value_bytes};
 
+mod hybrid;
 mod overlay;
+pub(crate) use hybrid::ScopedNativeHybridFileResult;
+pub(super) use hybrid::convert as convert_hybrid;
 pub(super) use overlay::convert as convert_overlay;
 pub type ScopedOverlaySemanticResult =
     ScopedNativeResult<quanta_index_contract::native_protocol::NativeOverlaySemanticResult>;

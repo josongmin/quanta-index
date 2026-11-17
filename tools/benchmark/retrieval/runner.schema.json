@@ -14,6 +14,9 @@
     "route_provenance",
     "results"
   ],
+  "if": {"properties": {"route_provenance": {"required": ["hybrid_file"]}}},
+  "then": {"required": ["file_top_k"]},
+  "else": {"not": {"required": ["file_top_k"]}},
   "properties": {
     "schema_version": {
       "const": 5
@@ -21,6 +24,10 @@
     "span_accounting_version": {
       "const": 1,
       "description": "Present on new Quanta producer records; all Quanta candidates then require published-unit span evidence. Optional only for immutable historical v5 records."
+    },
+    "file_top_k": {
+      "type": "integer", "minimum": 1, "maximum": 10000,
+      "description": "Declared returned-file cap for the explicit hybrid_file request; absent on all other routes."
     },
     "query_pack_sha256": {
       "type": "string",
@@ -1250,6 +1257,87 @@
         }
       }
     },
+    "hybrid_file_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "lane_top_k", "file_top_k", "response"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "lane_top_k": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "file_top_k": {"type": "integer", "minimum": 1, "maximum": 10000},
+        "response": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["generation", "selected_active_head", "file_top_k", "bounded_file_count", "lexical_pool_sha256", "dense_pool_sha256", "results", "lexical_window", "dense_window", "explanation"],
+          "properties": {
+            "generation": {
+              "type": "object", "additionalProperties": false,
+              "required": ["repo_id", "revision_id", "manifest_generation"],
+              "properties": {
+                "repo_id": {"type": "string", "minLength": 1},
+                "revision_id": {"type": "string", "minLength": 1},
+                "manifest_generation": {"type": "integer", "minimum": 1}
+              }
+            },
+            "selected_active_head": {"type": ["object", "null"]},
+            "file_top_k": {"type": "integer", "minimum": 1, "maximum": 10000},
+            "bounded_file_count": {"type": "integer", "minimum": 0, "maximum": 20000},
+            "lexical_pool_sha256": {"type": "array", "minItems": 32, "maxItems": 32, "items": {"type": "integer", "minimum": 0, "maximum": 255}},
+            "dense_pool_sha256": {"type": "array", "minItems": 32, "maxItems": 32, "items": {"type": "integer", "minimum": 0, "maximum": 255}},
+            "results": {"type": "array", "maxItems": 10000, "items": {"$ref": "#/$defs/hybrid_file_hit"}},
+            "lexical_window": {"$ref": "#/$defs/hybrid_file_window"},
+            "dense_window": {"$ref": "#/$defs/hybrid_file_window"},
+            "explanation": {"type": "object", "additionalProperties": {}}
+          }
+        }
+      }
+    },
+    "hybrid_file_hit": {
+      "type": "object", "additionalProperties": false,
+      "required": ["file", "lexical", "dense", "file_rrf_score"],
+      "properties": {
+        "file": {
+          "type": "object", "additionalProperties": false,
+          "required": ["source_repo_id", "repo_relative_path"],
+          "properties": {
+            "source_repo_id": {"type": "string", "minLength": 1},
+            "repo_relative_path": {"type": "string", "minLength": 1}
+          }
+        },
+        "lexical": {"type": ["object", "null"]},
+        "dense": {"type": ["object", "null"]},
+        "file_rrf_score": {"type": "number"}
+      }
+    },
+    "hybrid_file_window": {
+      "type": "object", "additionalProperties": false,
+      "required": ["returned", "candidate_count", "outcome", "coverage"],
+      "properties": {
+        "returned": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "candidate_count": {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": {"enum": ["exact", "at_least"]},
+            "value": {"type": "integer", "minimum": 0}
+          }
+        },
+        "outcome": {
+          "type": "object", "additionalProperties": {},
+          "required": ["kind"],
+          "properties": {"kind": {"enum": ["exact_exhausted", "lower_bound", "capped_unknown", "interrupted_partial", "approximate"]}}
+        },
+        "coverage": {
+          "type": "object", "additionalProperties": {},
+          "required": ["examined", "lanes"],
+          "properties": {
+            "examined": {"type": "object", "additionalProperties": {}},
+            "lanes": {"type": "array", "minItems": 1}
+          }
+        },
+        "empty_provenance": {"enum": ["available_empty", "filtered_empty", "zero_hit_executed"]}
+      }
+    },
     "result": {
       "type": "object",
       "additionalProperties": false,
@@ -1272,25 +1360,27 @@
           "minLength": 1
         },
         "rank_unit": {
-          "description": "Optional effective result unit. symbol is valid only for Quanta exact_symbol_name on the symbol route; distinct_file only for the lexical file projections literal_file, keyword_file, substring_file, code_search_file, code_search_exact_content_file, code_search_typo_file and code_search_components_file. It names the unit, not how the units are ordered. Historical symbol records may omit it.",
+          "description": "Optional effective result unit. symbol names the exact_symbol_name route; distinct_file names lexical file projections or the explicit hybrid_file route. It names the unit, not how units are ordered. Historical symbol records may omit it.",
           "enum": [
             "distinct_file",
             "symbol"
           ]
         },
         "ordering": {
-          "description": "How a file projection orders its distinct files: scored Quanta keyword files, path-ordered Quanta restrictions, or native-score Semble BM25 with upstream tie order.",
+          "description": "How a file projection orders distinct files, including explicit hybrid_file RRF order.",
           "enum": [
             "score_desc_path_tiebreak",
             "path_order_constant_score",
-            "score_desc_native_tiebreak"
+            "score_desc_native_tiebreak",
+            "file_rrf_desc_lexical_presence_key_v1"
           ]
         },
         "score_evidence": {
-          "description": "Present only when every candidate preserves its finite native score. Historical v5 records without it remain replayable but have no per-row score-order proof.",
+          "description": "Present only when every candidate preserves its finite route score. Historical v5 records without it remain replayable but have no per-row score-order proof.",
           "enum": [
             "native_sdk_score_v1",
-            "semble_bm25_score_v1"
+            "semble_bm25_score_v1",
+            "hybrid_file_rrf_v1"
           ]
         },
         "file_collection": {
@@ -1316,6 +1406,7 @@
             }
           }
         },
+        "hybrid_file_evidence": {"$ref": "#/$defs/hybrid_file_evidence"},
         "status": {
           "enum": [
             "success",
@@ -1350,6 +1441,34 @@
         }
       },
       "allOf": [
+        {
+          "if": {"required": ["route"], "properties": {"route": {"const": "hybrid_file"}}},
+          "then": {
+            "required": ["rank_unit", "ordering", "score_evidence"],
+            "properties": {
+              "rank_unit": {"const": "distinct_file"},
+              "ordering": {"const": "file_rrf_desc_lexical_presence_key_v1"},
+              "score_evidence": {"const": "hybrid_file_rrf_v1"}
+            }
+          },
+          "else": {
+            "not": {"required": ["hybrid_file_evidence"]},
+            "properties": {
+              "ordering": {"not": {"const": "file_rrf_desc_lexical_presence_key_v1"}},
+              "score_evidence": {"not": {"const": "hybrid_file_rrf_v1"}}
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["route", "status"],
+            "properties": {
+              "route": {"const": "hybrid_file"},
+              "status": {"enum": ["success", "capped", "abstained"]}
+            }
+          },
+          "then": {"required": ["hybrid_file_evidence"]}
+        },
         {
           "if": {
             "required": [

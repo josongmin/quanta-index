@@ -7,7 +7,7 @@ use std::fs::OpenOptions;
 use std::io::Read;
 use std::num::NonZeroU128;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -248,6 +248,27 @@ pub struct StateRootLease {
     state_root_identity_v1: PathBuf,
 }
 
+/// Borrowed existing root FD. This allocates no descriptor and retains the
+/// actual lease by reference. A caller cloning the FD owns admission and
+/// retirement of that clone; this DATA loan grants no publication authority.
+#[cfg(unix)]
+pub struct StateRootDirectoryReadRefV1<'a> {
+    lease: &'a StateRootLease,
+}
+#[cfg(unix)]
+impl StateRootDirectoryReadRefV1<'_> {
+    pub fn require_current_v1(&self) -> Result<(), CoreError> {
+        self.lease
+            .require_current_root_at_v1(&self.lease.root_directory)
+    }
+}
+#[cfg(unix)]
+impl std::os::fd::AsFd for StateRootDirectoryReadRefV1<'_> {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(self.lease.root_directory.as_ref())
+    }
+}
+
 /// Owned root-directory custody that keeps the process lease live.
 ///
 /// I/O borrows its directory FD through [`std::os::fd::AsFd`]. Writers retain
@@ -460,6 +481,23 @@ impl StateRootLease {
             ));
         }
         Ok(())
+    }
+
+    /// Observe the original pinned root inode after validating its live names.
+    /// This fixed DATA is not another lease, build permit, or publication proof.
+    #[cfg(unix)]
+    pub fn observe_current_root_inode_v1(&self) -> Result<InodeKey, CoreError> {
+        self.require_current_root_at_v1(&self.root_directory)?;
+        Ok(self.root_inode_v1)
+    }
+
+    /// Borrow the actual pinned directory without allocating another FD.
+    #[cfg(unix)]
+    pub fn borrow_root_directory_read_v1(
+        &self,
+    ) -> Result<StateRootDirectoryReadRefV1<'_>, CoreError> {
+        self.require_current_root_at_v1(&self.root_directory)?;
+        Ok(StateRootDirectoryReadRefV1 { lease: self })
     }
 
     /// Duplicate the pinned directory FD together with a shared lease owner.
@@ -1076,6 +1114,66 @@ fn build_semantic_embedders_with_transport(
                 provider_attempt_pool: Some(attempt_pool),
             })
         }
+        SemanticEmbedderProfile::LocalCode { binding, tuning } => {
+            let egress_grant = local_code_egress_grant(grant, &binding.endpoint())?;
+            binding.verify_health(tuning.timeout.min(Duration::from_secs(5)))?;
+            let config = quanta_index_embed::OpenAiProviderConfig::new_local_code(binding)
+                .with_max_batch(tuning.max_batch)
+                .with_max_estimated_tokens_per_request(tuning.max_estimated_tokens_per_request)
+                .with_max_retries(tuning.max_retries)
+                .with_timeout(tuning.timeout)
+                .with_concurrency(tuning.concurrency);
+            let local = match transport {
+                Some(transport) => OpenAiEmbeddingProvider::new(config, transport)?,
+                None => OpenAiEmbeddingProvider::with_reqwest(config)?,
+            };
+            let attempt_pool = Arc::new(ProviderAttemptPool::new(tuning.concurrency)?);
+            let local = local.with_attempt_pool(Arc::clone(&attempt_pool));
+            let normalized = L2UnitEmbeddingProvider::new(local)?;
+            let raw_norms: Arc<dyn MetricSourcePort> = normalized.raw_norm_tallies();
+            let mut metric_sources: Vec<Arc<dyn MetricSourcePort>> =
+                vec![Arc::new(OpenAiEmbedTelemetrySource), raw_norms];
+            let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> = if tuning.cache_enabled {
+                let identity = EmbeddingCacheIdentityV1::of(&normalized);
+                let cache = Arc::new(FileEmbeddingCache::new(
+                    &state_root.join("embed-cache"),
+                    &identity,
+                    tuning.cache_retention,
+                )?);
+                metric_sources.push(cache.clone());
+                let caching = Arc::new(CachingEmbeddingProvider::new(
+                    Box::new(normalized),
+                    Box::new(SharedFileEmbeddingCache(cache)),
+                ));
+                metric_sources.push(caching.clone());
+                caching
+            } else {
+                Arc::new(normalized)
+            };
+            if provider.model_id() != quanta_index_embed::LOCAL_CODE_MODEL_ID
+                || provider.model_revision() != quanta_index_embed::LOCAL_CODE_MODEL_REVISION
+            {
+                return Err(CoreError::InvalidContract(
+                    "local code provider identity drift".into(),
+                ));
+            }
+            let policy = SemanticEgressPolicyV1::External(egress_grant);
+            let inner: Arc<dyn QueryTextEmbedderPort + Send + Sync> =
+                Arc::new(QueryEmbedderAdapter(Arc::clone(&provider)));
+            Ok(SemanticEmbedders {
+                query: Arc::new(ProviderBoundaryQueryEmbedder::new(
+                    inner,
+                    Arc::clone(&provider_ledger),
+                    policy.clone(),
+                    PROVIDER_SUPERVISOR_ID,
+                )),
+                corpus: provider,
+                metric_sources,
+                provider_ledger,
+                source_egress_policy: Some(policy),
+                provider_attempt_pool: Some(attempt_pool),
+            })
+        }
         SemanticEmbedderProfile::Unavailable => {
             let corpus: Arc<dyn TextEmbeddingProvider + Send + Sync> = Arc::new(
                 HashingQueryTextEmbedder::new(SEARCH_OWNED_SEMANTIC_DIMENSION),
@@ -1090,6 +1188,25 @@ fn build_semantic_embedders_with_transport(
             })
         }
     }
+}
+
+fn local_code_egress_grant(
+    grant: &ProviderEgressGrantConfig,
+    endpoint: &str,
+) -> Result<quanta_index_core::SemanticEgressGrantV1, CoreError> {
+    if grant.endpoint != endpoint || !grant.source_content_consent {
+        return Err(CoreError::InvalidContract(
+            "local code source grant must name the exact loopback embedding endpoint and consent"
+                .into(),
+        ));
+    }
+    let egress = grant.to_grant(
+        "local-code",
+        quanta_index_embed::LOCAL_CODE_MODEL_ID,
+        quanta_index_embed::LOCAL_CODE_MODEL_REVISION,
+    );
+    egress.validate()?;
+    Ok(egress)
 }
 
 /// The file store behind an `Arc`, so the scrape can read its open report
@@ -2737,6 +2854,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn local_code_grant_requires_exact_loopback_endpoint_and_source_consent() {
+        let endpoint = "http://127.0.0.1:12345/v1/embeddings";
+        let mut grant = test_grant();
+        grant.endpoint = endpoint.into();
+        assert!(super::local_code_egress_grant(&grant, endpoint).is_err());
+        grant.source_content_consent = true;
+        let admitted =
+            super::local_code_egress_grant(&grant, endpoint).expect("complete local source grant");
+        assert_eq!(admitted.provider_id, "local-code");
+        assert_eq!(admitted.model_id, quanta_index_embed::LOCAL_CODE_MODEL_ID);
+        assert!(
+            super::local_code_egress_grant(&grant, "http://127.0.0.1:12346/v1/embeddings").is_err()
+        );
+        grant.tenant_id.clear();
+        assert!(super::local_code_egress_grant(&grant, endpoint).is_err());
+    }
+
     // CASE-COVERS (positive half of the identity-coupling invariant): the query
     // embedder and corpus embedder that `build_semantic_embedders` returns for the
     // SAME provider profile MUST advertise the SAME model identity. This is the
@@ -3433,7 +3568,7 @@ mod tests {
         };
         let budget = RequestBudgetV1::unbounded();
         let _ack = store.stage(&part, &budget)?;
-        let _loaded = store.load(identity, &budget)?;
+        let _loaded = store.load(identity, &budget, &mut |_bytes| Ok(()))?;
         let uploads = owned_root.path().join("source-publication-uploads");
         let before = std::fs::read_dir(&uploads)?
             .map(|entry| entry.and_then(|entry| std::fs::read(entry.path())))
@@ -3447,7 +3582,7 @@ mod tests {
         let replacement_owner = super::StateRootLease::acquire(owned_root.path())?;
         replacement_owner.require_state_root_v1(owned_root.path())?;
         if store.stage(&part, &budget).is_ok()
-            || store.load(identity, &budget).is_ok()
+            || store.load(identity, &budget, &mut |_bytes| Ok(())).is_ok()
             || store.discard(identity).is_ok()
         {
             return Err("upload I/O continued after the held lock entry was replaced".into());

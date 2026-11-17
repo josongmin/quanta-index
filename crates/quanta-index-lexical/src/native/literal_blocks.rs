@@ -13,14 +13,27 @@ use quanta_index_core::index::{
 const MAGIC: [u8; 4] = *b"QILB";
 const VERSION_V1: u8 = 1;
 const VERSION_V2: u8 = 2;
+const VERSION_V3: u8 = 3;
+const VERSION_V4: u8 = 4;
 const V1_HEADER_BYTES: usize = 7;
 const V2_HEADER_BYTES: usize = 13;
+const V3_HEADER_BYTES: usize = V2_HEADER_BYTES + PRODUCER_BYTES;
+const V4_OWNER_AT: usize = V2_HEADER_BYTES + 1;
+const PRODUCER_START: usize = 3;
+const PRODUCER_BYTES: usize = 16;
+const OWNER_BYTES: usize = 32;
+const OMIT_OWNER_PREFIX: u8 = 0x80;
 const RESTART_INTERVAL: usize = 16;
 const RESTART_BYTES: usize = 2;
 pub(super) const KEY_BYTES: usize = 35;
 pub(super) const MAX_BLOCK_BYTES: usize = 32 * 1024;
 const MAX_V1_KEYS: usize = (MAX_BLOCK_BYTES - V1_HEADER_BYTES) / KEY_BYTES;
-const MAX_RESTARTS: usize = MAX_BLOCK_BYTES / (KEY_BYTES + 1);
+// With the entire owner omitted, a restart still has its flag, gram and offset.
+// Every other distinct logical key requires a flag and at least one suffix byte.
+const MIN_RESTART_BYTES: usize = 1 + PRODUCER_START + RESTART_BYTES;
+const MIN_RESTART_GROUP_BYTES: usize = MIN_RESTART_BYTES + (RESTART_INTERVAL - 1) * 2;
+const MAX_RESTARTS: usize =
+    1 + (MAX_BLOCK_BYTES - V2_HEADER_BYTES - MIN_RESTART_BYTES) / MIN_RESTART_GROUP_BYTES;
 
 pub(super) fn literal_key(gram: [u8; 3], owner: [u8; 32]) -> [u8; KEY_BYTES] {
     let mut key = [0; KEY_BYTES];
@@ -39,10 +52,26 @@ pub(super) enum PushResult {
     Full,
 }
 
+/// Prefix shared by every owner in a strictly sorted cold input.
+#[derive(Clone, Copy)]
+pub(super) struct ColdOwnerPrefix {
+    first: [u8; OWNER_BYTES],
+    width: usize,
+}
+
+impl ColdOwnerPrefix {
+    pub(super) fn from_sorted(owners: &[[u8; OWNER_BYTES]]) -> Option<Self> {
+        let first = *owners.first()?;
+        let width = common_prefix(&first, owners.last()?);
+        (width > PRODUCER_BYTES).then_some(Self { first, width })
+    }
+}
+
 /// One bounded staging buffer. Its allocation lease must be kept with the
 /// resulting ObjectBatchInput until installation returns.
 pub(super) struct LiteralBlockBuilder {
     bytes: Vec<u8>,
+    header: FrontHeader,
     restarts: Vec<u16>,
     count: usize,
     first: Option<[u8; KEY_BYTES]>,
@@ -51,7 +80,10 @@ pub(super) struct LiteralBlockBuilder {
 }
 
 impl LiteralBlockBuilder {
-    pub(super) fn new(budget: &WorkBudget) -> Result<Self, IndexError> {
+    pub(super) fn new(
+        budget: &WorkBudget,
+        shared: Option<ColdOwnerPrefix>,
+    ) -> Result<Self, IndexError> {
         let memory = budget.reserve_memory(
             u64::try_from(
                 MAX_BLOCK_BYTES
@@ -70,14 +102,29 @@ impl LiteralBlockBuilder {
             .try_reserve_exact(MAX_BLOCK_BYTES)
             .map_err(|_allocation| IndexError::ResourceLimited)?;
         bytes.extend_from_slice(&MAGIC);
-        bytes.push(VERSION_V2);
-        bytes.extend_from_slice(&[0; 8]);
+        let header = if let Some(shared) = shared {
+            bytes.push(VERSION_V4);
+            bytes.extend_from_slice(&[0; V2_HEADER_BYTES - 5]);
+            bytes.push(u8::try_from(shared.width).map_err(|_width| IndexError::ResourceLimited)?);
+            bytes.extend_from_slice(
+                shared
+                    .first
+                    .get(..shared.width)
+                    .ok_or(IndexError::ResourceLimited)?,
+            );
+            FrontHeader::cold(shared.width)?
+        } else {
+            bytes.push(VERSION_V3);
+            bytes.extend_from_slice(&[0; V3_HEADER_BYTES - 5]);
+            FrontHeader::V3
+        };
         let mut restarts = Vec::new();
         restarts
             .try_reserve_exact(MAX_RESTARTS)
             .map_err(|_allocation| IndexError::ResourceLimited)?;
         Ok(Self {
             bytes,
+            header,
             restarts,
             count: 0,
             first: None,
@@ -108,8 +155,25 @@ impl LiteralBlockBuilder {
                 &key,
             )
         };
+        let owner_end = self.header.key_owner_end;
+        let owner = key
+            .get(PRODUCER_START..owner_end)
+            .ok_or(IndexError::ResourceLimited)?;
+        let first_producer = self.count == 0 && !self.header.is_cold();
+        let matches_header = first_producer || owner == self.header.owner_prefix(&self.bytes)?;
+        if self.header.is_cold() && !matches_header {
+            return Err(IndexError::BackendViolation(
+                "cold literal key differs from the shared owner prefix".into(),
+            ));
+        }
+        let omitted = if matches_header {
+            owner_end.saturating_sub(prefix.max(PRODUCER_START))
+        } else {
+            0
+        };
         let row_bytes = KEY_BYTES
             .checked_sub(prefix)
+            .and_then(|suffix| suffix.checked_sub(omitted))
             .and_then(|suffix| suffix.checked_add(1))
             .ok_or(IndexError::ResourceLimited)?;
         let next_restart_bytes = self
@@ -132,7 +196,11 @@ impl LiteralBlockBuilder {
                 row_bytes
                     .checked_add(if restart { RESTART_BYTES } else { 0 })
                     .and_then(|width| {
-                        width.checked_add(if self.count == 0 { V2_HEADER_BYTES } else { 0 })
+                        width.checked_add(if self.count == 0 {
+                            self.header.bytes
+                        } else {
+                            0
+                        })
                     })
                     .ok_or(IndexError::ResourceLimited)?,
             )
@@ -143,18 +211,38 @@ impl LiteralBlockBuilder {
             let offset = self
                 .bytes
                 .len()
-                .checked_sub(V2_HEADER_BYTES)
+                .checked_sub(self.header.bytes)
                 .ok_or(IndexError::ResourceLimited)?;
             self.restarts
                 .push(u16::try_from(offset).map_err(|_width| IndexError::ResourceLimited)?);
         }
-        self.bytes
-            .push(u8::try_from(prefix).map_err(|_width| IndexError::ResourceLimited)?);
-        self.bytes.extend_from_slice(
-            key.get(prefix..).ok_or_else(|| {
-                IndexError::BackendViolation("literal block suffix absent".into())
-            })?,
-        );
+        let prefix_byte = u8::try_from(prefix).map_err(|_width| IndexError::ResourceLimited)?;
+        self.bytes.push(if omitted != 0 {
+            prefix_byte | OMIT_OWNER_PREFIX
+        } else {
+            prefix_byte
+        });
+        if omitted != 0 {
+            if prefix < PRODUCER_START {
+                self.bytes.extend_from_slice(
+                    key.get(prefix..PRODUCER_START)
+                        .ok_or(IndexError::ResourceLimited)?,
+                );
+            }
+            self.bytes.extend_from_slice(
+                key.get(prefix.max(owner_end)..)
+                    .ok_or(IndexError::ResourceLimited)?,
+            );
+        } else {
+            self.bytes
+                .extend_from_slice(key.get(prefix..).ok_or(IndexError::ResourceLimited)?);
+        }
+        if first_producer {
+            self.bytes
+                .get_mut(V2_HEADER_BYTES..V3_HEADER_BYTES)
+                .ok_or(IndexError::ResourceLimited)?
+                .copy_from_slice(owner);
+        }
         self.count = self
             .count
             .checked_add(1)
@@ -181,7 +269,7 @@ impl LiteralBlockBuilder {
         let body_bytes = self
             .bytes
             .len()
-            .checked_sub(V2_HEADER_BYTES)
+            .checked_sub(self.header.bytes)
             .ok_or(IndexError::ResourceLimited)?;
         self.bytes
             .get_mut(5..7)
@@ -250,9 +338,55 @@ struct Restart {
     key: [u8; KEY_BYTES],
 }
 
+#[derive(Clone, Copy)]
+struct FrontHeader {
+    bytes: usize,
+    owner_at: usize,
+    key_owner_end: usize,
+}
+
+impl FrontHeader {
+    const V2: Self = Self {
+        bytes: V2_HEADER_BYTES,
+        owner_at: V2_HEADER_BYTES,
+        key_owner_end: PRODUCER_START,
+    };
+    const V3: Self = Self {
+        bytes: V3_HEADER_BYTES,
+        owner_at: V2_HEADER_BYTES,
+        key_owner_end: PRODUCER_START + PRODUCER_BYTES,
+    };
+
+    fn cold(width: usize) -> Result<Self, IndexError> {
+        if !(PRODUCER_BYTES + 1..=OWNER_BYTES).contains(&width) {
+            return Err(corrupt("literal shared owner width differs"));
+        }
+        Ok(Self {
+            bytes: V4_OWNER_AT
+                .checked_add(width)
+                .ok_or(IndexError::ResourceLimited)?,
+            owner_at: V4_OWNER_AT,
+            key_owner_end: PRODUCER_START
+                .checked_add(width)
+                .ok_or(IndexError::ResourceLimited)?,
+        })
+    }
+
+    fn is_cold(self) -> bool {
+        self.owner_at == V4_OWNER_AT
+    }
+
+    fn owner_prefix(self, bytes: &[u8]) -> Result<&[u8], IndexError> {
+        bytes
+            .get(self.owner_at..self.bytes)
+            .ok_or_else(|| corrupt("literal owner header absent"))
+    }
+}
+
 enum BlockWire {
     Flat,
     Front {
+        header: FrontHeader,
         body_end: usize,
         restarts: Vec<Restart>,
         _memory: Option<MemoryLease>,
@@ -266,8 +400,109 @@ struct KeyState {
     previous: Option<[u8; KEY_BYTES]>,
 }
 
-fn common_prefix(left: &[u8; KEY_BYTES], right: &[u8; KEY_BYTES]) -> usize {
+fn common_prefix(left: &[u8], right: &[u8]) -> usize {
     left.iter().zip(right).take_while(|(a, b)| a == b).count()
+}
+
+fn decode_front_row(
+    bytes: &[u8],
+    header: FrontHeader,
+    body_end: usize,
+    offset: usize,
+    previous: Option<[u8; KEY_BYTES]>,
+) -> Result<([u8; KEY_BYTES], usize), IndexError> {
+    let start = header
+        .bytes
+        .checked_add(offset)
+        .ok_or(IndexError::ResourceLimited)?;
+    let encoded = *bytes
+        .get(start)
+        .filter(|_| start < body_end)
+        .ok_or_else(|| corrupt("literal front-coded prefix absent"))?;
+    let prefix = usize::from(encoded & !OMIT_OWNER_PREFIX);
+    let omitted = encoded & OMIT_OWNER_PREFIX != 0;
+    let shared = header.owner_prefix(bytes)?;
+    let owner_end = header.key_owner_end;
+    if (previous.is_none() && prefix != 0)
+        || (previous.is_some() && prefix >= KEY_BYTES)
+        || (omitted && shared.is_empty())
+    {
+        return Err(corrupt("literal front-coded prefix differs"));
+    }
+    let omitted_bytes = if omitted {
+        owner_end.saturating_sub(prefix.max(PRODUCER_START))
+    } else {
+        0
+    };
+    if omitted && omitted_bytes == 0 {
+        return Err(corrupt("literal owner prefix omission is empty"));
+    }
+    let suffix_len = KEY_BYTES
+        .checked_sub(prefix)
+        .and_then(|width| width.checked_sub(omitted_bytes))
+        .ok_or(IndexError::ResourceLimited)?;
+    let suffix_start = start.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+    let suffix_end = suffix_start
+        .checked_add(suffix_len)
+        .ok_or(IndexError::ResourceLimited)?;
+    let suffix = bytes
+        .get(suffix_start..suffix_end)
+        .filter(|_| suffix_end <= body_end)
+        .ok_or_else(|| corrupt("literal front-coded suffix exceeds body"))?;
+    let mut key = [0; KEY_BYTES];
+    if prefix != 0 {
+        let prior_prefix = previous
+            .as_ref()
+            .and_then(|prior| prior.get(..prefix))
+            .ok_or_else(|| corrupt("literal prior key prefix absent"))?;
+        key.get_mut(..prefix)
+            .ok_or(IndexError::ResourceLimited)?
+            .copy_from_slice(prior_prefix);
+    }
+    if omitted {
+        let gram_end = PRODUCER_START.max(prefix);
+        let gram_len = gram_end
+            .checked_sub(prefix)
+            .ok_or(IndexError::ResourceLimited)?;
+        if gram_len != 0 {
+            key.get_mut(prefix..gram_end)
+                .ok_or(IndexError::ResourceLimited)?
+                .copy_from_slice(suffix.get(..gram_len).ok_or(IndexError::ResourceLimited)?);
+        }
+        key.get_mut(PRODUCER_START..owner_end)
+            .ok_or(IndexError::ResourceLimited)?
+            .copy_from_slice(shared);
+        key.get_mut(owner_end..)
+            .ok_or(IndexError::ResourceLimited)?
+            .copy_from_slice(suffix.get(gram_len..).ok_or(IndexError::ResourceLimited)?);
+    } else {
+        key.get_mut(prefix..)
+            .ok_or(IndexError::ResourceLimited)?
+            .copy_from_slice(suffix);
+    }
+    let matches_header = omitted || key.get(PRODUCER_START..owner_end) == Some(shared);
+    if header.is_cold() && !matches_header {
+        return Err(corrupt("literal key differs from the shared owner prefix"));
+    }
+    let expected_omission = if matches_header {
+        owner_end.saturating_sub(prefix.max(PRODUCER_START))
+    } else {
+        0
+    };
+    if (expected_omission != 0) != omitted {
+        return Err(corrupt("literal owner prefix omission is noncanonical"));
+    }
+    if let Some(previous) = previous
+        && common_prefix(&previous, &key) != prefix
+    {
+        return Err(corrupt("literal front-coded prefix is not maximal"));
+    }
+    Ok((
+        key,
+        suffix_end
+            .checked_sub(header.bytes)
+            .ok_or(IndexError::ResourceLimited)?,
+    ))
 }
 
 impl LiteralBlock {
@@ -289,8 +524,8 @@ impl LiteralBlock {
             bytes: u64::try_from(bytes.len()).map_err(|_width| IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
-        let wire = match bytes.get(4) {
-            Some(&VERSION_V1) => {
+        let wire = match bytes.get(4).copied() {
+            Some(VERSION_V1) => {
                 let expected = V1_HEADER_BYTES
                     .checked_add(
                         count
@@ -313,7 +548,17 @@ impl LiteralBlock {
                 }
                 BlockWire::Flat
             }
-            Some(&VERSION_V2) => {
+            Some(version @ (VERSION_V2 | VERSION_V3 | VERSION_V4)) => {
+                let header = match version {
+                    VERSION_V4 => FrontHeader::cold(usize::from(
+                        *bytes
+                            .get(V2_HEADER_BYTES)
+                            .ok_or_else(|| corrupt("literal shared owner length absent"))?,
+                    ))?,
+                    VERSION_V3 => FrontHeader::V3,
+                    _ => FrontHeader::V2,
+                };
+                let shared_owner = header.owner_prefix(bytes)?;
                 let restart_bytes: [u8; 2] = bytes
                     .get(7..9)
                     .ok_or_else(|| corrupt("literal restart count absent"))?
@@ -331,7 +576,8 @@ impl LiteralBlock {
                 let table_bytes = restart_count
                     .checked_mul(RESTART_BYTES)
                     .ok_or(IndexError::ResourceLimited)?;
-                let body_end = V2_HEADER_BYTES
+                let body_end = header
+                    .bytes
                     .checked_add(body_len)
                     .ok_or(IndexError::ResourceLimited)?;
                 let total = body_end
@@ -375,28 +621,20 @@ impl LiteralBlock {
                         .try_into()
                         .map_err(|_width| corrupt("literal restart offset width differs"))?;
                     let offset = usize::from(u16::from_be_bytes(offset_bytes));
-                    let start = V2_HEADER_BYTES
-                        .checked_add(offset)
-                        .ok_or(IndexError::ResourceLimited)?;
-                    let key_start = start.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-                    let key_end = key_start
-                        .checked_add(KEY_BYTES)
-                        .ok_or(IndexError::ResourceLimited)?;
                     if offset >= body_len
                         || (index == 0 && offset != 0)
                         || restarts
                             .last()
                             .is_some_and(|prior: &Restart| prior.offset >= offset)
-                        || bytes.get(start) != Some(&0)
                     {
                         return Err(corrupt("literal restart offset or prefix differs"));
                     }
-                    let key: [u8; KEY_BYTES] = bytes
-                        .get(key_start..key_end)
-                        .filter(|_| key_end <= body_end)
-                        .ok_or_else(|| corrupt("literal restart key exceeds body"))?
-                        .try_into()
-                        .map_err(|_width| corrupt("literal restart key width differs"))?;
+                    let (key, _next) = decode_front_row(bytes, header, body_end, offset, None)?;
+                    if index == 0
+                        && key.get(PRODUCER_START..header.key_owner_end) != Some(shared_owner)
+                    {
+                        return Err(corrupt("literal owner header differs from first key"));
+                    }
                     if restarts
                         .last()
                         .is_some_and(|prior: &Restart| prior.key >= key)
@@ -406,6 +644,7 @@ impl LiteralBlock {
                     restarts.push(Restart { offset, key });
                 }
                 BlockWire::Front {
+                    header,
                     body_end,
                     restarts,
                     _memory: memory,
@@ -444,8 +683,10 @@ impl LiteralBlock {
 
     fn next_key(&self, state: &mut KeyState) -> Result<Option<[u8; KEY_BYTES]>, IndexError> {
         if state.index == self.count {
-            if let BlockWire::Front { body_end, .. } = &self.wire
-                && V2_HEADER_BYTES.checked_add(state.offset) != Some(*body_end)
+            if let BlockWire::Front {
+                header, body_end, ..
+            } = &self.wire
+                && header.bytes.checked_add(state.offset) != Some(*body_end)
             {
                 return Err(corrupt("literal front-coded body has trailing bytes"));
             }
@@ -455,7 +696,10 @@ impl LiteralBlock {
             BlockWire::Flat => flat_key_at(&self.stored.payload, state.index)
                 .ok_or_else(|| corrupt("flat literal key absent"))?,
             BlockWire::Front {
-                body_end, restarts, ..
+                header,
+                body_end,
+                restarts,
+                ..
             } => {
                 let restart = state.index.is_multiple_of(RESTART_INTERVAL);
                 if restart {
@@ -467,60 +711,14 @@ impl LiteralBlock {
                         return Err(corrupt("literal restart row offset differs"));
                     }
                 }
-                let start = V2_HEADER_BYTES
-                    .checked_add(state.offset)
-                    .ok_or(IndexError::ResourceLimited)?;
-                let prefix = usize::from(
-                    *self
-                        .stored
-                        .payload
-                        .get(start)
-                        .ok_or_else(|| corrupt("literal front-coded prefix absent"))?,
-                );
-                if (restart && prefix != 0)
-                    || (!restart && (prefix >= KEY_BYTES || state.previous.is_none()))
-                {
-                    return Err(corrupt("literal front-coded prefix differs"));
-                }
-                let suffix_len = KEY_BYTES
-                    .checked_sub(prefix)
-                    .ok_or(IndexError::ResourceLimited)?;
-                let suffix_start = start.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-                let suffix_end = suffix_start
-                    .checked_add(suffix_len)
-                    .ok_or(IndexError::ResourceLimited)?;
-                let suffix = self
-                    .stored
-                    .payload
-                    .get(suffix_start..suffix_end)
-                    .filter(|_| suffix_end <= *body_end)
-                    .ok_or_else(|| corrupt("literal front-coded suffix exceeds body"))?;
-                let mut key = [0; KEY_BYTES];
-                if prefix != 0 {
-                    let previous = state
-                        .previous
-                        .ok_or_else(|| corrupt("literal front-coded prior key absent"))?;
-                    key.get_mut(..prefix)
-                        .ok_or_else(|| corrupt("literal prefix destination absent"))?
-                        .copy_from_slice(
-                            previous
-                                .get(..prefix)
-                                .ok_or_else(|| corrupt("literal prior prefix absent"))?,
-                        );
-                }
-                key.get_mut(prefix..)
-                    .ok_or_else(|| corrupt("literal suffix destination absent"))?
-                    .copy_from_slice(suffix);
-                if !restart
-                    && state
-                        .previous
-                        .is_some_and(|previous| common_prefix(&previous, &key) != prefix)
-                {
-                    return Err(corrupt("literal front-coded prefix is not maximal"));
-                }
-                state.offset = suffix_end
-                    .checked_sub(V2_HEADER_BYTES)
-                    .ok_or(IndexError::ResourceLimited)?;
+                let (key, next_offset) = decode_front_row(
+                    &self.stored.payload,
+                    *header,
+                    *body_end,
+                    state.offset,
+                    if restart { None } else { state.previous },
+                )?;
+                state.offset = next_offset;
                 key
             }
         };
@@ -533,11 +731,14 @@ impl LiteralBlock {
             .ok_or(IndexError::ResourceLimited)?;
         state.previous = Some(key);
         if let BlockWire::Front {
-            body_end, restarts, ..
+            header,
+            body_end,
+            restarts,
+            ..
         } = &self.wire
         {
             if state.index == self.count
-                && V2_HEADER_BYTES.checked_add(state.offset) != Some(*body_end)
+                && header.bytes.checked_add(state.offset) != Some(*body_end)
             {
                 return Err(corrupt("literal front-coded body extent differs"));
             }
@@ -674,13 +875,16 @@ impl LiteralBlock {
             });
         }
         if index == self.count {
-            let BlockWire::Front { body_end, .. } = &self.wire else {
+            let BlockWire::Front {
+                header, body_end, ..
+            } = &self.wire
+            else {
                 return Err(corrupt("literal front cursor wire differs"));
             };
             return Ok(KeyState {
                 index,
                 offset: body_end
-                    .checked_sub(V2_HEADER_BYTES)
+                    .checked_sub(header.bytes)
                     .ok_or(IndexError::ResourceLimited)?,
                 previous: None,
             });
@@ -1001,7 +1205,7 @@ mod tests {
         let mut last_owner = [0; 32];
         *last_owner.last_mut().expect("last byte") = 1;
         let last = literal_key(*b"abc", last_owner);
-        let mut builder = LiteralBlockBuilder::new(&budget).expect("builder");
+        let mut builder = LiteralBlockBuilder::new(&budget, None).expect("builder");
         assert!(builder.is_empty());
         assert_eq!(
             builder.try_push(first, &mut budget).expect("first"),
@@ -1035,7 +1239,7 @@ mod tests {
                 .contains(&literal_key(*b"abd", [0; 32]))
                 .expect("absence")
         );
-        block.validate_all().expect("complete v2 validation");
+        block.validate_all().expect("complete v3 validation");
     }
 
     #[test]
@@ -1058,24 +1262,34 @@ mod tests {
         );
         assert!(old.contains(&last).expect("old point"));
 
-        let mut builder = LiteralBlockBuilder::new(&budget).expect("builder");
+        let prefix = common_prefix(&first, &last);
+        let mut v2 = Vec::new();
+        v2.extend_from_slice(&MAGIC);
+        v2.push(VERSION_V2);
+        v2.extend_from_slice(&2_u16.to_be_bytes());
+        v2.extend_from_slice(&1_u16.to_be_bytes());
+        v2.extend_from_slice(&38_u32.to_be_bytes());
+        v2.push(0);
+        v2.extend_from_slice(&first);
+        v2.push(u8::try_from(prefix).expect("prefix width"));
+        v2.extend_from_slice(last.get(prefix..).expect("last suffix"));
+        v2.extend_from_slice(&0_u16.to_be_bytes());
+        let old_front = LiteralBlock::decode(stored(v2.clone()), &mut budget).expect("front v2");
         assert_eq!(
-            builder.try_push(first, &mut budget).expect("push"),
-            PushResult::Added
+            old_front
+                .keys()
+                .collect::<Result<Vec<_>, _>>()
+                .expect("v2 keys"),
+            vec![first, last]
         );
-        assert_eq!(
-            builder.try_push(last, &mut budget).expect("push"),
-            PushResult::Added
-        );
-        let (input, _memory) = builder.finish().expect("block").into_batch_input();
-        let mut bad_offset = input.payload.clone();
+        let mut bad_offset = v2.clone();
         let offset_at = bad_offset.len().checked_sub(2).expect("offset");
         bad_offset
             .get_mut(offset_at..)
             .expect("offset bytes")
             .copy_from_slice(&1_u16.to_be_bytes());
         assert!(LiteralBlock::decode(stored(bad_offset), &mut budget).is_err());
-        let mut bad_prefix = input.payload;
+        let mut bad_prefix = v2;
         let second_prefix = V2_HEADER_BYTES
             .checked_add(KEY_BYTES)
             .and_then(|offset| offset.checked_add(1))
@@ -1087,9 +1301,146 @@ mod tests {
     }
 
     #[test]
-    fn full_block_is_bounded_and_preserves_next_key() {
+    fn v3_producer_omission_roundtrips_gram_changes_restarts_and_mixed_producers() {
         let mut budget = budget();
-        let mut builder = LiteralBlockBuilder::new(&budget).expect("builder");
+        let mut builder = LiteralBlockBuilder::new(&budget, None).expect("builder");
+        let mut expected = Vec::new();
+        for index in 0_u8..48 {
+            let gram = [b'a', b'a', b'a'.checked_add(index).expect("gram")];
+            let mut owner = [0; 32];
+            owner
+                .get_mut(..PRODUCER_BYTES)
+                .expect("producer")
+                .fill(if index == 20 { 0x22 } else { 0x11 });
+            *owner.last_mut().expect("owner") = index;
+            let key = literal_key(gram, owner);
+            assert_eq!(
+                builder.try_push(key, &mut budget).expect("push"),
+                PushResult::Added
+            );
+            expected.push(key);
+        }
+        let (input, _memory) = builder.finish().expect("prepared").into_batch_input();
+        assert_eq!(input.payload.get(4), Some(&VERSION_V3));
+        assert_eq!(
+            input.payload.get(V2_HEADER_BYTES..V3_HEADER_BYTES),
+            Some([0x11; 16].as_slice())
+        );
+        // V2: 13 + 3 restart rows * 36 + 45 gram-change rows * 34 + 6 table.
+        // V3: 29 + 3 restart rows * 20 + 44 same-producer rows * 18
+        //     + 1 foreign-producer row * 34 + 6 table.
+        assert_eq!(input.payload.len(), 921);
+        assert_eq!(
+            budget.usage().bytes,
+            u64::try_from(input.payload.len()).expect("width")
+        );
+        let block = LiteralBlock::decode(stored(input.payload.clone()), &mut budget).expect("v3");
+        assert_eq!(
+            block.keys().collect::<Result<Vec<_>, _>>().expect("keys"),
+            expected
+        );
+        for key in &expected {
+            assert!(block.contains(key).expect("member"));
+        }
+        block.validate_all().expect("complete v3 validation");
+
+        let mut bad = input.payload;
+        *bad.get_mut(V3_HEADER_BYTES).expect("first prefix") = 0;
+        assert!(
+            LiteralBlock::decode(stored(bad), &mut budget)
+                .and_then(|block| block.validate_all())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn shared_owner_prefix_wire_preserves_full_logical_keys() {
+        // One restart, then another owner on the same gram and a new gram.
+        // The header stores 30 shared owner bytes; body rows still prefix the
+        // complete 35-byte keys, including bytes reconstructed from the header.
+        let mut payload = b"QILB\x04\x00\x03\x00\x01\x00\x00\x00\x0c\x1e".to_vec();
+        payload.extend_from_slice(&[0x11; 16]);
+        payload.extend_from_slice(&[0x22; 14]);
+        payload.extend_from_slice(b"\x80abc\x90\x01\x22\x02\x82d\x91\x03\x00\x00");
+
+        let key = |gram, suffix| {
+            let mut owner = [0x22; 32];
+            owner.get_mut(..16).expect("producer").fill(0x11);
+            owner
+                .get_mut(30..)
+                .expect("stable ID suffix")
+                .copy_from_slice(&[if gram == *b"abd" { 0x91 } else { 0x90 }, suffix]);
+            literal_key(gram, owner)
+        };
+        let expected = [key(*b"abc", 1), key(*b"abc", 2), key(*b"abd", 3)];
+        let mut budget = budget();
+        let block = LiteralBlock::decode(stored(payload.clone()), &mut budget)
+            .expect("shared owner prefix block");
+        assert_eq!(
+            block.keys().collect::<Result<Vec<_>, _>>().expect("keys"),
+            expected
+        );
+        assert_eq!(
+            block
+                .lower_bound(expected.get(1).expect("second key"))
+                .expect("seek"),
+            1
+        );
+        assert_eq!(budget.usage().bytes, 58);
+
+        let owner_bytes = |key: &[u8; KEY_BYTES]| {
+            key.get(3..)
+                .expect("owner key")
+                .try_into()
+                .expect("owner width")
+        };
+        let first = owner_bytes(expected.first().expect("first key"));
+        let last = owner_bytes(expected.last().expect("last key"));
+        let shared = ColdOwnerPrefix::from_sorted(&[first, last]).expect("cold prefix");
+        let mut builder = LiteralBlockBuilder::new(&budget, Some(shared)).expect("builder");
+        let before = budget.usage();
+        assert!(
+            builder
+                .try_push(literal_key(*b"aaa", [0; 32]), &mut budget)
+                .is_err()
+        );
+        assert_eq!(budget.usage(), before);
+        assert!(builder.is_empty());
+        for key in expected {
+            assert_eq!(
+                builder.try_push(key, &mut budget).expect("push"),
+                PushResult::Added
+            );
+        }
+        let (input, _memory) = builder.finish().expect("finish").into_batch_input();
+        assert_eq!(input.payload, payload);
+        assert_eq!(budget.usage().bytes, 116);
+
+        let mut wrong_row = payload.clone();
+        // The second row needs only a suffix byte after the owner's shared
+        // prefix is inherited. Claiming an omission there is noncanonical.
+        *wrong_row.get_mut(50).expect("second row flag") = 0xa2;
+        let wrong = LiteralBlock::decode(stored(wrong_row), &mut budget).expect("header");
+        assert!(wrong.validate_all().is_err());
+
+        *payload.get_mut(13).expect("prefix length") = 33;
+        assert!(LiteralBlock::decode(stored(payload), &mut budget).is_err());
+    }
+
+    #[test]
+    fn full_block_is_bounded_and_preserves_next_key() {
+        let mut final_owner = [0; 32];
+        final_owner
+            .get_mut(30..)
+            .expect("owner suffix")
+            .fill(u8::MAX);
+        let shared = ColdOwnerPrefix::from_sorted(&[[0; 32], final_owner]).expect("cold prefix");
+        assert!(full_block_count(Some(shared)) > full_block_count(None));
+    }
+
+    fn full_block_count(shared: Option<ColdOwnerPrefix>) -> u16 {
+        let mut budget = budget();
+        let mut builder = LiteralBlockBuilder::new(&budget, shared).expect("builder");
         let mut accepted = 0_u16;
         loop {
             let mut owner = [0; 32];
@@ -1098,12 +1449,16 @@ mod tests {
                 .get_mut(30..)
                 .expect("owner suffix")
                 .copy_from_slice(&suffix);
+            let before = budget.usage();
             match builder
                 .try_push(literal_key(*b"abc", owner), &mut budget)
                 .expect("push")
             {
                 PushResult::Added => accepted = accepted.checked_add(1).expect("test count"),
-                PushResult::Full => break,
+                PushResult::Full => {
+                    assert_eq!(budget.usage(), before);
+                    break;
+                }
             }
         }
         let prepared = builder.finish().expect("block");
@@ -1111,6 +1466,20 @@ mod tests {
         assert!(usize::from(accepted) > MAX_V1_KEYS);
         let (input, _memory) = prepared.into_batch_input();
         assert!(input.payload.len() <= MAX_BLOCK_BYTES);
+        assert_eq!(
+            budget.usage().bytes,
+            u64::try_from(input.payload.len()).expect("width")
+        );
+        let block = LiteralBlock::decode(stored(input.payload), &mut budget).expect("decode");
+        block.validate_all().expect("every restart and row");
+        let end = block.last_key().expect("last key");
+        assert_eq!(
+            block.lower_bound(&end).expect("last seek"),
+            usize::from(accepted)
+                .checked_sub(1)
+                .expect("nonempty block")
+        );
+        accepted
     }
 
     #[test]

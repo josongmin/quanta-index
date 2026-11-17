@@ -404,7 +404,10 @@ fn delete_row(
             mutations: 1,
         })?;
         let object = super::reclaim::from_key(row.object.as_slice())?;
-        let _queued = super::reclaim::enqueue(transaction, object)?;
+        // The deletion and remaining-reference proof share this writer
+        // transaction. Keep the original cleanup fee; the extra bounded
+        // reference reads charge the same original request separately.
+        let _queued = super::reclaim::enqueue_unreferenced(transaction, object, budget)?;
     }
     Ok(())
 }

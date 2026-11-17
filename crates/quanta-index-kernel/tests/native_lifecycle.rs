@@ -453,6 +453,7 @@ fn stage(objects: &FileObjectStore, path: &str, bytes: &[u8]) -> TestResult<Obje
         bytes: blob,
         byte_len: u64::try_from(bytes.len())?,
         text: quanta_index_core::index::SourceTextAdmission::Excluded,
+        source_repo_id: None,
     };
     Ok(objects
         .put(&serde_json::to_vec(&record)?, &[blob], &mut budget())?
@@ -546,6 +547,7 @@ fn direct_staged_record_cannot_publish_false_utf8_admission() -> TestResult {
         text: quanta_index_core::index::SourceTextAdmission::Utf8 {
             policy: Digest([21; 32]),
         },
+        source_repo_id: None,
     };
     let record_ref = objects
         .put(&serde_json::to_vec(&record)?, &[body], &mut budget())?
@@ -573,6 +575,150 @@ fn direct_staged_record_cannot_publish_false_utf8_admission() -> TestResult {
         SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput))
     );
     assert_eq!(source(&engine, genesis)?, original);
+    Ok(())
+}
+
+#[test]
+fn source_path_bucket_preserves_repository_owners_and_rejects_scope_changes() -> TestResult {
+    use quanta_index_contract::RepoId;
+    use quanta_index_core::index::{SourcePathOwners, SourcePathRepositoryKey};
+
+    let directory = tempfile::tempdir()?;
+    let (engine, objects, catalog) = kernel(directory.path())?;
+    let genesis = engine.create_workspace(workspace(), 1, &mut budget())?;
+    let body = objects.put(b"a", &[], &mut budget())?.reference;
+    let put_record = |repository: Option<&str>| -> TestResult<ObjectRef> {
+        let record = SourceRecord {
+            path: "src/main.rs".into(),
+            bytes: body,
+            byte_len: 1,
+            text: quanta_index_core::index::SourceTextAdmission::Excluded,
+            source_repo_id: repository
+                .map(quanta_index_contract::RepoId::new)
+                .transpose()?,
+        };
+        Ok(objects
+            .put(&serde_json::to_vec(&record)?, &[body], &mut budget())?
+            .reference)
+    };
+    let initial = put_record(Some("corp-a"))?;
+    let sibling = put_record(Some("corp-b"))?;
+    let legacy = put_record(None)?;
+    let legacy_view = published(block_on(engine.submit(
+        request(
+            &engine,
+            &catalog,
+            &objects,
+            genesis,
+            source(&engine, genesis)?,
+            1,
+            1,
+            vec![OwnerMutation {
+                owner: owner(3),
+                expected: None,
+                next: Some(legacy),
+            }],
+        )?,
+        &mut budget(),
+    ))?)?;
+    let legacy_cut = source(&engine, legacy_view)?;
+    let initial_view = published(block_on(engine.submit(
+        request(
+            &engine,
+            &catalog,
+            &objects,
+            legacy_view,
+            legacy_cut,
+            2,
+            2,
+            vec![
+                OwnerMutation {
+                    owner: owner(1),
+                    expected: None,
+                    next: Some(initial),
+                },
+                OwnerMutation {
+                    owner: owner(2),
+                    expected: None,
+                    next: Some(sibling),
+                },
+            ],
+        )?,
+        &mut budget(),
+    ))?)?;
+    let original = source(&engine, initial_view)?;
+    let bucket_owner = |cut: SourceCut, repository: Option<&str>| -> TestResult<Option<OwnerKey>> {
+        let marker = objects
+            .lookup(cut.paths, b"path\0src/main.rs", &mut budget())?
+            .ok_or("repository path absent")?;
+        let SourcePathOwners::Repositories(root) =
+            SourcePathOwners::decode(marker, &budget())?
+        else {
+            return Err("repository bucket absent".into());
+        };
+        let repo = repository.map(RepoId::new).transpose()?;
+        let key = SourcePathRepositoryKey::new(repo.as_ref())?;
+        Ok(SourcePathOwners::repository_owner(
+            root,
+            key.as_slice()?,
+            objects.as_ref(),
+            &mut budget(),
+        )?)
+    };
+    assert_eq!(path_owner(&objects, legacy_cut, "src/main.rs")?, owner(3));
+    for (repo, id) in [(None, 3), (Some("corp-a"), 1), (Some("corp-b"), 2)] {
+        assert_eq!(bucket_owner(original, repo)?, Some(owner(id)));
+    }
+    for (operation_sequence, repository) in [(3, Some("corp-b")), (4, None)] {
+        let replacement = put_record(repository)?;
+        let outcome = block_on(engine.submit(
+            request(
+                &engine,
+                &catalog,
+                &objects,
+                initial_view,
+                original,
+                operation_sequence,
+                3,
+                vec![OwnerMutation {
+                    owner: owner(1),
+                    expected: Some(initial),
+                    next: Some(replacement),
+                }],
+            )?,
+            &mut budget(),
+        ))?;
+        assert_eq!(
+            outcome,
+            SubmitOutcome::Terminal(OperationStatus::Refused(Refusal::InvalidInput)),
+        );
+    }
+    assert_eq!(
+        objects.lookup_object(original.owners, &owner_map_key(owner(1)), &mut budget())?,
+        Some(initial)
+    );
+    let after_delete = published(block_on(engine.submit(
+        request(
+            &engine,
+            &catalog,
+            &objects,
+            initial_view,
+            original,
+            5,
+            3,
+            vec![OwnerMutation {
+                owner: owner(1),
+                expected: Some(initial),
+                next: None,
+            }],
+        )?,
+        &mut budget(),
+    ))?)?;
+    let next = source(&engine, after_delete)?;
+    assert_eq!(bucket_owner(next, Some("corp-a"))?, None);
+    assert_eq!(bucket_owner(next, Some("corp-b"))?, Some(owner(2)));
+    assert_eq!(bucket_owner(next, None)?, Some(owner(3)));
+    assert_eq!(bucket_owner(original, Some("corp-a"))?, Some(owner(1)));
     Ok(())
 }
 
@@ -692,7 +838,9 @@ fn source_path_cycle_crosses_mutation_cursor_pages() -> TestResult {
     let mut contains_packed_node = false;
     while let Some(reference) = path_nodes.pop() {
         let node = objects.get(reference, &mut budget())?;
-        contains_packed_node |= node.payload.starts_with(b"QIMAP005");
+        // Both one-level and nested packing cross the same mutation-page boundary.
+        contains_packed_node |= node.payload.starts_with(b"QIMAP005")
+            || node.payload.starts_with(b"QIMAP006");
         // Path owner values have no object children, so these edges are nodes.
         path_nodes.extend(node.registration.children.iter().copied());
     }
@@ -879,8 +1027,9 @@ fn source_only_manifest_exceeds_legacy_direct_child_limit() -> TestResult {
                 text: quanta_index_core::index::SourceTextAdmission::Excluded,
             })
             .collect::<Vec<_>>();
-        let records = engine.stage_sources(ingress, &captures, &mut staged_budget)?;
-        if records.len() != captures.len() {
+        let capture_count = captures.len();
+        let records = engine.stage_sources(ingress, captures, &mut staged_budget)?;
+        if records.len() != capture_count {
             return Err("source batch lost an ordinal result".into());
         }
         for (id, record) in (start..=end).zip(records) {
@@ -2417,6 +2566,83 @@ fn materialize_trace_preserves_result_and_work_with_balanced_owner_phases() -> T
             "materialize {api} envelope missing or repeated"
         );
     }
+    let build = beginnings
+        .iter()
+        .find_map(|(span_id, (_, stage))| {
+            (*stage == DiagnosticStageV1::BuildPrepare).then_some(*span_id)
+        })
+        .ok_or("Materialize async BuildPrepare absent")?;
+    let (_, total, _, _) = observed
+        .get(1)
+        .ok_or("recorded materialization usage absent")?;
+    for (key, ceiling) in [
+        (
+            quanta_index_core::DiagnosticCounterV1::WorkReads,
+            total.reads,
+        ),
+        (
+            quanta_index_core::DiagnosticCounterV1::WorkWrites,
+            total.writes,
+        ),
+        (
+            quanta_index_core::DiagnosticCounterV1::WorkBytes,
+            total.bytes,
+        ),
+        (
+            quanta_index_core::DiagnosticCounterV1::WorkMutations,
+            total.mutations,
+        ),
+    ] {
+        let matching: Vec<_> = events
+            .iter()
+            .enumerate()
+            .filter_map(|(at, event)| match event.kind {
+                DiagnosticEventKindV1::Counter {
+                    span_id,
+                    key: counter_key,
+                    value,
+                } if span_id.get() == build && counter_key == key => Some((at, value)),
+                _ => None,
+            })
+            .collect();
+        let [(at, value)] = matching.as_slice() else {
+            return Err("Materialize BuildPrepare work axis missing or duplicated".into());
+        };
+        let begin_at = events
+            .iter()
+            .position(|event| {
+                matches!(event.kind,
+                    DiagnosticEventKindV1::SpanBegin { span_id, .. } if span_id.get() == build
+                )
+            })
+            .ok_or("Materialize BuildPrepare begin absent")?;
+        let end_at = events
+            .iter()
+            .position(|event| {
+                matches!(event.kind,
+                    DiagnosticEventKindV1::SpanEnd { span_id, .. } if span_id.get() == build
+                )
+            })
+            .ok_or("Materialize BuildPrepare terminal absent")?;
+        assert!(
+            begin_at < *at && *at < end_at,
+            "Materialize counter escaped its async span"
+        );
+        assert!(
+            *value <= ceiling,
+            "Materialize build delta exceeded original operation work"
+        );
+        if matches!(
+            key,
+            quanta_index_core::DiagnosticCounterV1::WorkWrites
+                | quanta_index_core::DiagnosticCounterV1::WorkBytes
+        ) {
+            assert!(
+                *value > 0,
+                "owner build reported zero accepted writes or bytes"
+            );
+        }
+    }
     drop(events);
     assert_eq!(
         beginnings.len(),
@@ -3177,8 +3403,8 @@ fn empty_source_advance_rebinds_real_filemap_and_preserves_pinned_paths() -> Tes
         serde_json::from_slice(&objects.get(old_file.artifact, &mut budget())?.payload)?;
     let new_root: serde_json::Value =
         serde_json::from_slice(&objects.get(new_file.artifact, &mut budget())?.payload)?;
-    assert_eq!(new_root.get("owners"), old_root.get("owners"));
-    assert_eq!(new_root.get("paths"), old_root.get("paths"));
+    assert_eq!(old_root.get("source"), Some(&serde_json::to_value(old_cut)?));
+    assert_eq!(new_root.get("source"), Some(&serde_json::to_value(new_cut)?));
 
     let old_paths = query_paths(
         &FilePathQuery {
@@ -3298,6 +3524,7 @@ fn terminal_replay_survives_pruned_physical_request() -> TestResult {
                 UpdateKind::SourceAdvance(transition) => transition.owners.object_children(),
                 UpdateKind::SourceResync { .. }
                 | UpdateKind::ProjectionAdvance(_)
+                | UpdateKind::HistoryAdvance(_)
                 | UpdateKind::Reconfigure { .. }
                 | UpdateKind::Materialize { .. } => {
                     return Err("expected source request fixture".into());
@@ -6128,6 +6355,7 @@ impl MapStreamCost {
 struct UpdateCostSpyState {
     physical_reads: std::collections::BTreeMap<ObjectRef, u64>,
     retained_reads: std::collections::BTreeMap<ObjectRef, u64>,
+    cancel_after_get: Option<ObjectRef>,
     prior_source_owners: Option<quanta_index_core::index::MapRoot>,
     unrelated_records: std::collections::BTreeSet<ObjectRef>,
     prior_source_scans: u64,
@@ -6143,6 +6371,7 @@ struct UpdateCostSpyState {
     single_map_stream: MapStreamCost,
     multi_map_stream: MapStreamCost,
     io_baseline: Option<quanta_index_storage::ObjectIoSnapshot>,
+    dense_install_samples: Vec<dense_install_batches::Sample>,
 }
 
 #[derive(Clone)]
@@ -6375,6 +6604,14 @@ impl UpdateCostSpy {
             delta_capture_elapsed: None,
         })
     }
+
+    fn cancel_after_get(&self, reference: ObjectRef) -> TestResult {
+        self.state
+            .lock()
+            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .cancel_after_get = Some(reference);
+        Ok(())
+    }
 }
 
 impl ImmutableObjectPort for UpdateCostSpy {
@@ -6434,7 +6671,9 @@ impl ImmutableObjectPort for UpdateCostSpy {
         {
             return Err(IndexError::ResourceLimited);
         }
+        let dense_profile = dense_install_batches::before(self, inputs)?;
         let confirmed = self.inner.install_batch(inputs, sink, budget)?;
+        dense_install_batches::after(self, inputs, dense_profile)?;
         // Inventory Block is the actual map installation path for 9..=512
         // rows. Observe confirmed objects, not attempted writes or a tree-only
         // apply_stream call.
@@ -6556,6 +6795,7 @@ impl ImmutableObjectPort for UpdateCostSpy {
         reference: ObjectRef,
         budget: &mut WorkBudget,
     ) -> Result<quanta_index_core::index::StoredObject, IndexError> {
+        let mut cancel = false;
         if self.active.load(std::sync::atomic::Ordering::Acquire) {
             let mut state = self
                 .state
@@ -6571,8 +6811,16 @@ impl ImmutableObjectPort for UpdateCostSpy {
                     .checked_add(1)
                     .ok_or(IndexError::ResourceLimited)?;
             }
+            if state.cancel_after_get == Some(reference) {
+                state.cancel_after_get = None;
+                cancel = true;
+            }
         }
-        self.inner.get(reference, budget)
+        let object = self.inner.get(reference, budget)?;
+        if cancel {
+            budget.request().cancel_handle().cancel();
+        }
+        Ok(object)
     }
 
     fn read_retained(
@@ -6709,7 +6957,7 @@ impl PersistentMapPort for UpdateCostSpy {
                 }
                 if edit.as_ref().is_some_and(|item| {
                     matches!(
-                        usize::try_from(item.root),
+                        usize::try_from(item.root()),
                         Ok(index)
                             if self.bases.get(index)
                                 == Some(&quanta_index_core::index::MapRoot(None))
@@ -7421,9 +7669,8 @@ fn native_text_byte_bounded_batch_confirmed_prefix_mixed_update_and_reopen() -> 
     // Two distinct bodies individually fit the public 8 MiB file contract,
     // but together exceed one draft window. Few tokens keep this a narrow law.
     let mut left = vec![b' '; 4 * 1024 * 1024];
-    // Five terms produce ten canonical inventory rows per owner, selecting
-    // the positional Block representation after small inventories gained
-    // inline representation.
+    // Five short terms produce ten case-qualified rows. Cold inventory can
+    // point directly to the one packed occurrence for each body.
     left.extend_from_slice(b"left shared alpha beta gamma");
     let mut right = vec![b' '; 4 * 1024 * 1024];
     right.extend_from_slice(b"right shared alpha beta gamma");
@@ -7447,7 +7694,7 @@ fn native_text_byte_bounded_batch_confirmed_prefix_mixed_update_and_reopen() -> 
     for input in &initial_inputs {
         let batch = engine.stage_sources(
             initial_ingress,
-            std::slice::from_ref(input),
+            vec![input.clone()],
             &mut large_fixture_budget(),
         )?;
         assert_eq!(batch.len(), 1);
@@ -7481,9 +7728,9 @@ fn native_text_byte_bounded_batch_confirmed_prefix_mixed_update_and_reopen() -> 
         engine.submit(initial_request, &mut large_fixture_budget()),
     )?)?;
     let measured = spy.disarm()?;
-    assert_eq!(measured.inventory_block_install_calls, 2);
-    assert_eq!(measured.inventory_block_inputs, 2);
-    assert_eq!(measured.inventory_block_ten_row_inputs, 2);
+    assert_eq!(measured.occurrence_install_calls, 2);
+    assert_eq!(measured.occurrence_inputs, 2);
+    assert_eq!(measured.inventory_block_install_calls, 0);
     assert_eq!(measured.single_map_stream.calls, 0);
     assert_eq!(native_text_test_df(&engine, &objects, initial, "left")?, 1);
     assert_eq!(native_text_test_df(&engine, &objects, initial, "right")?, 1);
@@ -7506,7 +7753,8 @@ fn native_text_byte_bounded_batch_confirmed_prefix_mixed_update_and_reopen() -> 
     let failed_ingress = engine.begin_input(failed_key)?;
     let mut staged = Vec::new();
     for window in additions.chunks(32) {
-        let batch = engine.stage_sources(failed_ingress, window, &mut large_fixture_budget())?;
+        let batch =
+            engine.stage_sources(failed_ingress, window.to_vec(), &mut large_fixture_budget())?;
         assert_eq!(batch.len(), window.len());
         staged.extend(batch);
     }
@@ -7606,7 +7854,11 @@ fn native_text_byte_bounded_batch_confirmed_prefix_mixed_update_and_reopen() -> 
     let success_ingress = engine.begin_input(success_key)?;
     let mut staged = Vec::new();
     for window in mixed.chunks(32) {
-        let batch = engine.stage_sources(success_ingress, window, &mut large_fixture_budget())?;
+        let batch = engine.stage_sources(
+            success_ingress,
+            window.to_vec(),
+            &mut large_fixture_budget(),
+        )?;
         assert_eq!(batch.len(), window.len());
         staged.extend(batch);
     }
@@ -7812,7 +8064,7 @@ fn one_owner_native_text_cost_case(
         }
         TextSourceStage::Batch32 => {
             for window in initial_inputs.chunks(32) {
-                let refs = engine.stage_sources(ingress, window, &mut budget())?;
+                let refs = engine.stage_sources(ingress, window.to_vec(), &mut budget())?;
                 assert_eq!(refs.len(), window.len());
                 staged.extend(refs);
             }
@@ -8230,7 +8482,7 @@ fn one_owner_native_text_cost_case(
                 .collect();
             let references = engine.stage_sources(
                 engine.begin_input(tail_operation)?,
-                &inputs,
+                inputs,
                 &mut large_fixture_budget(),
             )?;
             assert_eq!(references.len(), chunk.len());
@@ -11162,8 +11414,12 @@ fn native_text_same_position_term_replace_installs_only_changed_occurrences() ->
 mod inline_mutations;
 #[path = "native_lifecycle/owned_renewal_trace.rs"]
 mod owned_renewal_trace;
+#[path = "native_lifecycle/source_body_validation.rs"]
+mod source_body_validation;
 #[path = "native_lifecycle/text_entry_maps.rs"]
 mod text_entry_maps;
 
+#[path = "native_lifecycle/dense_install_batches.rs"]
+mod dense_install_batches;
 #[path = "native_lifecycle/occurrence_blocks.rs"]
 mod occurrence_blocks;

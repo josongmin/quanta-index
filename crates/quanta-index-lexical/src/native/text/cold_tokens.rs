@@ -1,26 +1,331 @@
-//! Owner-local ordered token groups for an admitted ASCII cold source.
+//! Owner-local ordered token groups for an admitted cold source.
 //!
 //! The canonical normalizer still creates every case key and position. This
 //! buffer only replaces the disposable SQL sort when optional memory is available.
 
 use quanta_index_core::index::{IndexError, MemoryLease, MemoryLifetime, WorkBudget, WorkUsage};
+use quanta_index_lq_text_normalizer::{CaseMode, TokenCursor, case_chars};
+use serde::ser::{SerializeSeq, SerializeStruct};
 use std::cmp::Ordering;
 
-use super::{MAX_POSITIONS_PER_TERM, PreparedKey, PreparedPositions, TokenBatch, check_term_key};
+use super::{
+    MAX_POSITIONS_PER_TERM, MAX_TERM_KEY_BYTES, PreparedKey, PreparedPositions, TOKEN_RUN_BATCH,
+    TokenBatch, check_term_key,
+};
+use crate::native::text_memory::measured_encoded_len;
 use crate::native::text_occurrence::block::{
-    HEADER_BYTES, MAX_BLOCK_BYTES, MAX_BLOCK_TERMS, PackedBlockView, VectorIndex,
+    HEADER_BYTES, MAX_BLOCK_BYTES, MAX_BLOCK_TERMS, PackedBlockView, VectorIndex, next_block_len,
 };
 
-use super::entry_patch::{COLD_ALIAS_MAX_KEY_BYTES, COLD_ALIAS_MIN_TERMS};
+use super::entry_patch::{COLD_ALIAS_MIN_TERMS, COLD_INLINE_ANCHOR_KEY_BYTES};
 
-// A run occupies at least one ASCII input byte and emits exactly two case
-// rows. Four key bytes per input byte is the conservative two-surface bound.
-// The parent admits at most 8 MiB, so u32 covers both arenas and row ordinals.
+const ROW_START_BITS: u32 = 28;
+const ROW_POSITION_BITS: u32 = 24;
+const ROW_LENGTH_LOW_BITS: u32 = 8;
+const ROW_START_MASK: u32 = (1 << ROW_START_BITS) - 1;
+const ROW_POSITION_MASK: u32 = (1 << ROW_POSITION_BITS) - 1;
+const ROW_LENGTH_LOW_MASK: u32 = (1 << ROW_LENGTH_LOW_BITS) - 1;
+const ROW_LENGTH_MASK: u32 = (1 << 10) - 1;
+const _: () = assert!(super::MAX_NFC_BYTES * 14 < (1_u64 << ROW_START_BITS));
+const _: () = assert!(super::MAX_NFC_BYTES <= (1_u64 << ROW_POSITION_BITS));
+const _: () = assert!(MAX_TERM_KEY_BYTES <= (1_u64 << 10));
+
+// A row retains the start and length instead of a separate end word. The
+// 10-bit length minus one occupies the spare bits of the two used words.
 #[derive(Clone, Copy)]
 struct Row {
-    start: u32,
-    end: u32,
-    position: u32,
+    start_and_length_high: u32,
+    position_and_length_low: u32,
+}
+
+impl Row {
+    fn new(start: u32, end: u32, position: u32) -> Result<Self, IndexError> {
+        let length_minus_one = end
+            .checked_sub(start)
+            .and_then(|length| length.checked_sub(1))
+            .filter(|length| (1..=ROW_LENGTH_MASK).contains(length))
+            .ok_or(IndexError::ResourceLimited)?;
+        if start > ROW_START_MASK || position > ROW_POSITION_MASK {
+            return Err(IndexError::ResourceLimited);
+        }
+        Ok(Self {
+            start_and_length_high: start
+                | ((length_minus_one >> ROW_LENGTH_LOW_BITS) << ROW_START_BITS),
+            position_and_length_low: position
+                | ((length_minus_one & ROW_LENGTH_LOW_MASK) << ROW_POSITION_BITS),
+        })
+    }
+
+    fn start(self) -> u32 {
+        self.start_and_length_high & ROW_START_MASK
+    }
+
+    fn end(self) -> Option<u32> {
+        let length_minus_one = ((self.start_and_length_high >> ROW_START_BITS)
+            << ROW_LENGTH_LOW_BITS)
+            | (self.position_and_length_low >> ROW_POSITION_BITS);
+        self.start().checked_add(length_minus_one)?.checked_add(1)
+    }
+
+    fn position(self) -> u32 {
+        self.position_and_length_low & ROW_POSITION_MASK
+    }
+}
+
+/// Physical payload shape only; the canonical writer still owns every output.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct ColdBlockShape {
+    pub(super) object_count: usize,
+    pub(super) total_payload_bytes: usize,
+    pub(super) maximum_payload_bytes: usize,
+    pub(super) maximum_key_bytes: usize,
+    pub(super) term_count: usize,
+    /// Maximum live owned key/vector bytes plus the incoming group's grow copy.
+    pub(super) maximum_key_position_peak: usize,
+    pub(super) maximum_group_positions: usize,
+}
+
+fn position_capacity(len: usize) -> Result<usize, IndexError> {
+    if len == 0
+        || u64::try_from(len).map_err(|_error| IndexError::ResourceLimited)?
+            > MAX_POSITIONS_PER_TERM
+    {
+        return Err(IndexError::ResourceLimited);
+    }
+    len.checked_next_power_of_two()
+        .ok_or(IndexError::ResourceLimited)
+}
+
+/// Append one canonical case surface to already funded key backing.
+pub(super) fn append_canonical_case_key(
+    keys: &mut Vec<u8>,
+    text: &str,
+    case: CaseMode,
+    limit: usize,
+) -> Result<(), IndexError> {
+    let start = keys.len();
+    let capacity = keys.capacity().min(limit);
+    let append = |keys: &mut Vec<u8>, bytes: &[u8]| -> Result<(), IndexError> {
+        let end = keys
+            .len()
+            .checked_add(bytes.len())
+            .ok_or(IndexError::ResourceLimited)?;
+        if end > capacity {
+            return Err(IndexError::BackendViolation(
+                "canonical case key exceeded its funded census".into(),
+            ));
+        }
+        keys.extend_from_slice(bytes);
+        Ok(())
+    };
+    append(
+        keys,
+        &[match case {
+            CaseMode::Sensitive => 0,
+            CaseMode::Folded => 1,
+        }],
+    )?;
+    if text.is_ascii() {
+        match case {
+            CaseMode::Sensitive => append(keys, text.as_bytes())?,
+            CaseMode::Folded => {
+                let end = keys
+                    .len()
+                    .checked_add(text.len())
+                    .ok_or(IndexError::ResourceLimited)?;
+                if end > capacity {
+                    return Err(IndexError::BackendViolation(
+                        "canonical folded key exceeded its funded census".into(),
+                    ));
+                }
+                keys.extend(text.bytes().map(|byte| byte.to_ascii_lowercase()));
+            }
+        }
+    } else {
+        let mut encoded = [0; 4];
+        for ch in case_chars(text, case) {
+            append(keys, ch.encode_utf8(&mut encoded).as_bytes())?;
+        }
+    }
+    check_term_key(keys.get(start..).ok_or(IndexError::ResourceLimited)?)
+}
+
+impl ColdBlockShape {
+    fn record(&mut self, payload_bytes: usize) -> Result<(), IndexError> {
+        self.object_count = self
+            .object_count
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        self.total_payload_bytes = self
+            .total_payload_bytes
+            .checked_add(payload_bytes)
+            .ok_or(IndexError::ResourceLimited)?;
+        self.maximum_payload_bytes = self.maximum_payload_bytes.max(payload_bytes);
+        Ok(())
+    }
+}
+
+/// Borrowed sequence with the same Serde structure as `Occurrence` and
+/// `Positions`; it is used only by the canonical JSON length counter.
+struct BorrowedOccurrence<'a>(&'a [Row]);
+
+impl serde::Serialize for BorrowedOccurrence<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        struct Positions<'a>(&'a [Row]);
+        impl serde::Serialize for Positions<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+                for row in self.0 {
+                    sequence.serialize_element(&row.position())?;
+                }
+                sequence.end()
+            }
+        }
+        let mut record = serializer.serialize_struct("Occurrence", 1)?;
+        record.serialize_field("positions", &Positions(self.0))?;
+        record.end()
+    }
+}
+
+/// Exact backing for both canonical case surfaces of one source.
+pub(super) struct CanonicalTokenCensus {
+    rows: usize,
+    key_bytes: usize,
+    packet_key_bytes: usize,
+    exact: bool,
+}
+
+impl CanonicalTokenCensus {
+    /// Bound the physical arena from the already admitted NFC byte length.
+    /// Token runs are separated by at least one byte, so at most ceil(N/2)
+    /// runs emit two case rows. On the pinned Rust toolchain, one lowercase
+    /// scalar emits at most three Unicode scalars of at most four UTF-8 bytes.
+    /// Sensitive keys therefore use at most N bytes and folded keys at most
+    /// 12N bytes, plus one case prefix for each row.
+    pub(super) fn upper_bound(normalized_bytes: usize) -> Result<Option<Self>, IndexError> {
+        if normalized_bytes == 0
+            || !u64::try_from(normalized_bytes).is_ok_and(|bytes| bytes <= super::MAX_NFC_BYTES)
+        {
+            return Ok(None);
+        }
+        let runs = normalized_bytes
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?
+            / 2;
+        let rows = runs.checked_mul(2).ok_or(IndexError::ResourceLimited)?;
+        let key_bytes = normalized_bytes
+            .checked_mul(13)
+            .and_then(|bytes| bytes.checked_add(rows))
+            .ok_or(IndexError::ResourceLimited)?;
+        let packet_key_limit = TOKEN_RUN_BATCH
+            .checked_mul(2)
+            .and_then(|rows| {
+                usize::try_from(MAX_TERM_KEY_BYTES)
+                    .ok()
+                    .and_then(|maximum| rows.checked_mul(maximum))
+            })
+            .ok_or(IndexError::ResourceLimited)?;
+        if u32::try_from(rows).is_err() || u32::try_from(key_bytes).is_err() {
+            return Err(IndexError::ResourceLimited);
+        }
+        Ok(Some(Self {
+            rows,
+            key_bytes,
+            packet_key_bytes: key_bytes.min(packet_key_limit),
+            exact: false,
+        }))
+    }
+
+    pub(super) fn count<L>(
+        cursor: &mut TokenCursor<'_, L>,
+        source_bytes: usize,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<Self>, IndexError> {
+        cursor.rewind();
+        if !u64::try_from(source_bytes).is_ok_and(|bytes| bytes <= super::MAX_SOURCE_BYTES) {
+            return Ok(None);
+        }
+        // The normalized scan and case conversion are charged even when the
+        // optional arena is denied. No second NFC backing is constructed.
+        budget.charge(WorkUsage {
+            bytes: u64::try_from(cursor.text().len())
+                .map_err(|_error| IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        let mut rows = 0usize;
+        let mut key_bytes = 0usize;
+        let mut packet_key_bytes = 0usize;
+        let mut current_packet = 0usize;
+        let mut packet_runs = 0usize;
+        let maximum =
+            usize::try_from(MAX_TERM_KEY_BYTES).map_err(|_error| IndexError::ResourceLimited)?;
+        while let Some(run) = cursor.next_run() {
+            budget.checkpoint()?;
+            if !run.is_indexable() {
+                continue;
+            }
+            let _position =
+                u32::try_from(run.position).map_err(|_error| IndexError::ResourceLimited)?;
+            let mut run_key_bytes = 0usize;
+            for case in [CaseMode::Sensitive, CaseMode::Folded] {
+                let length = case_chars(run.text, case).try_fold(1usize, |bytes, ch| {
+                    bytes
+                        .checked_add(ch.len_utf8())
+                        .filter(|next| *next <= maximum)
+                        .ok_or(IndexError::ResourceLimited)
+                })?;
+                run_key_bytes = run_key_bytes
+                    .checked_add(length)
+                    .ok_or(IndexError::ResourceLimited)?;
+            }
+            budget.charge(WorkUsage {
+                bytes: u64::try_from(run_key_bytes)
+                    .map_err(|_error| IndexError::ResourceLimited)?,
+                ..WorkUsage::default()
+            })?;
+            rows = rows.checked_add(2).ok_or(IndexError::ResourceLimited)?;
+            key_bytes = key_bytes
+                .checked_add(run_key_bytes)
+                .ok_or(IndexError::ResourceLimited)?;
+            current_packet = current_packet
+                .checked_add(run_key_bytes)
+                .ok_or(IndexError::ResourceLimited)?;
+            packet_runs = packet_runs
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?;
+            if packet_runs == TOKEN_RUN_BATCH {
+                packet_key_bytes = packet_key_bytes.max(current_packet);
+                current_packet = 0;
+                packet_runs = 0;
+            }
+        }
+        cursor.rewind();
+        if rows == 0 {
+            return Ok(None);
+        }
+        if u32::try_from(rows).is_err() || u32::try_from(key_bytes).is_err() {
+            return Err(IndexError::BackendViolation(
+                "canonical token census exceeds u32 offsets".into(),
+            ));
+        }
+        Ok(Some(Self {
+            rows,
+            key_bytes,
+            packet_key_bytes: packet_key_bytes.max(current_packet),
+            exact: true,
+        }))
+    }
+
+    pub(super) fn packet_key_bytes(&self) -> usize {
+        self.packet_key_bytes
+    }
+
+    pub(super) fn arena_bytes(&self) -> Result<usize, IndexError> {
+        self.rows
+            .checked_mul(std::mem::size_of::<Row>())
+            .and_then(|rows| rows.checked_add(self.key_bytes))
+            .ok_or(IndexError::ResourceLimited)
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -111,7 +416,7 @@ impl PackedBlockView for ColdPackedAlias<'_> {
             .rows_for(term)?
             .get(ordinal)
             .ok_or(IndexError::ResourceLimited)?
-            .position)
+            .position())
     }
 }
 
@@ -120,12 +425,92 @@ pub(super) struct ColdTokens {
     rows: Vec<Row>,
     max_rows: usize,
     max_key_bytes: usize,
+    term_count: usize,
+    exact: bool,
     ready: bool,
     // Both Vec backings die before their one owner-local optional grant.
     _memory: MemoryLease,
 }
 
 impl ColdTokens {
+    /// Encode the existing normalized cursor directly into the exact-funded
+    /// cold arena. The fallback packet retains its mandatory row backing but
+    /// never materializes keys on this successful path.
+    pub(super) fn fill_from_cursor(
+        &mut self,
+        cursor: &mut TokenCursor<'_, Option<MemoryLease>>,
+        fallback_packet: &mut TokenBatch,
+        budget: &mut WorkBudget,
+    ) -> Result<u64, IndexError> {
+        if self.ready
+            || !self.rows.is_empty()
+            || !self.keys.is_empty()
+            || !fallback_packet.rows.is_empty()
+            || !fallback_packet.keys.is_empty()
+        {
+            return Err(IndexError::BackendViolation(
+                "cold direct source or fallback packet was already used".into(),
+            ));
+        }
+        let mut indexed = 0u64;
+        while let Some(run) = cursor.next_run() {
+            budget.checkpoint()?;
+            if !run.is_indexable() {
+                continue;
+            }
+            let position =
+                u32::try_from(run.position).map_err(|_error| IndexError::ResourceLimited)?;
+            let next_rows = self
+                .rows
+                .len()
+                .checked_add(2)
+                .ok_or(IndexError::ResourceLimited)?;
+            if next_rows > self.max_rows || next_rows > self.rows.capacity() {
+                return Err(IndexError::BackendViolation(
+                    "cold direct rows exceeded exact census".into(),
+                ));
+            }
+            // One run scan, two case encodes, and two Row writes remain. The
+            // old 128-byte packet work and a second key copy no longer occur.
+            let row_bytes = 2usize
+                .checked_mul(std::mem::size_of::<Row>())
+                .ok_or(IndexError::ResourceLimited)?;
+            let row_bytes =
+                u64::try_from(row_bytes).map_err(|_error| IndexError::ResourceLimited)?;
+            let bytes = u64::try_from(run.text.len())
+                .map_err(|_error| IndexError::ResourceLimited)?
+                .checked_mul(4)
+                .and_then(|bytes| bytes.checked_add(row_bytes))
+                .ok_or(IndexError::ResourceLimited)?;
+            budget.charge(WorkUsage {
+                mutations: 1,
+                bytes,
+                ..WorkUsage::default()
+            })?;
+            for case in [CaseMode::Sensitive, CaseMode::Folded] {
+                let start =
+                    u32::try_from(self.keys.len()).map_err(|_error| IndexError::ResourceLimited)?;
+                append_canonical_case_key(&mut self.keys, run.text, case, self.max_key_bytes)?;
+                let end =
+                    u32::try_from(self.keys.len()).map_err(|_error| IndexError::ResourceLimited)?;
+                self.rows.push(Row::new(start, end, position)?);
+            }
+            indexed = indexed.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        }
+        if self.rows.len() > self.max_rows || self.keys.len() > self.max_key_bytes {
+            return Err(IndexError::BackendViolation(
+                "cold direct source exceeded its proved input bound".into(),
+            ));
+        }
+        if self.exact && (self.rows.len() != self.max_rows || self.keys.len() != self.max_key_bytes)
+        {
+            return Err(IndexError::BackendViolation(
+                "cold direct source differs from canonical census".into(),
+            ));
+        }
+        Ok(indexed)
+    }
+
     /// Optional one-block alias preparation. A shape miss has no SQL or object
     /// effect and must use the original grouped BlockDraft path.
     pub(super) fn try_packed_alias(
@@ -135,8 +520,13 @@ impl ColdTokens {
         budget.checkpoint()?;
         if !self.ready {
             return Err(IndexError::BackendViolation(
-                "small ASCII token groups were not ordered".into(),
+                "cold token groups were not ordered".into(),
             ));
+        }
+        // The ordered stream already proved its exact group count. An
+        // oversized owner cannot use a single alias block.
+        if self.term_count > MAX_BLOCK_TERMS {
+            return Ok(None);
         }
         let metadata_bytes = std::mem::size_of::<ColdPackedAlias<'_>>();
         let Some(memory) = budget.try_reserve_memory_for_optimization(
@@ -164,7 +554,9 @@ impl ColdTokens {
             }
             let first = self.rows.get(start).ok_or(IndexError::ResourceLimited)?;
             let key = Self::key(&self.keys, first).ok_or(IndexError::ResourceLimited)?;
-            if key.len() > COLD_ALIAS_MAX_KEY_BYTES {
+            // The direct fast path emits an inline alias. Only its first
+            // persisted anchor key has the fixed SmallMap width.
+            if start == 0 && key.len() > COLD_INLINE_ANCHOR_KEY_BYTES {
                 return Ok(None);
             }
             check_term_key(key)?;
@@ -185,9 +577,22 @@ impl ColdTokens {
                     > MAX_POSITIONS_PER_TERM
             {
                 return Err(IndexError::BackendViolation(
-                    "small ASCII token group exceeded its validated envelope".into(),
+                    "cold token group exceeded its validated envelope".into(),
                 ));
             }
+            let inspected = key
+                .len()
+                .checked_add(
+                    positions
+                        .len()
+                        .checked_mul(std::mem::size_of::<u32>())
+                        .ok_or(IndexError::ResourceLimited)?,
+                )
+                .ok_or(IndexError::ResourceLimited)?;
+            budget.charge(WorkUsage {
+                bytes: u64::try_from(inspected).map_err(|_error| IndexError::ResourceLimited)?,
+                ..WorkUsage::default()
+            })?;
             let (same, insertion) = candidate.index.locate(budget, |prior| {
                 let term = usize::from(
                     *candidate
@@ -198,8 +603,8 @@ impl ColdTokens {
                 Ok(candidate
                     .rows_for(term)?
                     .iter()
-                    .map(|row| row.position)
-                    .cmp(positions.iter().map(|row| row.position)))
+                    .map(|row| row.position())
+                    .cmp(positions.iter().map(|row| row.position())))
             })?;
             let vector = match same {
                 Some(vector) => {
@@ -233,8 +638,8 @@ impl ColdTokens {
                 .terms
                 .get_mut(term_ordinal)
                 .ok_or(IndexError::ResourceLimited)? = BorrowedTerm {
-                key_start: first.start,
-                key_end: first.end,
+                key_start: first.start(),
+                key_end: first.end().ok_or(IndexError::ResourceLimited)?,
                 row_start: u32::try_from(start).map_err(|_error| IndexError::ResourceLimited)?,
                 row_end: u32::try_from(end).map_err(|_error| IndexError::ResourceLimited)?,
                 vector,
@@ -267,33 +672,13 @@ impl ColdTokens {
     }
 
     pub(super) fn try_new(
-        body_bytes: usize,
+        census: CanonicalTokenCensus,
         budget: &WorkBudget,
     ) -> Result<Option<Self>, IndexError> {
-        if !u64::try_from(body_bytes).is_ok_and(|bytes| bytes <= super::MAX_SOURCE_BYTES) {
+        if !u32::try_from(census.key_bytes).is_ok_and(|bytes| bytes <= ROW_START_MASK) {
             return Ok(None);
         }
-        // Empty sources still need a nonzero optional reservation; no token
-        // can use the spare row/key capacity. Keep all backing under one lease.
-        let admitted_body = body_bytes.max(1);
-        let max_rows = admitted_body
-            .checked_mul(2)
-            .ok_or(IndexError::ResourceLimited)?;
-        let max_key_bytes = admitted_body
-            .checked_mul(4)
-            .ok_or(IndexError::ResourceLimited)?;
-        if u32::try_from(max_key_bytes).is_err() || u32::try_from(max_rows).is_err() {
-            return Err(IndexError::BackendViolation(
-                "ASCII token bounds exceed u32 offsets".into(),
-            ));
-        }
-        let bytes = max_key_bytes
-            .checked_add(
-                max_rows
-                    .checked_mul(std::mem::size_of::<Row>())
-                    .ok_or(IndexError::ResourceLimited)?,
-            )
-            .ok_or(IndexError::ResourceLimited)?;
+        let bytes = census.arena_bytes()?;
         let Some(memory) = budget.try_reserve_memory_for_optimization(
             u64::try_from(bytes).map_err(|_error| IndexError::ResourceLimited)?,
             MemoryLifetime::Temporary,
@@ -302,11 +687,11 @@ impl ColdTokens {
             return Ok(None);
         };
         let mut keys = Vec::new();
-        if keys.try_reserve_exact(max_key_bytes).is_err() {
+        if keys.try_reserve_exact(census.key_bytes).is_err() {
             return Ok(None);
         }
         let mut rows = Vec::new();
-        if rows.try_reserve_exact(max_rows).is_err() {
+        if rows.try_reserve_exact(census.rows).is_err() {
             return Ok(None);
         }
         let actual = keys
@@ -324,13 +709,46 @@ impl ColdTokens {
         Ok(Some(Self {
             keys,
             rows,
-            max_rows,
-            max_key_bytes,
+            max_rows: census.rows,
+            max_key_bytes: census.key_bytes,
+            term_count: 0,
+            exact: census.exact,
             ready: false,
             _memory: memory,
         }))
     }
 
+    /// Replay one SQL-sized page at a time from the validated arena. The
+    /// page contains only borrowed keys and positions; no second key or row
+    /// backing is allocated while the arena's Original grant is live.
+    pub(super) fn replay_borrowed_pages(
+        &self,
+        budget: &mut WorkBudget,
+        mut consume: impl FnMut(&[(&[u8], u32)], &mut WorkBudget) -> Result<(), IndexError>,
+    ) -> Result<(), IndexError> {
+        budget.checkpoint()?;
+        if !self.ready {
+            return Err(IndexError::BackendViolation(
+                "cold replay requires a validated canonical arena".into(),
+            ));
+        }
+        let mut page = [(&[][..], 0_u32); quanta_index_scratch_sqlite::MAX_WRITE_BATCH_ROWS];
+        for rows in self.rows.chunks(page.len()) {
+            let entries = page
+                .get_mut(..rows.len())
+                .ok_or(IndexError::ResourceLimited)?;
+            for (entry, row) in entries.iter_mut().zip(rows) {
+                budget.checkpoint()?;
+                let key = Self::key(&self.keys, row).ok_or(IndexError::ResourceLimited)?;
+                check_term_key(key)?;
+                *entry = (key, row.position());
+            }
+            consume(entries, budget)?;
+        }
+        budget.checkpoint()
+    }
+
+    #[cfg(test)]
     pub(super) fn push_batch(
         &mut self,
         batch: &TokenBatch,
@@ -338,7 +756,7 @@ impl ColdTokens {
     ) -> Result<(), IndexError> {
         if self.ready {
             return Err(IndexError::BackendViolation(
-                "small ASCII token buffer changed after ordering".into(),
+                "cold token buffer changed after ordering".into(),
             ));
         }
         for token in batch.rows() {
@@ -352,7 +770,7 @@ impl ColdTokens {
                 .ok_or(IndexError::ResourceLimited)?;
             if self.rows.len() >= self.max_rows || end > self.max_key_bytes {
                 return Err(IndexError::BackendViolation(
-                    "small ASCII token census exceeded its proved input bound".into(),
+                    "cold token census exceeded its proved input bound".into(),
                 ));
             }
             budget.charge(WorkUsage {
@@ -362,26 +780,23 @@ impl ColdTokens {
             let start =
                 u32::try_from(self.keys.len()).map_err(|_error| IndexError::ResourceLimited)?;
             let end = u32::try_from(end).map_err(|_error| IndexError::ResourceLimited)?;
+            let row = Row::new(start, end, token.position())?;
             self.keys.extend_from_slice(key);
-            self.rows.push(Row {
-                start,
-                end,
-                position: token.position(),
-            });
+            self.rows.push(row);
         }
         Ok(())
     }
 
     fn key<'a>(keys: &'a [u8], row: &Row) -> Option<&'a [u8]> {
-        let start = usize::try_from(row.start).ok()?;
-        let end = usize::try_from(row.end).ok()?;
+        let start = usize::try_from(row.start()).ok()?;
+        let end = usize::try_from(row.end()?).ok()?;
         keys.get(start..end)
     }
 
     fn compare(keys: &[u8], left: &Row, right: &Row) -> Ordering {
         Self::key(keys, left)
             .cmp(&Self::key(keys, right))
-            .then_with(|| left.position.cmp(&right.position))
+            .then_with(|| left.position().cmp(&right.position()))
     }
 
     fn sort_checkpoint(
@@ -474,25 +889,27 @@ impl ColdTokens {
         Self::sort_rows(&mut self.rows, keys, || budget.checkpoint())?;
         let mut prior: Option<&Row> = None;
         let mut positions = 0usize;
+        let mut term_count = 0usize;
         for row in &self.rows {
             budget.checkpoint()?;
             let key = Self::key(keys, row).ok_or(IndexError::ResourceLimited)?;
             check_term_key(key)?;
-            if let Some(previous) = prior {
-                if Self::key(keys, previous).ok_or(IndexError::ResourceLimited)? == key {
-                    if previous.position >= row.position {
-                        return Err(IndexError::CorruptObject(
-                            "small ASCII token position repeats".into(),
-                        ));
-                    }
-                    positions = positions
-                        .checked_add(1)
-                        .ok_or(IndexError::ResourceLimited)?;
-                } else {
-                    positions = 1;
+            if let Some(previous) = prior
+                && Self::key(keys, previous).ok_or(IndexError::ResourceLimited)? == key
+            {
+                if previous.position() >= row.position() {
+                    return Err(IndexError::CorruptObject(
+                        "cold token position repeats".into(),
+                    ));
                 }
+                positions = positions
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
             } else {
                 positions = 1;
+                term_count = term_count
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
             }
             if u64::try_from(positions).map_err(|_error| IndexError::ResourceLimited)?
                 > MAX_POSITIONS_PER_TERM
@@ -502,8 +919,181 @@ impl ColdTokens {
             prior = Some(row);
         }
         budget.checkpoint()?;
+        self.term_count = term_count;
         self.ready = true;
         Ok(())
+    }
+
+    /// Walk the already sorted canonical input without key, position, payload,
+    /// object, or SQL allocation. The writer's split arithmetic and JSON
+    /// length counter determine the exact physical output shape.
+    pub(super) fn block_shape(&self, budget: &WorkBudget) -> Result<ColdBlockShape, IndexError> {
+        budget.checkpoint()?;
+        if !self.ready {
+            return Err(IndexError::BackendViolation(
+                "cold token groups were not ordered".into(),
+            ));
+        }
+        let mut shape = ColdBlockShape::default();
+        let mut vectors = [BorrowedTerm::default(); MAX_BLOCK_TERMS];
+        let mut index = VectorIndex::within_owner_grant();
+        let mut vector_count = 0usize;
+        let mut block_terms = 0usize;
+        let mut block_len = HEADER_BYTES;
+        let mut block_key_bytes = 0usize;
+        let mut block_position_bytes = 0usize;
+        let mut only_positions = (0usize, 0usize);
+        let mut start = 0usize;
+        while start < self.rows.len() {
+            budget.checkpoint()?;
+            let first = self.rows.get(start).ok_or(IndexError::ResourceLimited)?;
+            let key = Self::key(&self.keys, first).ok_or(IndexError::ResourceLimited)?;
+            check_term_key(key)?;
+            let mut end = start;
+            while let Some(row) = self.rows.get(end) {
+                budget.checkpoint()?;
+                if Self::key(&self.keys, row).ok_or(IndexError::ResourceLimited)? != key {
+                    break;
+                }
+                end = end.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+            }
+            let positions = self
+                .rows
+                .get(start..end)
+                .ok_or(IndexError::ResourceLimited)?;
+            if positions.is_empty()
+                || u64::try_from(positions.len()).map_err(|_error| IndexError::ResourceLimited)?
+                    > MAX_POSITIONS_PER_TERM
+            {
+                return Err(IndexError::BackendViolation(
+                    "cold token group exceeded its validated envelope".into(),
+                ));
+            }
+            shape.term_count = shape
+                .term_count
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?;
+            shape.maximum_key_bytes = shape.maximum_key_bytes.max(key.len());
+            shape.maximum_group_positions = shape.maximum_group_positions.max(positions.len());
+            loop {
+                let capacity = position_capacity(positions.len())?;
+                let group_growth_bytes = capacity
+                    .checked_add(capacity / 2)
+                    .and_then(|positions| positions.checked_mul(std::mem::size_of::<u32>()))
+                    .ok_or(IndexError::ResourceLimited)?;
+                let live = block_key_bytes
+                    .checked_add(block_position_bytes)
+                    .and_then(|bytes| bytes.checked_add(key.len()))
+                    .and_then(|bytes| bytes.checked_add(group_growth_bytes))
+                    .ok_or(IndexError::ResourceLimited)?;
+                shape.maximum_key_position_peak = shape.maximum_key_position_peak.max(live);
+                let (same, insertion) = index.locate(budget, |ordinal| {
+                    let prior = vectors.get(ordinal).ok_or(IndexError::ResourceLimited)?;
+                    let rows = self
+                        .rows
+                        .get(
+                            usize::try_from(prior.row_start)
+                                .map_err(|_error| IndexError::ResourceLimited)?
+                                ..usize::try_from(prior.row_end)
+                                    .map_err(|_error| IndexError::ResourceLimited)?,
+                        )
+                        .ok_or(IndexError::ResourceLimited)?;
+                    Ok(rows
+                        .iter()
+                        .map(|row| row.position())
+                        .cmp(positions.iter().map(|row| row.position())))
+                })?;
+                if let Some(next) = next_block_len(
+                    block_len,
+                    block_terms,
+                    key.len(),
+                    positions.len(),
+                    same.is_none(),
+                )? {
+                    block_len = next;
+                    block_key_bytes = block_key_bytes
+                        .checked_add(key.len())
+                        .ok_or(IndexError::ResourceLimited)?;
+                    block_terms = block_terms
+                        .checked_add(1)
+                        .ok_or(IndexError::ResourceLimited)?;
+                    if block_terms == 1 {
+                        only_positions = (start, end);
+                    }
+                    if same.is_none() {
+                        block_position_bytes = block_position_bytes
+                            .checked_add(
+                                capacity
+                                    .checked_mul(std::mem::size_of::<u32>())
+                                    .ok_or(IndexError::ResourceLimited)?,
+                            )
+                            .ok_or(IndexError::ResourceLimited)?;
+                        *vectors
+                            .get_mut(vector_count)
+                            .ok_or(IndexError::ResourceLimited)? = BorrowedTerm {
+                            row_start: u32::try_from(start)
+                                .map_err(|_error| IndexError::ResourceLimited)?,
+                            row_end: u32::try_from(end)
+                                .map_err(|_error| IndexError::ResourceLimited)?,
+                            ..BorrowedTerm::default()
+                        };
+                        vector_count = vector_count
+                            .checked_add(1)
+                            .ok_or(IndexError::ResourceLimited)?;
+                        index.insert(
+                            insertion,
+                            u16::try_from(vector_count - 1)
+                                .map_err(|_error| IndexError::ResourceLimited)?,
+                        );
+                    }
+                    break;
+                }
+                if block_terms == 0 {
+                    shape.record(measured_encoded_len(
+                        &BorrowedOccurrence(positions),
+                        budget,
+                    )?)?;
+                    break;
+                }
+                let payload_bytes = if block_terms == 1 {
+                    measured_encoded_len(
+                        &BorrowedOccurrence(
+                            self.rows
+                                .get(only_positions.0..only_positions.1)
+                                .ok_or(IndexError::ResourceLimited)?,
+                        ),
+                        budget,
+                    )?
+                } else {
+                    block_len
+                };
+                shape.record(payload_bytes)?;
+                block_terms = 0;
+                vector_count = 0;
+                block_key_bytes = 0;
+                block_position_bytes = 0;
+                index = VectorIndex::within_owner_grant();
+                block_len = HEADER_BYTES;
+            }
+            start = end;
+        }
+        if block_terms != 0 {
+            let payload_bytes = if block_terms == 1 {
+                measured_encoded_len(
+                    &BorrowedOccurrence(
+                        self.rows
+                            .get(only_positions.0..only_positions.1)
+                            .ok_or(IndexError::ResourceLimited)?,
+                    ),
+                    budget,
+                )?
+            } else {
+                block_len
+            };
+            shape.record(payload_bytes)?;
+        }
+        budget.checkpoint()?;
+        Ok(shape)
     }
 
     pub(super) fn visit_groups(
@@ -519,7 +1109,7 @@ impl ColdTokens {
         budget.checkpoint()?;
         if !self.ready {
             return Err(IndexError::BackendViolation(
-                "small ASCII token groups were not ordered".into(),
+                "cold token groups were not ordered".into(),
             ));
         }
         let mut current: Option<(PreparedKey, PreparedPositions)> = None;
@@ -543,7 +1133,7 @@ impl ColdTokens {
                 .as_mut()
                 .ok_or(IndexError::ResourceLimited)?
                 .1
-                .push(row.position, budget)?;
+                .push(row.position(), budget)?;
         }
         if let Some((key, positions)) = current {
             consume(key, positions, budget)?;
@@ -572,6 +1162,7 @@ mod tests {
     struct Meter {
         live: AtomicU64,
         ceiling: AtomicU64,
+        reservations: AtomicU64,
     }
 
     impl MemoryLeaseOwner for Meter {
@@ -600,6 +1191,7 @@ mod tests {
                         .filter(|next| *next <= self.0.ceiling.load(Ordering::Relaxed))
                 })
                 .map_err(|_error| IndexError::ResourceLimited)?;
+            let _prior_reservations = self.0.reservations.fetch_add(1, Ordering::Relaxed);
             Ok(MemoryLease::new(bytes, self.0.clone()))
         }
     }
@@ -653,16 +1245,433 @@ mod tests {
         ]
     }
 
+    fn exact_census(
+        source: &str,
+        budget: &mut WorkBudget,
+    ) -> Result<CanonicalTokenCensus, IndexError> {
+        let mut cursor = TokenCursor::new(source);
+        CanonicalTokenCensus::count(&mut cursor, source.len(), budget)?
+            .ok_or(IndexError::ResourceLimited)
+    }
+
+    #[test]
+    fn compact_row_roundtrips_boundaries_and_rejects_overflow() -> Result<(), IndexError> {
+        for (start, end, position) in [
+            (0, 2, 0),
+            (65_535, 65_806, 7_654_321),
+            (268_435_455, 268_436_479, 16_777_215),
+        ] {
+            let row = Row::new(start, end, position)?;
+            if (row.start(), row.end(), row.position()) != (start, Some(end), position) {
+                return Err(IndexError::BackendViolation(
+                    "compact token row differs".into(),
+                ));
+            }
+        }
+        for (start, end, position) in [
+            (268_435_456, 268_435_458, 0),
+            (0, 1_025, 0),
+            (0, 2, 16_777_216),
+            (0, 1, 0),
+            (2, 1, 0),
+        ] {
+            if !matches!(
+                Row::new(start, end, position),
+                Err(IndexError::ResourceLimited)
+            ) {
+                return Err(IndexError::BackendViolation(
+                    "compact token row accepted fields outside its range".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unicode_upper_bound_covers_exact_runs_and_checked_limits() -> Result<(), IndexError> {
+        if CanonicalTokenCensus::upper_bound(0)?.is_some()
+            || CanonicalTokenCensus::upper_bound(usize::MAX)?.is_some()
+            || CanonicalTokenCensus::upper_bound(
+                usize::try_from(super::super::MAX_NFC_BYTES)
+                    .map_err(|_error| IndexError::ResourceLimited)?
+                    + 1,
+            )?
+            .is_some()
+        {
+            return Err(IndexError::BackendViolation(
+                "upper census accepted empty or over-limit NFC length".into(),
+            ));
+        }
+        let one = CanonicalTokenCensus::upper_bound(1)?.ok_or(IndexError::ResourceLimited)?;
+        if (
+            one.rows,
+            one.key_bytes,
+            one.packet_key_bytes,
+            one.arena_bytes()?,
+        ) != (2, 15, 15, 31)
+        {
+            return Err(IndexError::BackendViolation(
+                "one-byte Unicode upper census changed".into(),
+            ));
+        }
+        let maximum = usize::try_from(super::super::MAX_NFC_BYTES)
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        let largest =
+            CanonicalTokenCensus::upper_bound(maximum)?.ok_or(IndexError::ResourceLimited)?;
+        if (
+            largest.rows,
+            largest.key_bytes,
+            largest.packet_key_bytes,
+            largest.arena_bytes()?,
+        ) != (maximum, 14 * maximum, 64 * 1_024, 22 * maximum)
+        {
+            return Err(IndexError::BackendViolation(
+                "maximum Unicode upper census changed".into(),
+            ));
+        }
+        for source in ["a", "a b", "Alpha alpha β", "İ café Σ", "a!b!c", "𐐀 İ"] {
+            let (mut work, _meter) = budget()?;
+            let mut cursor = TokenCursor::new(source);
+            let bound = CanonicalTokenCensus::upper_bound(cursor.text().len())?
+                .ok_or(IndexError::ResourceLimited)?;
+            let exact = CanonicalTokenCensus::count(&mut cursor, source.len(), &mut work)?
+                .ok_or(IndexError::ResourceLimited)?;
+            if bound.exact
+                || !exact.exact
+                || bound.rows < exact.rows
+                || bound.key_bytes < exact.key_bytes
+                || bound.packet_key_bytes < exact.packet_key_bytes
+                || bound.arena_bytes()? < exact.arena_bytes()?
+            {
+                return Err(IndexError::BackendViolation(format!(
+                    "Unicode upper census did not cover {source:?}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn upper_bound_direct_fill_preserves_case_groups_and_refunds() -> Result<(), IndexError> {
+        use std::collections::BTreeMap;
+
+        let (mut work, meter) = budget()?;
+        let (mut cursor, mut packet) =
+            super::super::prepare_indexed_token_input("A a İ", &mut work)?;
+        let bound = CanonicalTokenCensus::upper_bound(cursor.text().len())?
+            .ok_or(IndexError::ResourceLimited)?;
+        if !packet.try_prepare_cold_keys(bound.packet_key_bytes(), &work)? {
+            return Err(IndexError::ResourceLimited);
+        }
+        let mut tokens = ColdTokens::try_new(bound, &work)?.ok_or(IndexError::ResourceLimited)?;
+        let before = work.usage();
+        if tokens.fill_from_cursor(&mut cursor, &mut packet, &mut work)? != 3 {
+            return Err(IndexError::BackendViolation(
+                "upper census changed indexed run count".into(),
+            ));
+        }
+        // The source runs are 1, 1, and 2 bytes and each emits two 8-byte rows.
+        let after = work.usage();
+        if after.bytes.checked_sub(before.bytes) != Some(64)
+            || after.mutations.checked_sub(before.mutations) != Some(3)
+        {
+            return Err(IndexError::BackendViolation(format!(
+                "cold fill expected 64 bytes and three mutations: {before:?} -> {after:?}"
+            )));
+        }
+        tokens.sort_and_validate(&work)?;
+        let mut groups = BTreeMap::new();
+        tokens.visit_groups(8192, &mut work, |key, positions, _budget| {
+            if groups
+                .insert(key.as_slice().to_vec(), positions.as_slice().to_vec())
+                .is_some()
+            {
+                return Err(IndexError::BackendViolation(
+                    "upper census emitted duplicate group".into(),
+                ));
+            }
+            Ok(())
+        })?;
+        let gold = BTreeMap::from([
+            (b"\0A".to_vec(), vec![0]),
+            (b"\0a".to_vec(), vec![1]),
+            ("\0İ".as_bytes().to_vec(), vec![2]),
+            (b"\x01a".to_vec(), vec![0, 1]),
+            ("\u{1}i\u{307}".as_bytes().to_vec(), vec![2]),
+        ]);
+        if groups != gold {
+            return Err(IndexError::BackendViolation(
+                "upper census changed canonical case groups".into(),
+            ));
+        }
+        drop((tokens, packet, cursor));
+        if meter.live.load(Ordering::Relaxed) != 0 || work.first_denial().is_some() {
+            return Err(IndexError::BackendViolation(
+                "upper census retained a grant or recorded a denial".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn upper_bound_optional_admission_miss_keeps_exact_census_available() -> Result<(), IndexError>
+    {
+        let (mut work, meter) = budget()?;
+        let bound = CanonicalTokenCensus::upper_bound(5)?.ok_or(IndexError::ResourceLimited)?;
+        meter.ceiling.store(
+            u64::try_from(bound.arena_bytes()? - 1)
+                .map_err(|_error| IndexError::ResourceLimited)?,
+            Ordering::Relaxed,
+        );
+        if ColdTokens::try_new(bound, &work)?.is_some()
+            || meter.live.load(Ordering::Relaxed) != 0
+            || work.first_denial().is_some()
+        {
+            return Err(IndexError::BackendViolation(
+                "rejected upper census retained an optional grant".into(),
+            ));
+        }
+        let exact = exact_census("Ab aB", &mut work)?;
+        let tokens = ColdTokens::try_new(exact, &work)?.ok_or(IndexError::ResourceLimited)?;
+        drop(tokens);
+        if meter.live.load(Ordering::Relaxed) != 0 || work.first_denial().is_some() {
+            return Err(IndexError::BackendViolation(
+                "exact census fallback leaked its grant".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn direct_cold_emission_matches_public_normalizer_without_packet_key_copy()
+    -> Result<(), IndexError> {
+        use quanta_index_lq_text_normalizer::tokenize;
+        use std::collections::BTreeMap;
+
+        fn collect(
+            source: &str,
+            direct: bool,
+        ) -> Result<(BTreeMap<Vec<u8>, Vec<u32>>, u64, u64), IndexError> {
+            let (mut work, meter) = budget()?;
+            let (mut cursor, mut packet) =
+                super::super::prepare_indexed_token_input(source, &mut work)?;
+            let census = CanonicalTokenCensus::count(&mut cursor, source.len(), &mut work)?
+                .ok_or(IndexError::ResourceLimited)?;
+            let mut tokens =
+                ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+            let indexed = if direct {
+                tokens.fill_from_cursor(&mut cursor, &mut packet, &mut work)?
+            } else {
+                super::super::visit_prepared_token_batches(
+                    &mut cursor,
+                    &mut packet,
+                    &mut work,
+                    |batch, budget| tokens.push_batch(batch, budget),
+                )?
+            };
+            let bytes = work.usage().bytes;
+            let reservations = meter.reservations.load(Ordering::Relaxed);
+            tokens.sort_and_validate(&work)?;
+            let mut groups = BTreeMap::new();
+            tokens.visit_groups(8192, &mut work, |key, positions, _budget| {
+                if groups
+                    .insert(key.as_slice().to_vec(), positions.as_slice().to_vec())
+                    .is_some()
+                {
+                    return Err(IndexError::BackendViolation(
+                        "canonical cold group repeated".into(),
+                    ));
+                }
+                Ok(())
+            })?;
+            if indexed != 7 {
+                return Err(IndexError::BackendViolation(
+                    "fixed indexable source count changed".into(),
+                ));
+            }
+            drop(tokens);
+            drop(packet);
+            drop(cursor);
+            if meter.live.load(Ordering::Relaxed) != 0 {
+                return Err(IndexError::BackendViolation(
+                    "cold source grants outlived the fixture".into(),
+                ));
+            }
+            Ok((groups, bytes, reservations))
+        }
+
+        let mut source = "Ab aB ab É cafe\u{301} İx ".to_owned();
+        source.extend(std::iter::repeat_n('x', 257));
+        source.push_str(" tail");
+        let mut expected = BTreeMap::<Vec<u8>, Vec<u32>>::new();
+        for (case, marker) in [(CaseMode::Sensitive, 0_u8), (CaseMode::Folded, 1_u8)] {
+            let tokenized = tokenize(&source, case);
+            for token in tokenized.indexable() {
+                let mut key = vec![marker];
+                key.extend_from_slice(token.text.as_bytes());
+                expected
+                    .entry(key)
+                    .or_default()
+                    .push(u32::try_from(token.position).map_err(|_| IndexError::ResourceLimited)?);
+            }
+        }
+        if expected.get(b"\0Ab".as_slice()) != Some(&vec![0])
+            || expected.get(b"\x01ab".as_slice()) != Some(&vec![0, 1, 2])
+            || expected.get("\x01café".as_bytes()) != Some(&vec![4])
+            || expected.get(b"\x01tail".as_slice()) != Some(&vec![7])
+        {
+            return Err(IndexError::BackendViolation(
+                "fixed public normalizer gold changed".into(),
+            ));
+        }
+        let (reference, reference_bytes, reference_reservations) = collect(&source, false)?;
+        let (direct, direct_bytes, direct_reservations) = collect(&source, true)?;
+        if reference != expected || direct != expected {
+            return Err(IndexError::BackendViolation(
+                "cold direct emission differs from public normalizer".into(),
+            ));
+        }
+        if direct_bytes >= reference_bytes || direct_reservations >= reference_reservations {
+            return Err(IndexError::BackendViolation(
+                "cold direct emission still materializes the intermediate packet".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn direct_cold_emission_refuses_census_drift_without_unfunded_growth() -> Result<(), IndexError>
+    {
+        let (mut work, meter) = budget()?;
+        let (mut cursor, mut packet) =
+            super::super::prepare_indexed_token_input("Ab aB", &mut work)?;
+        let mut census = CanonicalTokenCensus::count(&mut cursor, 5, &mut work)?
+            .ok_or(IndexError::ResourceLimited)?;
+        census.key_bytes = census
+            .key_bytes
+            .checked_sub(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        let mut tokens = ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+        if !matches!(
+            tokens.fill_from_cursor(&mut cursor, &mut packet, &mut work),
+            Err(IndexError::BackendViolation(_))
+        ) {
+            return Err(IndexError::BackendViolation(
+                "direct cold source accepted a false key census".into(),
+            ));
+        }
+        drop(tokens);
+        drop(packet);
+        drop(cursor);
+        if meter.live.load(Ordering::Relaxed) != 0 {
+            return Err(IndexError::BackendViolation(
+                "direct cold drift retained funded backing".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn direct_cold_emission_observes_original_cancellation_and_refunds() -> Result<(), IndexError> {
+        let (mut work, meter) = budget()?;
+        let (mut cursor, mut packet) =
+            super::super::prepare_indexed_token_input("cafe\u{301} Ab", &mut work)?;
+        let census = CanonicalTokenCensus::count(&mut cursor, 9, &mut work)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let mut tokens = ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+        work.request().cancel_handle().cancel();
+        if !matches!(
+            tokens.fill_from_cursor(&mut cursor, &mut packet, &mut work),
+            Err(IndexError::Cancelled)
+        ) {
+            return Err(IndexError::BackendViolation(
+                "direct cold source ignored original cancellation".into(),
+            ));
+        }
+        drop(tokens);
+        drop(packet);
+        drop(cursor);
+        if meter.live.load(Ordering::Relaxed) != 0 {
+            return Err(IndexError::BackendViolation(
+                "cancelled direct cold source retained backing".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exact_ascii_arena_admits_below_old_body_bound_and_refunds() -> Result<(), IndexError> {
+        let (mut work, meter) = budget()?;
+        let mut source = "Ab ".repeat(1_000);
+        source.extend(std::iter::repeat_n('!', 102_401 - source.len()));
+        let census = exact_census(&source, &mut work)?;
+        // 1,000 runs, two 3-byte case keys and two 8-byte rows each.
+        const EXACT_ARENA_BYTES: u64 = 22_000;
+        let arena_bytes =
+            u64::try_from(census.arena_bytes()?).map_err(|_error| IndexError::ResourceLimited)?;
+        if arena_bytes != EXACT_ARENA_BYTES || source.len() * 28 != 2_867_228 {
+            return Err(IndexError::BackendViolation(
+                "fixed ASCII arena oracle changed".into(),
+            ));
+        }
+        meter.ceiling.store(EXACT_ARENA_BYTES, Ordering::Relaxed);
+        let tokens = ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+        if meter.live.load(Ordering::Relaxed) != EXACT_ARENA_BYTES {
+            return Err(IndexError::BackendViolation(
+                "exact ASCII arena charged a different layout".into(),
+            ));
+        }
+        drop(tokens);
+        if meter.live.load(Ordering::Relaxed) != 0 || work.first_denial().is_some() {
+            return Err(IndexError::BackendViolation(
+                "exact ASCII arena was not fully refunded".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_unicode_census_releases_funded_nfc_and_row_packet() -> Result<(), IndexError> {
+        let (mut work, meter) = budget()?;
+        let source = "cafe\u{301} ".repeat(1_000);
+        let (mut cursor, packet) = super::super::prepare_indexed_token_input(&source, &mut work)?;
+        if cursor.text() != "café ".repeat(1_000) || meter.live.load(Ordering::Relaxed) == 0 {
+            return Err(IndexError::BackendViolation(
+                "funded Unicode NFC cursor was not retained".into(),
+            ));
+        }
+        work.request().cancel_handle().cancel();
+        if !matches!(
+            CanonicalTokenCensus::count(&mut cursor, source.len(), &mut work),
+            Err(IndexError::Cancelled)
+        ) {
+            return Err(IndexError::BackendViolation(
+                "Unicode census ignored cancellation".into(),
+            ));
+        }
+        drop(packet);
+        drop(cursor);
+        if meter.live.load(Ordering::Relaxed) != 0 {
+            return Err(IndexError::BackendViolation(
+                "cancelled Unicode census leaked its funded input".into(),
+            ));
+        }
+        Ok(())
+    }
+
     #[test]
     fn widened_ascii_boundary_preserves_canonical_groups() -> Result<(), IndexError> {
         use std::collections::BTreeMap;
 
-        let (oversized_work, oversized_meter) = budget()?;
+        let (mut oversized_work, oversized_meter) = budget()?;
         let oversized = usize::try_from(super::super::MAX_SOURCE_BYTES)
             .map_err(|_error| IndexError::ResourceLimited)?
             .checked_add(1)
             .ok_or(IndexError::ResourceLimited)?;
-        if ColdTokens::try_new(oversized, &oversized_work)?.is_some()
+        let oversized_source = "a".repeat(oversized);
+        let mut oversized_cursor = TokenCursor::new(&oversized_source);
+        if CanonicalTokenCensus::count(&mut oversized_cursor, oversized, &mut oversized_work)?
+            .is_some()
             || oversized_work.first_denial().is_some()
             || oversized_meter.live.load(Ordering::Relaxed) != 0
         {
@@ -679,8 +1688,9 @@ mod tests {
                     "ASCII test body length changed".into(),
                 ));
             }
+            let census = exact_census(&source, &mut work)?;
             let mut tokens =
-                ColdTokens::try_new(source.len(), &work)?.ok_or(IndexError::ResourceLimited)?;
+                ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
             let mut canonical = BTreeMap::<Vec<u8>, Vec<u32>>::new();
             let indexed =
                 super::super::visit_indexed_token_batches(&source, &mut work, |batch, budget| {
@@ -728,8 +1738,8 @@ mod tests {
     fn large_sort_observes_cancellation_before_completion() -> Result<(), IndexError> {
         let (mut work, meter) = budget()?;
         let source = "j i h g f e d c b a ".repeat(1_024);
-        let mut tokens =
-            ColdTokens::try_new(source.len(), &work)?.ok_or(IndexError::ResourceLimited)?;
+        let census = exact_census(&source, &mut work)?;
+        let mut tokens = ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
         let indexed =
             super::super::visit_indexed_token_batches(&source, &mut work, |batch, budget| {
                 tokens.push_batch(batch, budget)
@@ -770,8 +1780,8 @@ mod tests {
         let source = "a b c d e";
         let mut batch = TokenBatch::new(&work)?;
         batch.prepare(source, &source_runs(), &work)?;
-        let mut tokens =
-            ColdTokens::try_new(source.len(), &work)?.ok_or(IndexError::ResourceLimited)?;
+        let census = exact_census(source, &mut work)?;
+        let mut tokens = ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
         tokens.push_batch(&batch, &mut work)?;
         tokens.sort_and_validate(&work)?;
         drop(batch);
@@ -796,6 +1806,16 @@ mod tests {
             }
         }
         let direct = encode_packed(&borrowed, borrowed.encoded_len(), &work)?;
+        let shape = tokens.block_shape(&work)?;
+        if shape.object_count != 1
+            || shape.term_count != 10
+            || shape.total_payload_bytes != direct.bytes.len()
+            || shape.maximum_payload_bytes != direct.bytes.len()
+        {
+            return Err(IndexError::BackendViolation(
+                "borrowed block shape differs from canonical writer".into(),
+            ));
+        }
         let mut expected = b"QITXOC01\x00\x0a\x00\x05\x00\x00\x00\x00".to_vec();
         for surface in [0_u8, 1_u8] {
             for (vector, letter) in b"abcde".iter().enumerate() {
@@ -860,8 +1880,8 @@ mod tests {
             runs.get(..4).ok_or(IndexError::ResourceLimited)?,
             &work,
         )?;
-        let mut tokens =
-            ColdTokens::try_new("a b c d".len(), &work)?.ok_or(IndexError::ResourceLimited)?;
+        let census = exact_census("a b c d", &mut work)?;
+        let mut tokens = ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
         tokens.push_batch(&batch, &mut work)?;
         tokens.sort_and_validate(&work)?;
         if tokens.try_packed_alias(&mut work)?.is_some() {
@@ -887,6 +1907,198 @@ mod tests {
             return Err(IndexError::BackendViolation(
                 "cold alias fallback memory lease leaked".into(),
             ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn borrowed_block_shape_matches_canonical_multi_block_and_leaf_output() -> Result<(), IndexError>
+    {
+        let (mut work, meter) = budget()?;
+        let mut source = String::new();
+        for _repeat in 0..20 {
+            for ordinal in 0..257_u16 {
+                source.push_str(&format!("t{ordinal:03} "));
+            }
+        }
+        let census = exact_census(&source, &mut work)?;
+        let mut tokens = ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+        let indexed =
+            super::super::visit_indexed_token_batches(&source, &mut work, |batch, budget| {
+                tokens.push_batch(batch, budget)
+            })?;
+        if indexed != 5_140 {
+            return Err(IndexError::BackendViolation(
+                "block shape fixture changed".into(),
+            ));
+        }
+        tokens.sort_and_validate(&work)?;
+        let planned = tokens.block_shape(&work)?;
+        let mut actual = ColdBlockShape::default();
+        let mut draft = BlockDraft::new()?;
+        fn finish(
+            sealed: SealedBlock,
+            actual: &mut ColdBlockShape,
+            budget: &WorkBudget,
+        ) -> Result<(), IndexError> {
+            match sealed {
+                SealedBlock::Leaf { positions, .. } => {
+                    let payload =
+                        crate::native::text_memory::encode(&positions.occurrence, budget)?;
+                    actual.record(payload.as_slice().len())?;
+                }
+                SealedBlock::Packed { payload, .. } => actual.record(payload.bytes.len())?,
+            }
+            Ok(())
+        }
+        tokens.visit_groups(8192, &mut work, |key, positions, budget| {
+            actual.term_count = actual
+                .term_count
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?;
+            actual.maximum_key_bytes = actual.maximum_key_bytes.max(key.as_slice().len());
+            match draft.try_push(key, positions, budget)? {
+                BlockPush::Added => Ok(()),
+                BlockPush::Full { term, positions } => {
+                    if draft.len() != 0 {
+                        finish(
+                            std::mem::replace(&mut draft, BlockDraft::new()?).finish(budget)?,
+                            &mut actual,
+                            budget,
+                        )?;
+                    }
+                    match draft.try_push(term, positions, budget)? {
+                        BlockPush::Added => Ok(()),
+                        BlockPush::Full { term: _, positions } => {
+                            let payload =
+                                crate::native::text_memory::encode(&positions.occurrence, budget)?;
+                            actual.record(payload.as_slice().len())
+                        }
+                    }
+                }
+            }
+        })?;
+        if draft.len() != 0 {
+            finish(draft.finish(&work)?, &mut actual, &work)?;
+        }
+        if planned.object_count != actual.object_count
+            || planned.total_payload_bytes != actual.total_payload_bytes
+            || planned.maximum_payload_bytes != actual.maximum_payload_bytes
+            || planned.maximum_key_bytes != actual.maximum_key_bytes
+            || planned.term_count != actual.term_count
+            || planned.object_count < 2
+            || planned.maximum_key_position_peak == 0
+        {
+            return Err(IndexError::BackendViolation(format!(
+                "cold physical preflight differs from canonical writer: planned={planned:?}, actual={actual:?}"
+            )));
+        }
+        drop(tokens);
+        if meter.live.load(Ordering::Relaxed) != 0 || work.first_denial().is_some() {
+            return Err(IndexError::BackendViolation(
+                "block shape leaked memory or denied work".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exact_group_count_skips_514_term_alias_probe_but_keeps_512_term_alias()
+    -> Result<(), IndexError> {
+        for source_terms in [256_u16, 257_u16] {
+            let (mut work, meter) = budget()?;
+            let mut source = String::new();
+            for ordinal in 0..source_terms {
+                source.push_str(&format!("t{ordinal:03} "));
+            }
+            let census = exact_census(&source, &mut work)?;
+            let mut tokens =
+                ColdTokens::try_new(census, &work)?.ok_or(IndexError::ResourceLimited)?;
+            let indexed =
+                super::super::visit_indexed_token_batches(&source, &mut work, |batch, budget| {
+                    tokens.push_batch(batch, budget)
+                })?;
+            if indexed != u64::from(source_terms) {
+                return Err(IndexError::BackendViolation(
+                    "alias boundary source changed".into(),
+                ));
+            }
+            tokens.sort_and_validate(&work)?;
+            let before = work.usage();
+            let live_before = meter.live.load(Ordering::Relaxed);
+            let reservations_before = meter.reservations.load(Ordering::Relaxed);
+            let alias = tokens.try_packed_alias(&mut work)?;
+            if source_terms == 257 {
+                if alias.is_some()
+                    || work.usage() != before
+                    || meter.live.load(Ordering::Relaxed) != live_before
+                    || meter.reservations.load(Ordering::Relaxed) != reservations_before
+                {
+                    return Err(IndexError::BackendViolation(
+                        "514 distinct case terms performed a rejected alias probe".into(),
+                    ));
+                }
+                let shape = tokens.block_shape(&work)?;
+                if shape.term_count != 514 || shape.object_count != 2 {
+                    return Err(IndexError::BackendViolation(
+                        "514-term direct block shape changed".into(),
+                    ));
+                }
+                let mut seen = 0_usize;
+                tokens.visit_groups(8_192, &mut work, |key, positions, _budget| {
+                    let case =
+                        u8::try_from(seen / 257).map_err(|_error| IndexError::ResourceLimited)?;
+                    let ordinal =
+                        u32::try_from(seen % 257).map_err(|_error| IndexError::ResourceLimited)?;
+                    let term = format!("t{ordinal:03}");
+                    if key.as_slice().first() != Some(&case)
+                        || key.as_slice().get(1..) != Some(term.as_bytes())
+                        || positions.as_slice() != [ordinal]
+                    {
+                        return Err(IndexError::BackendViolation(
+                            "514-term direct fallback lost canonical group".into(),
+                        ));
+                    }
+                    seen += 1;
+                    Ok(())
+                })?;
+                if seen != 514 {
+                    return Err(IndexError::BackendViolation(
+                        "514-term direct fallback incomplete".into(),
+                    ));
+                }
+            } else {
+                let alias = alias.ok_or(IndexError::ResourceLimited)?;
+                if alias.term_count() != 512
+                    || alias.vector_count() != 256
+                    || work.usage().bytes != before.bytes + 4_608
+                    || work.usage().reads != before.reads
+                    || work.usage().writes != before.writes
+                    || work.usage().mutations != before.mutations
+                    || meter.reservations.load(Ordering::Relaxed) != reservations_before + 1
+                {
+                    return Err(IndexError::BackendViolation(
+                        "512-term eligible alias changed its exact probe".into(),
+                    ));
+                }
+                drop(alias);
+                if meter.live.load(Ordering::Relaxed) != live_before {
+                    return Err(IndexError::BackendViolation(
+                        "512-term alias grant was not refunded".into(),
+                    ));
+                }
+            }
+            if work.first_denial().is_some() {
+                return Err(IndexError::BackendViolation(
+                    "alias cardinality gate recorded a terminal denial".into(),
+                ));
+            }
+            drop(tokens);
+            if meter.live.load(Ordering::Relaxed) != 0 {
+                return Err(IndexError::BackendViolation(
+                    "alias boundary source leaked memory".into(),
+                ));
+            }
         }
         Ok(())
     }

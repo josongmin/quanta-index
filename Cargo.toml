@@ -15,7 +15,6 @@ members = [
     "crates/quanta-index-searchd",
     "crates/quanta-index-searchd-runtime",
     "crates/quanta-index-searchd-harness",
-    "crates/quanta-index-scan-experiment",
     "crates/quanta-index-searchctl",
     "crates/quanta-index-sdk",
     "crates/quanta-index-lq-norm",
@@ -119,14 +118,15 @@ use_self = "allow"
 wildcard_enum_match_arm = "deny"
 
 [workspace.dependencies]
-quanta-installed-artifact-trust = { path = "shared/quanta-installed-artifact-trust" }
 quanta-explicit-fd-process = { path = "shared/quanta-explicit-fd-process" }
+quanta-installed-artifact-trust = { path = "shared/quanta-installed-artifact-trust" }
 anyhow = "1.0.100"
 # arrow-array / arrow-schema pinned to the major version lancedb 0.30 uses
 # internally; mismatched majors silently fail downcast_ref::<StringArray>() etc.
 # at runtime. Bump in lockstep with lancedb on upgrade.
 arrow-array = "58"
 arrow-schema = "58"
+blake3 = { version = "1.5", default-features = false, features = ["pure"] }
 ciborium = { version = "=0.2.2", path = "vendor/ciborium-0.2.2" }
 ciborium-ll = "0.2.2"
 crc32fast = "1.4.2"
@@ -134,6 +134,7 @@ criterion = { version = "0.5.1", default-features = false, features = ["cargo_be
 fs2 = "0.4.3"
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast", "zeroize", "rand_core"] }
 libc = "0.2.186"
+libproc = "=0.14.11"
 # Persistent (structurally shared) ordered maps for the auxiliary authority
 # snapshots: a retained epoch shares every unchanged node with the current
 # one, so retaining `AUX_EPOCH_RETAIN` snapshots costs the changed paths,

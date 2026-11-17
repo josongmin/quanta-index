@@ -39,6 +39,9 @@ use quanta_index_lexical::native::{
 use quanta_index_repomap::native::{FileMapReadContext, FilePathQuery, NativeFileMap, query_paths};
 use quanta_index_storage::{FileObjectStore, FileScratchSpace};
 
+#[path = "native_bootstrap/literal_seal.rs"]
+mod literal_seal;
+
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const ADMISSION: Digest = Digest([31; 32]);
 
@@ -471,7 +474,7 @@ fn existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens() -
     ]);
     let mut references = Vec::new();
     for page in inputs.chunks(32) {
-        references.extend(engine.stage_sources(ingress, page, &mut budget()?)?);
+        references.extend(engine.stage_sources(ingress, page.to_vec(), &mut budget()?)?);
     }
     let mutations = engine.stage_mutations(
         ingress,
@@ -713,5 +716,192 @@ fn existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens() -
     assert_literal_matches(&reopened, &objects, revised, b"XQZ", &[owner(1)])?;
     assert_literal_matches(&reopened, &objects, revised, &[0xff, 0x80, 0x80], &[])?;
     assert_eq!(literal_builds.load(Ordering::Relaxed), 4);
+    Ok(())
+}
+
+#[test]
+fn cold_text_inventory_directory_uses_one_bounded_persisted_map() -> TestResult {
+    use quanta_index_core::index::MapValue;
+    use std::collections::BTreeSet;
+    use std::fmt::Write as _;
+
+    // A fixed small directory of occurrence-block upper fences fits one
+    // 16 KiB map object; this checks actual storage, not the producer hint.
+    let work = || -> TestResult<WorkBudget> {
+        Ok(WorkBudget::new(
+            WorkLimits {
+                reads: 1_000_000,
+                writes: 1_000_000,
+                bytes: 512 * 1024 * 1024,
+                mutations: 1_000_000,
+            },
+            Instant::now()
+                .checked_add(Duration::from_secs(60))
+                .ok_or("cost deadline")?,
+        ))
+    };
+    let root = tempfile::tempdir()?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (engine, objects) = open_engine(root.path(), calls.clone())?;
+    let genesis = engine.create_workspace(workspace(), 1, &mut work()?)?;
+    let ingress = engine.begin_input(operation(1))?;
+    let mut body = String::new();
+    for n in 0..4096 {
+        write!(&mut body, "word{n:04} ")?;
+    }
+    let refs = engine.stage_sources(
+        ingress,
+        vec![SourceInput {
+            path: "src/large.rs".into(),
+            bytes: body.into_bytes(),
+            text: SourceTextAdmission::Utf8 { policy: ADMISSION },
+        }],
+        &mut work()?,
+    )?;
+    let [source] = &*refs else {
+        return Err("one source expected".into());
+    };
+    let mutations = engine.stage_mutations(
+        ingress,
+        [Ok(OwnerMutation {
+            owner: owner(1),
+            expected: None,
+            next: Some(*source),
+        })],
+        &mut work()?,
+    )?;
+    let before = engine.pin_view(ViewSelection::Exact(genesis), &work()?)?;
+    let mut transition = SourceTransition {
+        expected_source: before.view().source,
+        owners: mutations,
+        events: Vec::new(),
+    };
+    transition.events.push(SourceEvent {
+        producer: operation(1).producer,
+        stream: operation(1).stream,
+        stream_epoch: 1,
+        predecessor: 0,
+        sequence: 1,
+        payload: transition.owner_digest()?,
+    });
+    before.release()?;
+    let source_view = published(block_on(engine.submit(
+        UpdateRequest {
+            operation: operation(1),
+            expected_view: genesis,
+            kind: UpdateKind::SourceAdvance(transition),
+        },
+        &mut work()?,
+    ))?)?;
+    let text_spec = specs()?[2].clone();
+    let reconfigure_ingress = engine.begin_input(operation(2))?;
+    let profile = engine.stage_profile(
+        reconfigure_ingress,
+        &IndexProfile {
+            instances: vec![text_spec.clone()],
+        },
+        &mut work()?,
+    )?;
+    let mut build_work = work()?;
+    let view = published(block_on(engine.submit(
+        UpdateRequest {
+            operation: operation(2),
+            expected_view: source_view,
+            kind: UpdateKind::Reconfigure { profile },
+        },
+        &mut build_work,
+    ))?)?;
+    let ticket = engine.pin_view(ViewSelection::Exact(view), &work()?)?;
+    let text = binding(&objects, ticket.record(), text_spec.instance)?;
+    let text_root: serde_json::Value =
+        serde_json::from_slice(&objects.get(text.artifact, &mut work()?)?.payload)?;
+    let owners: MapRoot =
+        serde_json::from_value(text_root.get("owners").ok_or("text owners absent")?.clone())?;
+    // Text member keys are the raw producer/stable pair, distinct from the
+    // Source snapshot's namespaced owner-map key.
+    let mut text_owner = [0_u8; 32];
+    text_owner[..16].copy_from_slice(&owner(1).producer.0);
+    text_owner[16..].copy_from_slice(&owner(1).stable_id.0);
+    let value = objects
+        .lookup(owners, &text_owner, &mut work()?)?
+        .ok_or("text contribution absent")?;
+    let MapValue::Inline(inline) = value else {
+        return Err("rooted contribution expected".into());
+    };
+    assert_eq!(
+        inline.data()?.first(),
+        Some(&0x83),
+        "large cold inventory must be a directory"
+    );
+    let [actual_source, inventory] = inline.children()? else {
+        return Err("record and inventory children expected".into());
+    };
+    assert_eq!(*actual_source, *source);
+    let mut pending = vec![*inventory];
+    let mut maps = BTreeSet::new();
+    let mut occurrences = BTreeSet::new();
+    let mut map_bytes = 0usize;
+    while let Some(reference) = pending.pop() {
+        let stored = objects.get(reference, &mut work()?)?;
+        assert_eq!(stored.registration.reference, reference);
+        if matches!(
+            stored.payload.get(..8),
+            Some(b"QIMAP004" | b"QIMAP005" | b"QIMAP006")
+        ) {
+            if maps.insert(reference) {
+                map_bytes += stored.payload.len();
+                pending.extend(stored.registration.children.as_slice().iter().copied());
+            }
+        } else {
+            assert!(
+                stored.payload.starts_with(b"QITXOC01"),
+                "unexpected directory value wire"
+            );
+            assert!(stored.registration.children.is_empty());
+            let _inserted = occurrences.insert(reference);
+        }
+    }
+    // This fixed inventory needs multiple occurrence blocks but at most85
+    // child references and16KiB of metadata, within one physical map envelope.
+    assert!(occurrences.len() > 1 && occurrences.len() <= 85);
+    assert!(map_bytes <= 16 * 1024);
+    eprintln!(
+        "cold inventory: map_objects={} occurrence_blocks={} map_bytes={} build_usage={:?}",
+        maps.len(),
+        occurrences.len(),
+        map_bytes,
+        build_work.usage()
+    );
+    ticket.release()?;
+    drop(objects);
+    drop(engine);
+    let (reopened, objects) = open_engine(root.path(), calls)?;
+    let ticket = reopened.pin_view(ViewSelection::Exact(view), &work()?)?;
+    let text = binding(&objects, ticket.record(), text_spec.instance)?;
+    let reader = NativeTextIndex::new(TextRecipe::new(ADMISSION));
+    for mode in [CaseMode::Sensitive, CaseMode::Folded] {
+        for term in ["word0000", "word2048", "word4095"] {
+            assert_eq!(
+                reader.inspect_term_df(
+                    &text,
+                    mode,
+                    term,
+                    TextReadContext {
+                        ticket: ticket.record(),
+                        objects: objects.as_ref(),
+                        maps: objects.as_ref(),
+                        budget: &mut work()?,
+                    }
+                )?,
+                1
+            );
+        }
+    }
+    ticket.release()?;
+    assert_eq!(
+        maps.len(),
+        1,
+        "bounded cold inventory directory was split into per-node objects"
+    );
     Ok(())
 }

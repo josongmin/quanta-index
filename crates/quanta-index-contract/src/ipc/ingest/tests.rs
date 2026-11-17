@@ -1465,6 +1465,7 @@ fn search_plane_ingest_response_envelope_round_trip_receipt() -> TestRes {
         request_id: 3,
         payload: SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
             crate::SearchCorpusPublishOutcome {
+                upload_cleanup: None,
                 publication: crate::SourcePublicationBinding::for_batch(
                     &fixture_search_corpus_batch(),
                 ),

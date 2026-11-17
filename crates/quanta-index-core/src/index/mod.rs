@@ -3,20 +3,25 @@ mod attempt;
 pub mod budget;
 pub mod effort;
 mod error;
+pub mod existing_file;
+pub(crate) mod existing_tree;
 mod lifetime;
 mod map_roots;
 mod map_value;
 mod memory;
 mod metadata;
 mod mutations;
+pub mod object_install;
 mod owned_work;
 mod owner_coverage;
 pub mod ports;
 mod query;
+mod read_attempt;
 mod read_settlement;
 mod reclaim;
 mod records;
 mod registration;
+mod source_paths;
 mod scratch;
 mod searchable;
 mod staging_payload;
@@ -32,7 +37,10 @@ pub use map_value::{
     EncodedMapValue, InlineMapValue, MAX_MAP_INLINE_BYTES, MAX_MAP_INLINE_CHILDREN,
     MAX_MAP_VALUE_WIRE_BYTES, MapValue,
 };
-pub use memory::{MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope, MemoryScopePort};
+pub use memory::{
+    MemoryCredit, MemoryCreditClosePort, MemoryCreditLimits, MemoryLease, MemoryLeaseOwner,
+    MemoryLifetime, MemoryScope, MemoryScopePort, ScopedMemoryBudget,
+};
 pub use metadata::{
     MAX_BINDING_METADATA_BYTES, decode_coverage_binding, decode_member_binding,
     decode_owner_coverage, decode_owner_member_binding, decode_projection_binding,
@@ -48,14 +56,15 @@ pub use owned_work::{
 };
 pub use owner_coverage::{pending_owner_coverage_value, read_owner_coverage};
 pub use ports::{
-    AttemptContext, ObjectReadFile, ObjectReadIoPort, ObjectWriteIoPort, ObjectWriteSyncDirectories,
-    ObjectWriteTicket,
+    AttemptContext, ObjectReadFile, ObjectReadIoPort, ObjectWriteIoPort,
+    ObjectWriteSyncDirectories, ObjectWriteTicket,
 };
 pub use quanta_index_contract::index::*;
 pub use query::{
     FiniteScore, FiniteScoreError, IndexQueryPort, NativeTextHitSource, QueryCoverage,
     QueryOutcome, QueryReadContext,
 };
+pub use read_attempt::CatalogReadAttempt;
 pub use read_settlement::{
     CatalogReadSettlementPort, NativeReadReleaseObservation, NativeReadSettlement,
     NativeReadSettlementBlocker, NativeReadSettlementScope, NativeReadSettlementStatus,
@@ -68,14 +77,17 @@ pub use reclaim::{
 pub use records::{
     AdmissionOutcome, BaseMember, BootstrapRef, DeltaInput, MapBatchRequest, MapBatchWrite,
     MapEdit, MapPage, MapPageCursor, MapPageData, MapPageEntry, MapWrite, ObjectBatchInput,
-    ObjectInstallScope, OrdinalMapEdit, OrdinalMapEditData, PlanContext, PlanDecision,
-    PreparedPublication, SourceChange, SourceDelta, SourcePathKey, SourceRecordOwner,
-    StagedObjectReferenceIter, StagedObjectReferences, StoredObject, StoredObjectData,
-    TicketRecord, member_map_key, owner_from_map_key, owner_from_path_map_value, owner_map_key,
-    path_owner_map_value, producer_owner_prefix,
+    ObjectInstallScope, OrdinalMapEdit, PlanContext, PlanDecision, PreparedPublication,
+    SourceChange, SourceDelta, SourcePathKey, SourcePathOwners, SourcePathRepositoryKey,
+    SourceRecordOwner, StagedObjectReferenceIter, StagedObjectReferences, StoredObject,
+    StoredObjectData, TicketRecord, member_map_key, owner_from_map_key, owner_from_path_map_value,
+    owner_map_key, path_owner_map_value, producer_owner_prefix,
 };
 pub use registration::{
     RegisteredObject, RegisteredObjectBatch, RegisteredObjectData, RegisteredObjectIter,
+};
+pub use source_paths::{
+    validate_source_path_repository_key, visit_repository_path_owners, visit_repository_path_sources,
 };
 pub use scratch::{
     ScratchAllocation, ScratchIoBinding, ScratchIoScope, ScratchNamespaceLease, ScratchRequest,

@@ -53,3 +53,12 @@ pub use errors::{BridgeError, BridgeErrorCode};
 pub use syntax::{SgFilter, SgQuery, parse_sourcegraph};
 pub use translator::translate_query;
 pub use version::{SUPPORTED_SG_VERSION, SourcegraphVersionTag, TRANSLATOR_VERSION};
+
+/// Parse Sourcegraph text and translate it using the supported dialect.
+pub fn lower_sourcegraph_query(
+    query_text: &str,
+) -> Result<quanta_index_lq_norm::LqNormalizedQuery, BridgeError> {
+    let query = parse_sourcegraph(query_text)?;
+    let version = SourcegraphVersionTag::supported()?;
+    translate_query(query, &version, query_text.len())
+}

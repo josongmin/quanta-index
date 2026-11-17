@@ -1,6 +1,8 @@
-//! Lexical adapter — Tantivy 0.22-backed inverted index.
+//! Native lexical queries and optional Legacy Tantivy generations.
 //!
-//! Implements [`quanta_index_core::LexicalIndexBuildPort`] and
+//! The `native` module implements file search over immutable Native roots.
+//! With `legacy-tantivy`, the adapter implements
+//! [`quanta_index_core::LexicalIndexBuildPort`] and
 //! [`quanta_index_core::LexicalIndexOpenPort`].
 //!
 //! The adapter materializes channel events into a
@@ -41,6 +43,9 @@
 #![deny(clippy::let_underscore_must_use)]
 #![deny(clippy::map_err_ignore)]
 
+pub mod legacy;
+pub mod native;
+
 /// Global distinct path and content trigram posting memberships admitted by
 /// the canonical F15 file authority. Scale preflight uses the same bound.
 pub const FILE_AUTHORITY_POSTING_MEMBERSHIP_LIMIT: u32 = 20_000_000;
@@ -51,33 +56,50 @@ pub const FILE_COVERAGE_ENCODED_BYTES_LIMIT: u64 = 64 * 1024 * 1024;
 /// Conservative effective-coverage decode admission, independent of measured RSS.
 pub const FILE_COVERAGE_DECODE_HEAP_BYTES_LIMIT: u64 = 256 * 1024 * 1024;
 
+#[cfg(feature = "legacy-tantivy")]
 mod analyzer;
-pub mod native;
 
+#[cfg(feature = "legacy-tantivy")]
 mod authority_doc_set;
 
+#[cfg(feature = "legacy-tantivy")]
 mod budgeted_search;
 
+#[cfg(feature = "legacy-tantivy")]
 mod dense_admission;
 
+#[cfg(feature = "legacy-tantivy")]
 mod doc_census;
 
+#[cfg(feature = "legacy-tantivy")]
 mod file_authority;
+#[cfg(feature = "legacy-tantivy")]
 mod lexical_allocation;
+#[cfg(feature = "legacy-tantivy")]
 mod lexical_compaction;
+#[cfg(feature = "legacy-tantivy")]
 mod lexical_gc;
+#[cfg(feature = "legacy-tantivy")]
 mod lexical_hard_scan;
+#[cfg(feature = "legacy-tantivy")]
 mod lexical_publication;
 mod lexical_root_names;
+#[cfg(feature = "legacy-tantivy")]
 mod lexical_runs;
+#[cfg(feature = "legacy-tantivy")]
 mod lexical_store;
+#[cfg(feature = "legacy-tantivy")]
 mod maintenance_merge_facts;
+#[cfg(feature = "legacy-tantivy")]
 mod maintenance_stats;
+#[cfg(feature = "legacy-tantivy")]
 mod physical_measurement;
+#[cfg(feature = "legacy-tantivy")]
 mod retention_measurement;
 
 pub mod filters;
 
+#[cfg(feature = "legacy-tantivy")]
 pub mod history_text_index;
 
 pub mod phrase;
@@ -88,39 +110,59 @@ pub mod planner;
 
 mod predicate_registry;
 
+#[cfg(feature = "legacy-tantivy")]
 mod ranked_keys;
+#[cfg(feature = "legacy-tantivy")]
 mod ranked_page;
 
 pub mod regex;
 
+#[cfg(feature = "legacy-tantivy")]
 mod regex_match_cache;
 
+#[cfg(feature = "legacy-tantivy")]
 mod sealed_generation;
 
 pub mod symbol;
+#[cfg(feature = "legacy-tantivy")]
 mod symbol_components;
 
+#[cfg(feature = "legacy-tantivy")]
 mod text_authority;
 
 pub mod trigram_plan;
 
+#[cfg(feature = "legacy-tantivy")]
 mod adapter;
+#[cfg(feature = "legacy-tantivy")]
 mod adapter_ingest;
+#[cfg(feature = "legacy-tantivy")]
 mod adapter_lifecycle;
+#[cfg(feature = "legacy-tantivy")]
 mod adapter_open;
 mod causal_profile;
 mod channel_payloads;
+#[cfg(feature = "legacy-tantivy")]
 mod documents;
+#[cfg(feature = "legacy-tantivy")]
 mod generation_dir;
+#[cfg(feature = "legacy-tantivy")]
 mod index_store;
+#[cfg(feature = "legacy-tantivy")]
 mod inventory;
+#[cfg(feature = "legacy-tantivy")]
 mod metadata_normalize;
+#[cfg(feature = "legacy-tantivy")]
 mod overlay_codec;
+#[cfg(feature = "legacy-tantivy")]
 mod publication_write_stats;
+#[cfg(feature = "legacy-tantivy")]
 mod query_admission;
+#[cfg(feature = "legacy-tantivy")]
 mod query_errors;
+#[cfg(feature = "legacy-tantivy")]
 mod schema;
-mod stage_timing;
+#[cfg(feature = "legacy-tantivy")]
 // The searcher facade declares its submodules `pub(crate)` (the crate's
 // other modules name their items; `unreachable_pub = deny` forbids a bare
 // `pub`). The expectation sits here because module discipline keeps a
@@ -130,56 +172,74 @@ mod stage_timing;
     reason = "the searcher's submodules are private to the crate; `pub(crate)` is the visibility the crate's other modules need"
 )]
 mod searcher;
+#[cfg(feature = "legacy-tantivy")]
+mod stage_timing;
+#[cfg(feature = "legacy-tantivy")]
 mod text_authority_plan;
+#[cfg(feature = "legacy-tantivy")]
 mod text_docs;
+#[cfg(feature = "legacy-tantivy")]
 mod writer_cache;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-tantivy"))]
 mod test_support;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-tantivy"))]
 extern crate self as quanta_index_lexical;
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-tantivy"))]
 #[path = "../tests/support/publication_fixture.rs"]
 mod publication_fixture;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-tantivy"))]
 #[path = "../tests/support/current_source_fixture.rs"]
 mod current_source_fixture;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-tantivy"))]
 mod publication_faults;
 
 /// The one text normalization contract (QI-BB-011), shared with the query DSL
 /// and the search plane; every text surface of this crate lowers through it.
 pub(crate) use quanta_index_lq_text_normalizer as normalize;
 
+#[cfg(feature = "legacy-tantivy")]
 pub use maintenance_merge_facts::{FileRunMergeFacts, NativeMergeOutputFacts, NativeRunMergeFacts};
+#[cfg(feature = "legacy-tantivy")]
 pub use maintenance_stats::{LexicalMaintenanceObservation, LexicalMaintenanceStats};
+#[cfg(feature = "legacy-tantivy")]
 pub use publication_write_stats::LexicalPublicationWriteStats;
+#[cfg(feature = "legacy-tantivy")]
 pub use sealed_generation::LexicalSealCommitmentStats;
+#[cfg(feature = "legacy-tantivy")]
 pub use sealed_generation::coverage::{LexicalCoverageReadByPhaseStats, LexicalCoverageReadStats};
 
+#[cfg(feature = "legacy-tantivy")]
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+#[cfg(feature = "legacy-tantivy")]
 use std::path::PathBuf;
 
+#[cfg(feature = "legacy-tantivy")]
 use std::sync::{Arc, Mutex, RwLock};
 
+#[cfg(feature = "legacy-tantivy")]
 use std::time::Instant;
 
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_contract::channel::LexicalChannelOp;
 
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_contract::{
     FileContributorIdentityEntry, LexicalCursor, LqExpr, LqLeaf, LqQuery, LqVisibility,
     ManifestGeneration, RepoId, RevisionId,
 };
 
+#[cfg(feature = "legacy-tantivy")]
 use quanta_index_core::{
     LexicalArtifactIdentityV1, LexicalExecutionBudgetV1, LexicalWriterPolicy,
     TextAuthorityUpdateStats, WriterAdmissionPort,
 };
 
-const LEXICAL_SEALED_IDENTITY_FILE_NAME: &str = "search-corpus-generation-identity.cbor";
+#[cfg(feature = "legacy-tantivy")]
+use crate::legacy::names::LEXICAL_SEALED_IDENTITY_FILE_NAME;
 
 /// Records which base generation a delta generation actually carried forward.
 ///
@@ -187,45 +247,62 @@ const LEXICAL_SEALED_IDENTITY_FILE_NAME: &str = "search-corpus-generation-identi
 /// authority sidecars each create the generation directory as a side effect,
 /// so a sidecar published before the lexical delta would otherwise make the
 /// base clone look already done. This marker is the authority instead.
+#[cfg(feature = "legacy-tantivy")]
 const LEXICAL_DELTA_BASE_FILE_NAME: &str = "search-corpus-delta-base.cbor";
 /// A delta clone in progress; it is not evidence that inheritance completed.
+#[cfg(feature = "legacy-tantivy")]
 const LEXICAL_DELTA_CLONE_INTENT_FILE_NAME: &str = "search-corpus-delta-clone-intent.cbor";
 
 /// Tantivy writes this on every commit; its presence proves index content exists.
-const TANTIVY_INDEX_META_FILE_NAME: &str = "meta.json";
+#[cfg(feature = "legacy-tantivy")]
+use crate::legacy::names::TANTIVY_INDEX_META_FILE_NAME;
 
 /// Tantivy's managed-file list, rewritten whenever the generation's file set changes.
+#[cfg(feature = "legacy-tantivy")]
 const TANTIVY_MANAGED_FILE_NAME: &str = ".managed.json";
 
 /// Prefix of Tantivy's lock files, which belong to one live writer only.
+#[cfg(feature = "legacy-tantivy")]
 const TANTIVY_LOCK_FILE_PREFIX: &str = ".tantivy";
 
-use crate::predicate_registry::{
-    RepoDescriptionArg, RepoFileConstraint, RepoMetaArg, RepoTopicArg,
-};
+#[cfg(feature = "legacy-tantivy")]
+use crate::plan::RepoFileConstraint;
+#[cfg(feature = "legacy-tantivy")]
+use crate::predicate_registry::{RepoDescriptionArg, RepoMetaArg, RepoTopicArg};
 
+#[cfg(feature = "legacy-tantivy")]
 use crate::ranked_page::ProjectionGroup;
 
+#[cfg(feature = "legacy-tantivy")]
 use crate::regex::RegexPolicy;
 
+#[cfg(feature = "legacy-tantivy")]
 use crate::regex_match_cache::RegexMatchCache;
 
+#[cfg(feature = "legacy-tantivy")]
 use crate::text_authority::{AddedTextDoc, NativeAuthority, NativeRoot, NativeSourceEdit};
 
+#[cfg(feature = "legacy-tantivy")]
 use tantivy::schema::{Field, Schema};
 
+#[cfg(feature = "legacy-tantivy")]
 use tantivy::{Index, IndexReader, IndexWriter};
 
+#[cfg(feature = "legacy-tantivy")]
 pub use crate::inventory::inventory_sealed_generations;
 
+#[cfg(feature = "legacy-tantivy")]
 const TEXT_DOC_KIND: &str = "text";
 
+#[cfg(feature = "legacy-tantivy")]
 const SYMBOL_DOC_KIND: &str = "symbol";
 
 /// Marker inside the name of a durable write's temporary file.
+#[cfg(feature = "legacy-tantivy")]
 const DURABLE_WRITE_TEMPORARY_MARKER: &str = ".tmp-";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(feature = "legacy-tantivy")]
 enum QueryDocKind {
     Text,
     Symbol,
@@ -234,6 +311,7 @@ enum QueryDocKind {
 /// Schema field handles for the lexical index. Cloned cheaply into every
 /// searcher; constructed once per adapter instance.
 #[derive(Clone)]
+#[cfg(feature = "legacy-tantivy")]
 struct SchemaFields {
     schema: Schema,
     candidate_id: Field,
@@ -281,16 +359,19 @@ struct SchemaFields {
 
 /// Per-generation cache key.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg(feature = "legacy-tantivy")]
 struct GenKey {
     repo_id: RepoId,
     revision_id: RevisionId,
     generation: ManifestGeneration,
 }
 
+#[cfg(feature = "legacy-tantivy")]
 const GENERATION_MUTATION_LOCK_STRIPES: usize = 256;
 
 /// Adapter-owned repo-metadata overlay carried by a typed `FullBundle` payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg(feature = "legacy-tantivy")]
 struct LexicalRepoMetadataPayload {
     fork: bool,
     archived: bool,
@@ -303,12 +384,14 @@ struct LexicalRepoMetadataPayload {
 /// Shared via `Arc<Mutex<_>>` so multiple `build` invocations for the same
 /// generation serialize on a single Tantivy writer (Tantivy writers are not
 /// Sync).
+#[cfg(feature = "legacy-tantivy")]
 struct GenerationWriter {
     index: Index,
     writer: IndexWriter,
 }
 
 /// One cached writer and when it was last touched.
+#[cfg(feature = "legacy-tantivy")]
 struct CachedWriter {
     handle: Arc<Mutex<GenerationWriter>>,
     last_used: Instant,
@@ -316,6 +399,7 @@ struct CachedWriter {
 
 /// Why the cache committed and released a writer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(feature = "legacy-tantivy")]
 enum WriterRelease {
     /// Room was needed for another writer.
     Lru,
@@ -326,6 +410,7 @@ enum WriterRelease {
 }
 
 /// The largest number of indexing threads one writer runs.
+#[cfg(feature = "legacy-tantivy")]
 const WRITER_THREADS_MAX: usize = 8;
 
 /// Bounded cache of per-generation Tantivy writers under one heap envelope
@@ -355,6 +440,7 @@ const WRITER_THREADS_MAX: usize = 8;
 /// a new writer. Discard joins without committing abandoned changes. A failing
 /// commit or join aborts the release, and uncertain quiescence refuses a physical
 /// snapshot until the service is restarted.
+#[cfg(feature = "legacy-tantivy")]
 struct WriterCache {
     entries: BTreeMap<GenKey, CachedWriter>,
     order: VecDeque<GenKey>,
@@ -370,6 +456,7 @@ struct WriterCache {
 
 /// One overlay family's snapshot as a query holds it, decoded from the
 /// bytes the sealed-generation walk proved.
+#[cfg(feature = "legacy-tantivy")]
 enum OverlaySnapshot {
     RepoMetadata(LexicalRepoMetadataPayload),
     CommitRecency(RepoCommitRecencyShard),
@@ -381,16 +468,19 @@ enum OverlaySnapshot {
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg(feature = "legacy-tantivy")]
 struct RepoCommitRecencyShard {
     latest_committer_time_ms_by_repo_id: BTreeMap<String, u64>,
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg(feature = "legacy-tantivy")]
 struct RepoMetaShard {
     meta_by_repo_id: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg(feature = "legacy-tantivy")]
 struct RepoTopicShard {
     topics_by_repo_id: BTreeMap<String, BTreeSet<String>>,
 }
@@ -401,16 +491,19 @@ struct RepoTopicShard {
 /// `repo:has.description(<pattern>)` query time. Distinct substrate from
 /// [`RepoTopicShard`] (topic set) and the repo-meta key/value store so
 /// description support never silently piggybacks on unrelated authority.
+#[cfg(feature = "legacy-tantivy")]
 struct RepoDescriptionShard {
     descriptions_by_repo_id: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg(feature = "legacy-tantivy")]
 struct FileOwnershipShard {
     owners_by_repo_id: BTreeMap<String, BTreeMap<String, BTreeSet<String>>>,
 }
 
 #[derive(Clone, Debug, Default)]
+#[cfg(feature = "legacy-tantivy")]
 struct FileContributorShard {
     contributors_by_repo_id:
         BTreeMap<String, BTreeMap<String, BTreeSet<FileContributorIdentityEntry>>>,
@@ -422,6 +515,7 @@ struct FileContributorShard {
 ///
 /// IDs belong to an original source-event reservation persisted by the catalog.
 /// The allocator never derives authority from the index or a generation path.
+#[cfg(feature = "legacy-tantivy")]
 struct TextDocAllocator {
     next_doc_id: u64,
     remaining: u64,
@@ -429,6 +523,7 @@ struct TextDocAllocator {
 }
 
 /// How a batch's text-authority impact is written after the commit.
+#[cfg(feature = "legacy-tantivy")]
 enum TextAuthorityWrite {
     /// Nothing in the batch touched indexed text.
     None,
@@ -441,6 +536,7 @@ enum TextAuthorityWrite {
 }
 
 /// What a batch does to the text authority, decided before any op runs.
+#[cfg(feature = "legacy-tantivy")]
 struct TextAuthorityPlan {
     write: TextAuthorityWrite,
     allocator: TextDocAllocator,
@@ -448,6 +544,7 @@ struct TextAuthorityPlan {
 }
 
 /// Tantivy-backed lexical adapter.
+#[cfg(feature = "legacy-tantivy")]
 pub struct LexicalAdapter {
     state_root: PathBuf,
     fields: SchemaFields,
@@ -505,6 +602,7 @@ pub struct LexicalAdapter {
 ///
 /// The classification decides whether a batch opens a writer; whether a
 /// batch may land at all is [`op_writes_generation`]'s.
+#[cfg(feature = "legacy-tantivy")]
 const fn op_mutates_index(op: &LexicalChannelOp) -> bool {
     match op {
         LexicalChannelOp::UpsertChunk(_)
@@ -524,12 +622,14 @@ const fn op_mutates_index(op: &LexicalChannelOp) -> bool {
 /// Whether an op writes anything into the generation directory: the index
 /// or the repo-metadata overlay. After the seal neither may land; the
 /// remaining ops are no-ops for this adapter and stay no-ops.
+#[cfg(feature = "legacy-tantivy")]
 const fn op_writes_generation(op: &LexicalChannelOp) -> bool {
     op_mutates_index(op) || matches!(op, LexicalChannelOp::FullBundle(_))
 }
 
 /// The open visitor retains authenticated text descriptors and serving metadata.
 #[derive(Default)]
+#[cfg(feature = "legacy-tantivy")]
 struct LoadedGeneration {
     text_authority: Option<NativeAuthority>,
     file_authority: Option<file_authority::paged::PagedFileAuthority>,
@@ -542,6 +642,7 @@ struct LoadedGeneration {
     file_contributor: Option<FileContributorShard>,
 }
 
+#[cfg(feature = "legacy-tantivy")]
 struct TantivySearcher {
     /// Optional only for explicitly unbound generations; absence is not
     /// evidence of a completely indexed empty universe.
@@ -580,6 +681,7 @@ struct TantivySearcher {
     artifact_identity: LexicalArtifactIdentityV1,
 }
 
+#[cfg(feature = "legacy-tantivy")]
 struct PreparedPredicatePlan {
     expr: LqExpr,
     allowed_files: Option<BTreeSet<quanta_index_contract::SourceFileKey>>,
@@ -590,12 +692,14 @@ struct PreparedPredicatePlan {
 
 /// What an `index:no` text scan returns: at most `limit` rows after the
 /// boundary, projected when asked.
+#[cfg(feature = "legacy-tantivy")]
 struct ManualPage<'a> {
     limit: usize,
     after: Option<&'a LexicalCursor>,
     group: Option<ProjectionGroup>,
 }
 
+#[cfg(feature = "legacy-tantivy")]
 struct PreparedExecutableQuery {
     query: LqQuery,
     predicate_plan: PreparedPredicatePlan,
@@ -607,6 +711,7 @@ struct PreparedExecutableQuery {
 /// `repo.has.file` gates by an indexed `path:`/`name:`/`lang:` matcher;
 /// `repo.has.content` gates by an indexed content query. Both narrow the
 /// eligible repo surface, so `prepare_predicate_plan` treats them uniformly.
+#[cfg(feature = "legacy-tantivy")]
 enum RepoScopeConstraint {
     File(RepoFileConstraint),
     Content(LqLeaf),
@@ -623,6 +728,7 @@ enum RepoScopeConstraint {
 /// snippet-quality gate's `MAX_SNIPPET_LEN` in
 /// `quanta-index-searchd-harness::snippet`, so a snippet the engine emits passes
 /// the rail's bounded-window check (J7Q-02).
+#[cfg(feature = "legacy-tantivy")]
 const SNIPPET_WINDOW_BYTES: usize = 240;
 
 /// Leading-context budget when centering a window on a hit.
@@ -630,9 +736,10 @@ const SNIPPET_WINDOW_BYTES: usize = 240;
 /// Equals `SNIPPET_WINDOW_BYTES / 2`, precomputed to avoid integer division; the
 /// trailing side takes the remainder, so a centered hit always carries leading
 /// context.
+#[cfg(feature = "legacy-tantivy")]
 const SNIPPET_LEAD_BYTES: usize = 120;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-tantivy"))]
 mod adapter_tests {
     use quanta_index_contract::{GenerationSnapshot, SearchPlaneTrackKind};
     use quanta_index_core::{

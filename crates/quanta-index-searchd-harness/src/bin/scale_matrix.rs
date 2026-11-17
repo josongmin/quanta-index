@@ -28,12 +28,18 @@ use quanta_index_core::{
 };
 use quanta_index_searchd::{DiagnosticCaptureLimitsV1, DiagnosticCaptureV1};
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
-use quanta_index_searchd_harness::scale::{
-    DiskObservationMode, NativeIndexMeasurement, ScaleRuntimeConfig, ScaleTier, TierMeasurement,
-    measure_index_native_tier, measure_tier_with_runtime_config_and_capture,
-    native_source_binding_for_failure, source_binding_for_failure, write_artifacts,
-    write_index_native_artifacts, write_refusal_artifact_with_context,
+use quanta_index_searchd_harness::native_index::{
+    NativeIndexMeasurement, measure_index_native_tier, native_source_binding_for_failure,
+    write_index_native_artifacts,
 };
+#[cfg(feature = "legacy-bench")]
+use quanta_index_searchd_harness::scale::{
+    ScaleRuntimeConfig, TierMeasurement, measure_tier_with_runtime_config_and_capture,
+    source_binding_for_failure, write_artifacts,
+};
+use quanta_index_searchd_harness::scale_disk_census::DiskObservationMode;
+use quanta_index_searchd_harness::scale_refusal::write_refusal_artifact_with_context;
+use quanta_index_searchd_harness::source_fixture::ScaleTier;
 
 /// Deterministic default seed so the rail is reproducible run-to-run unless an
 /// operator overrides it via `--seed`.
@@ -41,13 +47,14 @@ const DEFAULT_SEED: u64 = 0x5161_5343_414c_4531;
 
 const USAGE: &str = "Usage: scale_matrix [--tier small|medium|large|xlarge | --all-tiers]
     [--backend legacy|index-native] [--native-daemon-bin ABSOLUTE_EXECUTABLE]
+    Legacy backend requires --features legacy-bench. Native default requires --native-daemon-bin.
     [--seed U64] [--client-timeout-ms 1..=600000]
     [--disk-observation boundary-only|periodic]
     [--history-max-bytes POSITIVE_U64] [--history-max-total-bytes POSITIVE_U64]
     [--out-dir ABSOLUTE_EXTERNAL_NEW_PATH]
     [--trace-mode off|record] [--trace-out ABSOLUTE_EXTERNAL_NEW_PATH]
     [--trace-max-output-bytes 6144..=1073741824]
-    Default tier: small (16 files). medium=256, large=4096, xlarge=32768.
+    Default tier: small (16 files). Native is the default backend without legacy-bench. medium=256, large=4096, xlarge=32768.
     scale-supported-v1: timeout=600s, history pair=1GiB/total=2GiB, ingest text=128MiB.
     Publications above 64MiB use 1MiB staged parts; sealed body cap=512MiB, process memory ceiling=4GiB.
     Explicit timeout/history overrides remain diagnostic inputs.
@@ -63,11 +70,13 @@ const USAGE: &str = "Usage: scale_matrix [--tier small|medium|large|xlarge | --a
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ScaleBackend {
+    #[cfg(feature = "legacy-bench")]
     Legacy,
     IndexNative,
 }
 
 enum ScaleResult {
+    #[cfg(feature = "legacy-bench")]
     Legacy(Box<TierMeasurement>),
     IndexNative(Box<NativeIndexMeasurement>),
 }
@@ -77,9 +86,13 @@ struct CliArgs {
     seed: u64,
     tiers: Vec<ScaleTier>,
     fresh_output: bool,
+    #[cfg(feature = "legacy-bench")]
     client_timeout_ms: Option<u64>,
+    #[cfg(feature = "legacy-bench")]
     disk_observation: DiskObservationMode,
+    #[cfg(feature = "legacy-bench")]
     history_max_bytes: Option<u64>,
+    #[cfg(feature = "legacy-bench")]
     history_max_total_bytes: Option<u64>,
     trace_out: Option<PathBuf>,
     trace_max_output_bytes: u64,
@@ -142,6 +155,9 @@ fn parse_args_from(
     let mut trace_mode = "off";
     let mut trace_out = None;
     let mut trace_max_output_bytes = None;
+    #[cfg(not(feature = "legacy-bench"))]
+    let mut backend = ScaleBackend::IndexNative;
+    #[cfg(feature = "legacy-bench")]
     let mut backend = ScaleBackend::Legacy;
     let mut native_daemon_bin = None;
     let mut args = args.into_iter();
@@ -149,6 +165,7 @@ fn parse_args_from(
         match flag.as_str() {
             "--backend" => {
                 backend = match args.next().as_deref() {
+                    #[cfg(feature = "legacy-bench")]
                     Some("legacy") => ScaleBackend::Legacy,
                     Some("index-native") => ScaleBackend::IndexNative,
                     _ => anyhow::bail!("--backend must be legacy or index-native"),
@@ -278,6 +295,7 @@ fn parse_args_from(
         anyhow::bail!("--trace-max-output-bytes requires --trace-out and Record mode");
     }
     match backend {
+        #[cfg(feature = "legacy-bench")]
         ScaleBackend::Legacy if native_daemon_bin.is_some() => {
             anyhow::bail!("--native-daemon-bin requires --backend index-native")
         }
@@ -301,6 +319,7 @@ fn parse_args_from(
                 );
             }
         }
+        #[cfg(feature = "legacy-bench")]
         ScaleBackend::Legacy => {}
     }
     if let Some(path) = &trace_out {
@@ -323,6 +342,7 @@ fn parse_args_from(
             anyhow::bail!("--trace-out must be outside the checkout");
         }
     }
+    #[cfg(feature = "legacy-bench")]
     let _history = ScaleRuntimeConfig {
         client_timeout: client_timeout_ms.map(Duration::from_millis),
         disk_observation,
@@ -335,9 +355,13 @@ fn parse_args_from(
         seed,
         tiers,
         fresh_output: out_dir_explicit,
+        #[cfg(feature = "legacy-bench")]
         client_timeout_ms,
+        #[cfg(feature = "legacy-bench")]
         disk_observation,
+        #[cfg(feature = "legacy-bench")]
         history_max_bytes,
+        #[cfg(feature = "legacy-bench")]
         history_max_total_bytes,
         trace_out,
         trace_max_output_bytes: trace_max_output_bytes
@@ -434,6 +458,7 @@ fn run_with_capture(
         .map(|(lease, root)| lease.context().child_context(root));
     let result = (|| -> AnyResult<Vec<ScaleResult>> {
         let mut measurements = Vec::with_capacity(cli.tiers.len());
+        #[cfg(feature = "legacy-bench")]
         let runtime_config = ScaleRuntimeConfig {
             client_timeout: cli.client_timeout_ms.map(Duration::from_millis),
             disk_observation: cli.disk_observation,
@@ -441,6 +466,7 @@ fn run_with_capture(
             history_max_total_bytes: cli.history_max_total_bytes,
         };
         let execution = match cli.backend {
+            #[cfg(feature = "legacy-bench")]
             ScaleBackend::Legacy => runtime_config.execution_json()?,
             ScaleBackend::IndexNative => serde_json::json!({
                 "backend":"index-native-configured-daemon-uds",
@@ -452,6 +478,7 @@ fn run_with_capture(
         };
         let refuse = |tier: ScaleTier, error: anyhow::Error| -> anyhow::Error {
             let binding = match match cli.backend {
+                #[cfg(feature = "legacy-bench")]
                 ScaleBackend::Legacy => source_binding_for_failure(tier, cli.seed),
                 ScaleBackend::IndexNative => native_source_binding_for_failure(tier, cli.seed),
             } {
@@ -469,6 +496,7 @@ fn run_with_capture(
                     host,
                     &error,
                     match cli.backend {
+                        #[cfg(feature = "legacy-bench")]
                         ScaleBackend::Legacy => "scale",
                         ScaleBackend::IndexNative => "scale-index-native",
                     },
@@ -488,6 +516,7 @@ fn run_with_capture(
                 .as_ref()
                 .and_then(|root| invocation_lease.as_ref()?.child_of(root));
             let measured = match cli.backend {
+                #[cfg(feature = "legacy-bench")]
                 ScaleBackend::Legacy => measure_tier_with_runtime_config_and_capture(
                     *tier,
                     cli.seed,
@@ -516,6 +545,7 @@ fn run_with_capture(
         // refuses source or wire admission.
         for measurement in &measurements {
             let tier = match measurement {
+                #[cfg(feature = "legacy-bench")]
                 ScaleResult::Legacy(measurement) => measurement.tier,
                 ScaleResult::IndexNative(measurement) => measurement.tier,
             };
@@ -525,6 +555,7 @@ fn run_with_capture(
                 cli.out_dir.join(tier.as_str())
             };
             let written = trace_artifact_write(artifact_context.as_ref(), || match measurement {
+                #[cfg(feature = "legacy-bench")]
                 ScaleResult::Legacy(measurement) => {
                     write_artifacts(measurement, &out_dir, (*git_head).clone(), (*host).clone())
                 }
@@ -537,6 +568,7 @@ fn run_with_capture(
             });
             if let Err(error) = written {
                 let error = match measurement {
+                    #[cfg(feature = "legacy-bench")]
                     ScaleResult::Legacy(_) => error,
                     ScaleResult::IndexNative(measurement) => {
                         measurement.with_failure_capture_paths(error)
@@ -571,6 +603,7 @@ fn trace_artifact_write<T>(
     Ok(artifact)
 }
 
+#[cfg(feature = "legacy-bench")]
 fn format_cold_open_ms(value: Option<f64>) -> String {
     value.map_or_else(|| "unavailable".to_string(), |ms| format!("{ms:.0}"))
 }
@@ -610,62 +643,63 @@ fn main() -> ExitCode {
         }
     };
     for measurement in &measurements {
-        if let ScaleResult::IndexNative(native) = measurement {
-            println!(
-                "scale-index-native[{}]: seed={} files={} source_bytes={} full_event_ack_ms={:.3} first_search_ms={:.3} total_ms={:.3} scope=index-only",
-                native.tier.as_str(),
-                native.seed,
-                native.file_count,
-                native.source_bytes,
-                native
-                    .phases
-                    .get("full_event_ack")
-                    .map_or(0.0, |phase| phase.wall_ms),
-                native.first_query_ms,
-                native.total_ms,
-            );
-            continue;
-        }
-        let ScaleResult::Legacy(measurement) = measurement else {
-            continue;
-        };
-        println!(
-            "scale[{}]: seed={} serving_owners=1 source_repos={} files={} build_ms={:.3} activation_ms={:.3} first_query_ms={:.3} warm_p50_ms={:.3} daemon_cold_open_ms={} adapter_open_ms={:.3} plan_ms={:.3} execute_ms={:.3} update_ms={:.3} noop_seal_ms={:.3} noop_activation_ms={:.3} reclaimed_bytes={} results={}",
-            measurement.tier.as_str(),
-            measurement.seed,
-            measurement.source_repo_count,
-            measurement.file_count,
-            measurement.build_ms,
-            measurement.activation_ms,
-            measurement.first_query_ms,
-            measurement.warm_query.p50_ms,
-            format_cold_open_ms(measurement.daemon.cold_open_ms),
-            measurement.adapter.open_ms,
-            measurement.adapter.plan_ms,
-            measurement.adapter.execute_ms,
-            measurement.delta.update_ms,
-            measurement.noop.seal_ms,
-            measurement.noop.activation_ms,
-            measurement.delta.reclaimed_bytes,
-            measurement.result_count,
-        );
-        if let Some(cpu) = measurement.cpu {
-            println!(
-                "scale[{}] process_cpu: user_ms={:.3} system_ms={:.3} scope=harness+daemon-thread",
-                measurement.tier.as_str(),
-                cpu.user_ms,
-                cpu.system_ms,
-            );
-        }
-        if let Some(delete) = measurement.delete_reopen {
-            println!(
-                "scale[{}] delete_reopen: delete_seal_ms={:.3} activation_ms={:.3} same_process_reopen_ms={:.3} reopened_first_query_ms={:.3}",
-                measurement.tier.as_str(),
-                delete.delete_seal,
-                delete.delete_activation,
-                delete.same_process_reopen,
-                delete.reopened_first_query,
-            );
+        match measurement {
+            ScaleResult::IndexNative(native) => {
+                println!(
+                    "scale-index-native[{}]: seed={} files={} source_bytes={} full_event_ack_ms={:.3} first_search_ms={:.3} total_ms={:.3} scope=index-only",
+                    native.tier.as_str(),
+                    native.seed,
+                    native.file_count,
+                    native.source_bytes,
+                    native
+                        .phases
+                        .get("full_event_ack")
+                        .map_or(0.0, |phase| phase.wall_ms),
+                    native.first_query_ms,
+                    native.total_ms,
+                );
+            }
+            #[cfg(feature = "legacy-bench")]
+            ScaleResult::Legacy(measurement) => {
+                println!(
+                    "scale[{}]: seed={} serving_owners=1 source_repos={} files={} build_ms={:.3} activation_ms={:.3} first_query_ms={:.3} warm_p50_ms={:.3} daemon_cold_open_ms={} adapter_open_ms={:.3} plan_ms={:.3} execute_ms={:.3} update_ms={:.3} noop_seal_ms={:.3} noop_activation_ms={:.3} reclaimed_bytes={} results={}",
+                    measurement.tier.as_str(),
+                    measurement.seed,
+                    measurement.source_repo_count,
+                    measurement.file_count,
+                    measurement.build_ms,
+                    measurement.activation_ms,
+                    measurement.first_query_ms,
+                    measurement.warm_query.p50_ms,
+                    format_cold_open_ms(measurement.daemon.cold_open_ms),
+                    measurement.adapter.open_ms,
+                    measurement.adapter.plan_ms,
+                    measurement.adapter.execute_ms,
+                    measurement.delta.update_ms,
+                    measurement.noop.seal_ms,
+                    measurement.noop.activation_ms,
+                    measurement.delta.reclaimed_bytes,
+                    measurement.result_count,
+                );
+                if let Some(cpu) = measurement.cpu {
+                    println!(
+                        "scale[{}] process_cpu: user_ms={:.3} system_ms={:.3} scope=harness+daemon-thread",
+                        measurement.tier.as_str(),
+                        cpu.user_ms,
+                        cpu.system_ms,
+                    );
+                }
+                if let Some(delete) = measurement.delete_reopen {
+                    println!(
+                        "scale[{}] delete_reopen: delete_seal_ms={:.3} activation_ms={:.3} same_process_reopen_ms={:.3} reopened_first_query_ms={:.3}",
+                        measurement.tier.as_str(),
+                        delete.delete_seal,
+                        delete.delete_activation,
+                        delete.same_process_reopen,
+                        delete.reopened_first_query,
+                    );
+                }
+            }
         }
     }
     println!(
@@ -678,10 +712,34 @@ fn main() -> ExitCode {
 mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
+    #[cfg(feature = "legacy-bench")]
+    use super::DiskObservationMode;
     use super::{
-        DiagnosticCaptureLimitsV1, DiagnosticCaptureV1, DiskObservationMode, ScaleBackend,
-        format_cold_open_ms, parse_args_from, parse_client_timeout_ms, parse_history_max_bytes,
+        DiagnosticCaptureLimitsV1, DiagnosticCaptureV1, ScaleBackend, parse_args_from,
+        parse_client_timeout_ms, parse_history_max_bytes,
     };
+
+    #[cfg(not(feature = "legacy-bench"))]
+    #[test]
+    fn native_only_default_requires_a_daemon_and_rejects_legacy_selection() {
+        let missing = parse_args_from(Vec::<String>::new(), false)
+            .err()
+            .expect("Native default must require an explicit executable");
+        assert!(
+            missing
+                .to_string()
+                .contains("--backend index-native requires --native-daemon-bin")
+        );
+        assert!(parse_args_from(["--backend", "legacy"].map(str::to_owned), false).is_err());
+    }
+
+    #[cfg(feature = "legacy-bench")]
+    #[test]
+    fn explicit_legacy_selector_keeps_the_legacy_cli() {
+        let parsed = parse_args_from(["--backend", "legacy"].map(str::to_owned), false)
+            .expect("explicit legacy feature keeps its CLI");
+        assert_eq!(parsed.backend, ScaleBackend::Legacy);
+    }
 
     #[test]
     fn native_backend_requires_explicit_executable_and_refuses_legacy_policy() {
@@ -759,6 +817,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "legacy-bench")]
     #[test]
     fn disk_observation_parser_defaults_and_refuses_invalid_inputs() {
         let default =
@@ -790,10 +849,11 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "legacy-bench")]
     #[test]
     fn absent_query_cold_open_is_not_printed_as_zero() {
-        assert_eq!(format_cold_open_ms(None), "unavailable");
-        assert_eq!(format_cold_open_ms(Some(0.0)), "0");
+        assert_eq!(super::format_cold_open_ms(None), "unavailable");
+        assert_eq!(super::format_cold_open_ms(Some(0.0)), "0");
     }
 
     #[test]
@@ -822,6 +882,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "legacy-bench")]
     #[test]
     fn trace_mode_requires_one_new_external_output() {
         let root = tempfile::tempdir().expect("external output parent");
@@ -881,6 +942,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "legacy-bench")]
     #[test]
     fn trace_output_limit_is_explicit_and_bounded() {
         let root = tempfile::tempdir().expect("external output parent");
@@ -944,6 +1006,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "legacy-bench")]
     #[test]
     fn legacy_stderr_profiling_cannot_contaminate_either_trace_mode() {
         let root = tempfile::tempdir().expect("external output parent");

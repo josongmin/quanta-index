@@ -6,6 +6,13 @@ license.workspace = true
 publish.workspace = true
 autotests = false
 
+[features]
+default = []
+legacy-tantivy = [
+    "quanta-index-lexical/legacy-tantivy",
+    "quanta-index-searchd-harness/legacy-bench",
+]
+
 [[bin]]
 name = "quanta-index-searchd"
 path = "src/bin/quanta-index-searchd.rs"
@@ -15,22 +22,27 @@ bench = false
 [[test]]
 name = "runtime_fast_suite"
 path = "tests/runtime_fast_suite.rs"
+required-features = ["legacy-tantivy"]
 
 [[test]]
 name = "l4_preview_sdk"
 path = "tests/l4_preview_sdk.rs"
+required-features = ["legacy-tantivy"]
 
 [[test]]
 name = "runtime_risk_suite"
 path = "tests/runtime_risk_suite.rs"
+required-features = ["legacy-tantivy"]
 
 [[test]]
 name = "runtime_extended_suite"
 path = "tests/runtime_extended_suite.rs"
+required-features = ["legacy-tantivy"]
 
 [[test]]
 name = "runtime_semantic_stream_suite"
 path = "tests/runtime_semantic_stream_suite.rs"
+required-features = ["legacy-tantivy"]
 
 [[test]]
 name = "runtime_supervisor_owner_v1"
@@ -43,6 +55,7 @@ path = "tests/process_readiness_owner_v1.rs"
 [[test]]
 name = "state_migration_owner_v1"
 path = "tests/state_migration_owner_v1.rs"
+required-features = ["legacy-tantivy"]
 
 [[test]]
 name = "native_graph_uds"
@@ -76,6 +89,7 @@ path = "tests/native_product_process.rs"
 workspace = true
 
 [dependencies]
+ciborium.workspace = true
 lance-io.workspace = true
 anyhow.workspace = true
 signal-hook.workspace = true
@@ -85,7 +99,7 @@ quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-embed = { version = "0.1.0", path = "../quanta-index-embed" }
 quanta-index-ipc = { version = "0.1.0", path = "../quanta-index-ipc" }
 quanta-index-kernel = { version = "0.1.0", path = "../quanta-index-kernel" }
-quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }
+quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical", default-features = false }
 quanta-index-repomap = { version = "0.1.0", path = "../quanta-index-repomap" }
 quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane", default-features = false }
 quanta-index-searchd = { version = "0.1.0", path = "../quanta-index-searchd" }
@@ -97,22 +111,22 @@ serde = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 sha2.workspace = true
-rustix = { workspace = true, features = ["fs", "process"] }
+rustix = { workspace = true, features = ["fs", "process", "net", "time"] }
 
 [[bench]]
 name = "dsl_query_matrix"
 harness = false
+required-features = ["legacy-tantivy"]
 
 [dev-dependencies]
 quanta-index-scratch-sqlite = { version = "0.1.0", path = "../quanta-index-scratch-sqlite" }
 object_store = { version = "=0.13.2", default-features = false }
 quanta-index-searchd = { version = "0.1.0", path = "../quanta-index-searchd", features = ["test-provider-transport"] }
-ciborium = { workspace = true }
 criterion = { workspace = true }
 quanta-index-corpus-smoke = { version = "0.1.0", path = "../quanta-index-corpus-smoke" }
 quanta-index-sdk = { version = "0.1.0", path = "../quanta-index-sdk" }
 quanta-index-searchctl = { version = "0.1.0", path = "../quanta-index-searchctl" }
-quanta-index-searchd-harness = { version = "0.1.0", path = "../quanta-index-searchd-harness" }
+quanta-index-searchd-harness = { version = "0.1.0", path = "../quanta-index-searchd-harness", default-features = false }
 quanta-index-search-plane = { version = "0.1.0", path = "../quanta-index-search-plane", default-features = false, features = ["test-runtime-barriers"] }
 rusqlite = { workspace = true }
 serde = { workspace = true }
@@ -132,5 +146,13 @@ path = "tests/native_owned_pump.rs"
 [target.'cfg(unix)'.dependencies]
 libsqlite3-sys = { version = "=0.38.2", features = ["quanta-capacity-vfs"] }
 
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+quanta-explicit-fd-process.workspace = true
+quanta-installed-artifact-trust.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nix.workspace = true
+
 [target.'cfg(unix)'.dev-dependencies]
 libsqlite3-sys = { version = "=0.38.2", features = ["quanta-capacity-vfs-test-hooks"] }
+nix = { workspace = true, features = ["fs"] }

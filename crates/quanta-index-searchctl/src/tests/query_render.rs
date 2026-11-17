@@ -50,6 +50,7 @@ fn pretty_renderer_names_go_trace_file_result_and_lane_windows() {
                 lexical_window: QueryResultWindowV2::exact_probe(1),
                 dense_window: QueryResultWindowV2::exact_probe(0),
                 frame_class: quanta_index_contract::GoTestTraceFrameClassV1::Unresolved,
+                rank_pools: None,
                 explanation: SearchExplanation::empty(),
             },
         ),

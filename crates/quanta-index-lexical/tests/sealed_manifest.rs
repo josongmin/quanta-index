@@ -5,6 +5,7 @@
 //! scrub verify referenced object bytes. Fault injection distinguishes
 //! these detection points and checks durable quarantine after scrub.
 
+#![cfg(feature = "legacy-tantivy")]
 #![forbid(unsafe_code)]
 
 #[path = "support/publication_fixture.rs"]

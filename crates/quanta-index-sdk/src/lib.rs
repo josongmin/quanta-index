@@ -14,6 +14,8 @@ pub(crate) mod lexical;
 mod namespace;
 pub mod native_connect_v1;
 pub mod native_index;
+#[path = "client/native_query.rs"]
+mod native_query;
 pub mod native_uds;
 mod observability;
 pub mod preparation;
@@ -26,6 +28,7 @@ mod structural;
 mod symbol;
 pub(crate) mod text_query_builder;
 mod transport;
+mod unsupported;
 
 pub use batch::{BatchMode, BatchReceipt};
 pub use binding::{
@@ -54,6 +57,7 @@ pub use lexical::{
     SearchCorpusNamespace,
 };
 pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};
+pub use native_query::{NativeQueryError, NativeQueryReader, NativeQuerySession};
 pub use observability::ObservabilityNamespace;
 pub use quanta_index_contract::{
     IngestObservationStatus, IngestStageDurations, IngestStageReport,
@@ -79,6 +83,7 @@ pub(crate) use transport::{
     UdsQueryTransport,
 };
 pub use transport::{DiagnosticAttemptGuardV1, DiagnosticAttemptSourceV1};
+pub use unsupported::{LegacyQueryCapabilityV1, UNSUPPORTED_QUERY_DIAGNOSTIC_VERSION};
 
 pub use quanta_index_contract::lex::{
     CommitRecord, CommitSha, DiffHunkRecord, DirtyRecord, LanguageCode, ParseNode, ParseRoleTag,

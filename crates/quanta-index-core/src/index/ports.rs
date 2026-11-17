@@ -1,15 +1,15 @@
 //! Small capability ports: physical data never owns the product head.
 use super::{
     AdmissionOutcome, AttemptRef, BaseMember, BootstrapRef, CatalogView, DeltaInput, Digest,
-    ImmutableOperation, IndexError, IngressRef, InstanceSpec, MapBatchRequest, MapBatchWrite,
-    MapEdit, MapPage, MapRoot, MapWrite, MemberBinding, ObjectBatchInput, ObjectInstallScope,
-    ObjectRef, OperationKey, OperationStatus, OrdinalMapEdit, OwnedReadyOutcome,
-    OwnedWorkAssignment, OwnedWorkBegin, OwnedWorkGrant, OwnedWorkPolicy, OwnedWorkReport,
-    OwnerInputBinding, OwnerKey, OwnerMemberBinding, OwnerMutationSet, PlanContext, PlanDecision,
-    PreparedPublication, ProjectionBinding, ReclaimCandidate, ReclaimDrainPage, ReclaimPermit,
-    ReclaimTarget, ReclaimWork, ReclaimWorkPage, Refusal, RegisteredObject, RetiringRef,
-    SourceEvent, StoredObject, TicketRecord, ViewRef, ViewSelection, WorkAction, WorkBudget,
-    WorkClaim, WorkIntent, WorkStatus, WorkspaceKey,
+    HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryTransition, ImmutableOperation, IndexError, IngressRef, InstanceSpec, MapBatchRequest,
+    MapBatchWrite, MapEdit, MapPage, MapRoot, MapWrite, MemberBinding, ObjectBatchInput,
+    ObjectInstallScope, ObjectRef, OperationKey, OperationStatus, OrdinalMapEdit,
+    OwnedReadyOutcome, OwnedWorkAssignment, OwnedWorkBegin, OwnedWorkGrant, OwnedWorkPolicy,
+    OwnedWorkReport, OwnerInputBinding, OwnerKey, OwnerMemberBinding, OwnerMutationSet,
+    PlanContext, PlanDecision, PreparedPublication, ProjectionBinding, ReclaimCandidate,
+    ReclaimDrainPage, ReclaimPermit, ReclaimTarget, ReclaimWork, ReclaimWorkPage, Refusal,
+    RegisteredObject, RetiringRef, SourceEvent, StoredObject, TicketRecord, ViewRef, ViewSelection,
+    WorkAction, WorkBudget, WorkClaim, WorkIntent, WorkStatus, WorkspaceKey,
 };
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
@@ -36,6 +36,11 @@ pub trait ObjectReadFile: Send + Sync {
 /// Reserve the returned owner's allocation from the supplied budget before
 /// allocation and retain that charge through the owner's physical close.
 pub trait ObjectReadIoPort: std::fmt::Debug + Send + Sync {
+    /// Tracked temporary owner backing for at most one existing-object read.
+    fn read_owner_memory_bound(&self) -> Result<Option<super::MemoryCreditLimits>, IndexError> {
+        Ok(None)
+    }
+
     fn open(
         &self,
         path: &std::path::Path,
@@ -46,6 +51,14 @@ pub trait ObjectReadIoPort: std::fmt::Debug + Send + Sync {
 /// Physical capacity for one file-store output; Catalog remains its logical
 /// installation authority. Reserve the complete bound before `O_EXCL` create.
 pub trait ObjectWriteIoPort: std::fmt::Debug + Send + Sync {
+    /// Tracked ticket backing for at most `maximum_outputs` simultaneous writes.
+    fn write_ticket_memory_bound(
+        &self,
+        _maximum_outputs: usize,
+    ) -> Result<Option<super::MemoryCreditLimits>, IndexError> {
+        Ok(None)
+    }
+
     /// Reconcile only an orphaned, physically retired safe create at this
     /// canonical output path. A live writer, absent output or different inode
     /// grants no recovery. The original physical authority must reauthenticate
@@ -117,7 +130,44 @@ pub trait ObjectWriteTicket: Send {
 /// Byte/work/memory limits are independently admitted by the original budget.
 pub const MAX_OBJECT_INSTALL_BATCH: usize = 256;
 
+/// Upper bounds for one batch's physical inputs, independent of object identity.
+/// The caller must enforce these bounds on the actual packet before effects.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "Callers must distinguish these maxima from actual packet counts."
+)]
+pub struct ObjectInstallMemoryShape {
+    pub maximum_inputs: usize,
+    pub maximum_total_payload_bytes: usize,
+    pub maximum_payload_bytes: usize,
+    pub maximum_total_children: usize,
+}
+
+impl ObjectInstallMemoryShape {
+    pub fn validate(self) -> Result<(), IndexError> {
+        if self.maximum_inputs == 0
+            || self.maximum_inputs > MAX_OBJECT_INSTALL_BATCH
+            || self.maximum_payload_bytes > self.maximum_total_payload_bytes
+        {
+            return Err(IndexError::InvalidInput(
+                "object install memory shape is invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub trait ImmutableObjectPort: Send + Sync {
+    /// Effect-free tracked allocation upper bound for `install_batch`.
+    /// Unknown backends decline rather than inventing a memory allowance.
+    fn install_batch_memory_bound(
+        &self,
+        _shape: ObjectInstallMemoryShape,
+    ) -> Result<Option<super::MemoryCreditLimits>, IndexError> {
+        Ok(None)
+    }
+
     /// Computes the canonical immutable identity without storage access or
     /// requiring child objects to exist. Charges encoding work before allocation.
     fn identify(
@@ -150,11 +200,40 @@ pub trait ImmutableObjectPort: Send + Sync {
         sink: &dyn ObjectWriteSink,
         budget: &mut WorkBudget,
     ) -> Result<crate::index::RegisteredObjectBatch, IndexError>;
+    /// Effect-free optional admission for one at-most-256-ref union of at
+    /// most two childless packets. The returned handle retains original wire,
+    /// registration, shard-path and output-slot grants. None declines before
+    /// any persistent effect and does not record a terminal memory denial.
+    /// Each packet retains `packet_bytes`; `maximum_payload` is a staging bound.
+    fn try_prepare_leaf_install_run(
+        &self,
+        _attempt: AttemptRef,
+        _maximum_payload: usize,
+        _packet_bytes: usize,
+        budget: &mut WorkBudget,
+    ) -> Result<Option<Box<dyn super::object_install::PreparedObjectInstallRun + '_>>, IndexError>
+    {
+        budget.checkpoint()?;
+        Ok(None)
+    }
     fn get(
         &self,
         reference: ObjectRef,
         budget: &mut WorkBudget,
     ) -> Result<StoredObject, IndexError>;
+
+    /// Read one authenticated, childless UTF-8 leaf without retaining its body
+    /// beyond the visitor. An override must call the visitor exactly once on
+    /// success and preserve the original request's work and cancellation checks.
+    fn visit_utf8_leaf(
+        &self,
+        reference: ObjectRef,
+        byte_len: u64,
+        budget: &mut WorkBudget,
+        visit: &mut dyn FnMut(&str, &mut WorkBudget) -> Result<(), IndexError>,
+    ) -> Result<(), IndexError> {
+        visit_utf8_leaf(self, reference, byte_len, budget, visit)
+    }
 
     /// Consume DATA previously returned by this port in the same protected read
     /// attempt. The caller retains that DATA's original allocation custody.
@@ -170,16 +249,95 @@ pub trait ImmutableObjectPort: Send + Sync {
     }
 }
 
+/// Default UTF-8 leaf verification for independent object ports and attempts.
+/// A source attempt may override the port method to record a same-attempt proof.
+pub fn visit_utf8_leaf(
+    objects: &(impl ImmutableObjectPort + ?Sized),
+    reference: ObjectRef,
+    byte_len: u64,
+    budget: &mut WorkBudget,
+    visit: &mut dyn FnMut(&str, &mut WorkBudget) -> Result<(), IndexError>,
+) -> Result<(), IndexError> {
+    budget.checkpoint()?;
+    let stored = objects.get(reference, budget)?;
+    budget.checkpoint()?;
+    if stored.registration.reference != reference
+        || !stored.registration.children.is_empty()
+        || u64::try_from(stored.payload.len()).map_err(|_error| IndexError::ResourceLimited)?
+            != byte_len
+    {
+        return Err(IndexError::CorruptObject(
+            "UTF-8 leaf body identity, edges or length mismatch".into(),
+        ));
+    }
+    let text = std::str::from_utf8(&stored.payload).map_err(|_error| {
+        IndexError::InvalidInput("source text admission requires UTF-8".into())
+    })?;
+    visit(text, budget)
+}
+
+/// One fixed physical layout decision for every root in a bounded edit stream.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RootPackingMode {
+    #[default]
+    None,
+    Terminal,
+    Nested,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RootPackingPlan {
+    modes: [RootPackingMode; 256],
+}
+
+impl Default for RootPackingPlan {
+    fn default() -> Self {
+        Self {
+            modes: [RootPackingMode::None; 256],
+        }
+    }
+}
+
+impl RootPackingPlan {
+    pub fn select(&mut self, ordinal: u32, mode: RootPackingMode) -> Result<(), IndexError> {
+        let index = usize::try_from(ordinal).map_err(|_error| IndexError::ResourceLimited)?;
+        let slot = self.modes.get_mut(index).ok_or_else(|| {
+            IndexError::InvalidInput("packed map root ordinal is out of bounds".into())
+        })?;
+        *slot = mode;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn mode(&self, ordinal: usize) -> RootPackingMode {
+        self.modes.get(ordinal).copied().unwrap_or_default()
+    }
+
+    pub fn validate_for_roots(self, roots: usize) -> Result<(), IndexError> {
+        let unused_modes = self.modes.get(roots..).ok_or_else(|| {
+            IndexError::InvalidInput("packed map root ordinal is out of bounds".into())
+        })?;
+        if unused_modes
+            .iter()
+            .any(|mode| *mode != RootPackingMode::None)
+        {
+            return Err(IndexError::InvalidInput(
+                "packed map root ordinal is out of bounds".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A bounded producer of sorted, unique edits. Reaching EOF seals the complete
 /// logical edit stream; a producer error must never become a successful prefix.
 pub trait MapEditCursor {
     fn next_edit(&mut self, budget: &mut WorkBudget) -> Result<Option<OrdinalMapEdit>, IndexError>;
 
-    /// Opt in one root to the compact terminal-subtree representation.
-    /// The consumer validates the ordinal against its bases before reading any
-    /// edits. Unaware producers retain the original map wire format.
-    fn pack_terminal_subtrees_for_root(&self) -> Option<u32> {
-        None
+    /// The consumer validates all selected ordinals before reading any edits.
+    /// Unaware producers retain the ordinary map representation.
+    fn subtree_packing(&self) -> Result<RootPackingPlan, IndexError> {
+        Ok(RootPackingPlan::default())
     }
 }
 
@@ -395,6 +553,20 @@ pub trait PersistentMapPort: Send + Sync {
         limit: u32,
         budget: &mut WorkBudget,
     ) -> Result<MapPage, IndexError>;
+    /// Visit one-row scan pages through EOF under the same immutable-root
+    /// authority and Work budget as `scan`. The visitor may stage disposable
+    /// effects. It must not transfer the root's authority during the visit.
+    /// `false` selects the scalar path before any reads, charges or callbacks.
+    /// Once a page has been delivered, an error aborts the visit without replay.
+    fn try_visit_scan_pages(
+        &self,
+        _root: MapRoot,
+        budget: &mut WorkBudget,
+        _visitor: &mut dyn FnMut(MapPage, &mut WorkBudget) -> Result<(), IndexError>,
+    ) -> Result<bool, IndexError> {
+        budget.checkpoint()?;
+        Ok(false)
+    }
     /// Structural diff, without a whole-map scan or materialized key union.
     /// Equal immutable subtree references are skipped without reads, so this
     /// does not revalidate unchanged objects. Callers retain both roots through
@@ -462,6 +634,15 @@ pub trait ObjectWriteSink: Send + Sync {
 /// Every reservation/confirmation validates the frozen scope, exact object
 /// registration, child list and active fence, including bootstrap custody.
 pub trait ManagedObjectInstallPort: Send + Sync {
+    /// Tracked Catalog allocation upper bound for reserve/confirm/advance of
+    /// one bounded object packet. It grants no logical custody authority.
+    fn managed_install_memory_bound(
+        &self,
+        _shape: ObjectInstallMemoryShape,
+    ) -> Result<Option<super::MemoryCreditLimits>, IndexError> {
+        Ok(None)
+    }
+
     fn reserve_managed(
         &self,
         scope: ObjectInstallScope,
@@ -624,6 +805,53 @@ pub struct AttemptContext<'a> {
     pub budget: &'a mut WorkBudget,
 }
 
+impl AttemptContext<'_> {
+    /// Reborrow the attempt while a verified UTF-8 leaf is live. The object
+    /// port owns the body and the callback cannot extend its lifetime.
+    pub fn with_utf8_leaf<T>(
+        &mut self,
+        reference: ObjectRef,
+        byte_len: u64,
+        visit: impl FnOnce(&str, &mut AttemptContext<'_>) -> Result<T, IndexError>,
+    ) -> Result<T, IndexError> {
+        let objects = self.objects;
+        let maps = self.maps;
+        let custody = self.custody;
+        let scratch = self.scratch;
+        let attempt = self.attempt;
+        let mut visitor = Some(visit);
+        let mut output = None;
+        let mut repeated = false;
+        let result =
+            objects.visit_utf8_leaf(reference, byte_len, self.budget, &mut |text, budget| {
+                let Some(visit) = visitor.take() else {
+                    repeated = true;
+                    return Err(IndexError::BackendViolation(
+                        "UTF-8 leaf visitor was repeated".into(),
+                    ));
+                };
+                let mut scoped = AttemptContext {
+                    attempt,
+                    objects,
+                    maps,
+                    custody,
+                    scratch,
+                    budget,
+                };
+                output = Some(visit(text, &mut scoped)?);
+                Ok(())
+            });
+        if repeated {
+            return Err(IndexError::BackendViolation(
+                "UTF-8 leaf visitor was repeated".into(),
+            ));
+        }
+        result?;
+        output
+            .ok_or_else(|| IndexError::BackendViolation("UTF-8 leaf visitor was not called".into()))
+    }
+}
+
 /// Selects request-bounded observation or mandatory post-failure reconciliation.
 ///
 /// Reconciliation must remain available after the original request expires so
@@ -660,6 +888,17 @@ pub trait OperationJournalPort: Send + Sync {
         key: OperationKey,
         access: OperationInspectAccess<'_>,
     ) -> Result<OperationStatus, IndexError>;
+    /// Exact Published operation metadata. This is not a Catalog read pin and
+    /// must not substitute the current head or read immutable object bodies.
+    /// Backends without an exact durable metadata reader refuse explicitly.
+    fn published_view_metadata(
+        &self,
+        _key: OperationKey,
+        budget: &mut WorkBudget,
+    ) -> Result<CatalogView, IndexError> {
+        budget.checkpoint()?;
+        Err(IndexError::SnapshotUnavailable)
+    }
     fn operation(&self, key: OperationKey) -> Result<ImmutableOperation, IndexError>;
     fn claim_recovery(&self, key: OperationKey) -> Result<AttemptRef, IndexError>;
     fn refuse(&self, attempt: AttemptRef, reason: Refusal) -> Result<OperationStatus, IndexError>;
@@ -883,6 +1122,14 @@ pub trait CatalogDiagnosticPort: Send + Sync {
 }
 
 pub trait CatalogReadPort: Send + Sync {
+    /// Bind one exact ticket and original request. Entry observation is durable
+    /// before return; no caller work runs under a held Catalog transaction.
+    fn begin_read_attempt<'a>(
+        &'a self,
+        session: &'a dyn super::ReadSessionLease,
+        ticket: super::ReadTicketLease,
+        budget: &'a WorkBudget,
+    ) -> Result<Box<dyn super::CatalogReadAttempt + 'a>, IndexError>;
     fn open_read_session(&self) -> Result<Arc<dyn super::ReadSessionLease>, IndexError>;
     /// Checks the original request before waiting and before pin commit.
     ///
@@ -1124,6 +1371,38 @@ pub trait IndexProjectionBuildPort: Send + Sync {
     ) -> IndexFuture<'a, MemberBinding>;
 }
 
+/// Verify a sealed, complete History input under the existing attempt's
+/// original budget and custody. No file SourceDelta or provider is implied.
+/// The Kernel owns profile/view CAS; the adapter owns History cut/replay and
+/// row semantics, including the exact prior member for DELTA.
+pub trait IndexHistoryBuildPort: Send + Sync {
+    fn resource_demand(&self) -> super::effort::ResourceNeed;
+    fn validate_instance(&self, instance: &InstanceSpec) -> Result<(), IndexError>;
+    fn verify_history(
+        &self,
+        instance: &InstanceSpec,
+        prior: Option<&MemberBinding>,
+        transition: &HistoryTransition,
+        context: &mut AttemptContext<'_>,
+    ) -> Result<MemberBinding, IndexError>;
+    fn append_history(
+        &self,
+        instance: &InstanceSpec,
+        prior: &MemberBinding,
+        append: &HistoryAppendV1,
+        next_view_sequence: u64,
+        context: &mut AttemptContext<'_>,
+    ) -> Result<MemberBinding, IndexError>;
+    fn advance_history_generation(
+        &self,
+        instance: &InstanceSpec,
+        prior: &MemberBinding,
+        advance: &HistoryGenerationAdvanceV1,
+        next_view_sequence: u64,
+        context: &mut AttemptContext<'_>,
+    ) -> Result<MemberBinding, IndexError>;
+}
+
 pub trait IndexBuildPort: Send + Sync {
     type Delta: Send;
     type Plan: Send;
@@ -1152,4 +1431,33 @@ pub trait IndexBuildPort: Send + Sync {
         candidate: Self::Candidate,
         context: &'a mut AttemptContext<'_>,
     ) -> IndexFuture<'a, MemberBinding>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExistingTreeEntryKindV1 {
+    Directory,
+    File,
+    Symlink,
+    Socket,
+    Other,
+}
+
+/// Metadata only. Implementations must admit directory FD/buffer/entry costs
+/// before effects, authenticate the actual existing root and no-follow paths,
+/// preserve typed budget failures, and retain close custody. The callback's
+/// name is borrowed; it cannot outlive the current admitted directory entry.
+/// This port does not grant Source, Catalog, or publication authority.
+pub trait ExistingTreeMetadataIoPortV1: std::fmt::Debug + Send + Sync {
+    fn visit_directory_v1(
+        &self,
+        path: &std::path::Path,
+        budget: &mut WorkBudget,
+        visit: &mut dyn FnMut(
+            &std::ffi::OsStr,
+            ExistingTreeEntryKindV1,
+            u64,
+            &mut WorkBudget,
+        )
+            -> Result<(), super::existing_file::ExistingFileReadFailureV1>,
+    ) -> Result<(), super::existing_file::ExistingFileReadFailureV1>;
 }

@@ -49,6 +49,7 @@ fn l2_replay_fixture() -> (
     .source_event(sample_source_event());
     let wire = ok_or_fail!(original.to_wire_batch());
     let outcome = quanta_index_contract::SearchCorpusPublishOutcome {
+        upload_cleanup: None,
         publication: quanta_index_contract::SourcePublicationBinding::for_batch(&wire),
         receipt: BatchPublishReceipt {
             sealed: true,

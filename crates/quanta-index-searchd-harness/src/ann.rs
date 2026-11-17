@@ -1,4 +1,6 @@
-//! The ANN rail: recall@k, latency, build time and index bytes of a sealed
+//! Exact ANN oracles plus the optional `semantic-bench` measurement rail.
+//!
+//! The optional rail measures recall@k, latency, build time and index bytes of a sealed
 //! semantic generation, as a current-head artifact (QI-BB-027 완료 기준 #3,
 //! QI-BB-031 완료 기준 #3).
 //!
@@ -21,19 +23,27 @@
 //! score that is not the exact cosine, or a page shorter than `k` fails the
 //! rail.
 
+#[cfg(feature = "semantic-bench")]
 use std::path::Path;
+#[cfg(feature = "semantic-bench")]
 use std::time::Instant;
 
-use anyhow::{Context, Result as AnyResult, anyhow};
+#[cfg(feature = "semantic-bench")]
+use anyhow::anyhow;
+use anyhow::{Context, Result as AnyResult};
+#[cfg(feature = "semantic-bench")]
 use quanta_index_contract::{
     EmbeddingNormalization, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
 };
+#[cfg(feature = "semantic-bench")]
 use quanta_index_core::{GenerationStorageKeyV1, RequestBudgetV1, SemanticIndexOpenPort};
+#[cfg(feature = "semantic-bench")]
 use quanta_index_semantic::{
     SemanticAdapter, build_resident_batch_v1, legacy_chunk_embedding_record_v1,
     sealed_replace_batch_v1,
 };
 
+#[cfg(feature = "semantic-bench")]
 use crate::artifact::{
     BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
     LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest,
@@ -41,14 +51,17 @@ use crate::artifact::{
 };
 
 /// The artifact family this rail writes.
+#[cfg(feature = "semantic-bench")]
 pub const DIMENSION: &str = "ann";
 
 /// How far a returned score may be from the exact cosine: the sealed
 /// effort refines the top candidates against the stored vectors, so a
 /// returned score is the exact cosine up to `f32` rounding.
+#[cfg(feature = "semantic-bench")]
 const EXACT_SCORE_TOLERANCE: f32 = 1e-4;
 
 /// The one path every row is stored under.
+#[cfg(feature = "semantic-bench")]
 const CORPUS_PATH: &str = "src/corpus.rs";
 
 /// What the rail seals and asks.
@@ -79,6 +92,7 @@ impl AnnRailConfig {
 }
 
 /// What one run measured.
+#[cfg(feature = "semantic-bench")]
 #[derive(Clone, Debug)]
 pub struct AnnReport {
     pub config: AnnRailConfig,
@@ -175,6 +189,7 @@ pub fn exact_top_k(rows: &[(String, Vec<f32>)], query: &[f32], k: usize) -> Vec<
         .collect()
 }
 
+#[cfg(feature = "semantic-bench")]
 #[expect(
     clippy::expect_used,
     reason = "fixed ANN harness identity is an in-source validated fixture"
@@ -183,6 +198,7 @@ fn repo() -> RepoId {
     RepoId::new("ann-rail").expect("static fixture ID satisfies canonical policy")
 }
 
+#[cfg(feature = "semantic-bench")]
 #[expect(
     clippy::expect_used,
     reason = "fixed ANN harness identity is an in-source validated fixture"
@@ -192,11 +208,13 @@ fn revision() -> RevisionId {
 }
 
 /// The id of row `seed`.
+#[cfg(feature = "semantic-bench")]
 fn row_id(seed: u64) -> String {
     format!("row-{seed}")
 }
 
 /// Bytes of every file under the dataset's index directory.
+#[cfg(feature = "semantic-bench")]
 fn index_bytes(generation_dir: &Path) -> AnyResult<u64> {
     let mut total = 0_u64;
     let mut pending = vec![generation_dir.join("dataset")];
@@ -220,6 +238,7 @@ fn index_bytes(generation_dir: &Path) -> AnyResult<u64> {
 }
 
 /// Seal the corpus under `state_root`, ask every query, and score it.
+#[cfg(feature = "semantic-bench")]
 pub fn run_ann_report(config: AnnRailConfig, state_root: &Path) -> AnyResult<AnnReport> {
     let width = u32::try_from(config.width).context("the width fits a contract dimension")?;
     let adapter = SemanticAdapter::with_state_root(state_root.to_path_buf())?;
@@ -308,6 +327,7 @@ pub fn run_ann_report(config: AnnRailConfig, state_root: &Path) -> AnyResult<Ann
 }
 
 /// The normalization policy as the manifest spells it.
+#[cfg(feature = "semantic-bench")]
 const fn normalization_name(normalization: EmbeddingNormalization) -> &'static str {
     match normalization {
         EmbeddingNormalization::None => "none",
@@ -315,6 +335,7 @@ const fn normalization_name(normalization: EmbeddingNormalization) -> &'static s
     }
 }
 
+#[cfg(feature = "semantic-bench")]
 fn config_entries(config: &AnnRailConfig) -> [(&'static str, String); 5] {
     [
         ("rows", config.rows.to_string()),
@@ -327,6 +348,7 @@ fn config_entries(config: &AnnRailConfig) -> [(&'static str, String); 5] {
 
 /// The corpus is its generator and size: the digest names the walk, the
 /// row count and the width, which fix every byte the rail sealed.
+#[cfg(feature = "semantic-bench")]
 fn corpus_files(config: &AnnRailConfig) -> Vec<(String, String)> {
     vec![(
         CORPUS_PATH.to_string(),
@@ -338,6 +360,7 @@ fn corpus_files(config: &AnnRailConfig) -> Vec<(String, String)> {
 }
 
 /// The one `BenchArtifactV1` for `report`.
+#[cfg(feature = "semantic-bench")]
 pub fn artifact(
     report: &AnnReport,
     git_head: GitHeadV1,
@@ -401,6 +424,7 @@ pub fn artifact(
 }
 
 /// Write `summary.json` (the `BenchArtifactV1`) under `dir`.
+#[cfg(feature = "semantic-bench")]
 pub fn write_artifacts(
     report: &AnnReport,
     dir: &Path,
@@ -421,6 +445,7 @@ mod tests {
 
     /// A tier at the index floor: 300 rows is above the 256-row threshold,
     /// so the seal builds the ANN index the full tier measures.
+    #[cfg(feature = "semantic-bench")]
     const SMALL: AnnRailConfig = AnnRailConfig {
         rows: 300,
         width: 16,
@@ -460,6 +485,7 @@ mod tests {
     /// It seals through the index, returns exact scores and full pages,
     /// records every query's latency and the `l2_unit` policy, and its
     /// artifact carries every field the artifact gate requires.
+    #[cfg(feature = "semantic-bench")]
     #[test]
     fn a_small_tier_measures_and_writes_a_complete_artifact() {
         let temp = tempfile::tempdir().expect("tempdir");

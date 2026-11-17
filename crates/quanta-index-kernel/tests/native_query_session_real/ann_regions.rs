@@ -2,17 +2,27 @@
 
 use super::*;
 use quanta_index_contract::native_protocol::NativeSemanticTraversal;
+use quanta_index_core::diagnostic_trace::{
+    DiagnosticAnnRegionObservationV1, DiagnosticAnnRegionPhaseV1, DiagnosticCaptureIdV1,
+    DiagnosticClockV1, DiagnosticContextV1, DiagnosticEmitV1, DiagnosticEventKindV1,
+    DiagnosticEventSinkV1, DiagnosticLaneV1, DiagnosticRootKindV1, DiagnosticTerminalV1,
+};
 use quanta_index_core::index::{WorkIntent, WorkScope};
+use std::sync::{Mutex, atomic::AtomicBool};
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "the ANN integration test must poll Lance region creation inside its owned Tokio reactor"
+    reason = "the ANN integration test drives Native materialization inside its owned Tokio reactor"
 )]
 fn ann_block_on<F: std::future::Future>(runtime: &tokio::runtime::Runtime, future: F) -> F::Output {
     runtime.block_on(future)
 }
 
 fn ann_budget() -> WorkBudget {
+    ann_budget_with_request(RequestBudgetV1::for_duration(Duration::from_secs(120)))
+}
+
+fn ann_budget_with_request(request: RequestBudgetV1) -> WorkBudget {
     WorkBudget::with_request(
         WorkLimits {
             reads: 1_000_000,
@@ -20,14 +30,21 @@ fn ann_budget() -> WorkBudget {
             bytes: 1_500_000_000,
             mutations: 1_000_000,
         },
-        RequestBudgetV1::for_duration(Duration::from_secs(120)),
+        request,
     )
 }
 
-fn extra_owner(id: u8) -> OwnerKey {
+fn extra_owner(id: u16) -> OwnerKey {
+    let stable_id = if let Ok(id) = u8::try_from(id) {
+        [id; 16]
+    } else {
+        let mut bytes = [0; 16];
+        bytes[..2].copy_from_slice(&id.to_be_bytes());
+        bytes
+    };
     OwnerKey {
         producer: PRODUCER,
-        stable_id: StableOwnerId([id; 16]),
+        stable_id: StableOwnerId(stable_id),
     }
 }
 
@@ -43,7 +60,7 @@ struct AnnSources {
 fn advance_ann_sources_count(
     fixture: &Fixture,
     view: ViewRef,
-    count: u8,
+    count: u16,
 ) -> TestResult<AnnSources> {
     let extra_count = count
         .checked_sub(1)
@@ -60,11 +77,11 @@ fn advance_ann_sources_count(
         SourceTextAdmission::Utf8 { policy: ADMISSION },
         &mut ann_budget(),
     )?;
-    staged.push(Ok(OwnerMutation {
+    staged.push(OwnerMutation {
         owner: owner(),
         expected: None,
         next: Some(primary),
-    }));
+    });
     let mut extra_sources = Vec::new();
     extra_sources.try_reserve_exact(usize::from(extra_count))?;
     for id in 7..=last_id {
@@ -75,16 +92,19 @@ fn advance_ann_sources_count(
             SourceTextAdmission::Utf8 { policy: ADMISSION },
             &mut ann_budget(),
         )?;
-        staged.push(Ok(OwnerMutation {
-            owner: extra_owner(id),
+        let owner = extra_owner(id);
+        staged.push(OwnerMutation {
+            owner,
             expected: None,
             next: Some(source),
-        }));
-        extra_sources.push((extra_owner(id), source));
+        });
+        extra_sources.push((owner, source));
     }
-    let owners = fixture
-        .kernel
-        .stage_mutations(ingress, staged, &mut ann_budget())?;
+    staged.sort_unstable_by_key(|mutation| mutation.owner);
+    let owners =
+        fixture
+            .kernel
+            .stage_mutations(ingress, staged.into_iter().map(Ok), &mut ann_budget())?;
     let mut transition = SourceTransition {
         expected_source: source(&fixture.kernel, view)?,
         owners,
@@ -232,10 +252,23 @@ fn semantic_hit_observed(
     NativeSemanticTraversal,
     bool,
 )> {
-    let mut work = ann_budget();
+    semantic_hit_with_budget(fixture, view, &mut ann_budget())
+}
+
+fn semantic_hit_with_budget(
+    fixture: &Fixture,
+    view: ViewRef,
+    work: &mut WorkBudget,
+) -> TestResult<(
+    OwnerKey,
+    f64,
+    CoverageBinding,
+    NativeSemanticTraversal,
+    bool,
+)> {
     let mut session = fixture
         .kernel
-        .begin_query_session(ViewSelection::Exact(view), &mut work)?;
+        .begin_query_session(ViewSelection::Exact(view), work)?;
     let stage = session.prepare_stage(&fixture.semantic, SEMANTIC_INSTANCE, semantic_request())?;
     let need = stage.required_resources();
     let outcome = stage.execute(&guard(need)?)?;
@@ -277,6 +310,104 @@ fn sealed_semantic_hit(
     Ok((owner, cosine, coverage))
 }
 
+#[derive(Debug, Default)]
+struct CarryTraceClock(AtomicU64);
+
+impl DiagnosticClockV1 for CarryTraceClock {
+    fn now_ns(&self) -> u64 {
+        self.0.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
+#[derive(Debug)]
+struct CarryRegionSink {
+    selected: Mutex<Vec<DiagnosticAnnRegionObservationV1>>,
+    dropped: AtomicBool,
+}
+
+impl Default for CarryRegionSink {
+    fn default() -> Self {
+        Self {
+            selected: Mutex::new(Vec::with_capacity(8)),
+            dropped: AtomicBool::new(false),
+        }
+    }
+}
+
+impl DiagnosticEventSinkV1 for CarryRegionSink {
+    fn try_emit(&self, event: DiagnosticEmitV1) -> bool {
+        if matches!(event.kind, DiagnosticEventKindV1::Health { .. }) {
+            self.dropped.store(true, Ordering::Relaxed);
+            return true;
+        }
+        let DiagnosticEventKindV1::AnnRegionObservation { observation, .. } = event.kind else {
+            return true;
+        };
+        if observation.phase != DiagnosticAnnRegionPhaseV1::SelectedQuery {
+            return true;
+        }
+        let Ok(mut selected) = self.selected.try_lock() else {
+            self.dropped.store(true, Ordering::Relaxed);
+            return false;
+        };
+        if selected.len() == 8 {
+            self.dropped.store(true, Ordering::Relaxed);
+            return false;
+        }
+        selected.push(observation);
+        true
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SelectedRegion {
+    ordinal: u64,
+    rows: u32,
+    descriptor: [u8; 32],
+}
+
+fn selected_ann_regions(
+    fixture: &Fixture,
+    view: ViewRef,
+) -> TestResult<(OwnerKey, f64, CoverageBinding, Vec<SelectedRegion>)> {
+    let sink = Arc::new(CarryRegionSink::default());
+    let context = DiagnosticContextV1::new(
+        DiagnosticCaptureIdV1([91; 16]),
+        Arc::new(CarryTraceClock::default()),
+        sink.clone(),
+    );
+    let root = context.enter_root(DiagnosticRootKindV1::Request, DiagnosticLaneV1(1))?;
+    let request = RequestBudgetV1::for_duration(Duration::from_secs(120))
+        .with_diagnostic_context(context.child_context(&root));
+    let result = semantic_hit_with_budget(fixture, view, &mut ann_budget_with_request(request));
+    root.finish(DiagnosticTerminalV1::from_result(&result))?;
+    let (owner, cosine, coverage, traversal, exhaustive) = result?;
+    assert!(matches!(
+        traversal,
+        NativeSemanticTraversal::Approximate { .. }
+    ));
+    assert!(!exhaustive);
+    assert!(!sink.dropped.load(Ordering::Relaxed));
+    let mut selected = Vec::new();
+    for observation in sink
+        .selected
+        .lock()
+        .map_err(|_| "ANN carry trace sink poisoned")?
+        .iter()
+    {
+        let descriptor = observation
+            .descriptor_ref
+            .ok_or("selected ANN region did not report its descriptor")?;
+        selected.push(SelectedRegion {
+            ordinal: observation.ordinal,
+            rows: observation.rows,
+            descriptor,
+        });
+    }
+    selected.sort_unstable_by_key(|region| region.ordinal);
+    Ok((owner, cosine, coverage, selected))
+}
+
 #[test]
 fn managed_ann_region_reopens_after_owner_replacement_with_old_view_pinned() -> TestResult {
     let root = tempfile::tempdir()?;
@@ -285,7 +416,7 @@ fn managed_ann_region_reopens_after_owner_replacement_with_old_view_pinned() -> 
             .enable_all()
             .build()?,
     );
-    let fixture = fixture_with_ann(root.path(), Arc::clone(&runtime))?;
+    let fixture = fixture_with_ann(root.path())?;
     let configured = configured(&fixture)?;
     let AnnSources {
         view: source_view,
@@ -294,7 +425,7 @@ fn managed_ann_region_reopens_after_owner_replacement_with_old_view_pinned() -> 
     } = advance_ann_sources(&fixture, configured)?;
     let sealed_view = materialize_ann_owners(&fixture, runtime.as_ref(), source_view)?;
     let sealed_source = source(&fixture.kernel, sealed_view)?;
-    let (winner, cosine, coverage) = semantic_hit(&fixture, sealed_view)?;
+    let (winner, cosine, coverage) = sealed_semantic_hit(&fixture, sealed_view)?;
     assert_eq!(winner, owner());
     assert_eq!(cosine.to_bits(), 1.0f64.to_bits());
     assert_eq!(coverage.status, CoverageStatus::Complete);
@@ -310,7 +441,7 @@ fn managed_ann_region_reopens_after_owner_replacement_with_old_view_pinned() -> 
         advance(&fixture, sealed_view, 67, 2, b"beta", Some(primary))?;
     assert_ne!(primary, replacement);
     let replaced_view = materialize_ann_replacement(&fixture, runtime.as_ref(), replaced_source)?;
-    let (old_winner, old_score, old_coverage) = semantic_hit(&fixture, sealed_view)?;
+    let (old_winner, old_score, old_coverage) = sealed_semantic_hit(&fixture, sealed_view)?;
     assert_eq!(old_winner, owner());
     assert_eq!(old_score.to_bits(), 1.0f64.to_bits());
     assert_eq!(old_coverage, coverage);
@@ -331,12 +462,13 @@ fn managed_ann_region_reopens_after_owner_replacement_with_old_view_pinned() -> 
     old_pin.validate()?;
     drop(fixture);
 
-    // Reconstruct the real storage and Catalog handles. The selected query
-    // must load the managed file-set chunks and hydrate a new private Lance
-    // session; no process-global Lance memory store survives this reopen.
-    let reopened = fixture_with_ann(root.path(), runtime)?;
+    // Reconstruct the real storage and Catalog handles. Query the persisted
+    // Native ANN region while the original pin still protects the old view.
+    let reopened = fixture_with_ann(root.path())?;
+    old_pin.validate()?;
+    assert_eq!(native_pin_count(&reopened.catalog)?, 1);
     let (reopened_winner, reopened_score, reopened_coverage) =
-        semantic_hit(&reopened, sealed_view)?;
+        sealed_semantic_hit(&reopened, sealed_view)?;
     assert_eq!(reopened_winner, owner());
     assert_eq!(reopened_score.to_bits(), 1.0f64.to_bits());
     assert_eq!(reopened_coverage, coverage);
@@ -368,7 +500,7 @@ fn managed_ann_second_seal_preserves_prior_selected_view_across_reopen() -> Test
             .enable_all()
             .build()?,
     );
-    let fixture = fixture_with_ann(root.path(), Arc::clone(&runtime))?;
+    let fixture = fixture_with_ann(root.path())?;
     let configured = configured(&fixture)?;
     let sources = advance_ann_sources_count(&fixture, configured, 128)?;
     assert_eq!(sources.extra_sources.len(), 127);
@@ -427,7 +559,7 @@ fn managed_ann_second_seal_preserves_prior_selected_view_across_reopen() -> Test
     assert_eq!(pinned_coverage, first_coverage);
     drop(fixture);
 
-    let reopened = fixture_with_ann(root.path(), runtime)?;
+    let reopened = fixture_with_ann(root.path())?;
     let (reopened_first_winner, reopened_first_score, reopened_first_coverage) =
         sealed_semantic_hit(&reopened, first_view)?;
     assert_eq!(reopened_first_winner, owner());
@@ -438,6 +570,117 @@ fn managed_ann_second_seal_preserves_prior_selected_view_across_reopen() -> Test
     assert_eq!(reopened_second_winner, owner());
     assert_eq!(reopened_second_score.to_bits(), 1.0f64.to_bits());
     assert_eq!(reopened_second_coverage, second_coverage);
+    old_pin.release()?;
+    assert_eq!(native_pin_count(&reopened.catalog)?, 0);
+    Ok(())
+}
+
+#[test]
+fn managed_ann_multi_region_carry_unlinks_both_old_descriptors_across_reopen() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let runtime = Arc::new(
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?,
+    );
+    let fixture = fixture_with_ann(root.path())?;
+    let configured = configured(&fixture)?;
+    let sources = advance_ann_sources_count(&fixture, configured, 256)?;
+    assert_eq!(sources.extra_sources.len(), 255);
+
+    // Select the fixed alpha oracle before the first 64-owner seal. Work is
+    // ordered by durable identity rather than by the source owner number.
+    let initial = fixture
+        .kernel
+        .ready_work(workspace(), 1, 256, &mut ann_budget())?;
+    assert_eq!(initial.len(), 256);
+    let primary = initial
+        .iter()
+        .find(|work| matches!(work.scope, WorkScope::Owner { owner: candidate, .. } if candidate == owner()))
+        .ok_or("ANN primary source has no materialization work")?;
+    let primary_view = materialize_ann_work(&fixture, runtime.as_ref(), sources.view, primary, 3)?;
+    let first_view =
+        materialize_ann_owners_range(&fixture, runtime.as_ref(), primary_view, 4, 66, 64, None)?;
+    let second_view =
+        materialize_ann_owners_range(&fixture, runtime.as_ref(), first_view, 67, 130, 64, None)?;
+    let third_view =
+        materialize_ann_owners_range(&fixture, runtime.as_ref(), second_view, 131, 194, 64, None)?;
+    let (old_winner, old_score, old_coverage, old_regions) =
+        selected_ann_regions(&fixture, third_view)?;
+    assert_eq!(old_winner, owner());
+    assert_eq!(old_score.to_bits(), 1.0f64.to_bits());
+    assert!(matches!(
+        old_coverage.status,
+        CoverageStatus::Partial { .. }
+    ));
+    assert_ne!(old_coverage.covered, Some(old_coverage.desired));
+    assert_eq!(
+        old_coverage.desired.root,
+        source(&fixture.kernel, sources.view)?.owners
+    );
+    let [old_larger, old_smaller] = old_regions.as_slice() else {
+        return Err("third seal did not retain two selected ANN regions".into());
+    };
+    assert_eq!(
+        [
+            (old_larger.ordinal, old_larger.rows),
+            (old_smaller.ordinal, old_smaller.rows)
+        ],
+        [(1, 128), (2, 64)]
+    );
+    assert_ne!(old_larger.descriptor, old_smaller.descriptor);
+
+    let mut old_pin = fixture
+        .kernel
+        .pin_view(ViewSelection::Exact(third_view), &ann_budget())?;
+    old_pin.validate()?;
+    let final_view = materialize_ann_owners_range(
+        &fixture,
+        runtime.as_ref(),
+        third_view,
+        195,
+        258,
+        0,
+        Some(&mut old_pin),
+    )?;
+    old_pin.validate()?;
+    let (new_winner, new_score, new_coverage, new_regions) =
+        selected_ann_regions(&fixture, final_view)?;
+    assert_eq!(new_winner, owner());
+    assert_eq!(new_score.to_bits(), 1.0f64.to_bits());
+    assert_eq!(new_coverage.status, CoverageStatus::Complete);
+    assert_eq!(new_coverage.covered, Some(new_coverage.desired));
+    assert_eq!(new_coverage.desired, old_coverage.desired);
+    let [new_region] = new_regions.as_slice() else {
+        return Err("final carry did not select exactly one ANN region".into());
+    };
+    assert_eq!((new_region.ordinal, new_region.rows), (3, 256));
+    assert_ne!(old_larger.descriptor, new_region.descriptor);
+    assert_ne!(old_smaller.descriptor, new_region.descriptor);
+
+    let (held_winner, held_score, held_coverage, held_regions) =
+        selected_ann_regions(&fixture, third_view)?;
+    assert_eq!(held_winner, old_winner);
+    assert_eq!(held_score.to_bits(), old_score.to_bits());
+    assert_eq!(held_coverage, old_coverage);
+    assert_eq!(held_regions, old_regions);
+    drop(fixture);
+
+    let reopened = fixture_with_ann(root.path())?;
+    old_pin.validate()?;
+    assert_eq!(native_pin_count(&reopened.catalog)?, 1);
+    let (reopened_old_winner, reopened_old_score, reopened_old_coverage, reopened_old_regions) =
+        selected_ann_regions(&reopened, third_view)?;
+    assert_eq!(reopened_old_winner, old_winner);
+    assert_eq!(reopened_old_score.to_bits(), old_score.to_bits());
+    assert_eq!(reopened_old_coverage, old_coverage);
+    assert_eq!(reopened_old_regions, old_regions);
+    let (reopened_new_winner, reopened_new_score, reopened_new_coverage, reopened_new_regions) =
+        selected_ann_regions(&reopened, final_view)?;
+    assert_eq!(reopened_new_winner, new_winner);
+    assert_eq!(reopened_new_score.to_bits(), new_score.to_bits());
+    assert_eq!(reopened_new_coverage, new_coverage);
+    assert_eq!(reopened_new_regions, new_regions);
     old_pin.release()?;
     assert_eq!(native_pin_count(&reopened.catalog)?, 0);
     Ok(())

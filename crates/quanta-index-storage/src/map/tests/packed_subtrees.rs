@@ -1,13 +1,14 @@
 //! Producer-selected packed subtrees must preserve ordinary map semantics.
 
 use super::*;
-use quanta_index_core::index::ports::{MapDiffRange, MapDiffVisitor};
+use quanta_index_core::index::ports::{MapDiffRange, MapDiffVisitor, RootPackingMode};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 struct HintCursor {
     edits: std::vec::IntoIter<OrdinalMapEdit>,
-    selected: Option<u32>,
+    selected: Vec<u32>,
+    mode: RootPackingMode,
 }
 
 impl MapEditCursor for HintCursor {
@@ -16,8 +17,14 @@ impl MapEditCursor for HintCursor {
         Ok(self.edits.next())
     }
 
-    fn pack_terminal_subtrees_for_root(&self) -> Option<u32> {
-        self.selected
+    fn subtree_packing(
+        &self,
+    ) -> Result<quanta_index_core::index::ports::RootPackingPlan, IndexError> {
+        let mut packing = quanta_index_core::index::ports::RootPackingPlan::default();
+        for ordinal in &self.selected {
+            packing.select(*ordinal, self.mode)?;
+        }
+        Ok(packing)
     }
 }
 
@@ -33,8 +40,15 @@ impl MapEditCursor for InvalidHintCursor {
         ))
     }
 
-    fn pack_terminal_subtrees_for_root(&self) -> Option<u32> {
-        Some(2)
+    fn subtree_packing(
+        &self,
+    ) -> Result<quanta_index_core::index::ports::RootPackingPlan, IndexError> {
+        let mut packing = quanta_index_core::index::ports::RootPackingPlan::default();
+        packing.select(
+            2,
+            quanta_index_core::index::ports::RootPackingMode::Terminal,
+        )?;
+        Ok(packing)
     }
 }
 
@@ -94,7 +108,7 @@ fn make_roots(
                     expected: None,
                     next: Some(scalar),
                 },
-            ));
+            )?);
         }
     }
     for key in [vec![0xf0], vec![0xf1], vec![0xf2]] {
@@ -105,12 +119,13 @@ fn make_roots(
                 expected: None,
                 next: Some(owner_value),
             },
-        ));
+        )?);
     }
     let before = physical_file_count(directory)?;
     let mut cursor = HintCursor {
         edits: edits.into_iter(),
-        selected,
+        selected: selected.into_iter().collect(),
+        mode: RootPackingMode::Terminal,
     };
     let roots = store.apply_stream(
         &[MapRoot(None), MapRoot(None)],
@@ -247,6 +262,71 @@ fn selected_root_spills_after_physical_child_limit() -> TestResult {
 }
 
 #[test]
+fn multiple_selected_roots_reduce_physical_nodes_and_reopen_with_same_entries() -> TestResult {
+    let mut counts = Vec::new();
+    for selected in [Vec::new(), vec![0, 1]] {
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let sink = RecordingSink::default();
+        let mut work = budget()?;
+        let values = [
+            MapValue::from(value(&store, b"first root value", &mut work)?),
+            MapValue::from(value(&store, b"second root value", &mut work)?),
+        ];
+        let mut edits = Vec::new();
+        let mut expected = [BTreeMap::new(), BTreeMap::new()];
+        for root in 0u32..2 {
+            let value = *values.get(usize::try_from(root)?).ok_or("value missing")?;
+            for branch in 0u8..8 {
+                for leaf in 0u8..8 {
+                    let key = vec![branch << 4, leaf << 4];
+                    let _old = expected
+                        .get_mut(usize::try_from(root)?)
+                        .ok_or("model missing")?
+                        .insert(key.clone(), value);
+                    edits.push(OrdinalMapEdit::unscoped(
+                        root,
+                        MapEdit {
+                            key,
+                            expected: None,
+                            next: Some(value),
+                        },
+                    )?);
+                }
+            }
+        }
+        let before = physical_file_count(&directory)?;
+        let mut cursor = HintCursor {
+            edits: edits.into_iter(),
+            selected,
+            mode: RootPackingMode::Terminal,
+        };
+        let output = store.apply_stream(
+            &[MapRoot(None), MapRoot(None)],
+            &mut cursor,
+            &sink,
+            &mut work,
+        )?;
+        let roots = [
+            *output.first().ok_or("first root missing")?,
+            *output.get(1).ok_or("second root missing")?,
+        ];
+        counts.push(physical_file_count(&directory)? - before);
+        drop(store);
+        let reopened = FileObjectStore::open(&directory.0)?;
+        for (root, model) in roots.into_iter().zip(expected) {
+            let entries = model.into_iter().collect::<Vec<_>>();
+            check_eq!(scan_all(&reopened, root, &mut work)?, entries);
+        }
+    }
+    check!(
+        counts.get(1).ok_or("packed count missing")?
+            < counts.first().ok_or("plain count missing")?
+    );
+    Ok(())
+}
+
+#[test]
 fn selected_root_packs_terminal_subtrees_without_changing_map_laws() -> TestResult {
     let plain_directory = TestDir::new();
     let plain_store = FileObjectStore::open(&plain_directory.0)?;
@@ -331,7 +411,8 @@ fn selected_root_packs_terminal_subtrees_without_changing_map_laws() -> TestResu
         .ok_or("replaced value missing")?;
     let before_refusal = physical_file_count(&packed_directory)?;
     let mut stale = HintCursor {
-        selected: Some(0),
+        selected: vec![0],
+        mode: RootPackingMode::Terminal,
         edits: vec![OrdinalMapEdit::unscoped(
             0,
             MapEdit {
@@ -339,7 +420,7 @@ fn selected_root_packs_terminal_subtrees_without_changing_map_laws() -> TestResu
                 expected: None,
                 next: Some(replacement),
             },
-        )]
+        )?]
         .into_iter(),
     };
     check!(matches!(
@@ -353,7 +434,8 @@ fn selected_root_packs_terminal_subtrees_without_changing_map_laws() -> TestResu
     ));
     check_eq!(physical_file_count(&packed_directory)?, before_refusal);
     let mut cursor = HintCursor {
-        selected: Some(0),
+        selected: vec![0],
+        mode: RootPackingMode::Terminal,
         edits: [
             MapEdit {
                 key: removed_key.clone(),
@@ -373,7 +455,7 @@ fn selected_root_packs_terminal_subtrees_without_changing_map_laws() -> TestResu
         ]
         .into_iter()
         .map(|edit| OrdinalMapEdit::unscoped(0, edit))
-        .collect::<Vec<_>>()
+        .collect::<Result<Vec<_>, _>>()?
         .into_iter(),
     };
     let changed = *packed_store
@@ -431,5 +513,263 @@ fn selected_root_packs_terminal_subtrees_without_changing_map_laws() -> TestResu
         scan_all(&reopened, packed[1], &mut packed_work)?,
         scan_all(&plain_store, plain[1], &mut plain_work)?
     );
+    Ok(())
+}
+
+fn hierarchical_root(
+    store: &FileObjectStore,
+    directory: &TestDir,
+    mode: RootPackingMode,
+    work: &mut WorkBudget,
+) -> Result<(MapRoot, BTreeMap<Vec<u8>, MapValue>, usize), Box<dyn std::error::Error>> {
+    let scalar = MapValue::from(value(store, b"nested map scalar", work)?);
+    let mut model = BTreeMap::new();
+    let mut edits = Vec::new();
+    for first in 0u8..4 {
+        for second in 0u8..4 {
+            for third in 0u8..4 {
+                let key = vec![first << 4, second << 4, third << 4];
+                let _prior = model.insert(key.clone(), scalar);
+                edits.push(OrdinalMapEdit::unscoped(
+                    0,
+                    MapEdit {
+                        key,
+                        expected: None,
+                        next: Some(scalar),
+                    },
+                )?);
+            }
+        }
+    }
+    let before = physical_file_count(directory)?;
+    let mut cursor = HintCursor {
+        edits: edits.into_iter(),
+        selected: vec![0],
+        mode,
+    };
+    let roots = store.apply_stream(
+        &[MapRoot(None)],
+        &mut cursor,
+        &RecordingSink::default(),
+        work,
+    )?;
+    let root = *roots.first().ok_or("nested map root missing")?;
+    Ok((root, model, physical_file_count(directory)? - before))
+}
+
+#[test]
+fn nested_mode_reduces_physical_nodes_and_preserves_lookup_diff_and_reopen() -> TestResult {
+    let plain_dir = TestDir::new();
+    let plain_store = FileObjectStore::open(&plain_dir.0)?;
+    let mut plain_work = budget()?;
+    let (_plain, expected, terminal_count) = hierarchical_root(
+        &plain_store,
+        &plain_dir,
+        RootPackingMode::Terminal,
+        &mut plain_work,
+    )?;
+
+    let dir = TestDir::new();
+    let store = FileObjectStore::open(&dir.0)?;
+    let mut work = budget()?;
+    let (root, model, nested_count) =
+        hierarchical_root(&store, &dir, RootPackingMode::Nested, &mut work)?;
+    check_eq!(model, expected);
+    check!(nested_count < terminal_count);
+    let stored = store.get(root.0.ok_or("nested root missing")?, &mut work)?;
+    check_eq!(stored.payload.get(..8), Some(b"QIMAP006".as_slice()));
+    let expected_rows = model
+        .iter()
+        .map(|(key, value)| (key.clone(), *value))
+        .collect::<Vec<_>>();
+    check_eq!(scan_all(&store, root, &mut work)?, expected_rows);
+    for (key, value) in &model {
+        check_eq!(store.lookup(root, key, &mut work)?, Some(*value));
+    }
+    let keys = [b"\x00\x00\x00".as_slice(), b"\x30\x30\x30", b"\x40\x00\x00"];
+    let mut results = [None; 3];
+    store.lookup_batch(root, &keys, &mut results, &mut work)?;
+    check_eq!(results, keys.map(|key| model.get(key).copied()));
+
+    let removed_key = vec![0x10, 0x10, 0x10];
+    let prior = *model.get(&removed_key).ok_or("nested prior missing")?;
+    let mut cursor = HintCursor {
+        edits: vec![OrdinalMapEdit::unscoped(
+            0,
+            MapEdit {
+                key: removed_key.clone(),
+                expected: Some(prior),
+                next: None,
+            },
+        )?]
+        .into_iter(),
+        selected: vec![0],
+        mode: RootPackingMode::Nested,
+    };
+    let changed = *store
+        .apply_stream(&[root], &mut cursor, &RecordingSink::default(), &mut work)?
+        .first()
+        .ok_or("changed nested root missing")?;
+    let mut changes = Changes::default();
+    check!(!store.visit_diff(
+        root,
+        changed,
+        MapDiffRange {
+            prefix: b"",
+            after: None,
+            limit: 16,
+        },
+        &mut changes,
+        &mut work
+    )?);
+    check_eq!(changes.0, vec![(removed_key.clone(), Some(prior), None)]);
+    let mut changed_model = model.clone();
+    let _removed = changed_model.remove(&removed_key);
+    check_eq!(
+        scan_all(&store, changed, &mut work)?,
+        changed_model.into_iter().collect::<Vec<_>>()
+    );
+    // This established fixture has eight small terminal subtrees, so its
+    // selected root is guaranteed to fit the QIMAP005 physical child bound.
+    // The larger hierarchy above can legitimately spill its selected root as
+    // QIMAP004; that is not a legacy-reader oracle.
+    let (mixed_roots, mixed_model, _) = make_roots(&store, &dir, Some(0), 8, &mut work)?;
+    let legacy_root = mixed_roots[0];
+    let ordinary_root = mixed_roots[1];
+    let legacy_rows = mixed_model.into_iter().collect::<Vec<_>>();
+    let ordinary_rows = scan_all(&store, ordinary_root, &mut work)?;
+    for (other, magic) in [
+        (legacy_root, b"QIMAP005".as_slice()),
+        (ordinary_root, b"QIMAP004".as_slice()),
+    ] {
+        let object = store.get(other.0.ok_or("mixed map root missing")?, &mut work)?;
+        check_eq!(object.payload.get(..8), Some(magic));
+        let actual = scan_all(&store, other, &mut work)?;
+        let expected = if other == legacy_root {
+            legacy_rows.as_slice()
+        } else {
+            ordinary_rows.as_slice()
+        };
+        check_eq!(actual.as_slice(), expected);
+    }
+    drop(store);
+    let reopened = FileObjectStore::open(&dir.0)?;
+    check_eq!(scan_all(&reopened, root, &mut work)?, expected_rows);
+    check_eq!(reopened.lookup(changed, &removed_key, &mut work)?, None);
+    check_eq!(scan_all(&reopened, legacy_root, &mut work)?, legacy_rows);
+    check_eq!(
+        scan_all(&reopened, ordinary_root, &mut work)?,
+        ordinary_rows
+    );
+    Ok(())
+}
+
+#[test]
+fn nested_wire_refuses_bad_child_version_length_and_edges() -> TestResult {
+    let dir = TestDir::new();
+    let store = FileObjectStore::open(&dir.0)?;
+    let mut work = budget()?;
+    let (root, _, _) = hierarchical_root(&store, &dir, RootPackingMode::Nested, &mut work)?;
+    let stored = store.get(root.0.ok_or("nested root missing")?, &mut work)?;
+    let child_at = stored
+        .payload
+        .windows(8)
+        .enumerate()
+        .skip(1)
+        .find_map(|(at, bytes)| (bytes == b"QIMAP006").then_some(at))
+        .ok_or("nested child body missing")?;
+    let mut wrong_version = stored.payload.clone();
+    wrong_version[child_at..child_at + 8].copy_from_slice(b"QIMAP005");
+    let mut zero_length = stored.payload.clone();
+    zero_length[child_at - 2..child_at].copy_from_slice(&0u16.to_be_bytes());
+    let mut overlong = stored.payload.clone();
+    let declared = u16::from_be_bytes(overlong[child_at - 2..child_at].try_into()?);
+    overlong[child_at - 2..child_at].copy_from_slice(
+        &declared
+            .checked_add(1)
+            .ok_or("nested body length overflow")?
+            .to_be_bytes(),
+    );
+    for payload in [wrong_version, zero_length, overlong] {
+        let bad = store.put(&payload, &stored.registration.children, &mut work)?;
+        check!(matches!(
+            store.read_node(bad.reference, &mut work),
+            Err(IndexError::CorruptObject(_))
+        ));
+    }
+    let mut short_edges = stored.registration.children.clone();
+    let edge = short_edges.pop().ok_or("nested edge missing")?;
+    let bad = store.put(&stored.payload, &short_edges, &mut work)?;
+    check!(matches!(
+        store.read_node(bad.reference, &mut work),
+        Err(IndexError::CorruptObject(_))
+    ));
+    let mut long_edges = stored.registration.children.clone();
+    long_edges.push(edge);
+    let bad = store.put(&stored.payload, &long_edges, &mut work)?;
+    check!(matches!(
+        store.read_node(bad.reference, &mut work),
+        Err(IndexError::CorruptObject(_))
+    ));
+    Ok(())
+}
+
+fn nested_inline_wire(wrappers: usize, invalid_nibble: bool) -> Result<Vec<u8>, IndexError> {
+    // One canonical inline value at the node and its terminal branch means
+    // every wrapper is non-unary while the whole fixture has zero child refs.
+    let inline_empty = [1u8, 0, 0];
+    let mut wire = Vec::new();
+    wire.extend_from_slice(b"QIMAP004");
+    wire.extend_from_slice(&(if invalid_nibble { 1u16 } else { 0u16 }).to_be_bytes());
+    if invalid_nibble {
+        wire.push(16);
+    }
+    wire.push(1);
+    wire.extend_from_slice(&1u16.to_be_bytes());
+    wire.extend_from_slice(&1u16.to_be_bytes());
+    wire.extend_from_slice(&inline_empty);
+    wire.extend_from_slice(&0u16.to_be_bytes());
+    wire.extend_from_slice(&inline_empty);
+    for _ in 0..wrappers {
+        let mut outer = Vec::new();
+        outer.extend_from_slice(b"QIMAP006");
+        outer.extend_from_slice(&0u16.to_be_bytes());
+        outer.push(1);
+        outer.extend_from_slice(&1u16.to_be_bytes());
+        outer.extend_from_slice(&0u16.to_be_bytes());
+        outer.extend_from_slice(&1u16.to_be_bytes());
+        outer.extend_from_slice(&inline_empty);
+        outer.extend_from_slice(
+            &u16::try_from(wire.len())
+                .map_err(|_error| IndexError::ResourceLimited)?
+                .to_be_bytes(),
+        );
+        outer.extend_from_slice(&wire);
+        wire = outer;
+    }
+    Ok(wire)
+}
+
+#[test]
+fn nested_wire_admits_depth_eight_and_refuses_depth_nine_bad_prefix_and_cancel() -> TestResult {
+    let dir = TestDir::new();
+    let store = FileObjectStore::open(&dir.0)?;
+    let mut work = budget()?;
+    let valid = nested_inline_wire(8, false)?;
+    let registered = store.put(&valid, &[], &mut work)?;
+    let _decoded = store.read_node(registered.reference, &mut work)?;
+    for wire in [nested_inline_wire(9, false)?, nested_inline_wire(8, true)?] {
+        let registered = store.put(&wire, &[], &mut work)?;
+        check!(matches!(
+            store.read_node(registered.reference, &mut work),
+            Err(IndexError::CorruptObject(_))
+        ));
+    }
+    let mut cancelled = budget()?;
+    cancelled.request().cancel_handle().cancel();
+    check!(matches!(
+        store.read_node(registered.reference, &mut cancelled),
+        Err(IndexError::Cancelled)
+    ));
     Ok(())
 }

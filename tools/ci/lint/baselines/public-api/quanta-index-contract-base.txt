@@ -3980,6 +3980,27 @@ impl core::marker::Unpin for quanta_index_contract_base::ids::ManifestGeneration
 impl core::marker::UnsafeUnpin for quanta_index_contract_base::ids::ManifestGeneration
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract_base::ids::ManifestGeneration
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract_base::ids::ManifestGeneration
+pub struct quanta_index_contract_base::NativeCutoverDigest64V1(pub [u8; 64])
+impl core::clone::Clone for quanta_index_contract_base::NativeCutoverDigest64V1
+pub fn quanta_index_contract_base::NativeCutoverDigest64V1::clone(&self) -> quanta_index_contract_base::NativeCutoverDigest64V1
+impl core::cmp::Eq for quanta_index_contract_base::NativeCutoverDigest64V1
+impl core::cmp::PartialEq for quanta_index_contract_base::NativeCutoverDigest64V1
+pub fn quanta_index_contract_base::NativeCutoverDigest64V1::eq(&self, other: &quanta_index_contract_base::NativeCutoverDigest64V1) -> bool
+impl core::fmt::Debug for quanta_index_contract_base::NativeCutoverDigest64V1
+pub fn quanta_index_contract_base::NativeCutoverDigest64V1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_contract_base::NativeCutoverDigest64V1
+impl core::marker::StructuralPartialEq for quanta_index_contract_base::NativeCutoverDigest64V1
+impl serde_core::ser::Serialize for quanta_index_contract_base::NativeCutoverDigest64V1
+pub fn quanta_index_contract_base::NativeCutoverDigest64V1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract_base::NativeCutoverDigest64V1
+pub fn quanta_index_contract_base::NativeCutoverDigest64V1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract_base::NativeCutoverDigest64V1
+impl core::marker::Send for quanta_index_contract_base::NativeCutoverDigest64V1
+impl core::marker::Sync for quanta_index_contract_base::NativeCutoverDigest64V1
+impl core::marker::Unpin for quanta_index_contract_base::NativeCutoverDigest64V1
+impl core::marker::UnsafeUnpin for quanta_index_contract_base::NativeCutoverDigest64V1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract_base::NativeCutoverDigest64V1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract_base::NativeCutoverDigest64V1
 pub struct quanta_index_contract_base::NativeIdentityCopyDataV1<E>
 impl<E> quanta_index_contract_base::ids::NativeIdentityCopyDataV1<E>
 pub fn quanta_index_contract_base::ids::NativeIdentityCopyDataV1<E>::admission_failure_v1(&self) -> core::option::Option<&E>

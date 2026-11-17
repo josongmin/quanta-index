@@ -14,9 +14,7 @@ use quanta_index_core::index::{
     },
 };
 
-use super::{
-    FileObjectStore, MapBuffer, ResidentStage, charge_key_allocation, key_nibbles, original_lookup,
-};
+use super::{FileObjectStore, MapBuffer, ResidentStage, original_lookup};
 use crate::object::MAX_BATCH_BYTES;
 
 struct Pending {
@@ -567,11 +565,8 @@ impl PersistentMapPort for OwnerScope {
         key: &[u8],
         budget: &mut WorkBudget,
     ) -> Result<Option<MapValue>, IndexError> {
-        budget.checkpoint()?;
-        charge_key_allocation(key, budget)?;
-        let nibbles = key_nibbles(key, budget)?;
         self.store
-            .lookup_inner_with(root, &nibbles, budget, |reference, budget| {
+            .lookup_key(root, key, budget, |reference, budget| {
                 self.read_node(reference, budget)
             })
     }
@@ -593,10 +588,9 @@ impl PersistentMapPort for OwnerScope {
         limit: u32,
         budget: &mut WorkBudget,
     ) -> Result<MapPage, IndexError> {
-        self.store
-            .scan_with(root, after, limit, budget, |reference, budget| {
-                self.read_node(reference, budget)
-            })
+        FileObjectStore::scan_with(root, after, limit, budget, |reference, budget| {
+            self.read_node(reference, budget)
+        })
     }
     fn visit_diff(
         &self,

@@ -32,23 +32,64 @@ fn manual_v2() -> Vec<u8> {
     wire
 }
 
+fn manual_v3() -> Vec<u8> {
+    let mut wire = vec![
+        0x86, 3, 2, 0x83, 0x18, b'a', 0x18, b'b', 0x18, b'c', 1, 0x81, 0x58, 0x20,
+    ];
+    wire.extend_from_slice(&[7; 32]);
+    wire.extend_from_slice(&[0x82, 0x82, 0x19, 1, 0, 0, 0x82, 0x19, 1, 1, 0]);
+    wire
+}
+
 #[test]
-fn manual_v1_and_v2_fixtures_decode_to_one_page_without_reencoding_v1() {
+fn literal_v1_v2_v3_fixtures_preserve_old_artifacts_and_new_wire() {
     let page = fixture_page();
     assert_eq!(
         page_wire::encode_legacy_v1_for_test(&page).expect("v1"),
         manual_v1()
     );
-    assert_eq!(page.encode().expect("v2"), manual_v2());
+    assert_eq!(page_wire::encode_v2(&page).expect("v2"), manual_v2());
+    assert_eq!(page.encode().expect("v3"), manual_v3());
     assert_eq!(
         RunPostingPage::decode(&manual_v1()).expect("legacy page"),
         page
     );
-    assert_eq!(
-        RunPostingPage::decode(&manual_v2()).expect("new page"),
-        page
-    );
+    assert_eq!(RunPostingPage::decode(&manual_v2()).expect("v2 page"), page);
+    assert_eq!(RunPostingPage::decode(&manual_v3()).expect("v3 page"), page);
     assert_ne!(manual_v1(), manual_v2());
+    assert_ne!(manual_v2(), manual_v3());
+}
+
+#[test]
+fn v3_digest_bytes_are_exact_and_canonical() {
+    let page =
+        RunPostingPage::new(2, *b"abc", 1, vec![row(256, 0xff)]).expect("high-byte digest page");
+    let mut golden = vec![
+        0x86, 3, 2, 0x83, 0x18, b'a', 0x18, b'b', 0x18, b'c', 1, 0x81, 0x58, 0x20,
+    ];
+    golden.extend_from_slice(&[0xff; 32]);
+    golden.extend_from_slice(&[0x81, 0x82, 0x19, 1, 0, 0]);
+    assert_eq!(page.encode().expect("v3 wire"), golden);
+    assert_eq!(RunPostingPage::decode(&golden).expect("v3 fixture"), page);
+    assert_eq!(
+        page_wire::encode_v2(&page).expect("v2 wire").len(),
+        golden.len() + 32
+    );
+
+    let digest_start = 13;
+    let mut short = golden.clone();
+    short[12] = 31;
+    let _removed = short.remove(digest_start + 31);
+    let mut long = golden.clone();
+    long[12] = 33;
+    long.insert(digest_start + 32, 0xff);
+    let mut noncanonical_length = golden.clone();
+    drop(noncanonical_length.splice(11..13, [0x59, 0, 32]));
+    let mut legacy_array_under_v3 = manual_v2();
+    legacy_array_under_v3[1] = 3;
+    for malformed in [short, long, noncanonical_length, legacy_array_under_v3] {
+        assert!(RunPostingPage::decode(&malformed).is_err());
+    }
 }
 
 #[test]
@@ -158,7 +199,7 @@ fn legacy_prior_delta_and_mixed_merge_keep_original_blob_bytes_after_cold_open()
             },
         )]),
     )
-    .expect("mixed v1/v2 delta");
+    .expect("mixed v1/v3 delta");
     let delta_ref = store
         .map_get(&delta.pages, &key, None)
         .expect("delta map")
@@ -174,11 +215,11 @@ fn legacy_prior_delta_and_mixed_merge_keep_original_blob_bytes_after_cold_open()
         store
             .read_blob(&delta_ref, 32 * 1024, None)
             .expect("new bytes"),
-        next.encode().expect("v2")
+        next.encode().expect("v3")
     );
 
     let other = RunPostingPage::new(2, *b"abc", 0, vec![row(3, 9)]).expect("other page");
-    let (second, _) = apply_run_page_edits(
+    let (mut second, _) = apply_run_page_edits(
         &store,
         &lease,
         None,
@@ -187,11 +228,27 @@ fn legacy_prior_delta_and_mixed_merge_keep_original_blob_bytes_after_cold_open()
             key.clone(),
             RunPostingPageEdit {
                 prior: None,
-                next: Some(other),
+                next: Some(other.clone()),
             },
         )]),
     )
     .expect("second run");
+    let v2 = page_wire::encode_v2(&other).expect("v2 artifact");
+    let v2_ref = store
+        .put_blob(&lease, ObjectKind::Record, &[], &v2)
+        .expect("v2 stored page");
+    second.pages = store
+        .map_apply(
+            &lease,
+            &second.pages,
+            std::iter::once(Ok(MapEdit {
+                key: key.clone(),
+                value: Some(v2_ref.clone()),
+            })),
+        )
+        .expect("replace second page reference");
+    second.page_record_encoded_bytes = v2_ref.root.bytes;
+    second.validate().expect("v2 second root");
     let charged = run_merge_map_stage_bytes(&[&base.pages, &second.pages]).expect("stage charge");
     let old_three_frame_budget = charged
         .checked_sub(u64::try_from(2 * MAX_POSTING_PAGE_BYTES).expect("page bound"))
@@ -207,7 +264,7 @@ fn legacy_prior_delta_and_mixed_merge_keep_original_blob_bytes_after_cold_open()
         .is_err()
     );
     let (merged, _) = merge_run_posting_roots(&store, &lease, 3, &[base, second], charged)
-        .expect("mixed v1/v2 merge at exact staging charge");
+        .expect("mixed v1/v2 merge into v3 at exact staging charge");
     drop(lease);
     drop(store);
     let cold = ObjectStore::open(dir.path()).expect("cold store");
@@ -226,7 +283,7 @@ fn legacy_prior_delta_and_mixed_merge_keep_original_blob_bytes_after_cold_open()
         canonical
             .try_push(
                 merged_key,
-                &merged_page.encode().expect("canonical v2 page")
+                &merged_page.encode().expect("canonical v3 page")
             )
             .expect("canonical block entry"),
         immutable_block::PushResult::Added
@@ -239,4 +296,9 @@ fn legacy_prior_delta_and_mixed_merge_keep_original_blob_bytes_after_cold_open()
         cold.read_blob(&v1_ref, 32 * 1024, None).expect("cold v1"),
         v1
     );
+    assert_eq!(
+        cold.read_blob(&v2_ref, 32 * 1024, None).expect("cold v2"),
+        v2
+    );
+    assert_eq!(RunPostingPage::decode(&v2).expect("cold v2 decode"), other);
 }

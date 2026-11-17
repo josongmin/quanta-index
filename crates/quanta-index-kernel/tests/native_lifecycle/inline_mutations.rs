@@ -10,7 +10,7 @@ fn inline_mutation_pages_seal_original_digest_and_reopen_without_expected_edges(
     let ingress = engine.begin_input(operation(1))?;
     let sources = engine.stage_sources(
         ingress,
-        &[SourceInput {
+        vec![SourceInput {
             path: "same-source.rs".into(),
             bytes: b"source body".to_vec(),
             text: SourceTextAdmission::Utf8 {

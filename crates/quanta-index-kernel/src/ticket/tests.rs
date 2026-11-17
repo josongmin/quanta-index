@@ -49,6 +49,17 @@ impl quanta_index_core::index::ports::CatalogDiagnosticPort for CleanupCatalog {
 }
 
 impl CatalogReadPort for CleanupCatalog {
+    fn begin_read_attempt<'a>(
+        &'a self,
+        _: &'a dyn ReadSessionLease,
+        _: ReadTicketLease,
+        _: &'a WorkBudget,
+    ) -> Result<Box<dyn quanta_index_core::index::CatalogReadAttempt + 'a>, IndexError> {
+        Err(IndexError::BackendViolation(
+            "cleanup-only fixture cannot grant read authority".into(),
+        ))
+    }
+
     fn open_read_session(&self) -> Result<Arc<dyn ReadSessionLease>, IndexError> {
         Err(IndexError::BackendViolation(
             "not a session-open fixture".into(),

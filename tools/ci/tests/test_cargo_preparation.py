@@ -89,6 +89,7 @@ def test_one_preparation_preserves_original_selection_and_reuses_both_commands(
                 "quanta-index-searchd-runtime",
                 "--bin",
                 "quanta-index-searchd",
+                "--all-features",
                 "--locked",
             ],
         ]

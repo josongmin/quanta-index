@@ -185,18 +185,40 @@ fn run_inventory_for_65_distinct_references(limit: usize) -> Result<(), IndexErr
                     if limit == 0 { 4 } else { 1 }
                 );
             }
-            for (term, occurrence_ref) in &term_keys {
-                let mut cursor = spool.posting_root_cursor(term);
-                for owner in owners {
-                    let row = cursor.next_edit(context.budget)?.ok_or_else(|| {
-                        IndexError::BackendViolation("expected posting edit absent".into())
-                    })?;
-                    check_eq!(row.edit.key.as_slice(), owner.as_slice());
-                    check_eq!(row.edit.expected, None);
-                    check_eq!(row.edit.next, Some((*occurrence_ref).into()));
+            let mut after: Option<Vec<u8>> = None;
+            let mut observed = 0_usize;
+            loop {
+                let terms = spool.posting_term_page(after.as_deref(), context.budget)?;
+                if terms.is_empty() {
+                    break;
                 }
-                check!(cursor.next_edit(context.budget)?.is_none());
+                let mut roots = spool.posting_root_cursors(
+                    &terms,
+                    &[false; 64][..terms.len()],
+                    context.budget,
+                )?;
+                for (slot, term) in terms.iter().enumerate() {
+                    let (_, occurrence_ref) = term_keys
+                        .iter()
+                        .find(|(key, _)| key.as_slice() == term.as_slice())
+                        .ok_or_else(|| {
+                            IndexError::BackendViolation("unexpected posting term".into())
+                        })?;
+                    let mut cursor = roots.cursor(slot, term.as_slice())?;
+                    for owner in owners {
+                        let row = cursor.next_edit(context.budget)?.ok_or_else(|| {
+                            IndexError::BackendViolation("expected posting edit absent".into())
+                        })?;
+                        check_eq!(row.key(), owner.as_slice());
+                        check_eq!(row.expected()?, None);
+                        check_eq!(row.next()?, Some((*occurrence_ref).into()));
+                    }
+                    check!(cursor.next_edit(context.budget)?.is_none());
+                    observed += 1;
+                }
+                after = terms.iter().last().map(|key| key.as_slice().to_vec());
             }
+            check_eq!(observed, term_keys.len());
         }
     }
     check_eq!(memory.live.load(Ordering::Relaxed), 0);

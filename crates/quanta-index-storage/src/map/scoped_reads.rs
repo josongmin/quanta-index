@@ -13,7 +13,7 @@ use quanta_index_core::index::{
     },
 };
 
-use super::{Node, charge_key_allocation, decode_node, key_nibbles, original_lookup};
+use super::{Node, decode_node, original_lookup};
 use crate::FileObjectStore;
 
 const SLOTS: usize = 512;
@@ -196,11 +196,8 @@ impl PersistentMapPort for ScopedReads<'_> {
         key: &[u8],
         budget: &mut WorkBudget,
     ) -> Result<Option<MapValue>, IndexError> {
-        budget.checkpoint()?;
-        charge_key_allocation(key, budget)?;
-        let nibbles = key_nibbles(key, budget)?;
         self.store
-            .lookup_inner_with(root, &nibbles, budget, |reference, budget| {
+            .lookup_key(root, key, budget, |reference, budget| {
                 self.read_node(root, reference, budget)
             })
     }
@@ -224,10 +221,23 @@ impl PersistentMapPort for ScopedReads<'_> {
         limit: u32,
         budget: &mut WorkBudget,
     ) -> Result<MapPage, IndexError> {
-        self.store
-            .scan_with(root, after, limit, budget, |reference, budget| {
-                self.read_node(root, reference, budget)
-            })
+        FileObjectStore::scan_with(root, after, limit, budget, |reference, budget| {
+            self.read_node(root, reference, budget)
+        })
+    }
+
+    fn try_visit_scan_pages(
+        &self,
+        root: MapRoot,
+        budget: &mut WorkBudget,
+        visitor: &mut dyn FnMut(MapPage, &mut WorkBudget) -> Result<(), IndexError>,
+    ) -> Result<bool, IndexError> {
+        FileObjectStore::try_visit_scan_pages_with(
+            root,
+            budget,
+            |reference, budget| self.read_node(root, reference, budget),
+            visitor,
+        )
     }
 
     fn visit_diff(

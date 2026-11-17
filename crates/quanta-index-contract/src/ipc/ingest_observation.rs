@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BatchPublishReceipt, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
-    SearchPlaneTrackKind, SourcePublicationEvent,
+    SearchPlaneErrorCodeV2, SearchPlaneTrackKind, SourcePublicationEvent,
 };
 
 /// Wall-clock nanoseconds observed by the semantic storage owner.
@@ -174,13 +174,27 @@ impl SourcePublicationBinding {
     }
 }
 
+/// Transport-body cleanup after a durable source publication. A deferred or
+/// failed cleanup does not undo the publication or prevent its activation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourcePublicationUploadCleanupV1 {
+    Complete,
+    Deferred,
+    Failed {
+        code: SearchPlaneErrorCodeV2,
+        message: String,
+    },
+}
+
 /// The current publish response: durable identity and separate transient
-/// observation. The optional field is explicitly required on the wire.
+/// observation and cleanup. Nullable fields are explicitly required on the wire.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchCorpusPublishOutcome {
     pub publication: SourcePublicationBinding,
     pub receipt: BatchPublishReceipt,
     pub observation: Option<SearchCorpusIngestObservation>,
+    /// Present only for staged transport. This is not part of the journal receipt.
+    pub upload_cleanup: Option<SourcePublicationUploadCleanupV1>,
 }
 
 // One manual wire implementation for these closed records. Each map slot is
@@ -319,10 +333,59 @@ impl_observation_struct_serde!(SourcePublicationBinding {
     batch_digest: String => "batch_digest",
 });
 
+struct SourcePublicationUploadCleanupWire {
+    kind: String,
+    code: Option<SearchPlaneErrorCodeV2>,
+    message: Option<String>,
+}
+
+impl_observation_struct_serde!(SourcePublicationUploadCleanupWire {
+    kind: String => "kind",
+    code: Option<SearchPlaneErrorCodeV2> => "code",
+    message: Option<String> => "message",
+});
+
+impl Serialize for SourcePublicationUploadCleanupV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let (kind, code, message) = match self {
+            Self::Complete => ("complete", None, None),
+            Self::Deferred => ("deferred", None, None),
+            Self::Failed { code, message } => ("failed", Some(code), Some(message)),
+        };
+        let mut state = serializer.serialize_struct("SourcePublicationUploadCleanupV1", 3)?;
+        state.serialize_field("kind", kind)?;
+        state.serialize_field("code", &code)?;
+        state.serialize_field("message", &message)?;
+        state.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for SourcePublicationUploadCleanupV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = SourcePublicationUploadCleanupWire::deserialize(deserializer)?;
+        match (wire.kind.as_str(), wire.code, wire.message) {
+            ("complete", None, None) => Ok(Self::Complete),
+            ("deferred", None, None) => Ok(Self::Deferred),
+            ("failed", Some(code), Some(message)) => Ok(Self::Failed { code, message }),
+            _ => Err(serde::de::Error::custom(
+                "invalid source publication upload cleanup",
+            )),
+        }
+    }
+}
+
 impl_observation_struct_serde!(SearchCorpusPublishOutcome {
     publication: SourcePublicationBinding => "publication",
     receipt: BatchPublishReceipt => "receipt",
     observation: Option<SearchCorpusIngestObservation> => "observation",
+    upload_cleanup: Option<SourcePublicationUploadCleanupV1> => "upload_cleanup",
 });
 
 impl Serialize for IngestObservationStatus {
@@ -610,6 +673,7 @@ mod tests {
     fn outcome() -> Result<SearchCorpusPublishOutcome, Box<dyn std::error::Error>> {
         let batch = batch()?;
         Ok(SearchCorpusPublishOutcome {
+            upload_cleanup: None,
             publication: SourcePublicationBinding::for_batch(&batch),
             receipt: BatchPublishReceipt {
                 sealed: batch.seal,
@@ -722,6 +786,7 @@ mod tests {
             "/publication/target",
             "/publication/batch_digest",
             "/observation",
+            "/upload_cleanup",
             "/observation/semantic",
             "/observation/lexical_build_ns",
             "/observation/lexical_stages",
@@ -754,7 +819,7 @@ mod tests {
             "old bare receipt must not silently mix with observed payload"
         );
         let duplicated = format!(
-            "{{\"publication\":{},\"receipt\":{},\"observation\":null,\"observation\":null}}",
+            "{{\"publication\":{},\"receipt\":{},\"upload_cleanup\":null,\"observation\":null,\"observation\":null}}",
             serde_json::to_string(&outcome.publication)?,
             serde_json::to_string(&outcome.receipt)?
         );
@@ -762,6 +827,80 @@ mod tests {
             serde_json::from_str::<SearchCorpusPublishOutcome>(&duplicated).is_err(),
             "duplicate nullable observation must be refused"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn upload_cleanup_wire_is_closed_and_independent_of_durable_receipt() -> TestResult {
+        let mut published = outcome()?;
+        let receipt = serde_json::to_value(&published.receipt)?;
+        for cleanup in [
+            SourcePublicationUploadCleanupV1::Complete,
+            SourcePublicationUploadCleanupV1::Deferred,
+            SourcePublicationUploadCleanupV1::Failed {
+                code: SearchPlaneErrorCodeV2::Internal,
+                message: "cleanup write failed".into(),
+            },
+        ] {
+            let wire = serde_json::to_value(&cleanup)?;
+            assert_eq!(
+                serde_json::from_value::<SourcePublicationUploadCleanupV1>(wire.clone())?,
+                cleanup
+            );
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&cleanup, &mut bytes)?;
+            assert_eq!(
+                ciborium::from_reader::<SourcePublicationUploadCleanupV1, _>(bytes.as_slice())?,
+                cleanup
+            );
+            for key in ["kind", "code", "message"] {
+                let mut missing = wire.clone();
+                let _removed = missing.as_object_mut().ok_or("cleanup object")?.remove(key);
+                assert!(
+                    serde_json::from_value::<SourcePublicationUploadCleanupV1>(missing).is_err()
+                );
+                let duplicate = format!(
+                    "{{\"{key}\":{},{}",
+                    serde_json::to_string(&wire[key])?,
+                    &serde_json::to_string(&wire)?[1..]
+                );
+                assert!(
+                    serde_json::from_str::<SourcePublicationUploadCleanupV1>(&duplicate).is_err()
+                );
+            }
+            let mut unknown = wire;
+            let _previous = unknown
+                .as_object_mut()
+                .ok_or("cleanup object")?
+                .insert("extra".into(), serde_json::Value::Null);
+            assert!(serde_json::from_value::<SourcePublicationUploadCleanupV1>(unknown).is_err());
+            published.upload_cleanup = Some(cleanup);
+            assert_eq!(serde_json::to_value(&published.receipt)?, receipt);
+            assert_eq!(
+                serde_json::from_value::<SearchCorpusPublishOutcome>(serde_json::to_value(
+                    &published
+                )?)?,
+                published
+            );
+        }
+        for invalid in [
+            serde_json::json!({"kind":"complete", "code":"INTERNAL", "message":null}),
+            serde_json::json!({"kind":"deferred", "code":null, "message":"failure"}),
+            serde_json::json!({"kind":"failed", "code":null, "message":"failure"}),
+            serde_json::json!({"kind":"failed", "code":"INTERNAL", "message":null}),
+            serde_json::json!({"kind":"unknown", "code":null, "message":null}),
+        ] {
+            assert!(
+                serde_json::from_value::<SourcePublicationUploadCleanupV1>(invalid.clone())
+                    .is_err()
+            );
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&invalid, &mut bytes)?;
+            assert!(
+                ciborium::from_reader::<SourcePublicationUploadCleanupV1, _>(bytes.as_slice())
+                    .is_err()
+            );
+        }
         Ok(())
     }
 
@@ -863,6 +1002,10 @@ mod tests {
             ],
         ] {
             fields.push(publication.clone());
+            fields.push((
+                ciborium::Value::Text("upload_cleanup".to_string()),
+                ciborium::Value::Null,
+            ));
             let mut mutant = Vec::new();
             ciborium::into_writer(&ciborium::Value::Map(fields), &mut mutant)?;
             assert!(

@@ -23,73 +23,51 @@ Prior Native markers require an explicit rebuild or a new incarnation.
 
 ## Historical cutover checkpoint (2026-10-12)
 
-This runbook describes the existing legacy state workflow, not backup/restore
-qualification for the opt-in Catalog/Kernel native product. The remaining
-implementation and exact acceptance owners are in
-[E06](../plans/oct-22-finalizing/E06-sdk-service-cutover.md) and
-[E08](../plans/oct-22-finalizing/E08-integration-release.md).
-The Native RFC retains design contracts and dated observations. Launcher `serve`, explicit `serve-native`, their state
-markers and native Semantic/Auto capabilities are not interchangeable.
+The v12/capture-v2 marker and `bb7a8bf2` legacy workflow's 59-test result were
+source-bound checkpoints. Their exact narrative is in the
+[recovery index](../ARCHIVE-INDEX.md#2026-11-12-public-usage-and-operator-consolidation).
+They do not qualify Native backup/restore, default selection or a newer format.
+Use the current runtime/Catalog format authorities above and the
+[Native transition boundary](#native-cross-root-cutover-and-rollback-boundary--2026-11-12).
+Do not remove markers, relabel roots or reuse old-format capture claims.
 
-At this checkpoint Native used `.native-index-v12`. Source-event capture v2 bound the
-immutable logical mutation count/digest separately from the exact execution
-ViewRef/SourceCut and physical mutation-root layout. The Catalog verifies a
-persistent state-v12/capture-v2/hash-domain singleton before DDL, allocator
-seeding or recovery, including direct in-process Catalog/Kernel consumers.
-A v1-v11 marker or existing Native namespace without the exact current stamp
-requires a new root and explicit rebuild/new incarnation. Do not delete the
-old marker, relabel the root, rewrite event payloads or reuse old capture claims.
-Ordinary generic Catalog roots may already contain a Native namespace, so this
-breaking refusal applies to those unstamped roots too.
+## Native producer inventory recovery
 
-The native service retains its indexed terminal-custody ready set and bounded
-automatic maintenance with explicit workspace/epoch sequence windows. Existing
-pins and replay receipts are preserved inside the supported current incarnation;
-this statement does not promise old-format receipt migration. Source/version-transition
-implementation and selected proof are recorded in
-[Native RFC section 23.61](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md#2361-f07-logical-capture-rebase-and-native-v11-format-gate-2026-10-13).
-Producer-wide source resync seals its mode with the original operation and
-switches epoch only with the complete known-owner baseline, view and receipt.
-Pending resync does not expose the new epoch. A baseline must explicitly
-include every known owner of the producer; filesystem completeness remains
-the producer responsibility. Source events start at ordinal one, independently
-of the operation attempt sequence.
+The running Native service exposes
+[producer-owner paging](../../crates/quanta-index-sdk/src/native_uds.rs)
+through `list_producer_source_owners(selection, producer, after, limit, budget)`.
+The first page may select Latest; continuations use `Exact(page.view)` and
+`page.next_after()`, with limit 1..128. Persist the recovered view/source and
+prior epoch with the reconstruction attempt. Publication or epoch changes
+return Conflict; restart from a current first page. Historical inventory
+enumeration is refused; historical known-key lookup remains separate.
 
-When the producer's local owner ledger is lost, use Native SDK
-`list_producer_source_owners(selection, producer, after, limit, budget)`.
-The first page may select Latest; all continuation pages use `Exact(page.view)`
-and `page.next_after()`, with limit 1..128. Persist the recovered view/source
-and prior epoch with the reconstruction attempt. Include every recovered owner
-as unchanged, replacement or deletion in SourceResync and discover current/new
-files independently. Publication or epoch changes during enumeration return
-Conflict; restart from a current first page. Historical inventory enumeration
-is intentionally refused; historical known-key lookup remains available.
-The page API is a recovery input, not actual V9 producer delivery or backup
-qualification. Implementation/verification scope: [RFC section 23.63](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md#2363-f07-paged-producer-inventory-and-epoch-recovery-2026-10-13).
+SourceResync must include every known producer owner as unchanged, replacement
+or deletion, and independently discover current/new files. It seals mode with
+the original operation and switches epoch only with the complete baseline,
+view and receipt; pending resync does not expose the new epoch. Source events
+start at ordinal one independently of operation attempts. Paging is recovery
+input, not proof of actual V9 delivery or supported Native backup/restore.
+[Original API/verification scope](../history/oct-10-index-closeout/RFC-CHECKPOINTS-2026-10-21.md#2363-f07-paged-producer-inventory-and-epoch-recovery-2026-10-13)
 
-Native backup/restore, a supported old-outbox/new-incarnation reconciliation,
-sustained disk capacity and default launcher switch are still separate gates.
+## Offline staging custody
 
-Backup/restore creates its derived staging directory exclusively. Any existing
-staging entry (directory, file, symlink or dangling symlink) is a typed
-`InvalidRequest` refusal; it is neither reused nor removed. The destination
-itself must also be absent, including an empty directory. These checks precede
-staging writes.
+Backup/restore creates its derived staging directory exclusively. An existing
+directory, file, symlink or dangling symlink is typed `InvalidRequest`; it is
+neither reused nor removed. The destination must also be absent, including an
+empty directory. These checks precede staging writes.
 
-Interrupted and source-drifted staging roots remain unpublished. Inspect their
-contents and custody before explicitly cleaning an operator-owned staging root,
-or select another absent destination. A derived name or a sealed manifest does
-not prove ownership and does not make staging an activated root. Automatic
-path-based recursive cleanup is deliberately unavailable. The existing offline
-command owner accepted this boundary on frozen source `bb7a8bf2`: 59 tests passed,
-including source/external symlink preservation, interruption retry and drift.
-This legacy workflow result does not qualify new-native product restore.
-
-New-native cutover additionally requires
-its actual backup/restore or explicit rebuild route, old-view/replay identity
-checks and a supported reopen/rollback drill before default launcher selection.
+Interrupted or source-drifted staging remains unpublished. Inspect its contents
+and custody before explicitly cleaning an operator-owned root, or choose a new
+absent destination. A derived name or sealed manifest establishes neither
+ownership nor activation. Automatic path-based recursive cleanup is unavailable.
+Native fresh-root rebuild, old-view/replay identity and supported recovery
+acceptance remain in E06/E08 and the Native transition contract below.
 
 ## Offline state workflow (S21-11)
+
+This section covers the Legacy generation workflow. Native backup/restore and
+cross-root acceptance follow the explicit Native boundary below.
 
 CLI owner: `crates/quanta-index-searchd/src/cli/command.rs`.
 Execution owner: `crates/quanta-index-searchd-runtime/src/state_migration.rs`
@@ -202,28 +180,20 @@ restore never convert an old format into the current one.
 
 ## Historical legacy paired-cutover checkpoint
 
-The RepoMap V1 success route removal is a local dirty-tree candidate, not a
-cross-repo cutover receipt. The Semantica producer must build against the flat
-V2 activation request before qualification. Separately, the intended semantic
-cutover removes `QUANTA_INDEX_SEMANTIC_DERIVE_MODE` and all live chunk-text
-derivation fallback. It requires typed semantic-source producer fixtures and
-an exact-source search/ingest proof; a chunk-only publish now yields no dense
-vectors, not a hidden chunk-text fallback. The previous Semantica handoff
-could build a lexical batch with empty semantic replacement scopes when
-`shadow_semantic_publish` was false; the single-path producer change removes
-that switch. A lexical delta can still intentionally omit unchanged semantic
-scopes. The wire currently has no independent semantic coverage witness, so
-an empty vector alone cannot distinguish unchanged from an erroneous omission;
-producer tests and paired qualification must establish that invariant. The
-typed `RawCodeFallback` budget and card production remain required. The
-semantic manifest format is now 11 and its pre-seal build-contract format is
-3; prior-format generations are refused and must be rebuilt from typed
-producer input, not resumed or relabeled. This version bump is local source
-behavior, not a completed candidate-root or cross-repo qualification. The
-retired `migrate-state` importer is unavailable. Old semantic generations
-are typed-refusal/rebuild candidates, with no in-place migration. The live
-semantic runtime cutover is still in progress; these docs do not prove that
-a running binary or the Semantica producer has completed it.
+The RepoMap V1→V2 and semantic format11/build-contract3 observations were local
+source checkpoints, not a paired deployment receipt. Their exact pre-compaction
+body is recoverable from Git as recorded in the recovery index.
+
+Legacy semantic derivation consumes typed semantic-source scopes, including
+explicit `RawCodeFallback`; retired chunk-text fallback and
+`QUANTA_INDEX_SEMANTIC_DERIVE_MODE` are not live alternatives. An empty scope can
+mean unchanged semantic input, so empty vectors alone do not prove complete
+producer coverage. Independent producer and exact-pair tests must establish
+that invariant. Prior-format generations require typed rebuild, not relabeling
+or the retired `migrate-state` importer. The
+[Legacy semantic ADR](../adr/MAY-31-001-lancedb-semantic-generation-authority.md)
+and [Native ADR](../adr/NOV-12-001-native-query-and-semantic-engine.md)
+retain their separate backend and acceptance scopes.
 
 ## Semantica producer replay envelope V3 boundary (F07, 2026-10-13)
 
@@ -264,9 +234,10 @@ The current F07 host composition accepts an explicit optional Native UDS path.
 The host admits and retains its own path backing; publication callers borrow
 that path. Never derive this endpoint from the legacy SearchPlane state root.
 Same-key host revalidation includes exact endpoint equality. The SDK endpoint
-entry can retain an explicitly supplied socket, but the actual producer does
-not yet deliver an admitted per-attempt Native target. Endpoint configuration
-alone does not enable Native source publication.
+entry can retain an explicitly supplied socket. Endpoint custody and the
+admitted per-attempt Native target are separate inputs; actual publication
+must carry and authenticate both. Endpoint configuration alone does not enable
+Native source publication.
 
 Native selection and durable V9 preparation must be supplied together. Recovery
 uses the original V9 preparation and bound request. `status(operation)` alone
@@ -288,7 +259,7 @@ budgets and waiter allocation are outside the initial budget admission contract.
 
 Initial-full source staging borrows source bodies in fixed windows and returns
 an independent sealed owner set. It does not Submit. The dispatcher now wires V9 stage/bind/exact Submit for an explicitly attached
-target. The actual product caller still needs target delivery and eligible
+target. The actual product caller must carry that target with eligible
 first-full source authority.
 Runtime/Native Large/XL acceptance remains unqualified. Preserve original request
 roots and replay data across Unknown outcomes; do not reseal a different request
@@ -302,149 +273,81 @@ expiry retains the immutable original request for a later admitted retry.
 Confirmed Refused is terminal refusal, not Unknown. Writer receipt persistence
 is followed by a fresh clock sample before authoritative V9 recording.
 
-Lifecycle compatibility code now observes the actual SDK owned phase without
-requiring an invented owner bit or static timeout. Its owning Rust proof is
-pending. Startup readiness still has no fresh Original execution grant. Do not
-restore old keepers from persisted rows or treat query-readiness timeout as
-execution authority. Fresh product recovery admission must precede cutover;
-Native restart and Large/XL operating/performance acceptance remain NOT_RUN.
+Lifecycle compatibility observes the actual SDK owned phase rather than an
+invented owner bit or static timeout. Startup readiness is not a fresh Original
+execution grant. Do not restore keepers from persisted rows or treat query-readiness
+timeout as execution authority. Fresh recovery admission must precede cutover;
+current restart, installed recovery and performance results belong to NC-D/F.
 
 
 ### SDK explicit Native selection is not a product activation switch
 
-ApplyChanges now accepts a closed optional Native target and binds its canonical
-selection digest into idempotency. Native requires an explicit key. SDKPreSource,
-RecoveryRequired and Completed recovery currently refuse Native until exact V9
-preparation/binding/terminal evidence is authenticated. Do not replay an ordinary
-cached response as proof of Native publication.
+ApplyChanges' closed optional Native target binds the canonical selection digest
+into idempotency and requires an explicit key. SDKPreSource, RecoveryRequired
+and Completed recovery must authenticate exact V9 preparation/binding/terminal
+evidence before treating a Native journal as complete. An ordinary cached reply
+cannot prove Native publication.
 
-The normal Facts route still refuses before Source CAS because its authenticated
-pending source carrier is not yet coupled to committed promotion. The existence
-of the later capture helper does not enable this route. A genuine Original source
-must survive the same CAS and match the committed closure/keeper. Startup still
-needs fresh recovery admission; persisted Original keeper resurrection is invalid.
+Facts promotion requires a genuine Original source, the same Source CAS and
+committed closure/keeper. The admitted target and actual FULL/Delta/Resync
+capability must match that producer; endpoint configuration or source staging
+alone cannot authorize publication. Startup recovery needs fresh Original
+admission, never resurrection of a persisted keeper. Current producer/caller
+and installed acceptance are owned by [E02](../plans/oct-22-finalizing/E02-publication-recovery.md)
+and [E06](../plans/oct-22-finalizing/E06-sdk-service-cutover.md).
 
-Current scoped proof: Quanta observer/cap tests 56/56 and Semantica ingress tests
-126/126 on their recorded source scopes, target codec 1/1 on a separate CAS.
-Runtime check FAILED at the PTA genuine-fixture migration; SDK target execution,
-product restart and Native Large/XL acceptance remain NOT_RUN. See VALIDATION
-§23.68–23.69 for commands and the zero-test selector correction.
-
-
-The prospective→committed Facts carrier is now wired in source, and the existing
-pre-source journal stores checksum-covered Native selection. Cold and in-process
-recovery inspect it and refuse before legacy Product restoration. Facts remains
-guarded: ordinary mutations select Delta and the current Native source adapter
-accepts initial FULL only. Do not lift this guard without eligible first-FULL
-selection and Source CAS→V9 recovery coupled to fresh Original admission.
-Canonical validation checkpoints were added, but V5 artifact materialization and
-sorting still prevent an end-to-end interruption ceiling. Validation §23.70
-separates pending pooled checks from earlier scoped GREENs.
-
-
-Latest component proof at §23.70 is 65 selected Quanta tests and 127 same-CAS
-Semantica ingress tests, plus changed API inventory/prompt lint. SDK DTO owning
-compilation FAILED in the PTA Python birth feature boundary before executing
-its test. That source-authority fix, full Runtime proof and product activation
-remain outstanding; these component results are not a cutover receipt.
-
-
-The §23.71 producer audit removed the proposed Ordinary bridge because it has no
-production issuer. Java-only ledger access is feature-gated; unsupported Python
-general-expression reads return typed UnsupportedOperation. The genuine
-PythonSource literal route remains. Do not treat this as general Python support
-or lift Facts admission. PTA general-callable fixtures need actual Original
-producer custody, and initial FULL plus committed-source recovery are separate
-remaining seams. New owning-run results remain pending until their terminal
-receipt; see VALIDATION §23.71.
-
+The following are dated F07 results, not a current unfinished-work inventory:
+§23.68–23.69 recorded Q56/56·S126/126 and separate codec1/1; §23.70 recorded
+Q65·S127 component bodies. Runtime/SDK attempts failed before bodies in their
+PTA feature/birth boundary and did not qualify product restart or Large/XL.
+§23.70's carrier/journal source wiring superseded the earlier missing-carrier
+observation. §23.71 removed a proposed Ordinary bridge without a production
+issuer and recorded feature-gated/typed-refusal Python limits. Those historical
+limits and pending counts do not define today's capability matrix or new tasks.
+Use the owning source and current acceptance packet before changing admission.
 
 ### F07 V5 progress and Native completion checkpoint
 
-A Native SDK checkpoint must be joined to the same freshly admitted Original
-source, exact retained selector, immutable V9 request, typed Native terminal
-receipt and persisted ACK. The new Runtime readback uses the existing canonical
-ACK oracle; ordinary checkpoint readback explicitly refuses a Native journal.
-Cleanup phases are not completion readadmission. Mutation cold gates remain
-until Native Delta changed-set authority is implemented.
+A Native SDK checkpoint binds the same fresh Original source, retained selector,
+immutable V9 request, typed terminal receipt and persisted ACK. Ordinary
+checkpoint readback refuses a Native journal; cleanup is not completion.
 
-Initial FULL is an explicit index-only publication from a committed source
-baseline. Endpoint-only ensure does not claim Native completion. Fresh Original
-entry issuance, exact operation lookup before recollection, and Native terminal
-readback must be coupled before that API is accepted. The current additions are
-source/static work; owning Rust and product cutover remain NOT_RUN.
-Selected Contract/Core/IPC/SDK strict Clippy is VERIFIED, compiler 52.33s; see
-VALIDATION §23.72. It is not a Runtime/product/performance receipt.
-
-
-Initial-FULL producer recheck found a separate correctness seam: an ordinary
-ensure can already publish a Legacy Lexical head. The existing aggregate emitter
-then selects Delta, freezes that head and carries its delivered source-event
-predecessor. These values cannot be relabeled as Native first FULL. The Native
-selection must choose a complete Original FULL producer and its real backend
-head/event authority before plan/emission. Do not loosen the Native validator,
-clear the Legacy head, or claim the new initial API is accepted before coupling
-this policy and owning validation.
-
-
-The subsequent call-path check narrows the initial-head finding: endpoint-only
-ensure is not proven to always publish Legacy Lexical. The existing deferred G1
-contract provides a genuine NotComputed baseline with no lexical head/outbox,
-no completed predecessor and first source-event ancestry. The initial Native
-producer requires this exact deferred proof; an already-active Legacy head
-refuses before publication rather than being relabeled. Canonical Native target
-eligibility additionally requires Advance, event (0,1), and empty owners/paths/
-frontiers roots. SourceCut must still match the actual selected Native view.
-Fresh entry issuance and pre/post-collection exact V9 attempt inspection are
-connected in source. Acked replay authenticates typed Native receipt and persisted
-ACK; nonterminal replay fences recollection and remains pending/refused, not a
-new request. Automatic nonterminal resume, Delta and Resync remain open.
-
+Initial FULL uses a committed source baseline and complete Original producer,
+not endpoint-only ensure or a relabeled Legacy head. The deferred G1 baseline
+has no lexical head/outbox or completed predecessor. Native initial eligibility
+requires Advance, event (0,1), empty owners/paths/frontiers and SourceCut matching
+the selected Native view. Couple fresh entry issuance with exact attempt
+inspection before and after collection. Bound nonterminal replay fences
+recollection; it does not become a new operation. Actual FULL/Delta/delete/
+Resync and later replay acceptance follow the existing E02/E06 owners.
 
 ### F07 captured component verification and later activation boundary
 
-VALIDATION §23.73 records Contract746/746, Foundation208/208 and Kernel
-ingress127/127 at one immutable source hash. They prove component behavior,
-including observed V5 parity/cancellation; they do not qualify product cutover.
-Later Runtime/SDK source couples exact Native ACK to the existing Product reader
-visibility owner and resumes only already-bound Dispatching requests using the
-existing V9 lease/terminal owners. Its owning Rust and product execution remain
-NOT_RUN. Earlier phases remain pending and Native mutation Delta gates remain.
-
+The historical Contract746/746, Foundation208/208 and Kernel ingress127/127
+results shared one immutable source. They proved component V5/cancellation
+behavior, not product cutover. Exact Native ACK, actual SDK→daemon visibility,
+bound Dispatching replay and restart still need their matched owning/product
+scope; older component counts do not supply it.
 
 ### F07 recovery admission still required
 
-RFC/VALIDATION §23.74 distinguishes the exact-length file reader repair from
-complete Native memory admission. Do not qualify recovery memory from the outer
-Original scope: generic CBOR decode, re-encode and repeated member reads remain
-unadmitted. Original refusal mapping is repaired in source; new owning tests
-have not yet run. The latest SDK owning attempt failed on a missing build-context
-import before any test; its repaired retry has no terminal result yet.
-
+Recovery must admit raw/decoded memory, CBOR decode/re-encode and repeated
+member reads under their actual request and retained custody. An enclosing
+Original scope alone is insufficient. The old exact-reader fixes, compiler
+errors and body-zero SDK retries are historical records, not current repair
+assignments. Current source and acceptance belong to
+[E02](../plans/oct-22-finalizing/E02-publication-recovery.md) and
+[E06](../plans/oct-22-finalizing/E06-sdk-service-cutover.md).
 
 ### Latest Native launcher and recovery acceptance boundary (2026-10-13)
 
-Current `tools/deployment/launcher.py::serve_selection` chooses serve-native when
-selected native_config exists, and `_run_selected_command` requires its immutable
-boot receipt. Source installation of this branch supersedes an earlier inventory
-that launcher always selected serve. It does not qualify Native state backup,
-restore, crash recovery or deployment rollback.
-
-The SDK owning retry is terminal FAILED(exit101, parser type inference, tests0);
-current parser fixes require a new captured owning result. Exact Native ACK
-reader activation and bound Dispatching source paths are implemented, but their
-actual SDK→daemon→search and restart acceptance remains NOT_RUN. Before product
-cutover, finish controlled CBOR/read custody, earlier replay phases, Semantica
-Delta/delete/Resync and construction-time aggregate physical authority. Preserve both the earlier legacy XL timeout and later07f0430 legacy lifecycle
-pass(777.167s); Native Large/XL and formal performance remain separate.
-
-
-The original full scope still includes Native fresh-root rebuild/reselection and default cutover, actual
-Semantica producer FULL/Delta/delete/Resync, physical constructor-time admission,
-ANN/graph/IDE/Auto and integrated operating/release acceptance. The 45% requirement
-tally cannot authorize default rollout or retire legacy lifetime owners. Original
-A/D/C5 repairs and the later legacy XL lifecycle pass remain scoped VERIFIED.
-
+This heading retains the dated launcher/SDK checkpoint. Its branch selection,
+compiler failures and legacy lifecycle pass are source-scoped history. Current
+selection, producer fencing, rollback refusals and restore-forward limitations
+are in the Nov-12 transition contract below. Original FULL/Delta/delete/Resync,
+physical admission, old-view recovery, ANN/graph/IDE/Auto and operating/release
+requirements remain in the [full-product DoD](../plans/oct-22-finalizing/DOD.md).
+No percentage tally or local pass authorizes default rollout.
 
 ### Native selection and restart (2026-10-14)
 
@@ -499,7 +402,7 @@ Semantica FULL/Delta/delete/Resync, ANN/graph/IDE, sustained resource limits,
 Native Large/XL, default cutover or release qualification.
 
 
-### Native cross-root switch and explicit rollback — 2026-10-14
+### Native cross-root cutover and rollback boundary — 2026-11-12
 
 Use the existing authoritative producer to build a fresh root through the
 Native SDK, then stop the producer and daemon. Do not copy the old Catalog,
@@ -508,34 +411,150 @@ its existing owner; this launcher is a verified deployment consumer, not an
 alternative source collector. Producer source/coverage/frontier parity must
 pass before a product/default cutover is qualified.
 
-1. Issue a Catalog receipt for the candidate's actual Published operation with
+The launcher currently refuses `rollback-legacy` and Native-to-Native
+`switch-native`. BOOT verification cannot prove that a separate producer has
+no durable undelivered work, or that no publication occurred after cutover.
+Reissuing a BOOT receipt does not lift these refusals. Plain same-root Native
+installation preserves the exact first installed BOOT receipt and refuses a
+replacement receipt before invoking verification. Its operation, object,
+SourceCut, installation attestation and root incarnation cannot be refreshed
+into a new rollback baseline.
+
+The following
+Legacy-to-Native path retains the FULL handoff and selection CAS checks; it
+does not qualify a product/default cutover without the required integration
+and producer parity gates.
+
+1. Stop producer admission, settle accepted work, and stop/join the daemon.
+   Keep the same deployment directory for all cooperating launcher operations.
+2. Issue a Catalog receipt for the candidate's actual Published operation with
    `select-native-state --config ... --manifest-operation ... --receipt ...`.
-2. Ensure the currently selected root is stopped and its install receipt is
-   current. After accepted publications, reissue/reselect its receipt using
-   the existing same-root install path. A stale receipt is refused.
 3. Run `python3 tools/deployment/launcher.py inspect-selection --selection
    /absolute/deployment/selection.json`. It prints only mode, root and canonical
    `selection_sha256`, without provider/environment secrets.
-4. Run `switch-native --selection /absolute/deployment/selection.json
+4. Preserve the exact Legacy head with `preserve-legacy --selection
+   /absolute/deployment/selection.json --previous-selection
+   /absolute/deployment/previous-legacy.json --expected-selection-sha256
+   <inspected-digest>`.
+5. Run `switch-native --selection /absolute/deployment/selection.json
    --expected-selection-sha256 <inspected-digest> --binary /absolute/searchd
    --state-root /absolute/fresh-root --config /absolute/fresh-config.json
-   --receipt /absolute/fresh-receipt.json`, with the existing explicit `--env`
-   settings. Both selections must be Native, belong to the same workspace,
-   have independent nonces and distinct non-nested physical roots. The one
-   deployment lock remains held through old/candidate Verify and publication.
-5. Serve through the existing selected launcher, then verify the producer's
+   --receipt /absolute/fresh-receipt.json --previous-selection
+   /absolute/deployment/previous-legacy.json
+   --expected-previous-selection-sha256 <preserved-digest>
+   --target-operation <producer-target-json>
+   --published-operation <producer-published-json>
+   --published-source-cut-digest <producer-published-digest>`, with the existing
+   explicit `--env` settings. The operations and SourceCut digest must agree
+   with the candidate BOOT receipt. The roots must be distinct and non-nested.
+   The deployment lock remains held through candidate Verify and publication.
+6. Serve through the existing selected launcher, then verify the producer's
    query/coverage/frontier gold and restart behavior.
 
-Rollback uses the same switch command targeting the retained old root with its
-fresh receipt and the newly inspected current selection digest. It is an explicit
-offline selection change; it does not replay updates accepted only on the newer
-root or infer equal SourceCuts. A candidate/current verification refusal leaves
-selection publication untouched. If rename may have occurred, PersistenceUncertain
-requires inspection of the durable selection, rather than blindly retrying the
-old CAS or automatically publishing a rollback. Native cross-root plain install
-is refused so it cannot bypass CAS. Initial install and same-root reselection
-retain their existing paths. Legacy-to-Native default transition is gated by
-W2-19 A; Native backup/restore remains unsupported.
+Enabling backward selection requires the canonical offline Catalog reader and
+the real producer's fenced outbox authority. With producer admission closed and
+the daemon stopped/joined, retain the producer fence through the deployment
+lock, both stores' identity/high-water/replay-floor checks, selection CAS and
+directory fsync. Require no publication after the durable cutover baseline and
+no pending or undelivered work in either store. Missing, foreign, cancelled,
+expired or uncertain evidence refuses selection publication. A client ACK is
+not the Catalog commit point; lost ACKs must settle the original operation's
+durable receipt. A caller-supplied approval or manually authored receipt cannot
+substitute for these authorities.
+
+### Installed offline recovery
+
+Current implementation and installed qualification are tracked in the
+[NC-D work packets](../plans/nov-12-native-cutover/tickets/NC-D-boot.md#current-work-packets-20261115).
+The committed FULL graph builder, paid Java inventory lender, Java DFG visitor,
+initial ordinary Source/V9 binding, Native RepoMap/FD6 evidence wiring and
+normal Exact-query/ACK-loss fixture are present in current source. Reuse those
+producer and caller paths. Current paired-source compiler/owning bodies and
+post-publication coverage/restart acceptance remain with NC-D/F; code presence
+alone is not signed installation proof. Fresh Store/mixed Attach repairs apply
+only when that source creation path is used. Signed Linux normal recovery is NOT_RUN.
+
+The installed Semantica resident invokes Q `recover-native` with its pinned
+helper image, retained Host and SDK locks, and sealed Source evidence. Use
+the installed bundle and a resident configured with
+`--native-recovery-helper-executable`, `--native-recovery-helper-sha256` and
+`--native-recovery-helper-memory-bytes`. Stop and join the Q serving process
+before the request so it releases the deployment lock.
+
+- When the Legacy publication uses a separate RepoMap process, preserve that
+  process's actual schema-2 Legacy selection in the active deployment directory.
+  In the Native config, set `legacy_repomap_selection.path` to the absolute saved
+  selection path and `legacy_repomap_selection.sha256` to the 32 bytes of its
+  canonical `inspect-selection` digest. Pin the resulting Native config before
+  preparing or selecting it. Stop and join the separate RepoMap process as well.
+- For `rollback-legacy`, use the original saved Legacy selection in the
+  active deployment directory. Use the selected Native root's config and
+  the producer's original Native FULL sequence.
+- For `restore-forward` from Legacy, run `build-native-candidate` with the
+  active selection digest, a separate candidate control directory, the pinned
+  Q binary and config, and the installed S server image and SHA256. After
+  `--`, pass the S startup options for the existing Legacy repository and the
+  Native namespace, the expected Legacy snapshot, and the configured Q
+  profile, control operation and object reference. Set `--producer-env` to
+  select the same durable SDK store as the Legacy resident. The launcher starts
+  Q, runs installed S FULL, and persists the FULL handoff. It records a clean
+  drain after Q exits and is reaped, then seals the AST only if it matches Q's
+  current view. It returns `candidate_path`, `candidate_sha256` and
+  `original_full_sequence` for the recovery request. When the FULL handoff
+  exists but the clean-drain record is absent, rerun the same command with the
+  same inputs. The launcher reopens and drains Q before attempting BOOT with
+  the retained FULL sequence.
+
+Obtain both canonical selection digests with `inspect-selection`. Submit the
+request through the attached workspace session:
+
+```sh
+quanta --workspace "$repo_root" --server-socket "$resident_socket" \
+  --runtime-session-id "$session" \
+  daemon native-offline-cutover --mode "$mode" \
+  --selection-path "$selection" --expected-current-sha256 "$current_sha256" \
+  --candidate-path "$candidate" --expected-candidate-sha256 "$candidate_sha256" \
+  --config-path "$native_config" --config-sha256 "$native_config_sha256" \
+  --helper-executable "$helper" --helper-executable-sha256 "$helper_sha256" \
+  --original-full-sequence "$original_full_sequence"
+```
+
+Restore-forward from a selected Native root or a different Legacy SDK
+snapshot requires the producer's old-head replay coverage. Installed Linux
+acceptance remains open in
+[NC-D](../plans/nov-12-native-cutover/tickets/NC-D-boot.md).
+
+For a fresh operation, require `Applied`, inspect the active selection and
+confirm the actual change to the candidate digest. When Q completed the original
+publication, a same-operation retry after response loss requires `Reconciled`
+with that publication identity and no additional publication. Restart Q through the selected launcher
+and verify the expected source and query results. The resident requests
+`PrepareRestart` after cutover. Observe its exit and socket cleanup before
+starting the resident against the selected endpoint and obtaining a new session.
+Confirm the committed Source pointer, manifest and snapshot remain the intended ones.
+If the response was lost
+or reported `PersistenceUncertain`, inspect the selection first. To
+reconcile that operation, submit the original request fields, including the
+original current digest and FULL sequence.
+An unfinished request can retry publication from the original head only while
+the original selection file version remains in place. A republished file with
+the same canonical digest is a different selection version. The resident
+retains the original version in its recovery journal. The Q publisher records
+a recovery publication attribute on the temporary selection before file fsync
+and rename. Candidate reconciliation requires the attribute for the same
+request, original version and selected inode. The deployment filesystem must
+support file extended attributes. Earlier intents without a recorded file
+version or matching candidate attribute require operator inspection after an
+uncertain response.
+
+After rollback, prepare a fresh Native candidate and derive a new recovery
+request from its exact FULL/BOOT/config identity. The completed first forward
+request remains bound to its original selection version. Verify the full
+forward, rollback and fresh-forward cycle with selected queries and restarts.
+
+Native cross-root plain install remains refused. Initial install and same-root
+reselection retain their existing paths. Legacy-to-Native default transition
+remains gated by W2-19 A.
 
 Same-UID processes operating outside the cooperative deployment lock remain
 outside this launcher contract. Root verification uses the actual root lease

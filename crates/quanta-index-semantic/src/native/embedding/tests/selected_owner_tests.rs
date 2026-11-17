@@ -40,6 +40,175 @@ fn selected_inline_value<'a>(
     Ok(value)
 }
 
+pub(super) fn semantic_repository_source(
+    store: &MemoryStore,
+    path: &str,
+    repo: &str,
+    bytes: &[u8],
+) -> Result<(ObjectRef, ObjectRef), Box<dyn std::error::Error>> {
+    let payload = store.insert(bytes.to_vec(), vec![])?;
+    let record = SourceRecord {
+        path: path.into(),
+        bytes: payload,
+        byte_len: u64::try_from(bytes.len())?,
+        text: quanta_index_contract::index::SourceTextAdmission::Utf8 {
+            policy: Digest([9; 32]),
+        },
+        source_repo_id: Some(quanta_index_contract::RepoId::new(repo)?),
+    };
+    Ok((
+        store.insert(serde_json::to_vec(&record)?, vec![payload])?,
+        payload,
+    ))
+}
+
+#[test]
+fn native_semantic_exact_path_ranks_all_repository_bucket_owners()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut work = budget()?;
+    let bridge = Arc::new(TextEmbeddingBridge::new(FixedTextProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        deadline: work.request().deadline(),
+        normalization: EmbeddingNormalization::L2Unit,
+    })?);
+    let recipe = bridge.recipe(1024)?;
+    let spec = instance(&recipe);
+    let reader =
+        NativeSemanticReader::new(bridge.clone(), recipe.clone(), semantic_read_config(2))?;
+    let capped = NativeSemanticReader::new(bridge, recipe.clone(), semantic_read_config(1))?;
+    let store = MemoryStore::default();
+    let path = "src/shared.rs";
+    let (first, first_payload) = semantic_repository_source(&store, path, "repo-a", b"first")?;
+    let (second, second_payload) = semantic_repository_source(&store, path, "repo-b", b"second")?;
+    let rows = vec![
+        semantic_owner_vector(
+            &store,
+            &spec,
+            &recipe,
+            first,
+            first_payload,
+            1,
+            vec![0.0, 1.0],
+        )?,
+        semantic_owner_vector(
+            &store,
+            &spec,
+            &recipe,
+            second,
+            second_payload,
+            2,
+            vec![1.0, 0.0],
+        )?,
+    ];
+    let (binding, coverage) =
+        semantic_group_coverage(&store, &spec, first, CoverageStatus::Complete)?;
+    let bucket = store.insert(b"repository path bucket".to_vec(), vec![first, second])?;
+    let path_root = MapRoot(Some(
+        store.insert(b"selected paths".to_vec(), vec![bucket])?,
+    ));
+    let mut ticket = semantic_ticket(MapRoot(Some(first)), MapRoot(Some(coverage)), 1)?;
+    ticket.view.source.paths = path_root;
+    ticket.view.identity.digest = ticket.view.identity_digest()?;
+    let mut maps = selected_maps(first, &binding, coverage, &spec, rows);
+    maps.rooted_entries
+        .first_mut()
+        .ok_or("source owner root")?
+        .1 = vec![
+        (owner_map_key(owner(1)).to_vec(), first),
+        (owner_map_key(owner(2)).to_vec(), second),
+    ];
+    maps.inline_rooted_entries.push((
+        path_root,
+        vec![(
+            b"path\0src/shared.rs".to_vec(),
+            quanta_index_core::index::SourcePathOwners::Repositories(bucket).encode()?,
+        )],
+    ));
+    maps.inline_rooted_entries.push((
+        MapRoot(Some(bucket)),
+        vec![
+            (
+                b"repo\0repo-a".to_vec(),
+                quanta_index_core::index::path_owner_map_value(owner(1))?,
+            ),
+            (
+                b"repo\0repo-b".to_vec(),
+                quanta_index_core::index::path_owner_map_value(owner(2))?,
+            ),
+        ],
+    ));
+    let mut query = semantic_request("query", 1);
+    query.constraints.repo_relative_path_exact =
+        Some(quanta_index_contract::ExactRepoRelativePathV1::new(path)?);
+    for files in [false, true] {
+        let request = if files {
+            SemanticReadRequest::for_source_files(query.clone())?
+        } else {
+            query.clone().into()
+        };
+        let result = reader.query(
+            &request,
+            &mut QueryReadContext {
+                ticket: &ticket,
+                instance: &spec,
+                objects: &store,
+                maps: &maps,
+                budget: &mut work,
+            },
+        )?;
+        check!(result.exhaustive());
+        check_eq!(result.result().scanned_owners, 2);
+        let hit = result.result().hits.first().ok_or("repository path hit")?;
+        check_eq!(hit.owner, owner(2));
+        check_eq!(
+            hit.source_file().map(SemanticSourceFile::path),
+            files.then_some(path)
+        );
+    }
+    let limited = capped.query(
+        &query.clone().into(),
+        &mut QueryReadContext {
+            ticket: &ticket,
+            instance: &spec,
+            objects: &store,
+            maps: &maps,
+            budget: &mut work,
+        },
+    )?;
+    check_eq!(limited.result().scanned_owners, 1);
+    check_eq!(
+        limited.result().traversal,
+        NativeSemanticTraversal::ExactCapped
+    );
+    check_eq!(
+        limited
+            .result()
+            .hits
+            .first()
+            .ok_or("capped path hit")?
+            .owner,
+        owner(1)
+    );
+    drop(limited);
+    let (_, bucket_rows) = maps.inline_rooted_entries.get_mut(1).ok_or("bucket rows")?;
+    bucket_rows.get_mut(1).ok_or("second repository row")?.1 =
+        quanta_index_core::index::path_owner_map_value(owner(1))?;
+    check!(matches!(
+        reader.query(
+            &query.clone().into(),
+            &mut QueryReadContext {
+                ticket: &ticket,
+                instance: &spec,
+                objects: &store,
+                maps: &maps,
+                budget: &mut work,
+            },
+        ),
+        Err(IndexError::CorruptObject(_))
+    ));
+    Ok(())
+}
+
 #[test]
 fn native_semantic_reader_binds_source_membership_to_each_selected_view()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -431,6 +600,34 @@ fn native_semantic_exact_path_filters_before_top_k_and_authenticates_source()
     ));
     let wanted_path = quanta_index_contract::ExactRepoRelativePathV1::new("wanted.rs")?;
     let missing_path = quanta_index_contract::ExactRepoRelativePathV1::new("missing.rs")?;
+    for files in [false, true] {
+        let mut query = semantic_request("query", 1);
+        query.constraints.repo_relative_path_exact = Some(wanted_path.clone());
+        let request = if files {
+            SemanticReadRequest::for_source_files(query)?
+        } else {
+            query.into()
+        };
+        let objects = super::ann_product_tests::ReadOnceDescriptor::new(&store, wanted);
+        let filtered = reader.query(
+            &request,
+            &mut QueryReadContext {
+                ticket: &ticket,
+                instance: &spec,
+                objects: &objects,
+                maps: &maps,
+                budget: &mut work,
+            },
+        )?;
+        check_eq!(objects.reads(), 1);
+        check!(filtered.exhaustive());
+        let hit = filtered.result().hits.first().ok_or("filtered hit")?;
+        check_eq!(hit.owner, owner(2));
+        check_eq!(
+            hit.source_file().map(SemanticSourceFile::path),
+            files.then_some("wanted.rs")
+        );
+    }
     let mut run =
         |ticket: &TicketRecord,
          maps: &TestMap,
@@ -517,7 +714,7 @@ fn native_semantic_exact_path_filters_before_top_k_and_authenticates_source()
         run(&ticket, &maps, Some(&wanted_path)),
         Err(IndexError::CorruptObject(_))
     ));
-    check_eq!(calls.load(AtomicOrdering::SeqCst), 7);
+    check_eq!(calls.load(AtomicOrdering::SeqCst), 9);
     Ok(())
 }
 
@@ -760,6 +957,7 @@ fn native_semantic_exact_path_refuses_unlocated_live_overlay_before_provider()
         quanta_index_contract::ExactRepoRelativePathV1::new("wanted.rs")?,
     );
     let mut request = SemanticReadRequest {
+        source_files: false,
         lexical_eligibility: None,
         query,
         overlay: vec![SemanticOverlayDocument {

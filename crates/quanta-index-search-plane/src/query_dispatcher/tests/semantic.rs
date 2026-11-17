@@ -18,7 +18,7 @@ use crate::query_dispatcher::semantic_query::{
     resolve_hybrid_request_selection, resolve_semantic_request_selection,
 };
 use crate::query_dispatcher::tests::support::common::{
-    TestResult, corpus_generation, default_query_embedder, ipc_error_from, ready_ledger,
+    TestResult, candidate, corpus_generation, default_query_embedder, ipc_error_from, ready_ledger,
     test_activation_catalog,
 };
 use crate::query_dispatcher::tests::support::lexical::RejectLexicalOpener;
@@ -776,6 +776,7 @@ fn semantic_dispatch_embeds_query_text() -> TestResult {
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
+        | SearchPlaneQueryIpcResponse::HybridFileV1(_)
         | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
@@ -826,6 +827,7 @@ fn bounded_semantic_route_rejects_searcher_without_native_work_authority() -> Te
             quanta_index_contract::SemanticWorkBoundedQueryRequestV1 {
                 query: semantic_focus_request(),
                 max_work_units: 1_000_000,
+                canonical_ties: false,
             },
         ),
         &RequestBudgetV1::unbounded(),
@@ -841,6 +843,69 @@ fn bounded_semantic_route_rejects_searcher_without_native_work_authority() -> Te
         .is_empty()
     {
         return Err("bounded semantic refusal reached the native searcher".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn bounded_canonical_semantic_routes_ties_before_public_cut() -> TestResult {
+    let mut last = candidate("last", 1.0);
+    last.repo_relative_path = quanta_index_contract::RepoRelativePath::new("src/z.rs");
+    let mut first = candidate("first", 1.0);
+    first.repo_relative_path = quanta_index_contract::RepoRelativePath::new("src/a.rs");
+    let mut middle = candidate("middle", 1.0);
+    middle.repo_relative_path = quanta_index_contract::RepoRelativePath::new("src/m.rs");
+    let state = Arc::new(Mutex::new(RecordingSemanticState {
+        constrained_search_results: Some(vec![last, middle, first]),
+        ..RecordingSemanticState::default()
+    }));
+    let dispatcher = SearchPlaneDispatcher::new(
+        Arc::new(RejectLexicalOpener),
+        Arc::new(RecordingSemanticOpener {
+            state: Arc::clone(&state),
+        }),
+        Arc::new(StubRepoMapSnapshotPort::default()),
+        Arc::new(FailClosedStructuralProducer),
+        ready_ledger(),
+        test_activation_catalog()?,
+    );
+    let mut query = semantic_focus_request();
+    query.top_k = 2;
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(
+            quanta_index_contract::SemanticWorkBoundedQueryRequestV1 {
+                query,
+                max_work_units: 1_000_000,
+                canonical_ties: true,
+            },
+        ),
+        &RequestBudgetV1::unbounded(),
+    );
+    let SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(settled) = response else {
+        return Err("canonical semantic request did not settle as bounded semantic".into());
+    };
+    let ids = settled
+        .query
+        .results
+        .iter()
+        .map(|row| row.candidate_id.as_str())
+        .collect::<Vec<_>>();
+    if ids != ["first", "middle"]
+        || !settled.canonical_ties
+        || settled.query.window.returned() != 2
+        || settled.charged_work_units == 0
+        || settled.charged_work_units > 1_000_000
+    {
+        return Err(format!("canonical pool selection or settlement drift: {settled:?}").into());
+    }
+    let recorded = state
+        .lock()
+        .map_err(|error| format!("poisoned recording semantic state: {error}"))?;
+    if recorded.search_top_ks != [3]
+        || recorded.search_constraints
+            != [quanta_index_contract::QueryConstraintSetV1::unconstrained()]
+    {
+        return Err("canonical semantic request lost the same K probe or constraints".into());
     }
     Ok(())
 }

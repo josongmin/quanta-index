@@ -26,11 +26,14 @@
 //! alias table are covered exactly once. Adding a predicate is a core
 //! variant plus a registry row and, only if it introduces a genuinely new
 //! lowering shape, one new [`PredicateKind`] variant with its dispatch
-//! arm. Unsupported names continue to typed-fail through
-//! [`unimplemented_predicate`].
+//! arm. Legacy lowering uses `unimplemented_predicate` for unsupported names.
 
 use quanta_index_contract::{LqFileScope, LqPredicateArg};
-use quanta_index_core::{CoreError, LexicalPredicateAliasV1, LexicalPredicateV1};
+#[cfg(feature = "legacy-tantivy")]
+use quanta_index_core::CoreError;
+use quanta_index_core::{LexicalPredicateAliasV1, LexicalPredicateV1};
+
+use crate::plan::{RepoFileConstraint, RepoFileMatcher};
 
 /// Follow-up owner referenced by predicate typed-reject diagnostics.
 pub(crate) const PREDICATE_OWNER: &str = "LXE-03-predicate-extensions";
@@ -53,7 +56,7 @@ pub(crate) enum PredicateKind {
     /// `repo.has.file` — either a single textual scalar path shorthand or one
     /// or more `path:` / `name:` / `lang:` matcher filters, lowered to a
     /// repo-existence gate. Matcher parsing is registry-owned via
-    /// [`parse_repo_file_matchers`].
+    /// `parse_repo_file_matchers`.
     RepoFileGate,
     /// `repo.has.content` — exactly one content scalar (keyword / phrase /
     /// raw string / number), lowered to a repo-existence gate evaluated
@@ -284,6 +287,7 @@ pub(crate) fn kind_of(name: &str) -> Option<PredicateKind> {
 
 /// Build the canonical typed reject for a predicate shape the registry does not
 /// admit. Centralizes the wire code so every lowering site stays consistent.
+#[cfg(feature = "legacy-tantivy")]
 pub(crate) fn unimplemented_predicate(message: String) -> CoreError {
     CoreError::Typed {
         code: quanta_index_contract::SearchPlaneErrorCodeV2::LexPredicateUnimplemented,
@@ -291,42 +295,16 @@ pub(crate) fn unimplemented_predicate(message: String) -> CoreError {
     }
 }
 
-/// A single resolved `repo.has.file` matcher.
-///
-/// Each matcher narrows the repo-existence gate on a distinct indexed field:
-/// `Path` against the full repo-relative path, `Name` against the file name,
-/// `Language` against the indexed language code (ADV-01 widened arg-shape
-/// family), `Content` against the chunk text (SGX-01 `path + content`
-/// correlation). Each lowers to exactly one canonical field query in `lib.rs`
-/// and is AND-ed (`Occur::Must`) per indexed document, so a repo matches only
-/// when ONE file satisfies all matchers — no cross-file overmatching.
-#[derive(Clone)]
-pub(crate) enum RepoFileMatcher {
-    Path(String),
-    Name(String),
-    Language(String),
-    /// `content:` chunk-text matcher. Lowered (in `lib.rs`) through the same
-    /// `content_leaf_from_scalar` regex-delimiter path the `ContentLeaf` family
-    /// uses, so a `/regex/` content stays a regex and a bare value is a standard
-    /// tokenized match.
-    Content(String),
-}
-
-/// A fully validated `repo.has.file` argument set.
-pub(crate) struct RepoFileConstraint {
-    pub matchers: Vec<RepoFileMatcher>,
-}
-
-/// Why a `repo.has.file` argument set is not admissible.
+/// Why a repository-file predicate is invalid.
 ///
 /// Kept route-neutral so both the lexical lowering (which maps it to a
-/// [`CoreError`]) and the planner (which maps it to its own typed error) can
+/// `CoreError`) and the planner (which maps it to its own typed error) can
 /// reuse one validator without coupling to a single error type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RepoFileArgError {
     /// The argument set was not one admitted shape:
     /// - exactly one textual scalar path shorthand, or
-    /// - one or more `path:` / `name:` / `lang:` filters.
+    /// - one or more `path:` / `name:` / `lang:` / `content:` filters.
     UnsupportedArg,
     /// No `path:` / `name:` / `lang:` / `content:` matcher was supplied.
     NoMatcher,
@@ -336,16 +314,7 @@ pub(crate) enum RepoFileArgError {
     EmptyContentValue,
 }
 
-/// Parse `repo.has.file(...)` arguments into validated matchers.
-///
-/// This is the single owner of the `repo.has.file` argument contract:
-///
-/// - exactly one textual scalar path shorthand (`repo.has.file(src/lib.rs)`), or
-/// - one or more `path:` / `name:` / `lang:` filters
-///
-/// are admitted, and at least one matcher is required. Both lexical lowering
-/// and planner validation route through here so the contract cannot diverge
-/// between them.
+/// Materialize the same correlated matchers for planning and Legacy lowering.
 pub(crate) fn parse_repo_file_matchers(
     args: &[LqPredicateArg],
 ) -> Result<RepoFileConstraint, RepoFileArgError> {
@@ -359,46 +328,26 @@ pub(crate) fn parse_repo_file_matchers(
                 matchers: vec![RepoFileMatcher::Path(value.clone())],
             });
         }
-        [LqPredicateArg::Number(_)] => return Err(RepoFileArgError::UnsupportedArg),
+        [] => return Err(RepoFileArgError::NoMatcher),
         _ => {}
     }
-    let mut matchers: Vec<RepoFileMatcher> = Vec::new();
+    let mut matchers = Vec::with_capacity(args.len());
     for arg in args {
-        match arg {
-            LqPredicateArg::Filter { name, value } if name == "path" => {
-                matchers.push(RepoFileMatcher::Path(value.clone()));
+        let LqPredicateArg::Filter { name, value } = arg else {
+            return Err(RepoFileArgError::UnsupportedArg);
+        };
+        let matcher = match name.as_str() {
+            "path" => RepoFileMatcher::Path(value.clone()),
+            "name" => RepoFileMatcher::Name(value.clone()),
+            "lang" if value.trim().is_empty() => return Err(RepoFileArgError::EmptyLanguageValue),
+            "lang" => RepoFileMatcher::Language(value.clone()),
+            "content" if value.trim().is_empty() => {
+                return Err(RepoFileArgError::EmptyContentValue);
             }
-            LqPredicateArg::Filter { name, value } if name == "name" => {
-                matchers.push(RepoFileMatcher::Name(value.clone()));
-            }
-            LqPredicateArg::Filter { name, value } if name == "lang" => {
-                // Registry owns value validity too: an empty/whitespace lang is
-                // not a usable matcher, so reject it here rather than deferring
-                // to the executor.
-                if value.trim().is_empty() {
-                    return Err(RepoFileArgError::EmptyLanguageValue);
-                }
-                matchers.push(RepoFileMatcher::Language(value.clone()));
-            }
-            LqPredicateArg::Filter { name, value } if name == "content" => {
-                // SGX-01: `content:` correlates per-document with the path/name
-                // matchers. An empty content value is not a usable matcher.
-                if value.trim().is_empty() {
-                    return Err(RepoFileArgError::EmptyContentValue);
-                }
-                matchers.push(RepoFileMatcher::Content(value.clone()));
-            }
-            LqPredicateArg::Keyword(_)
-            | LqPredicateArg::Phrase(_)
-            | LqPredicateArg::RawString(_)
-            | LqPredicateArg::Number(_)
-            | LqPredicateArg::Filter { .. } => {
-                return Err(RepoFileArgError::UnsupportedArg);
-            }
-        }
-    }
-    if matchers.is_empty() {
-        return Err(RepoFileArgError::NoMatcher);
+            "content" => RepoFileMatcher::Content(value.clone()),
+            _ => return Err(RepoFileArgError::UnsupportedArg),
+        };
+        matchers.push(matcher);
     }
     Ok(RepoFileConstraint { matchers })
 }
@@ -783,6 +732,7 @@ pub(crate) struct ContentPredicateConstraint {
 }
 
 impl ContentPredicateConstraint {
+    #[cfg(feature = "legacy-tantivy")]
     pub(crate) const fn has_scopes(&self) -> bool {
         self.path_scope.is_some() || self.language.is_some()
     }
@@ -1597,7 +1547,8 @@ mod tests {
         };
         assert!(matches!(
             constraint.matchers.as_slice(),
-            [RepoFileMatcher::Path(_), RepoFileMatcher::Name(_)]
+            [RepoFileMatcher::Path(path), RepoFileMatcher::Name(name)]
+                if path == "src/lib.rs" && name == "lib.rs"
         ));
     }
 

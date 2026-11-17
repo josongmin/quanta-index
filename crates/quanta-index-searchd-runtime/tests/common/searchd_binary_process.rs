@@ -53,9 +53,9 @@ impl SearchdBinaryProcess {
     }
 
     pub(super) fn connect(&self) -> Result<QuantaIndex, Box<dyn Error>> {
-        Ok(QuantaIndex::connect(ConnectOptions::from_state_root(
-            &self.state_root,
-        ))?)
+        Ok(QuantaIndex::connect_legacy(
+            ConnectOptions::from_state_root(&self.state_root),
+        )?)
     }
 
     pub(super) fn stop(mut self) -> Result<(), Box<dyn Error>> {

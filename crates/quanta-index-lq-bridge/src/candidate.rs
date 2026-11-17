@@ -22,7 +22,7 @@
 use core::fmt;
 
 use crate::version::TRANSLATOR_VERSION;
-use quanta_index_contract::LqQuery;
+use quanta_index_lq_norm::LqNormalizedQuery as LqQuery;
 
 /// Stable bridge candidate envelope.
 ///
@@ -153,7 +153,7 @@ mod tests {
     use crate::syntax::parse_sourcegraph;
     use crate::translate_query;
     use crate::version::{SourcegraphVersionTag, TRANSLATOR_VERSION};
-    use quanta_index_contract::{LqExpr, LqLeaf, LqQuery, LqSpan};
+    use quanta_index_lq_norm::{LqExpr, LqLeaf, LqNormalizedQuery as LqQuery, LqSpan};
 
     fn empty_query() -> LqQuery {
         LqQuery::empty(LqSpan::eof(0))

@@ -42,7 +42,7 @@ mod retention_receipt;
 mod runtime_state;
 mod search_corpus_generation;
 mod search_corpus_history;
-mod serde_support;
+pub(crate) mod serde_support;
 mod structural_state;
 mod track_state;
 
@@ -51,7 +51,9 @@ pub use crate::search_corpus_retention::{
     SearchCorpusIndexBytesPort,
 };
 
-pub use activation_catalog::{ActivationCatalog, ActiveGenerationRecord};
+pub use activation_catalog::{ActivationCatalog, ActiveGenerationRecord, ActivationReadFailureV1, ReadOnlyActivationObservationV1, inspect_existing_activation_repository_v1};
+mod recovery_read_io;
+pub use search_corpus_history::inspect_existing_sealed_search_corpus_v1;
 pub use aux_epoch::{AuxEpochRefusedError, AuxRead};
 pub use auxiliary_store::{AuxiliaryAuthorityStore, restore_auxiliary_rows_into};
 #[cfg(test)]

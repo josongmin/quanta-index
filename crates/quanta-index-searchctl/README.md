@@ -2,6 +2,8 @@
 
 Run commands from the repository root. Start `quanta-index-searchd` and publish
 an active generation before querying it. Run as the daemon's permitted Unix user.
+The generation commands below use the Legacy client. The explicit `native`
+family has its own parser and selected-view inputs, described below.
 
 Source routing: [src/lib.rs](src/lib.rs) binds commands to SDK calls,
 [src/parse.rs](src/parse.rs) owns argument parsing and validation, and
@@ -99,6 +101,23 @@ quanta-index-searchctl --state-root /absolute/state-root quarantine discard \
 
 `--track` is `lexical|semantic`. Discard deletes the identified entry and refuses
 stale or invented identities. Inspect the inventory before invoking it.
+
+## Native selected views
+
+Use `quanta-index-searchctl native <command>` with an absolute `--socket` for
+the configured Native endpoint. `read-view` requires `--workspace HEX128` and
+`--epoch N`; `search-text` additionally requires `--instance HEX32`,
+`--query-text TEXT` and `--top-k N`. Native output is `pretty|json`.
+Workspace, epoch and instance identities come from the admitted producer/configuration.
+
+Retained commands are `read-session-open`, `read-session-renew`,
+`read-session-status`, `read-session-release`, `read-session-settlement`,
+`search-text-page` and `search-hybrid-file`. Their typed session/cursor inputs
+and required flags are defined by the
+[retained parser](src/native/read_session.rs) and
+[wire contract](../quanta-index-contract/src/native_protocol/read_session.rs).
+Session release and settlement remain explicit caller operations.
+These routes do not imply default-client or installed-producer migration.
 
 ## Exit codes
 

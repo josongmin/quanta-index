@@ -913,6 +913,7 @@ fn parse_go_test_trace_file(
         failure_source_repo_id,
         failure_module_context: None,
         top_k: file_top_k.ok_or_else(|| CliError::usage("missing --file-top-k".to_string()))?,
+        include_rank_pools: false,
     };
     request
         .validate_v1()

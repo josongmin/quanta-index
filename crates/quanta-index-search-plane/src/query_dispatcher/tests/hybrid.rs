@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex, RwLock};
 
 use quanta_index_contract::{
-    ExecutionOutcomeV2, GoTestTraceFileQueryRequestV1, GoTestTraceFrameClassV1, HybridQueryRequest,
-    ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SearchPlaneTrackKind,
-    TextQueryRequest, TextQuerySyntax,
+    ExecutionOutcomeV2, GoTestTraceFileQueryRequestV1, GoTestTraceFrameClassV1,
+    HybridFileQueryRequestV1, HybridQueryRequest, ManifestGeneration, QueryConstraintSetV1, RepoId,
+    RepoRelativePath, RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
+    SearchPlaneTrackKind, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::RequestBudgetV1;
 
@@ -59,7 +59,198 @@ fn go_file_request(failure_excerpt: &str, owner: Option<RepoId>) -> GoTestTraceF
         failure_source_repo_id: owner,
         failure_module_context: None,
         top_k: 5,
+        include_rank_pools: false,
     }
+}
+
+#[test]
+fn generic_file_route_ranks_distinct_files_without_go_path_priority() -> TestResult {
+    let lexical = vec![
+        go_file_candidate("test-1", "tests/failure_test.go", 1, 5.0),
+        go_file_candidate("test-2", "tests/failure_test.go", 2, 4.0),
+        go_file_candidate("shared-l", "src/shared.go", 3, 3.0),
+    ];
+    let dense = vec![
+        go_file_candidate("other-1", "src/other.go", 1, 0.9),
+        go_file_candidate("other-2", "src/other.go", 2, 0.8),
+        go_file_candidate("shared-d", "src/shared.go", 3, 0.7),
+    ];
+    let dispatcher = dispatcher_with_obs(
+        Arc::new(RecordingLexicalOpener {
+            state: Arc::new(Mutex::new(RecordingLexicalState::default())),
+            results: lexical,
+        }),
+        Arc::new(RecordingSemanticOpener {
+            state: Arc::new(Mutex::new(RecordingSemanticState {
+                constrained_search_results: Some(dense),
+                ..RecordingSemanticState::default()
+            })),
+        }),
+        Arc::new(BoundedQueryObsStore::default()),
+    )?;
+    let request = HybridFileQueryRequestV1 {
+        query: go_file_request("unused trace", None).query,
+        file_top_k: 3,
+    };
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::HybridFileV1(request.clone()),
+        &RequestBudgetV1::unbounded(),
+    );
+    let SearchPlaneQueryIpcResponse::HybridFileV1(files) = response else {
+        return Err(format!("expected file response, got {response:?}").into());
+    };
+    files.validate_against_v1(&request)?;
+    assert_eq!(files.file_top_k, 3);
+    assert_eq!(files.bounded_file_count, 3);
+    assert_eq!(
+        files
+            .results
+            .iter()
+            .map(|hit| hit.file.repo_relative_path.as_str())
+            .collect::<Vec<_>>(),
+        ["src/shared.go", "tests/failure_test.go", "src/other.go"]
+    );
+    assert_eq!(
+        files.results[0]
+            .lexical
+            .as_ref()
+            .map(|w| (w.file_rank, w.chunk_rank)),
+        Some((2, 3))
+    );
+    assert_eq!(
+        files.results[0]
+            .dense
+            .as_ref()
+            .map(|w| (w.file_rank, w.chunk_rank)),
+        Some((2, 3))
+    );
+    assert_eq!(files.lexical_window.returned(), 3);
+    assert_eq!(files.dense_window.returned(), 3);
+    let fusion = files
+        .explanation
+        .stage_timings
+        .as_deref()
+        .and_then(|stages| stages.last())
+        .ok_or("generic file route omitted its measured fusion stage")?;
+    assert_eq!(fusion.stage.as_str(), "hybrid.fusion");
+    assert_eq!(fusion.calls, 1);
+    assert_eq!(fusion.returned_candidates, Some(3));
+    assert_eq!(files.explanation.strategy, "hybrid_file_rrf");
+    let wire = encode_cbor(&files)?;
+    let decoded: quanta_index_contract::HybridFileQueryResponseV1 =
+        quanta_index_ipc::decode_cbor_payload(&wire)?;
+    assert_eq!(decoded, files);
+    Ok(())
+}
+
+#[test]
+fn generic_file_route_stabilizes_dense_ties_before_chunk_cap() -> TestResult {
+    let dense = vec![
+        go_file_candidate("z", "src/z.go", 1, 1.0),
+        go_file_candidate("a", "src/a.go", 1, 1.0),
+        go_file_candidate("b", "src/b.go", 1, 1.0),
+    ];
+    let dispatcher = dispatcher_with_obs(
+        Arc::new(RecordingLexicalOpener {
+            state: Arc::new(Mutex::new(RecordingLexicalState::default())),
+            results: Vec::new(),
+        }),
+        Arc::new(RecordingSemanticOpener {
+            state: Arc::new(Mutex::new(RecordingSemanticState {
+                constrained_search_results: Some(dense),
+                ..RecordingSemanticState::default()
+            })),
+        }),
+        Arc::new(BoundedQueryObsStore::default()),
+    )?;
+    let mut query = go_file_request("unused trace", None).query;
+    query.top_k = 2;
+    query.text_query.top_k = 2;
+    let request = HybridFileQueryRequestV1 {
+        query,
+        file_top_k: 2,
+    };
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::HybridFileV1(request.clone()),
+        &RequestBudgetV1::unbounded(),
+    );
+    let SearchPlaneQueryIpcResponse::HybridFileV1(files) = response else {
+        return Err(format!("expected file response, got {response:?}").into());
+    };
+    files.validate_against_v1(&request)?;
+    assert_eq!(files.file_top_k, 2);
+    assert_eq!(files.bounded_file_count, 2);
+    assert_eq!(
+        files
+            .results
+            .iter()
+            .map(|hit| hit.file.repo_relative_path.as_str())
+            .collect::<Vec<_>>(),
+        ["src/a.go", "src/b.go"]
+    );
+    assert_eq!(files.dense_window.returned(), 2);
+    Ok(())
+}
+
+#[test]
+fn generic_file_route_fetches_canonical_ties_at_probe_boundary() -> TestResult {
+    let mut dense = (0..26)
+        .map(|index| {
+            go_file_candidate(
+                &format!("z-{index}"),
+                &format!("src/z-{index:02}.go"),
+                1,
+                1.0,
+            )
+        })
+        .collect::<Vec<_>>();
+    dense.push(go_file_candidate("a", "src/a.go", 1, 1.0));
+    dense.push(go_file_candidate("b", "src/b.go", 1, 1.0));
+    let semantic = Arc::new(Mutex::new(RecordingSemanticState {
+        constrained_search_results: Some(dense),
+        ..RecordingSemanticState::default()
+    }));
+    let dispatcher = dispatcher_with_obs(
+        Arc::new(RecordingLexicalOpener {
+            state: Arc::new(Mutex::new(RecordingLexicalState::default())),
+            results: Vec::new(),
+        }),
+        Arc::new(RecordingSemanticOpener {
+            state: Arc::clone(&semantic),
+        }),
+        Arc::new(BoundedQueryObsStore::default()),
+    )?
+    .with_hybrid_fetch_floor(crate::HybridFetchFloorPolicy::Floor25);
+    let mut query = go_file_request("unused trace", None).query;
+    query.top_k = 2;
+    query.text_query.top_k = 2;
+    let request = HybridFileQueryRequestV1 {
+        query,
+        file_top_k: 2,
+    };
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::HybridFileV1(request.clone()),
+        &RequestBudgetV1::unbounded(),
+    );
+    let SearchPlaneQueryIpcResponse::HybridFileV1(files) = response else {
+        return Err(format!("expected file response, got {response:?}").into());
+    };
+    files.validate_against_v1(&request)?;
+    assert_eq!(
+        files
+            .results
+            .iter()
+            .map(|hit| hit.file.repo_relative_path.as_str())
+            .collect::<Vec<_>>(),
+        ["src/a.go", "src/b.go"]
+    );
+    let fetches = semantic
+        .lock()
+        .map_err(|error| format!("semantic state poisoned: {error}"))?
+        .search_top_ks
+        .clone();
+    assert_eq!(fetches.first(), Some(&25));
+    Ok(())
 }
 
 #[test]
@@ -548,6 +739,7 @@ fn hybrid_dispatch_embeds_semantic_query_text() -> TestResult {
         }
         other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
         | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+        | SearchPlaneQueryIpcResponse::HybridFileV1(_)
         | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::Text(_)
@@ -744,6 +936,7 @@ fn hybrid_dispatch_emits_closed_obs_metrics() -> TestResult {
         }
         other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
         | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+        | SearchPlaneQueryIpcResponse::HybridFileV1(_)
         | SearchPlaneQueryIpcResponse::GoTestTraceFileV1(_)
         | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
@@ -1006,7 +1199,8 @@ fn go_test_trace_dispatch_ranks_files_without_chunk_fusion() -> TestResult {
         }),
         Arc::new(BoundedQueryObsStore::default()),
     )?;
-    let request = go_file_request("src/handler.go:42: panic", Some(ready_pin().repo_id));
+    let mut request = go_file_request("src/handler.go:42: panic", Some(ready_pin().repo_id));
+    request.include_rank_pools = true;
     let response = dispatcher.dispatch(
         SearchPlaneQueryIpcRequest::GoTestTraceFileV1(request.clone()),
         &RequestBudgetV1::unbounded(),
@@ -1015,6 +1209,46 @@ fn go_test_trace_dispatch_ranks_files_without_chunk_fusion() -> TestResult {
         return Err(format!("expected GoTestTraceFileV1 response, got {response:?}").into());
     };
     files.validate_against_v1(&request)?;
+    let pools = files
+        .rank_pools
+        .as_ref()
+        .ok_or("opt-in omitted rank pools")?;
+    assert_eq!(
+        pools
+            .lexical
+            .iter()
+            .map(|row| (
+                row.file.repo_relative_path.as_str(),
+                row.candidate_id.as_str(),
+                row.score_bits
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("src/handler.go", "shared-id", 5.0_f32.to_bits()),
+            ("src/handler.go", "handler-next", 4.0_f32.to_bits()),
+            ("src/helper.go", "helper-lex", 3.0_f32.to_bits()),
+            ("src/handler_test.go", "test-lex", 2.0_f32.to_bits()),
+            ("README.md", "doc-lex", 1.0_f32.to_bits()),
+        ]
+    );
+    assert_eq!(
+        pools
+            .dense
+            .iter()
+            .map(|row| (
+                row.file.repo_relative_path.as_str(),
+                row.candidate_id.as_str(),
+                row.score_bits
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("src/other.go", "shared-id", 0.9_f32.to_bits()),
+            ("src/helper.go", "helper-dense", 0.8_f32.to_bits()),
+            ("src/handler.go", "handler-dense", 0.7_f32.to_bits()),
+            ("src/other.go", "other-next", 0.6_f32.to_bits()),
+            ("src/handler_test.go", "test-dense", 0.5_f32.to_bits()),
+        ]
+    );
     let paths = files
         .results
         .iter()

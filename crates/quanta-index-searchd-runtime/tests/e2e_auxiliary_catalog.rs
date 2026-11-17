@@ -21,6 +21,12 @@ use quanta_index_searchd_harness as e2e_harness;
 
 use e2e_harness::E2eRuntime;
 
+#[path = "e2e_auxiliary_catalog/history_source_readback.rs"]
+mod history_source_readback;
+
+#[path = "e2e_auxiliary_catalog/history_native.rs"]
+mod history_native;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 /// Rows per `(domain, generation)` in the daemon's catalog, read with the

@@ -793,10 +793,22 @@ def _native_resource_observation(value: object, host_os: object) -> dict:
         ):
             raise ValueError(f"native {expected_name} resource epoch failed or incomplete")
         _native_nonnegative_ms(epoch["observed_elapsed_ms"], f"{expected_name} elapsed")
+        child_rss = epoch["child_rss"]
+        if not isinstance(child_rss, dict):
+            raise ValueError("native child RSS observation is malformed")
+        method = child_rss.get("method")
+        if host_os == "linux":
+            expected_method = "proc_pid_status_vmrss"
+        elif method in ("ps_o_rss_kib", "proc_pid_rusage_resident_bytes_start_identity"):
+            # Historical ps artifacts remain replayable; the current harness
+            # emits only the native method. No footprint or peak alias is valid.
+            expected_method = method
+        else:
+            raise ValueError("native macOS child RSS method is unsupported")
         _native_sample(
-            epoch["child_rss"],
+            child_rss,
             f"{expected_name}.rss",
-            "proc_pid_status_vmrss" if host_os == "linux" else "ps_o_rss_kib",
+            expected_method,
             100,
             positive=True,
             positive_endpoints=True,
@@ -914,6 +926,8 @@ def _native_child_trace(
     raw: RawFile,
     *,
     publication: bool,
+    source_publication: bool = False,
+    lexical_readback: bool = False,
     trace_max_output_bytes: int | None = None,
 ) -> dict:
     if not isinstance(raw, RawFile) or (trace is not None and not isinstance(trace, dict)):
@@ -984,6 +998,53 @@ def _native_child_trace(
                 for span in witnesses
             ):
                 raise ValueError(f"native child {required} witness absent")
+    publication_end = 0
+    if source_publication:
+        phases: dict[int, list[dict]] = {}
+        expected = ("native_source_apply", "build_prepare", "native_publish")
+        for row in spans.values():
+            if (
+                row.get("lane_id") != 3
+                or row.get("stage") not in expected
+                or row.get("outcome") != "ok"
+            ):
+                continue
+            request = _native_ancestor_root(spans, row, identified)
+            if request is not None and spans[request].get("outcome") == "ok":
+                phases.setdefault(request, []).append(row)
+        completions = []
+        for request, rows in phases.items():
+            phase = 0
+            last_end = spans[request]["start_ns"]
+            for row in sorted(rows, key=lambda span: span["end_ns"]):
+                if row["stage"] == expected[phase] and row["start_ns"] >= last_end:
+                    last_end = row["end_ns"]
+                    phase += 1
+                    if phase == len(expected):
+                        completions.append(spans[request]["end_ns"])
+                        break
+        if not completions:
+            raise ValueError(
+                "native corpus lacks ordered source apply, prepare and publish in one successful request"
+            )
+        publication_end = min(completions)
+    if lexical_readback:
+        for row in spans.values():
+            if (
+                row.get("stage") != "query_lexical"
+                or row.get("lane_id") != 2
+                or row.get("outcome") != "ok"
+            ):
+                continue
+            request = _native_ancestor_root(spans, row, identified)
+            if (
+                request is not None
+                and spans[request].get("outcome") == "ok"
+                and spans[request]["start_ns"] >= publication_end
+            ):
+                break
+        else:
+            raise ValueError("native corpus trace lacks a successful Native lexical request")
     # Catalog settings and supervisor phases can have independent Operation
     # roots. The quiescent summary belongs to exactly one lifecycle root.
     sync_by_root = {}
@@ -1002,13 +1063,19 @@ def _native_child_trace(
     root_id, sync = next(iter(sync_by_root.items()))
     if set(sync) != sync_keys:
         raise ValueError("native child quiescent IO counters absent")
-    if roots[root_id].get("outcome") != "ok" or not any(
-        span.get("stage") == "runtime_boot"
+    boot_ends = [
+        span["end_ns"]
+        for span in spans.values()
+        if span.get("stage") == "runtime_boot"
         and span.get("outcome") == "ok"
         and _native_beneath_roots(spans, span, {root_id})
-        for span in spans.values()
-    ):
+    ]
+    if roots[root_id].get("outcome") != "ok" or not boot_ends:
         raise ValueError("native child IO operation lacks successful runtime boot")
+    if source_publication or lexical_readback:
+        boot_end = min(boot_ends)
+        if any(spans[request]["start_ns"] < boot_end for request in identified):
+            raise ValueError("native child request precedes successful runtime boot")
     if sync["sync_failures"] != 0 or (publication and sync["sync_calls"] == 0):
         raise ValueError("native child install IO failed or first publication has no calls")
     result = {"capture_id": capture_id, "clock_domain": trace["clock_domain"], "sync": sync}
@@ -1046,6 +1113,47 @@ def _native_child_trace(
     if map_root_staged is not None:
         result["map_root_staged"] = map_root_staged
     return result
+
+
+def validate_native_corpus_record(run_dir: Path, result: dict) -> dict:
+    """Validate both raw traces from the Native corpus SDK front door."""
+    descriptor = result.get("record_trace")
+    if result.get("status") != "VERIFIED" or not isinstance(descriptor, dict):
+        raise ValueError("Native corpus did not complete a Record run")
+    cap = _native_u64(descriptor.get("max_output_bytes"), "Native corpus trace cap")
+    if not 6144 <= cap <= MAX_CONFIGURED_CAPTURE_BYTES:
+        raise ValueError("Native corpus trace cap is out of range")
+    captures = {}
+    for epoch in ("first", "reopen"):
+        path = run_dir / f"{epoch}.trace.jsonl"
+        recorded = descriptor.get(epoch)
+        recorded_path = Path(recorded) if isinstance(recorded, str) else Path()
+        if (
+            not recorded_path.is_absolute()
+            or recorded_path.name != path.name
+            or recorded_path.parent.resolve(strict=True) != run_dir
+        ):
+            raise ValueError(f"Native corpus {epoch} trace path differs from result")
+        expected = _native_hex(descriptor.get(f"{epoch}_sha256"), 64, f"{epoch} trace SHA-256")
+        # Bind the expected digest before reading. The existing pinned reader
+        # checks it and refuses oversized traces before consuming their bytes.
+        raw = RawFile(path, "sha256:" + expected, path.lstat().st_size)
+        first = epoch == "first"
+        child = _native_child_trace(
+            None,
+            raw,
+            publication=first,
+            source_publication=first,
+            lexical_readback=True,
+            trace_max_output_bytes=cap,
+        )
+        captures[epoch] = {
+            "capture_id": child["capture_id"],
+            "sha256": expected,
+        }
+    if captures["first"]["capture_id"] == captures["reopen"]["capture_id"]:
+        raise ValueError("Native corpus daemon epochs have the same capture ID")
+    return {"status": "VERIFIED", "captures": captures}
 
 
 def _native_map_root_staged(trace: dict, spans: dict, identified: set[int]) -> dict | None:
@@ -1155,7 +1263,32 @@ def _native_stderr_summary(raw: RawFile, descriptor: dict, capture_id: str) -> d
         raise ValueError("native stderr descriptor path differs from raw file")
     if _native_u64(descriptor.get("whole_file_bytes_at_drain"), "stderr size") != raw.size:
         raise ValueError("native stderr size differs from drain")
-    offset = raw.size - min(raw.size, 16 * 1024)
+    # Historical artifacts contain only the last 16KiB. New artifacts partition
+    # that same payload budget into a disjoint initial/final 8KiB pair.
+    paired_scope = "bounded disjoint prefix and tail within 16KiB total; full file content not hashed"
+    paired = (
+        "prefix" in descriptor or "retained_budget_bytes" in descriptor
+        or descriptor.get("scope") == paired_scope
+    )
+    prefix = descriptor.get("prefix")
+    if paired:
+        if (
+            _native_u64(descriptor.get("retained_budget_bytes"), "stderr budget") != 16384
+            or not isinstance(prefix, dict)
+            or set(prefix) != {"offset", "bytes", "sha256"}
+        ):
+            raise ValueError("native stderr bounded prefix descriptor is incomplete")
+        offset = max(0, raw.size - 8192)
+        prefix_count = min(offset, 8192)
+        if (
+            _native_u64(prefix["offset"], "stderr prefix offset") != 0
+            or _native_u64(prefix["bytes"], "stderr prefix bytes") != prefix_count
+        ):
+            raise ValueError("native stderr bounded prefix differs from drain")
+        _native_hex(prefix["sha256"], 64, "stderr prefix SHA")
+    else:
+        offset = max(0, raw.size - 16384)
+        prefix_count = 0
     count = raw.size - offset
     if (
         _native_u64(descriptor.get("tail_offset"), "stderr tail offset") != offset
@@ -1175,6 +1308,12 @@ def _native_stderr_summary(raw: RawFile, descriptor: dict, capture_id: str) -> d
             or metadata.st_size != raw.size
         ):
             raise ValueError("native stderr file epoch or private mode differs")
+        handle.seek(0)
+        initial = handle.read(prefix_count)
+        if len(initial) != prefix_count:
+            raise ValueError("native stderr bounded prefix truncated")
+        if paired and hashlib.sha256(initial).hexdigest() != prefix["sha256"]:
+            raise ValueError("native stderr bounded prefix hash differs")
         handle.seek(offset)
         tail = handle.read(count)
         if len(tail) != count:

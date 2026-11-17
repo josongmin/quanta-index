@@ -17,6 +17,9 @@ mod physical_mixed_pressure;
 #[path = "native_index_uds/read_sessions.rs"]
 mod read_sessions;
 
+#[path = "native_index_uds/repository_paths.rs"]
+mod repository_paths;
+
 #[path = "native_index_uds/text_entry_maps.rs"]
 mod text_entry_maps;
 
@@ -88,6 +91,13 @@ use quanta_index_semantic::native::{
 };
 use quanta_index_storage::{FileObjectStore, FileScratchSpace};
 use sha2::{Digest as _, Sha256};
+
+#[cfg(target_os = "linux")]
+use std::sync::atomic::AtomicU64;
+#[cfg(target_os = "linux")]
+use quanta_index_core::index::{
+    MemoryLease, MemoryLeaseOwner, MemoryLifetime, MemoryScope, MemoryScopePort,
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -2027,7 +2037,154 @@ fn native_uds_stage_sources_accepts_full_object_batch_and_refuses_overflow() -> 
             .ok_or("staged reference absent")?;
         assert_eq!(direct, NativeIndexResponse::Staged(reference));
     }
+    let input = source(0);
+    let body = quanta_index_contract::index::native_immutable_object_ref_v1(&input.bytes, &[])
+        .ok_or("source body identity")?;
+    for repository in ["corp-a", "corp-b"] {
+        let scope = quanta_index_contract::RepoId::new(repository)?;
+        let reply = client.request(
+            NativeIndexRequest::StageRepositorySources {
+                ingress,
+                repository: scope,
+                inputs: vec![input.clone()],
+            },
+            &budget(),
+        )?;
+        let payload = format!(
+            r#"{{"path":"batch/0.rs","bytes":{},"byte_len":1,"text":"Excluded","source_repo_id":"{repository}"}}"#,
+            serde_json::to_string(&body)?,
+        );
+        let expected =
+            quanta_index_contract::index::native_immutable_object_ref_v1(payload.as_bytes(), &[body])
+                .ok_or("repository source record identity")?;
+        assert_eq!(reply, NativeIndexResponse::StagedSources(vec![expected]));
+        assert_ne!(staged.first(), Some(&expected));
+    }
     client.discard_input(ingress, &budget())?;
+    running.stop()?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+struct MultiframeStageMemory(Arc<AtomicU64>);
+
+#[cfg(target_os = "linux")]
+impl MemoryLeaseOwner for MultiframeStageMemory {
+    fn release(&self, bytes: u64) {
+        let previous = self.0.fetch_sub(bytes, Ordering::SeqCst);
+        assert!(previous >= bytes);
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl MemoryScopePort for MultiframeStageMemory {
+    fn reserve(&self, bytes: u64, _lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+        let _previous = self.0
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |active| {
+                active.checked_add(bytes).filter(|next| *next <= 256 * 1024 * 1024)
+            })
+            .map_err(|_| IndexError::ResourceLimited)?;
+        Ok(MemoryLease::new(bytes, Arc::new(Self(Arc::clone(&self.0)))))
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_uds_bound_admitted_projection_stage_crosses_single_frame_with_child_ref() -> TestResult {
+    use quanta_index_contract::index::native_immutable_object_ref_v1;
+    use quanta_index_contract::native_protocol::NativeProjectionOutputChildren;
+
+    let root = private_root()?;
+    let socket = root.path().join("native.sock");
+    let running = NativeServiceGuard::start(bind_service(
+        root.path(),
+        &socket,
+        work_limits(),
+        descriptors(),
+    )?);
+    let active = Arc::new(AtomicU64::new(0));
+    let memory = MemoryScope::new(Arc::new(MultiframeStageMemory(Arc::clone(&active))));
+    let request_budget = RequestBudgetV1::for_duration(Duration::from_secs(120));
+    let observed = NativeUdsClient::new(&socket)
+        .capture_peer_process_admitted_v1(&request_budget, &memory)?;
+    assert_eq!(observed.credentials_v1().pid, Some(std::process::id()));
+    let peer = observed.share_lease_v1();
+    drop(observed);
+    let client = NativeUdsClient::new(&socket).with_bound_peer_process_v1(&peer);
+    drop(peer);
+
+    let created = client.request_publication_admitted(
+        NativeIndexRequest::CreateWorkspace {
+            workspace: workspace(),
+            epoch: 1,
+        },
+        &request_budget,
+        &memory,
+    )?;
+    assert!(matches!(created.response(), NativeIndexResponse::Created(_)));
+    drop(created);
+    let operation = operation(1);
+    let opened = client.request_publication_admitted(
+        NativeIndexRequest::BeginInput(operation),
+        &request_budget,
+        &memory,
+    )?;
+    let NativeIndexResponse::InputOpened(ingress) = opened.response() else {
+        return Err(format!("expected opened ingress, got {:?}", opened.response()).into());
+    };
+    let ingress = *ingress;
+    assert_eq!(ingress.operation, operation);
+    drop(opened);
+
+    let child_bytes = b"multiframe-child";
+    let child_expected = native_immutable_object_ref_v1(child_bytes, &[])
+        .ok_or("child object identity overflow")?;
+    let child_reply = client.request_publication_admitted(
+        NativeIndexRequest::StageProjectionOutput {
+            ingress,
+            bytes: child_bytes.to_vec(),
+            children: NativeProjectionOutputChildren::new(Vec::new())
+                .expect("empty child set is valid"),
+        },
+        &request_budget,
+        &memory,
+    )?;
+    assert_eq!(child_reply.response(), &NativeIndexResponse::Staged(child_expected));
+    drop(child_reply);
+
+    // Each 0xff element has a two-byte CBOR representation. The stored object
+    // stays below 16 MiB, while this actual SDK request needs multiple frames.
+    let bytes = vec![0xff; quanta_index_ipc::MAX_FRAME_BODY_BYTES / 2 + 1024];
+    let expected = native_immutable_object_ref_v1(&bytes, &[child_expected])
+        .ok_or("projection object identity overflow")?;
+    let stage = NativeIndexRequest::StageProjectionOutput {
+        ingress,
+        bytes,
+        children: NativeProjectionOutputChildren::new(vec![child_expected])
+            .expect("one child is valid"),
+    };
+    assert!(
+        quanta_index_ipc::cbor_payload_len(&stage)?
+            > u64::try_from(quanta_index_ipc::MAX_FRAME_BODY_BYTES)?,
+        "the admitted request did not cross the single-frame limit"
+    );
+    let staged = client.request_publication_admitted(stage, &request_budget, &memory)?;
+    assert_eq!(staged.response(), &NativeIndexResponse::Staged(expected));
+    assert!(native_object_file(root.path(), expected)?.is_file());
+    drop(staged);
+
+    let discarded = client.request_publication_admitted(
+        NativeIndexRequest::DiscardInput(ingress),
+        &request_budget,
+        &memory,
+    )?;
+    assert_eq!(
+        discarded.response(),
+        &NativeIndexResponse::InputDiscarded(ingress)
+    );
+    drop(discarded);
+    drop(client);
+    assert_eq!(active.load(Ordering::SeqCst), 0);
     running.stop()?;
     Ok(())
 }
@@ -3035,7 +3192,7 @@ fn native_format_refuses_v6_before_initializing_catalog() -> TestResult {
     if std::fs::read(marker)? != b"quanta-index-native-state-v6\n" {
         return Err("v6 refusal changed the original marker".into());
     }
-    for entry in [".native-index-v19", "catalog", "native-objects"] {
+    for entry in [".native-index-v20", "catalog", "native-objects"] {
         if prior.path().join(entry).try_exists()? {
             return Err(format!("v6 refusal initialized {entry}").into());
         }
@@ -3064,7 +3221,7 @@ fn native_format_refuses_v7_before_initializing_bootstrap_catalog() -> TestResul
     if std::fs::read(marker)? != b"quanta-index-native-state-v7\n" {
         return Err("v7 refusal changed the original marker".into());
     }
-    for entry in [".native-index-v19", "catalog", "native-objects"] {
+    for entry in [".native-index-v20", "catalog", "native-objects"] {
         if prior.path().join(entry).try_exists()? {
             return Err(format!("v7 refusal initialized {entry}").into());
         }
@@ -3094,7 +3251,7 @@ fn native_format_refuses_v8_before_initializing_gc_catalog_or_objects() -> TestR
         return Err("v8 refusal changed the original marker".into());
     }
     for entry in [
-        ".native-index-v19",
+        ".native-index-v20",
         "catalog",
         "native-objects",
         "native-scratch-v1",
@@ -3116,8 +3273,8 @@ fn native_format_refuses_unmarked_existing_data_and_symlink_marker() -> TestResu
         descriptors(),
     )?;
     assert_eq!(
-        std::fs::read(native.path().join(".native-index-v19"))?,
-        b"quanta-index-native-state-v19\n"
+        std::fs::read(native.path().join(".native-index-v20"))?,
+        b"quanta-index-native-state-v20\n"
     );
     assert!(matches!(
         quanta_index_searchd::app::state_format::refuse_legacy_state_root_v1(native.path()),
@@ -3155,7 +3312,7 @@ fn native_format_refuses_unmarked_existing_data_and_symlink_marker() -> TestResu
         Err(error) => error,
     };
     assert!(prior_error.to_string().contains("explicit rebuild"));
-    assert!(!prior.path().join(".native-index-v19").exists());
+    assert!(!prior.path().join(".native-index-v20").exists());
 
     let prior_v2 = private_root()?;
     let prior_v2_marker = prior_v2.path().join(".native-index-v2");
@@ -3171,7 +3328,7 @@ fn native_format_refuses_unmarked_existing_data_and_symlink_marker() -> TestResu
         Err(error) => error,
     };
     assert!(prior_v2_error.to_string().contains("explicit rebuild"));
-    assert!(!prior_v2.path().join(".native-index-v19").exists());
+    assert!(!prior_v2.path().join(".native-index-v20").exists());
 
     let prior_v3 = private_root()?;
     let prior_v3_marker = prior_v3.path().join(".native-index-v3");
@@ -3187,7 +3344,7 @@ fn native_format_refuses_unmarked_existing_data_and_symlink_marker() -> TestResu
         Err(error) => error,
     };
     assert!(prior_v3_error.to_string().contains("explicit rebuild"));
-    assert!(!prior_v3.path().join(".native-index-v19").exists());
+    assert!(!prior_v3.path().join(".native-index-v20").exists());
 
     let prior_v4 = private_root()?;
     let prior_v4_marker = prior_v4.path().join(".native-index-v4");
@@ -3207,7 +3364,7 @@ fn native_format_refuses_unmarked_existing_data_and_symlink_marker() -> TestResu
         std::fs::read(&prior_v4_marker)?,
         b"quanta-index-native-state-v4\n"
     );
-    assert!(!prior_v4.path().join(".native-index-v19").exists());
+    assert!(!prior_v4.path().join(".native-index-v20").exists());
     assert!(!prior_v4.path().join("catalog").exists());
 
     let prior_v5 = private_root()?;
@@ -3228,15 +3385,15 @@ fn native_format_refuses_unmarked_existing_data_and_symlink_marker() -> TestResu
         std::fs::read(&prior_v5_marker)?,
         b"quanta-index-native-state-v5\n"
     );
-    assert!(!prior_v5.path().join(".native-index-v19").exists());
+    assert!(!prior_v5.path().join(".native-index-v20").exists());
     assert!(!prior_v5.path().join("catalog").exists());
 
     let symlinked = private_root()?;
     std::fs::write(
         symlinked.path().join("target"),
-        b"quanta-index-native-state-v19\n",
+        b"quanta-index-native-state-v20\n",
     )?;
-    std::os::unix::fs::symlink("target", symlinked.path().join(".native-index-v19"))?;
+    std::os::unix::fs::symlink("target", symlinked.path().join(".native-index-v20"))?;
     assert!(
         bind_service(
             symlinked.path(),
@@ -3250,9 +3407,9 @@ fn native_format_refuses_unmarked_existing_data_and_symlink_marker() -> TestResu
     let linked = private_root()?;
     let outside = private_root()?;
     let target = outside.path().join("marker-target");
-    std::fs::write(&target, b"quanta-index-native-state-v19\n")?;
+    std::fs::write(&target, b"quanta-index-native-state-v20\n")?;
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))?;
-    std::fs::hard_link(&target, linked.path().join(".native-index-v19"))?;
+    std::fs::hard_link(&target, linked.path().join(".native-index-v20"))?;
     assert!(
         bind_service(
             linked.path(),
@@ -3286,7 +3443,7 @@ fn native_format_refuses_v10_before_reinterpreting_capture_claims() -> TestResul
     assert_eq!(std::fs::read(&marker)?, original_marker);
     assert_eq!(std::fs::read(&old_database)?, original_database);
     for entry in [
-        ".native-index-v19",
+        ".native-index-v20",
         "native-objects",
         "native-scratch-v1",
         "native.sock",
@@ -3317,7 +3474,7 @@ fn native_format_refuses_v11_before_reinterpreting_source_authority() -> TestRes
     assert_eq!(std::fs::read(&marker)?, original_marker);
     assert_eq!(std::fs::read(&old_database)?, original_database);
     for entry in [
-        ".native-index-v19",
+        ".native-index-v20",
         "native-objects",
         "native-scratch-v1",
         "native.sock",
@@ -3361,7 +3518,7 @@ fn native_format_refuses_v9_without_creating_retention_state() -> TestResult {
         std::fs::read(root.path().join(".native-index-v9"))?,
         original
     );
-    assert!(!root.path().join(".native-index-v19").exists());
+    assert!(!root.path().join(".native-index-v20").exists());
     assert!(!root.path().join("catalog").exists());
     assert!(!socket.exists());
     Ok(())
@@ -3384,7 +3541,7 @@ fn native_v12_root_refuses_without_marker_or_catalog_rewrite() -> TestResult {
     };
     assert!(error.to_string().contains("explicit rebuild"));
     assert_eq!(std::fs::read(&marker)?, b"quanta-index-native-state-v12\n");
-    assert!(!root.path().join(".native-index-v19").exists());
+    assert!(!root.path().join(".native-index-v20").exists());
     assert!(!root.path().join("catalog").exists());
     assert!(!root.path().join("native-objects").exists());
     Ok(())
@@ -3409,7 +3566,7 @@ fn native_v13_root_refuses_without_marker_or_catalog_rewrite() -> TestResult {
     };
     assert!(error.to_string().contains("explicit rebuild"));
     assert_eq!(std::fs::read(&marker)?, b"quanta-index-native-state-v13\n");
-    assert!(!root.path().join(".native-index-v19").exists());
+    assert!(!root.path().join(".native-index-v20").exists());
     assert!(!root.path().join("catalog").exists());
     assert!(!root.path().join("native-objects").exists());
     Ok(())
@@ -3434,7 +3591,7 @@ fn native_v14_root_refuses_without_marker_or_catalog_rewrite() -> TestResult {
     };
     assert!(error.to_string().contains("explicit rebuild"));
     assert_eq!(std::fs::read(&marker)?, b"quanta-index-native-state-v14\n");
-    assert!(!root.path().join(".native-index-v19").exists());
+    assert!(!root.path().join(".native-index-v20").exists());
     assert!(!root.path().join("catalog").exists());
     assert!(!root.path().join("native-objects").exists());
     Ok(())
@@ -3459,7 +3616,7 @@ fn native_v15_root_refuses_without_marker_or_catalog_rewrite() -> TestResult {
     };
     assert!(error.to_string().contains("explicit rebuild"));
     assert_eq!(std::fs::read(&marker)?, b"quanta-index-native-state-v15\n");
-    assert!(!root.path().join(".native-index-v19").exists());
+    assert!(!root.path().join(".native-index-v20").exists());
     assert!(!root.path().join("catalog").exists());
     assert!(!root.path().join("native-objects").exists());
     Ok(())
@@ -3484,7 +3641,7 @@ fn native_v16_root_refuses_without_marker_or_catalog_rewrite() -> TestResult {
     };
     assert!(error.to_string().contains("explicit rebuild"));
     assert_eq!(std::fs::read(&marker)?, b"quanta-index-native-state-v16\n");
-    assert!(!root.path().join(".native-index-v19").exists());
+    assert!(!root.path().join(".native-index-v20").exists());
     assert!(!root.path().join("catalog").exists());
     assert!(!root.path().join("native-objects").exists());
     Ok(())
@@ -3509,40 +3666,42 @@ fn native_v17_root_refuses_without_marker_or_catalog_rewrite() -> TestResult {
     };
     assert!(error.to_string().contains("explicit rebuild"));
     assert_eq!(std::fs::read(&marker)?, b"quanta-index-native-state-v17\n");
-    assert!(!root.path().join(".native-index-v19").exists());
+    assert!(!root.path().join(".native-index-v20").exists());
     assert!(!root.path().join("catalog").exists());
     assert!(!root.path().join("native-objects").exists());
     Ok(())
 }
 
 #[test]
-fn native_v18_root_refuses_before_creating_v19_state() -> TestResult {
-    let root = private_root()?;
-    let marker = root.path().join(".native-index-v18");
-    let original_marker = b"quanta-index-native-state-v18\n";
-    std::fs::write(&marker, original_marker)?;
-    std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o600))?;
-    let old_catalog = root.path().join("catalog");
-    std::fs::create_dir(&old_catalog)?;
-    let old_database = old_catalog.join("catalog-v1.sqlite");
-    let original_database = b"v18 Catalog bytes must remain untouched";
-    std::fs::write(&old_database, original_database)?;
-    let socket = root.path().join("native.sock");
+fn native_previous_roots_refuse_before_creating_v20_state() -> TestResult {
+    for version in [18, 19] {
+        let root = private_root()?;
+        let marker = root.path().join(format!(".native-index-v{version}"));
+        let original_marker = format!("quanta-index-native-state-v{version}\n").into_bytes();
+        std::fs::write(&marker, &original_marker)?;
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o600))?;
+        let old_catalog = root.path().join("catalog");
+        std::fs::create_dir(&old_catalog)?;
+        let old_database = old_catalog.join("catalog-v1.sqlite");
+        let original_database = format!("v{version} Catalog bytes must remain untouched").into_bytes();
+        std::fs::write(&old_database, &original_database)?;
+        let socket = root.path().join("native.sock");
 
-    let error = match bind_service(root.path(), &socket, work_limits(), descriptors()) {
-        Ok(_service) => return Err("v18 state was accepted by the v19 reader".into()),
-        Err(error) => error,
-    };
-    assert!(error.to_string().contains("explicit rebuild"));
-    assert_eq!(std::fs::read(&marker)?, original_marker);
-    assert_eq!(std::fs::read(&old_database)?, original_database);
-    for entry in [
-        ".native-index-v19",
-        "native-objects",
-        "native-scratch-v1",
-        "native.sock",
-    ] {
-        assert!(!root.path().join(entry).exists());
+        let error = match bind_service(root.path(), &socket, work_limits(), descriptors()) {
+            Ok(_service) => return Err(format!("v{version} state was accepted by the v20 reader").into()),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("explicit rebuild"));
+        assert_eq!(std::fs::read(&marker)?, original_marker);
+        assert_eq!(std::fs::read(&old_database)?, original_database);
+        for entry in [
+            ".native-index-v20",
+            "native-objects",
+            "native-scratch-v1",
+            "native.sock",
+        ] {
+            assert!(!root.path().join(entry).exists());
+        }
     }
     Ok(())
 }
@@ -3635,6 +3794,9 @@ fn native_automatic_retention_advances_floor_releases_custody_and_preserves_pin_
     let (input, record) =
         stage_source(&client, operation(2), "first.rs", b"first retained source")?;
     let two = advance_one(&client, input, configured, owner(1), record, 1)?;
+    // Capture the historical Source publication through the independent
+    // existing pinned read before automatic history retirement.
+    let published_source_metadata = client.read_view(ViewSelection::Exact(two), &budget())?;
     let record_file = native_object_file(root.path(), record)?;
     let original_record_wire = std::fs::read(&record_file)?;
     running.stop()?;
@@ -3757,6 +3919,30 @@ fn native_automatic_retention_advances_floor_releases_custody_and_preserves_pin_
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    // Historical metadata must neither reacquire a retired ticket nor
+    // replenish terminal custody. Reuse the already-open read-only observer;
+    // do not open another raw Catalog/SQLite connection on the live root.
+    assert!(matches!(
+        client.read_view(ViewSelection::Exact(two), &budget()),
+        Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::SnapshotUnavailable
+    ));
+    let metadata_custody = || -> rusqlite::Result<(i64, i64)> {
+        connection.query_row(
+            "SELECT (SELECT COUNT(*) FROM native_pin_v1 WHERE sequence=?1), (SELECT COUNT(*) FROM native_terminal_custody_v1)",
+            rusqlite::params![pinned_sequence_sql],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+    };
+    let before_metadata_custody = metadata_custody()?;
+    assert_eq!(
+        client.published_view_metadata(operation(2), &budget())?,
+        published_source_metadata
+    );
+    assert_eq!(metadata_custody()?, before_metadata_custody);
+    assert!(matches!(
+        client.read_view(ViewSelection::Exact(two), &budget()),
+        Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::SnapshotUnavailable
+    ));
     drop(connection);
     assert_eq!(pin.view.identity, two);
     assert_eq!(std::fs::read(&record_file)?, original_record_wire);
@@ -3922,6 +4108,16 @@ fn native_automatic_retention_advances_floor_releases_custody_and_preserves_pin_
             "automatic physical retention did not remove old record/body: targets(object,lifecycle,all_reference_counts,parent_prefixes)={targets:?}, pinned_history_views_pins_work={history_and_pins:?}, queue_count={queue_count:?}, queue_first8={queued:?}, worker={worker:?}, resources={resources:?}, shutdown={shutdown:?}, admitted_queue_probe={queue_probe:?}, probe_elapsed={probe_elapsed:?}, probe_usage={probe_usage:?}, retirement_retry={retirement_retry:?}"
         ).into());
     }
+    // The daemon has reopened and the old source record/body were physically
+    // removed. Metadata must still come from the retained operation result.
+    assert_eq!(
+        client.published_view_metadata(operation(2), &budget())?,
+        published_source_metadata
+    );
+    assert!(matches!(
+        client.read_view(ViewSelection::Exact(two), &budget()),
+        Err(NativeUdsError::Refused(error)) if error.code == NativeIndexErrorCode::SnapshotUnavailable
+    ));
     assert_eq!(
         client
             .read_view(ViewSelection::Exact(four), &budget())?
@@ -3971,7 +4167,7 @@ fn native_bind_rejects_unusable_read_lease_before_format_creation() -> TestResul
             },
         );
         assert!(error.is_err());
-        assert!(!root.path().join(".native-index-v19").exists());
+        assert!(!root.path().join(".native-index-v20").exists());
         assert!(!root.path().join("catalog").exists());
     }
     Ok(())
@@ -4479,7 +4675,7 @@ fn native_bind_rejects_overcommitted_class_floors_before_format_creation() -> Te
         &resources,
     );
     assert!(result.is_err());
-    assert!(!root.path().join(".native-index-v19").exists());
+    assert!(!root.path().join(".native-index-v20").exists());
     assert!(!root.path().join("catalog").exists());
     Ok(())
 }
@@ -4759,7 +4955,7 @@ fn native_bind_refuses_nested_socket_before_format_creation() -> TestResult {
             Err(error) => error,
         };
         assert!(error.to_string().contains("nested directory"));
-        assert!(!root.path().join(".native-index-v19").exists());
+        assert!(!root.path().join(".native-index-v20").exists());
         assert!(!root.path().join("catalog").exists());
         assert!(!root.path().join("native-objects").exists());
         assert!(!root.path().join("run").exists());
@@ -4773,7 +4969,7 @@ fn native_bind_refuses_nested_socket_before_format_creation() -> TestResult {
         Err(error) => error,
     };
     assert!(error.to_string().contains("unresolved parent traversal"));
-    assert!(!root.path().join(".native-index-v19").exists());
+    assert!(!root.path().join(".native-index-v20").exists());
     assert!(!root.path().join("missing").exists());
     Ok(())
 }
@@ -6111,7 +6307,7 @@ fn native_automatic_reclaim_invalid_config_and_missing_floor_refuse_before_state
         );
         assert!(result.is_err(), "{case} accepted");
         assert!(
-            !root.path().join(".native-index-v19").exists(),
+            !root.path().join(".native-index-v20").exists(),
             "{case} wrote format"
         );
         assert!(
