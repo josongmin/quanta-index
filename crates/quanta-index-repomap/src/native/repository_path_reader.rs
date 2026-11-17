@@ -9,7 +9,7 @@ use quanta_index_contract::native_protocol::{
 use quanta_index_core::index::{
     IndexError, IndexQueryPort, MapPageEntry, MapRoot, MapValue, MemoryLease, MemoryLifetime,
     QueryOutcome, QueryReadContext, SourceCut, SourcePathKey, SourcePathOwners,
-    SourcePathRepositoryKey, SourceRecordOwner, WorkBudget, effort::ResourceNeed,
+    SourcePathRepositoryKey, SourceRecordOwner, WorkBudget, WorkUsage, effort::ResourceNeed,
     owner_from_path_map_value, owner_map_key, ports::IndexBuildPort,
     validate_source_path_repository_key,
 };
@@ -127,7 +127,9 @@ impl RepositoryFilePathPage {
         if stored.registration.reference != reference
             || stored.registration.children.as_slice() != [record.bytes]
             || record.path != path
-            || expected_repo.is_some_and(|key| actual_repo_key != key)
+            || expected_repo.map_or(record.source_repo_id.is_some(), |key| {
+                actual_repo_key != key
+            })
         {
             return Err(IndexError::CorruptObject(
                 "file path key/value mismatch".into(),
@@ -228,6 +230,29 @@ impl IndexQueryPort<RepositoryPathReadRequest, RepositoryFilePathPage>
     ) -> Result<QueryOutcome<RepositoryFilePathPage>, IndexError> {
         self.validate_instance(context.instance)?;
         let _need = self.reservation(request)?;
+        context.budget.checkpoint()?;
+        let cursor_bytes = request
+            .after
+            .as_ref()
+            .map_or(Some(0), |cursor| {
+                cursor.path.len().checked_add(
+                    cursor
+                        .repository
+                        .as_ref()
+                        .map_or(0, |repository| repository.as_str().len()),
+                )
+            })
+            .ok_or(IndexError::ResourceLimited)?;
+        let bytes = b"path\0"
+            .len()
+            .checked_add(request.prefix.len())
+            .and_then(|bytes| bytes.checked_add(cursor_bytes))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(IndexError::ResourceLimited)?;
+        context.budget.charge(WorkUsage {
+            bytes,
+            ..WorkUsage::default()
+        })?;
         if request.after.as_ref().is_some_and(|cursor| {
             cursor.view != context.ticket.view.identity
                 || cursor.instance != context.instance.instance
@@ -354,10 +379,15 @@ fn visit_path(
                     MemoryLifetime::Temporary,
                 )?;
                 if record.path != path
-                    || record.source_repo_id != cursor.repository
+                    || record.source_repo_id.is_some()
                     || stored.registration.reference != reference
                     || stored.registration.children.as_slice() != [record.bytes]
                 {
+                    return Err(IndexError::CorruptObject(
+                        "file path key/value mismatch".into(),
+                    ));
+                }
+                if cursor.repository.is_some() {
                     return Err(IndexError::InvalidInput(
                         "repository path cursor is absent".into(),
                     ));

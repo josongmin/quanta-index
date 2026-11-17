@@ -107,7 +107,8 @@ fn read_matrix_bytes(input: &Path) -> Result<Vec<u8>> {
         "Native DSL matrix must be a regular file"
     );
     let mut bytes = Vec::new();
-    let _read = file.take(MAX_MATRIX_BYTES + 1)
+    let _read = file
+        .take(MAX_MATRIX_BYTES + 1)
         .read_to_end(&mut bytes)
         .context("read Native DSL matrix")?;
     ensure!(
@@ -156,7 +157,11 @@ fn raw_sha256(value: &str, key: &str) -> Result<()> {
     Ok(())
 }
 
-fn samples_for_report(report: &Value, mode: BenchMode, id: &str) -> Result<(Vec<f64>, ReportTiming)> {
+fn samples_for_report(
+    report: &Value,
+    mode: BenchMode,
+    id: &str,
+) -> Result<(Vec<f64>, ReportTiming)> {
     let passes = report
         .get("passes")
         .and_then(Value::as_u64)
@@ -224,14 +229,22 @@ fn samples_for_report(report: &Value, mode: BenchMode, id: &str) -> Result<(Vec<
         observed.get("samples").and_then(Value::as_u64) == Some(u64::from(expected.samples)),
         "Native DSL {id} summary sample count differs"
     );
-    Ok((samples, ReportTiming {
-        passes, samples_per_pass: per_pass, prime_queries: prime,
-        cooldown_ms, pass_settle_ms,
-    }))
+    Ok((
+        samples,
+        ReportTiming {
+            passes,
+            samples_per_pass: per_pass,
+            prime_queries: prime,
+            cooldown_ms,
+            pass_settle_ms,
+        },
+    ))
 }
 
 fn finite_nonnegative(report: &Value, field: &str, id: &str) -> Result<f64> {
-    report.get(field).and_then(Value::as_f64)
+    report
+        .get(field)
+        .and_then(Value::as_f64)
         .filter(|value| value.is_finite() && *value >= 0.0)
         .with_context(|| format!("Native DSL {id} has missing or invalid {field}"))
 }
@@ -398,7 +411,10 @@ fn validate_matrix(input: &Value) -> Result<ValidatedMatrix> {
                 let deadline = finite_nonnegative(report, "query_deadline_ms", id)?;
                 ensure!(deadline > 0.0, "Native DSL {id} has zero query deadline");
                 if let Some(previous) = text_query_deadline_ms {
-                    ensure!(previous == deadline, "Native DSL Text query deadline differs across reports");
+                    ensure!(
+                        previous == deadline,
+                        "Native DSL Text query deadline differs across reports"
+                    );
                 } else {
                     text_query_deadline_ms = Some(deadline);
                 }
@@ -465,14 +481,19 @@ fn validate_matrix(input: &Value) -> Result<ValidatedMatrix> {
             }
             let (report_samples, timing) = samples_for_report(report, mode, id)?;
             if let Some(previous) = common_timing {
-                ensure!(previous == timing, "Native DSL timing differs across reports");
+                ensure!(
+                    previous == timing,
+                    "Native DSL timing differs across reports"
+                );
             } else {
                 common_timing = Some(timing);
             }
             samples.extend(report_samples);
         }
-        ensure!(all_samples.insert(id.to_owned(), samples).is_none(),
-            "duplicate Native DSL sample row {id}");
+        ensure!(
+            all_samples.insert(id.to_owned(), samples).is_none(),
+            "duplicate Native DSL sample row {id}"
+        );
     }
     ensure!(
         seen.len() == expected.len(),
@@ -559,24 +580,34 @@ fn build_artifact(
             }
         })
         .collect();
-    let corpus_digest = config_digest(
-        "dsl-native-mixed-fixture",
-        &[
-            ("text_fixture_sha256", valid.text_fixture_sha256.clone()),
-            (
-                "history_fixture_sha256",
-                valid.history_fixture_sha256.clone(),
-            ),
-        ],
-    );
+    let mut corpus_files = LEXICAL_CORPUS
+        .iter()
+        .map(|(path, content)| ((*path).to_owned(), (*content).to_owned()))
+        .collect::<Vec<_>>();
+    corpus_files.extend(history_fixture_corpus_files());
+    let corpus_digest = corpus_digest(&dimension, &corpus_files);
     let config_digest = config_digest(
         &dimension,
         &[
-            ("runner_sha256", valid.runner_sha256.clone()),
-            ("daemon_sha256", valid.daemon_sha256.clone()),
             ("text_config_sha256", valid.text_config_sha256.clone()),
             ("history_config_sha256", valid.history_config_sha256.clone()),
             ("mode", valid.mode.as_str().into()),
+            ("passes", valid.timing.passes.to_string()),
+            (
+                "samples_per_pass",
+                valid.timing.samples_per_pass.to_string(),
+            ),
+            ("prime_queries", valid.timing.prime_queries.to_string()),
+            ("cooldown_ms", valid.timing.cooldown_ms.to_string()),
+            ("pass_settle_ms", valid.timing.pass_settle_ms.to_string()),
+            (
+                "query_deadline_ms",
+                valid.text_query_deadline_ms.to_string(),
+            ),
+            (
+                "reports_per_scenario",
+                valid.reports_per_scenario.to_string(),
+            ),
         ],
     );
     BenchArtifactV1 {
@@ -611,7 +642,11 @@ fn build_artifact(
             "history_config_sha256": valid.history_config_sha256,
             "resource_scope": "assembler process RUSAGE_SELF only; daemon measurement RSS unavailable in matrix",
             "host_scope": "assembler host; pinned frozen runner invokes assembly after measurement",
-            "corpus_digest_scope": "framed digest of pinned Text fixture and History fixture SHA-256 identifiers",
+            "corpus_digest_scope": "canonical Text source bytes and History source/payload bytes, independent of executable and fixture descriptor",
+            "timing": {"passes": valid.timing.passes, "samples_per_pass": valid.timing.samples_per_pass,
+                "prime_queries": valid.timing.prime_queries, "cooldown_ms": valid.timing.cooldown_ms,
+                "pass_settle_ms": valid.timing.pass_settle_ms, "query_deadline_ms": valid.text_query_deadline_ms,
+                "reports_per_scenario": valid.reports_per_scenario},
             "sample_scope": "SDK latency samples; per-sample oracle enforced by pinned Native runner",
         }),
     }
@@ -630,7 +665,9 @@ mod tests {
     use super::{
         MAX_MATRIX_BYTES, build_artifact, read_matrix_bytes, samples_for_report, validate_matrix,
     };
-    use crate::artifact::{BenchMode, HostV1, ResourceUsageV1, corpus_digest_refs};
+    use crate::artifact::{
+        BenchArtifactV1, BenchMode, HostV1, ResourceUsageV1, corpus_digest_refs,
+    };
     use crate::scenarios::{FixtureKind, LEXICAL_CORPUS, NATIVE_TEXT_FILE_SCENARIOS, SCENARIOS};
 
     fn complete_matrix(mode: BenchMode) -> serde_json::Value {
@@ -650,7 +687,9 @@ mod tests {
                 "daemon_sha256": raw_daemon,
                 "config_template_sha256": raw_config,
                 "fixture_sha256": corpus_digest_refs("native-dsl-text", LEXICAL_CORPUS.iter().copied()),
+                "query_deadline_ms": 1000.0,
                 "passes": 1, "samples_per_pass": 1, "prime_queries": prime,
+                "cooldown_ms": 0.0, "pass_settle_ms": 0.0,
                 "published": [{"view": {}, "source_cut": {}, "operations": [{"submit_count": 1, "completion": "immediate_ack"}]}],
                 "samples_ms": [1.0],
                 "latency": {"p50_ms": 1.0, "p95_ms": 1.0, "p99_ms": 1.0, "samples": 1},
@@ -668,6 +707,7 @@ mod tests {
                 "result_shape": scenario.expected_shape.as_str(),
                 "published": {"view": {}, "cut": {}, "session": {}},
                 "passes": 1, "samples_per_pass": 1, "prime_queries": prime,
+                "cooldown_ms": 0.0, "pass_settle_ms": 0.0,
                 "samples_ms": [1.0],
                 "latency": {"p50_ms": 1.0, "p95_ms": 1.0, "p99_ms": 1.0, "samples": 1},
             });
@@ -689,25 +729,30 @@ mod tests {
         })
     }
 
+    fn artifact_for_test(matrix: serde_json::Value) -> BenchArtifactV1 {
+        let valid = validate_matrix(&matrix).expect("valid complete Native subset");
+        build_artifact(
+            valid,
+            HostV1 {
+                os: "unit-test".into(),
+                arch: "unit-test".into(),
+                cpu_count: 1,
+                mem_bytes: 1,
+                hostname_hash: "unit-test".into(),
+            },
+            ResourceUsageV1 { peak_rss_bytes: 1 },
+            "sha256:unit-test".into(),
+            matrix,
+        )
+    }
+
     #[test]
     fn complete_native_subset_keeps_all_registry_rows_and_explicit_gaps() {
         for mode in [BenchMode::Cold, BenchMode::Warm] {
             let matrix = complete_matrix(mode);
             let valid = validate_matrix(&matrix).expect("valid complete Native subset");
             assert_eq!(valid.samples.len(), 14);
-            let artifact = build_artifact(
-                valid,
-                HostV1 {
-                    os: "unit-test".into(),
-                    arch: "unit-test".into(),
-                    cpu_count: 1,
-                    mem_bytes: 1,
-                    hostname_hash: "unit-test".into(),
-                },
-                ResourceUsageV1 { peak_rss_bytes: 1 },
-                "sha256:unit-test".into(),
-                matrix,
-            );
+            let artifact = artifact_for_test(matrix);
             assert_eq!(artifact.rows.len(), 33);
             assert_eq!(
                 artifact
@@ -739,11 +784,34 @@ mod tests {
     }
 
     #[test]
+    fn executable_digest_does_not_change_corpus_or_config_digest() {
+        let first = artifact_for_test(complete_matrix(BenchMode::Warm));
+        let mut second_matrix = complete_matrix(BenchMode::Warm);
+        second_matrix["runner_sha256"] = json!(format!("sha256:{}", "9".repeat(64)));
+        let second = artifact_for_test(second_matrix);
+        assert_eq!(
+            first.provenance.corpus_digest,
+            second.provenance.corpus_digest
+        );
+        assert_eq!(
+            first.provenance.config_digest,
+            second.provenance.config_digest
+        );
+    }
+
+    #[test]
+    fn refuses_timing_drift_between_scenarios() {
+        let mut matrix = complete_matrix(BenchMode::Warm);
+        matrix["scenarios"][0]["reports"][0]["cooldown_ms"] = json!(5.0);
+        assert!(validate_matrix(&matrix).is_err());
+    }
+
+    #[test]
     fn matrix_reader_requires_bounded_regular_input() -> anyhow::Result<()> {
         let temp = TempDir::new()?;
         let path = temp.path().join("matrix.json");
         fs::write(&path, b"{}")?;
-        assert_eq!(read_matrix_bytes(&path)?, b"{}");
+        assert_eq!(read_matrix_bytes(&path)?.as_slice(), b"{}");
         let alias = temp.path().join("alias.json");
         symlink(&path, &alias)?;
         assert!(read_matrix_bytes(&alias).is_err());
@@ -786,6 +854,7 @@ mod tests {
     fn rejects_cold_report_with_multiple_queries() {
         let report = json!({
             "passes": 1, "samples_per_pass": 2, "prime_queries": 0,
+            "cooldown_ms": 0.0, "pass_settle_ms": 0.0,
             "samples_ms": [1.0, 2.0],
             "latency": {"p50_ms": 1.0, "p95_ms": 2.0, "p99_ms": 2.0, "samples": 2},
         });
@@ -796,6 +865,7 @@ mod tests {
     fn rejects_summary_that_differs_from_raw_samples() {
         let report = json!({
             "passes": 1, "samples_per_pass": 1, "prime_queries": 0,
+            "cooldown_ms": 0.0, "pass_settle_ms": 0.0,
             "samples_ms": [1.0],
             "latency": {"p50_ms": 2.0, "p95_ms": 2.0, "p99_ms": 2.0, "samples": 1},
         });

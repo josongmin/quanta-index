@@ -231,7 +231,7 @@ Production-ready는 필수 process/ops/scale/external 조건까지 통과해야 
 
 | 범위 | 현재 실행 owner / 제한 |
 | --- | --- |
-| 정적·owner·adapter·CLI·daemon | [루트 build/verification usage](../../README.md#build-and-verification), Justfile과 test-authority에서 해당 selector를 선택 |
+| 정적·owner·adapter·CLI·daemon | [루트 build/verification usage](../../README.md#development-and-verification), Justfile과 test-authority에서 해당 selector를 선택 |
 | Query truth·generation·fault | [검증/품질 결정](../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md), 해당 실제 backend/process oracle |
 | 품질·Linux performance | [벤치 usage](../../tools/benchmark/README.md), [품질 잔여](../plans/oct-22-finalizing/E08-integration-release.md#integration-gates); 필요 native artifact는 `check-bench-artifacts.py --require`, local fixture/advisory를 qualified 결과로 대체 금지 |
 | Producer·운영·release | [SEP-21 residual plan](../plans/oct-22-finalizing/E08-integration-release.md#release-inputs), [state usage](../operator/state-cutover-runbook.md) |

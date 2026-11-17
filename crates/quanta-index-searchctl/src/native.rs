@@ -317,17 +317,23 @@ fn parse(args: &[String]) -> CliResult<NativeOptions> {
                 "native query-repository-paths accepts path flags and --output json only".into(),
             ));
         }
-        NativeCommand::QueryRepositoryPaths if !limit.is_some_and(|limit| (1..=128).contains(&limit)) => {
+        NativeCommand::QueryRepositoryPaths
+            if !limit.is_some_and(|limit| (1..=128).contains(&limit)) =>
+        {
             return Err(CliError::usage("native --limit must be 1..=128".into()));
         }
-        NativeCommand::QueryRepositoryPaths if after.as_ref().is_some_and(|cursor| {
-            cursor.view.workspace != workspace || cursor.view.epoch != epoch
-        }) => {
+        NativeCommand::QueryRepositoryPaths
+            if after.as_ref().is_some_and(|cursor| {
+                cursor.view.workspace != workspace || cursor.view.epoch != epoch
+            }) =>
+        {
             return Err(CliError::usage(
                 "native --after-json view differs from --workspace or --epoch".into(),
             ));
         }
-        NativeCommand::ReadView | NativeCommand::SearchText | NativeCommand::QueryRepositoryPaths => {}
+        NativeCommand::ReadView
+        | NativeCommand::SearchText
+        | NativeCommand::QueryRepositoryPaths => {}
     }
     Ok(NativeOptions {
         command,
@@ -505,9 +511,10 @@ mod tests {
             instance: IndexInstanceId([2; 16]),
             prefix: "src/".into(),
             path: "src/a.rs".into(),
-            repository: Some(quanta_index_contract::RepoId::new("corp-a").map_err(|error| {
-                CliError::usage(format!("test repository: {error}"))
-            })?),
+            repository: Some(
+                quanta_index_contract::RepoId::new("corp-a")
+                    .map_err(|error| CliError::usage(format!("test repository: {error}")))?,
+            ),
         };
         let mut args = [
             "query-repository-paths",
@@ -532,7 +539,10 @@ mod tests {
                 .map_err(|error| CliError::usage(format!("test cursor: {error}")))?,
         ]);
         let parsed = parse(&args)?;
-        assert!(matches!(parsed.command, NativeCommand::QueryRepositoryPaths));
+        assert!(matches!(
+            parsed.command,
+            NativeCommand::QueryRepositoryPaths
+        ));
         assert_eq!(parsed.output, NativeOutput::Json);
         assert_eq!(parsed.after, Some(cursor));
         args[6] = "2".into();

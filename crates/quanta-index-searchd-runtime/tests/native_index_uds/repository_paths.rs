@@ -85,7 +85,9 @@ fn native_uds_repository_paths_page_same_path_and_bind_cursor() -> TestResult {
     let profile_ingress = client.begin_input(operation(1), &budget())?;
     let profile = client.stage_profile(
         profile_ingress,
-        IndexProfile { instances: vec![literal_spec(), file_spec()] },
+        IndexProfile {
+            instances: vec![literal_spec(), file_spec()],
+        },
         &budget(),
     )?;
     let configured = published(&client.submit(
@@ -115,16 +117,16 @@ fn native_uds_repository_paths_page_same_path_and_bind_cursor() -> TestResult {
     let prior = client.read_view(ViewSelection::Exact(configured), &budget())?;
     let owners = client.stage_mutations(
         ingress,
-        [legacy, source_a, source_b].into_iter().enumerate().map(|(index, record)| {
-            OwnerMutation {
+        [(1_u8, legacy), (2, source_a), (3, source_b)]
+            .into_iter()
+            .map(|(id, record)| OwnerMutation {
                 owner: OwnerKey {
                     producer: operation(2).producer,
-                    stable_id: StableOwnerId([u8::try_from(index + 1).unwrap_or(0); 16]),
+                    stable_id: StableOwnerId([id; 16]),
                 },
                 expected: None,
                 next: Some(record),
-            }
-        }),
+            }),
         &budget(),
     )?;
     let mut transition = SourceTransition {

@@ -72,6 +72,202 @@ fn native_text_request_uses_the_explicit_native_socket() {
 
 #[cfg(unix)]
 #[test]
+fn native_repository_path_cli_pages_one_published_view_across_repositories()
+-> Result<(), Box<dyn std::error::Error>> {
+    use quanta_index_contract::{
+        RepoId,
+        index::{
+            CollectionId, Digest, IndexInstanceId, ObjectRef, OwnerKey, ProducerId, SlotId,
+            StableOwnerId, TenantId, ViewRef, ViewSelection, WorkspaceKey, WorktreeId,
+        },
+        native_protocol::{
+            NativeFilePathEntry, NativeIndexRequest, NativeIndexRequestEnvelope,
+            NativeIndexResponse, NativeIndexResponseEnvelope, NativeRepositoryPathCursor,
+            NativeRepositoryPathEntry, NativeRepositoryPathPage,
+        },
+    };
+    use std::{
+        os::unix::net::UnixListener,
+        time::{Duration, Instant},
+    };
+
+    let directory = tempfile::tempdir()?;
+    let socket = directory.path().join("repository-paths.sock");
+    let listener = UnixListener::bind(&socket)?;
+    listener.set_nonblocking(true)?;
+    let view = ViewRef {
+        workspace: WorkspaceKey {
+            tenant: TenantId([1; 16]),
+            collection: CollectionId([1; 16]),
+            worktree: WorktreeId([1; 16]),
+            slot: SlotId([1; 16]),
+        },
+        epoch: 1,
+        sequence: 2,
+        digest: Digest([3; 32]),
+    };
+    let instance = IndexInstanceId([2; 16]);
+    let file = NativeFilePathEntry {
+        owner: OwnerKey {
+            producer: ProducerId([4; 16]),
+            stable_id: StableOwnerId([5; 16]),
+        },
+        path: "src/a.rs".into(),
+        source: ObjectRef(Digest([6; 32])),
+        bytes: ObjectRef(Digest([7; 32])),
+        byte_len: 8,
+    };
+    let cursor = NativeRepositoryPathCursor {
+        view,
+        instance,
+        prefix: "src/".into(),
+        path: file.path.clone(),
+        repository: None,
+    };
+    let first = NativeRepositoryPathPage {
+        view,
+        entries: vec![NativeRepositoryPathEntry {
+            repository: None,
+            file: file.clone(),
+        }],
+        has_more: true,
+        next_after: Some(cursor.clone()),
+    };
+    let second = NativeRepositoryPathPage {
+        view,
+        entries: vec![NativeRepositoryPathEntry {
+            repository: Some(RepoId::new("corp-a")?),
+            file,
+        }],
+        has_more: false,
+        next_after: None,
+    };
+    let expected_cursor = cursor.clone();
+    let peer = std::thread::spawn(move || -> Result<(), String> {
+        for (number, page) in [first, second].into_iter().enumerate() {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => return Err(error.to_string()),
+                }
+            };
+            stream
+                .set_nonblocking(false)
+                .map_err(|error| error.to_string())?;
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .map_err(|error| error.to_string())?;
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .map_err(|error| error.to_string())?;
+            let request: NativeIndexRequestEnvelope =
+                quanta_index_ipc::decode_request(&mut stream).map_err(|error| error.to_string())?;
+            let NativeIndexRequest::QueryRepositoryPaths {
+                selection,
+                instance: actual_instance,
+                prefix,
+                after,
+                limit,
+            } = request.payload
+            else {
+                return Err("CLI did not use repository-aware Native request".into());
+            };
+            let expected_selection = if number == 0 {
+                ViewSelection::Latest {
+                    workspace: view.workspace,
+                    epoch: view.epoch,
+                }
+            } else {
+                ViewSelection::Exact(view)
+            };
+            if selection != expected_selection
+                || actual_instance != instance
+                || prefix != "src/"
+                || limit != 1
+                || after != (number == 1).then_some(expected_cursor.clone())
+            {
+                return Err("CLI changed the pinned repository path cursor".into());
+            }
+            let encoded = quanta_index_ipc::encode_response(&NativeIndexResponseEnvelope {
+                request_id: request.request_id,
+                payload: NativeIndexResponse::RepositoryPathPage(page),
+            })
+            .map_err(|error| error.to_string())?;
+            stream
+                .write_all(&encoded)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    });
+
+    let mut args = vec![
+        "native".into(),
+        "query-repository-paths".into(),
+        "--socket".into(),
+        socket.to_string_lossy().into_owned(),
+        "--workspace".into(),
+        workspace_hex(),
+        "--epoch".into(),
+        "1".into(),
+        "--instance".into(),
+        "02".repeat(16),
+        "--prefix".into(),
+        "src/".into(),
+        "--limit".into(),
+        "1".into(),
+    ];
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    let exit = run(args.clone(), &mut output, &mut errors);
+    assert_eq!(
+        exit,
+        ExitCode::SUCCESS,
+        "{}",
+        String::from_utf8_lossy(&errors)
+    );
+    let first_page: NativeRepositoryPathPage = serde_json::from_slice(&output)?;
+    assert_eq!(first_page.entries.len(), 1);
+    assert_eq!(first_page.entries[0].repository, None);
+    args.extend([
+        "--after-json".into(),
+        serde_json::to_string(&first_page.next_after.expect("first continuation"))?,
+    ]);
+    output.clear();
+    errors.clear();
+    let exit = run(args, &mut output, &mut errors);
+    let server = peer
+        .join()
+        .map_err(|_panic| "repository path peer panicked")?;
+    assert_eq!(
+        exit,
+        ExitCode::SUCCESS,
+        "{}",
+        String::from_utf8_lossy(&errors)
+    );
+    server?;
+    let second_page: NativeRepositoryPathPage = serde_json::from_slice(&output)?;
+    assert_eq!(second_page.entries.len(), 1);
+    assert_eq!(
+        second_page.entries[0]
+            .repository
+            .as_ref()
+            .map(RepoId::as_str),
+        Some("corp-a")
+    );
+    assert!(!second_page.has_more);
+    assert!(second_page.next_after.is_none());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn native_retained_page_emits_native_wire_and_preserves_exact_path()
 -> Result<(), Box<dyn std::error::Error>> {
     use quanta_index_contract::{

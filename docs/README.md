@@ -37,7 +37,7 @@ conditional designs; their age or presence does not authorize implementation.
 
 ## Usage and references
 
-- [SDK](../crates/quanta-index-sdk/README.md), [CLI](../crates/quanta-index-searchctl/README.md), [build/verification](../README.md#build-and-verification).
+- [SDK](../crates/quanta-index-sdk/README.md), [CLI](../crates/quanta-index-searchctl/README.md), [build/verification](../README.md#development-and-verification).
 - [Benchmark commands](../tools/benchmark/README.md), [code-search report/runbook](../tools/benchmark/CODE_SEARCH_RUNBOOK.md), [retrieval guide](../tools/benchmark/retrieval/README.md).
 - [DSL capabilities](reference/dsl-capabilities.md), [proof inventory](reference/dsl-proof-inventory.md), [Sourcegraph filter coverage](reference/sourcegraph-filter-parity.md).
 - [State backup/restore/rebuild](operator/state-cutover-runbook.md), [embedding setup](potion-code-embedder.md).

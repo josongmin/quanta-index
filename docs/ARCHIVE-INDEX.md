@@ -19,7 +19,8 @@ authority audit and the R11/R12 Text handoffs are compacted to scoped result
 indexes. B05's eight review items resolve to the existing execution ADR.
 The preimages retain every original command, source digest, RED/GREEN,
 candidate table and execution limit. Active IDs and acceptance remain in
-the six tickets.
+the six tickets. Documentation entry links follow the root README's current
+Development and verification heading.
 
 Exact dirty preimages and SHA-256 manifest:
 `/Users/songmin/.codex/artifacts/quanta-index-nov-13-doc-preimages/nov17-six-ticket-history-compaction-cecgdzz5`.

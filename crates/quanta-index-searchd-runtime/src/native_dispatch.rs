@@ -38,6 +38,7 @@ pub(crate) fn request_authorized(
         | NativeIndexRequest::DiffProjectionSourceOwners { .. }
         | NativeIndexRequest::SearchLiteral { .. }
         | NativeIndexRequest::QueryPaths { .. }
+        | NativeIndexRequest::QueryRepositoryPaths { .. }
         | NativeIndexRequest::SearchText { .. }
         | NativeIndexRequest::SearchSemantic { .. }
         | NativeIndexRequest::QueryGraph { .. }

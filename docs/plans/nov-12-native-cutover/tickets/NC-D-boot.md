@@ -115,6 +115,8 @@ S 기존 설치 fixture의 `source_v1.rs`, `postpublication_v1.rs`, `scenario_v1
 <a id="d-current-disposition-20261116"></a>
 ### 이 채팅의 잔여 작업과 완료 조건
 
+**Main 통합 · 2026-11-17.** 공용 Q Main 작업 트리의 818개 파일을 `03e2cead645`에 반영했고, 원격 문서 4개 커밋을 `51fb09414779`에서 병합했다. Native 실행 안내와 원격 README 구조를 함께 보존했다. `git push origin main` 뒤 로컬·원격 `51fb09414779` 일치를 확인했다. 병합 diff·README 로컬 링크 및 prompt 문서 5개 동기화 검사는 통과했다. R16·CP2·서명 설치 수용은 아래 원 실행 결과를 따른다.
+
 **코드 상태.** cold ImportGraph, Java DFG 수신, typed 원인·환급, candidate FULL → 서명 AST → Q Latest → BOOT와 D1–D3 복구 호출은 연결돼 있다. Java getter 배열·선언 스코프·classpath member bound와 외부 메서드의 반환 binary name을 반영했다. Parser, contract, runtime-analysis의 변경분 owning compiler·본문은 NOT_RUN이다.
 
 | 이 채팅에서 직접 마감 | 현재 상태 | 완료 조건 |
