@@ -233,6 +233,18 @@ rust-clippy:
 rust-test:
     {{cargo}} --lane test-workspace-lane test --workspace --all-features --locked
 
+# Audited unsafe descriptor ownership stays in this single shared package.
+# It is excluded from workspace members and needs its own explicit rail.
+rust-test-explicit-fd:
+    {{cargo}} --lane test-workspace-lane nextest run --manifest-path shared/quanta-explicit-fd-process/Cargo.toml --lib --locked --offline --no-tests fail --test-threads 1
+
+rust-clippy-explicit-fd:
+    {{cargo}} --lane test-workspace-lane clippy --manifest-path shared/quanta-explicit-fd-process/Cargo.toml --all-targets --locked --offline -- -D warnings -D clippy::undocumented_unsafe_blocks
+
+rust-audit-explicit-fd:
+    uv run --frozen --extra dev python shared/quanta-explicit-fd-process/audit_source.py
+    uv run --frozen --extra dev python -m unittest discover -s shared/quanta-explicit-fd-process -p test_audit_source.py
+
 # The codec's no_std integration binary must run without its default std feature;
 # the all-features workspace rail does not exercise that configuration.
 rust-test-ciborium-no-default:

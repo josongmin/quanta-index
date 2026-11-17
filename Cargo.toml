@@ -32,7 +32,7 @@ members = [
     "benchmarks/bench-protocol",
     "vendor/ciborium-0.2.2",
 ]
-exclude = ["vendor/tree-sitter-typescript", "vendor/tree-sitter-go", "vendor/tree-sitter-rust", "vendor/tree-sitter-python", "vendor/tree-sitter-javascript", "vendor/tantivy-0.22.1", "vendor/libsqlite3-sys-0.38.2", "vendor/rusqlite-0.40.2", "vendor/lance-io-7.0.0", "vendor/lance-7.0.0", "vendor/object_store-0.13.2", "vendor/lancedb-0.30.0"]
+exclude = ["shared/quanta-explicit-fd-process", "vendor/tree-sitter-typescript", "vendor/tree-sitter-go", "vendor/tree-sitter-rust", "vendor/tree-sitter-python", "vendor/tree-sitter-javascript", "vendor/tantivy-0.22.1", "vendor/libsqlite3-sys-0.38.2", "vendor/rusqlite-0.40.2", "vendor/lance-io-7.0.0", "vendor/lance-7.0.0", "vendor/object_store-0.13.2", "vendor/lancedb-0.30.0"]
 resolver = "2"
 
 [workspace.package]
@@ -118,6 +118,7 @@ use_self = "allow"
 wildcard_enum_match_arm = "deny"
 
 [workspace.dependencies]
+quanta-explicit-fd-process = { path = "shared/quanta-explicit-fd-process" }
 anyhow = "1.0.100"
 # arrow-array / arrow-schema pinned to the major version lancedb 0.30 uses
 # internally; mismatched majors silently fail downcast_ref::<StringArray>() etc.
