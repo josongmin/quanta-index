@@ -300,4 +300,3 @@ fn native_history_read_session_wire_refuses_missing_authority_and_unknown_fields
     assert!(serde_json::from_value::<NativeIndexRequest>(wire).is_err());
     Ok(())
 }
-
