@@ -121,7 +121,18 @@ S 기존 설치 fixture의 `source_v1.rs`, `postpublication_v1.rs`, `scenario_v1
 
 **11월 17일 실행 보정.** CP2 owning의 원 외장 입력은 현재 장치에서 사라져 post-execution custody 검증이 ENOENT로 종료됐다. R16도 Docker EOF로 완료 영수증 없이 종료됐고, 보존된 원 실행·로그를 검증하는 단일 환경 복구 경로를 보완했다. 실제 수용 판정과 재접수는 [F 현재 원장](NC-F-integration.md#root-단일-큐-현재-검증--2026-11-16)을 따른다. 코드 우선 수리와 제어 검증을 먼저 수행한다.
 
-**11월 17일 코드 우선 재감사.** S `40dd746bf99c`와 Q `3a222aa58`의 검토 경로에서 cold ImportGraph, Java DFG 14종 수신, candidate FULL → 서명 AST → Q Latest → BOOT의 추가 확정 P0–P2 결함은 찾지 못했다. import inventory의 65/64 work 거절은 기존 Source first-refusal → finisher → lender의 typed `Err` → SDK `?`로 이미 전달된다. 중복 원인 저장 변경 두 곳은 제거해 기존 경로를 유지했다. 관련 Rust 8파일은 각 저장소 edition으로 `rustfmt --emit stdout --config skip_children=true` 구문 검사를 통과했고, scope diff 검사도 통과했다. 이 결과는 compiler·본문·제품 수용이 아니다. R16 환경 중단 복구의 기존 Python 회귀 4개도 통과했으며 새 Rust 실행기는 만들지 않았다.
+<a id="d-session-hardening-20261117"></a>
+**Session-hardening · 2026-11-17.** 이 채팅의 publisher/codec·실제 recovery caller, committed cold ImportGraph·Java DFG·거절/환급, FULL → 서명 AST → Q Latest → BOOT와 설치 fixture 세 수리를 병렬 재감사했다. 기준은 S `db42c61e11d5`·Q `49b4e7187f02`의 생산·테스트 20경로 및 checkout 밖 기존 제어 6경로의 내용이다. 과거 77경로 manifest는 현재 없어 이전 귀속은 Git·호출 이력으로 복원한 범위에 한정한다. S의 혼합 커밋 전체나 Q `03e2cead6` 전체를 이 채팅의 단독 변경으로 귀속하지 않는다. 당시 검토한 생산 경로에서 추가 확정 P0–P2 결함은 없었다. 65/64 work 거절은 원 Source first-refusal → finisher → lender의 typed `Err` → SDK `?`로 보존되므로 중복 원인 저장 수리는 필요하지 않다.
+
+**동시 변경 인수 경계.** 검토 중 `native_candidate_prepare_v1.rs`의 `NativeSelected` History 확장은 활성 claim `NC-H-NATIVE-TO-NATIVE-CANDIDATE-20261117`에서 변경됐다. 초기 enum/파서 뒤 소비 arm도 추가되는 중이며, 아래 Python 결과의 Q launcher는 아직 `replay`/`snapshot` 입력만 받는다. 이 파일의 기존 정적 판정은 SHA256 `0dbf151364dc`에 한정한다. 신규 모드의 S producer·Q launcher·기존 회귀가 함께 연결되고 원 owning 증거를 인수하기 전에는 그 확장을 완료로 처리하지 않는다. 해당 claim의 네 S 경로는 중복 수정하지 않았다. 그 외 검토한 19경로는 재대조 시 내용이 동일했다.
+
+| 실행한 좁은 proof | 원 명령 / 결속 | 관측 결과·한계 |
+| --- | --- | --- |
+| Q launcher 전체 owner | `PYTHONDONTWRITEBYTECODE=1 uv run --frozen --extra dev python -m pytest -q -p no:cacheprovider -rs tools/ci/tests/test_deployment_launcher.py`; launcher SHA256 `b24d8e2b0a7a`, test `a5583ac9b7c7`, 실행 전후 동일 | **VERIFIED · exit0 / 144 PASS / 3 SKIP / 30.31s**. skip은 Linux procfd socket 2개·peer credentials 1개다. fixture child 제어 경로이며 Linux 설치 증거가 아니다. 선행 7개 subset을 별도 합산하지 않는다. |
+| R16 중단 복구 제어 | 기존 controller에서 `python3.12 -B -m unittest test_sdk_r16_docker_interruption_retry_v1.py`; audit `816e5822ce07`, runner `2f863b8676b0`, test `d39c9e4a2e58`, 실행 전후 동일 | **VERIFIED · exit0 / 5 PASS**. 원 Source·request·QBC run·9파일 SHA 및 단일 archive 재시도를 검사한다. 실제 SDK 재실행·본문은 아니다. |
+| R16 → Caller 인계 제어 | 같은 controller에서 `python3.12 -B -m unittest test_r16_caller_published_handoff.py`; runner `78ec3f5d3696`, test `096e3716a285`, 실행 전후 동일 | **VERIFIED · exit0 / 7 PASS**. stale source·변조 spec·bool exit·중복 lock·untyped busy를 거절한다. 실제 Caller/Published 본문은 아니다. |
+
+추가 Rust 9파일의 edition별 `rustfmt --emit stdout --config skip_children=true` 구문 검사와 scoped diff 검사를 통과했다. 이는 compiler·본문 수용이 아니다. R16 status의 `WAITING_EXISTING_SDK_RESUMER_LOCK`/PID88608만으로 진행 중이라고 판정하지 않는다. 이번 확인 시 해당 PID는 없었고 실제 SDK·Caller·설치 본문 증거도 추가되지 않았다. CP2 원 외장 입력 소실과 아래 원 DoD는 유지하며 `source_ready=false`, state=`partial`이다.
 
 **실행 이력 구분.** `ovl-78e615e8428093d63a78b7d1a177ebda`의 11.94 MiB 스택 거절은 11월 16일 R13 기록이다. 11월 17일 R16의 `ovl-07bac19c04d1386c87ff705abda59dae`는 Docker 중단 후 새 ELF·스택 사전검사·본문 영수증이 없다. 일부 파일의 byte 동일성을 R16의 스택 실패나 성공으로 승격하지 않는다.
 
@@ -134,6 +145,7 @@ S 기존 설치 fixture의 `source_v1.rs`, `postpublication_v1.rs`, `scenario_v1
 | 기존 오너에서 인수할 입력 | 인수 기준 |
 | --- | --- |
 | Semantica Java getter 배열·bound | `NC-D-JAVA-GETTER-ARRAY-20261116` 변경과 scalar 수리를 함께 포함한 고정 입력으로 Java plugin·Parser exact 본문을 확인한다. classfile member 검증은 기존 binary feature에, cross-file import 회귀는 기존 Parser feature에 각각 결속한다. R15 scalar 동결본의 1/1은 앞선 scalar 수정 범위다. SDK successor가 필요하면 같은 오너에서 전체 Java 의존 변경과 현재 spec 결속을 확인한다. |
+| NC-H Native → Native candidate History | 활성 claim `NC-H-NATIVE-TO-NATIVE-CANDIDATE-20261117`의 `NativeSelected` producer/consumer와 Q launcher 입력·pin 전달을 함께 인수한다. 기존 `native-installed-history-full-delta-process-owner`에서 FULL·successor DELTA 및 복구 본문을 확인한다. 작성 중 S 네 경로에 별도 구현이나 추가 생산자를 배정하지 않는다. |
 | Semantica Store·Runtime 및 D1–D3 owning | [Analysis Head inventory·Java V7 Store exact](#session-hardening-20261115)와 IFX040·Atomic Verify 결과를 각각 소스와 결속한다. Host906은 고정 입력에서 **VERIFIED · 222 PASS / 0 FAIL / 1 ignored**다. Runtime15f·Lifecycle82·CLI842·SDKaf4의 현재 입력 본문은 **NOT_RUN**이다. [Host proof](#d-host906-body-red-20261116) |
 | F Root·Q 통합 및 서명 공급 | Runtime6의 Storage3 원 본문 3/3은 인수했다. WorkStorage3는 이 영수증의 범위 밖이다. 기존 Runtime291 영수증, Q selection/combined107 및 Linux 물리 RepoMap 결과는 원 범위별로 인수한다. Q wire/join·Catalog/Host 75 PASS는 해당 범위다. 4-role·Q ELF·SQL worker·Watchman의 같은 서명 설치 입력은 [F 최종 패킷](NC-F-integration.md#p07-final-actions-20261115)과 기존 공급기에서 받는다. |
 
