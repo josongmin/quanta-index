@@ -143,23 +143,41 @@ impl FileObjectReader {
         frontier.pending.extend(roots.iter().rev().copied());
         let mut selected_objects = [None, None];
         while let Some(reference) = frontier.pending.pop() {
-            let stored = self.get(reference, budget)?;
-            let needed = frontier
-                .pending
-                .len()
-                .checked_add(stored.registration.children.len())
-                .ok_or(IndexError::ResourceLimited)?;
-            frontier.reserve(needed, maximum, budget)?;
-            frontier
-                .pending
-                .extend(stored.registration.children.iter().rev().copied());
-            if let Some(selected) = selected {
-                for (target, slot) in selected.into_iter().zip(&mut selected_objects) {
+            let retain = selected.filter(|targets| {
+                targets
+                    .iter()
+                    .zip(&selected_objects)
+                    .any(|(target, slot)| *target == reference && slot.is_none())
+            });
+            let registration = if let Some(targets) = retain {
+                let stored = self.get(reference, budget)?;
+                for (target, slot) in targets.into_iter().zip(&mut selected_objects) {
                     if reference == target && slot.is_none() {
                         *slot = Some(stored.clone());
                     }
                 }
-            }
+                stored.registration.clone()
+            } else {
+                let registration = read_io::read_registration(
+                    &self.objects,
+                    &self.namespace,
+                    self.io.as_ref(),
+                    reference,
+                    budget,
+                )?;
+                let _binding = self.namespace_binding()?;
+                budget.checkpoint()?;
+                registration
+            };
+            let needed = frontier
+                .pending
+                .len()
+                .checked_add(registration.children.len())
+                .ok_or(IndexError::ResourceLimited)?;
+            frontier.reserve(needed, maximum, budget)?;
+            frontier
+                .pending
+                .extend(registration.children.iter().rev().copied());
         }
         let _binding = self.namespace_binding()?;
         budget.checkpoint()?;

@@ -2101,14 +2101,8 @@ fn read_u32(wire: &[u8], at: usize) -> Result<u32, IndexError> {
 }
 
 fn digest_wire(wire: &[u8]) -> ObjectRef {
-    digest_wire_parts(&[wire])
-}
-
-fn digest_wire_parts(parts: &[&[u8]]) -> ObjectRef {
     let mut hasher = wire_hasher();
-    for &part in parts {
-        hasher.update(part);
-    }
+    hasher.update(wire);
     ObjectRef(Digest(hasher.finalize().into()))
 }
 

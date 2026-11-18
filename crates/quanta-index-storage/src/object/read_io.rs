@@ -3,22 +3,24 @@
 use std::{
     fs::{self, File},
     io::Read as _,
+    num::NonZeroUsize,
     os::unix::fs::{MetadataExt as _, OpenOptionsExt as _},
     path::{Path, PathBuf},
 };
 
 use quanta_index_core::index::{
     Digest, IndexError, MemoryLease, MemoryLifetime, ObjectReadFile, ObjectReadIoPort, ObjectRef,
-    StoredObject, WorkBudget, WorkUsage,
+    RegisteredObject, StoredObject, WorkBudget, WorkUsage,
 };
-use sha2::Digest as _;
+use sha2::{Digest as _, Sha256};
 
 use super::{
-    HEADER_LEN, MAX_WIRE, charge_decoded_wire, decode_wire_registration, digest_wire,
-    digest_wire_parts, hex_digit, namespace::NamespaceLease, nofollow_flag, parse_wire_header,
-    storage_error, validate_private_directory, validate_private_file, validate_private_shard,
-    wire_hasher,
+    HEADER_LEN, MAX_WIRE, charge_decoded_wire, decode_wire_registration, digest_wire, hex_digit,
+    namespace::NamespaceLease, nofollow_flag, parse_wire_header, storage_error,
+    validate_private_directory, validate_private_file, validate_private_shard, wire_hasher,
 };
+
+const STREAM_BYTES: usize = 64 * 1024;
 
 /// Only the completed file read constructs this immutable, reference-bound wire.
 pub(super) struct ReadWire {
@@ -136,24 +138,88 @@ pub(super) fn read_stored(
     reference: ObjectRef,
     budget: &mut WorkBudget,
 ) -> Result<StoredObject, IndexError> {
+    let (registration, (payload, memory)) = read_object(
+        objects,
+        namespace,
+        io,
+        reference,
+        budget,
+        |file, payload_len, hasher, budget| {
+            let memory = budget.reserve_memory(
+                StoredObject::payload_allocation_bytes(payload_len)?,
+                MemoryLifetime::Retained,
+            )?;
+            let payload = read_buffer(file, payload_len)?;
+            hasher.update(&payload);
+            Ok((payload, memory))
+        },
+    )?;
+    Ok(StoredObject::new(registration, payload, memory))
+}
+
+/// Authenticate the whole object with bounded payload scratch and retain
+/// just its registered edges for closure traversal.
+pub(super) fn read_registration(
+    objects: &Path,
+    namespace: &NamespaceLease,
+    io: &dyn ObjectReadIoPort,
+    reference: ObjectRef,
+    budget: &mut WorkBudget,
+) -> Result<RegisteredObject, IndexError> {
+    let (registration, ()) = read_object(
+        objects,
+        Some(namespace),
+        Some(io),
+        reference,
+        budget,
+        |file, payload_len, hasher, budget| {
+            if payload_len == 0 {
+                return Ok(());
+            }
+            let scratch_len = payload_len.min(STREAM_BYTES);
+            let _memory = budget.reserve_memory(
+                u64::try_from(scratch_len).map_err(|_error| IndexError::ResourceLimited)?,
+                MemoryLifetime::Temporary,
+            )?;
+            let mut scratch = zeroed_buffer(scratch_len)?;
+            hash_wire_tail(file, payload_len, &mut scratch, hasher, budget)
+        },
+    )?;
+    Ok(registration)
+}
+
+fn read_object<T>(
+    objects: &Path,
+    namespace: Option<&NamespaceLease>,
+    io: Option<&dyn ObjectReadIoPort>,
+    reference: ObjectRef,
+    budget: &mut WorkBudget,
+    read_payload: impl FnOnce(&mut &File, usize, &mut Sha256, &WorkBudget) -> Result<T, IndexError>,
+) -> Result<(RegisteredObject, T), IndexError> {
     let (owner, file_len) = open_wire_reader(objects, namespace, io, reference, budget)?;
     let mut file = owner.file()?;
     let mut header = [0; HEADER_LEN];
     read_exact(&mut file, &mut header)?;
+    let mut hasher = wire_hasher();
+    hasher.update(header);
     let (payload_len, child_bytes) = match parse_wire_header(&header, file_len) {
         Ok(layout) => layout,
         Err(header_error) => {
             // Lengths from a bad header cannot size allocations. Keep the
             // physical digest/EOF error ahead of the format error.
-            verify_wire_after_bad_header(&mut file, &header, file_len, reference)?;
+            let mut scratch = [0; 4096];
+            hash_wire_tail(
+                &mut file,
+                file_len.saturating_sub(HEADER_LEN),
+                &mut scratch,
+                &mut hasher,
+                budget,
+            )?;
+            verify_wire_end(&mut file, reference, || finish_digest(hasher))?;
             return Err(header_error);
         }
     };
 
-    let memory = budget.reserve_memory(
-        StoredObject::payload_allocation_bytes(payload_len)?,
-        MemoryLifetime::Retained,
-    )?;
     let _child_wire_memory = if child_bytes == 0 {
         None
     } else {
@@ -163,34 +229,36 @@ pub(super) fn read_stored(
         )?
     };
     let children = read_buffer(&mut file, child_bytes)?;
-    let payload = read_buffer(&mut file, payload_len)?;
-    verify_wire_end(&mut file, reference, || {
-        digest_wire_parts(&[&header, &children, &payload])
-    })?;
+    hasher.update(&children);
+    let payload = read_payload(&mut file, payload_len, &mut hasher, budget)?;
+    verify_wire_end(&mut file, reference, || finish_digest(hasher))?;
     charge_decoded_wire(payload_len, child_bytes, budget)?;
     let registration = decode_wire_registration(reference, file_len, &children, budget)?;
-    Ok(StoredObject::new(registration, payload, memory))
+    Ok((registration, payload))
 }
 
-fn verify_wire_after_bad_header(
+fn hash_wire_tail(
     file: &mut &File,
-    header: &[u8; HEADER_LEN],
-    file_len: usize,
-    reference: ObjectRef,
+    remaining: usize,
+    scratch: &mut [u8],
+    hasher: &mut Sha256,
+    budget: &WorkBudget,
 ) -> Result<(), IndexError> {
-    let mut hasher = wire_hasher();
-    hasher.update(header);
-    let mut scratch = [0; 4096];
-    let chunk_size = scratch.len();
-    for offset in (HEADER_LEN..file_len).step_by(chunk_size) {
-        let len = file_len.saturating_sub(offset).min(chunk_size);
+    let chunk_size = NonZeroUsize::new(scratch.len())
+        .ok_or(IndexError::ResourceLimited)?
+        .get();
+    for offset in (0..remaining).step_by(chunk_size) {
+        budget.checkpoint()?;
+        let len = remaining.saturating_sub(offset).min(chunk_size);
         let chunk = scratch.get_mut(..len).ok_or(IndexError::ResourceLimited)?;
         read_exact(file, chunk)?;
         hasher.update(chunk);
     }
-    verify_wire_end(file, reference, || {
-        ObjectRef(Digest(hasher.finalize().into()))
-    })
+    Ok(())
+}
+
+fn finish_digest(hasher: Sha256) -> ObjectRef {
+    ObjectRef(Digest(hasher.finalize().into()))
 }
 
 fn open_wire_reader(
@@ -259,12 +327,17 @@ fn open_wire_reader(
 }
 
 fn read_buffer(file: &mut &File, len: usize) -> Result<Vec<u8>, IndexError> {
+    let mut bytes = zeroed_buffer(len)?;
+    read_exact(file, &mut bytes)?;
+    Ok(bytes)
+}
+
+fn zeroed_buffer(len: usize) -> Result<Vec<u8>, IndexError> {
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(len)
         .map_err(|_allocation_error| IndexError::ResourceLimited)?;
     bytes.resize(len, 0);
-    read_exact(file, &mut bytes)?;
     Ok(bytes)
 }
 

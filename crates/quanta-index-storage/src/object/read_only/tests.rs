@@ -282,11 +282,17 @@ fn closure_selected_roots_reuse_authenticated_bodies_without_extra_reads() -> Te
     let leaf = store.put(b"fixed leaf", &[], &mut work)?.reference;
     let request = store.put(b"request body", &[leaf], &mut work)?.reference;
     let profile = store.put(b"profile body", &[], &mut work)?.reference;
-    let independent = store.put(b"independent body", &[], &mut work)?.reference;
+    let large = vec![0xa5; 128 * 1024];
+    let independent = store.put(&large, &[], &mut work)?.reference;
     drop(store);
     let reads = Arc::new(Reads::default());
     let reader = reader(root.path(), Arc::clone(&reads))?;
     let mut verify = budget(100)?;
+    let live = Arc::new(ReadMemory::default());
+    verify.bind_memory_scope(Some(MemoryScope::new(Arc::new(BoundedReadMemory {
+        live: Arc::clone(&live),
+        limit: 96 * 1024,
+    }))));
     let [stored_request, stored_profile] = reader.verify_closure_with_selected_roots(
         &[request, profile, independent],
         [request, profile],
@@ -300,6 +306,9 @@ fn closure_selected_roots_reuse_authenticated_bodies_without_extra_reads() -> Te
     // Request, leaf, profile, independent. The two returned bodies need no get.
     require(verify.usage().reads == 4)?;
     require(reads.0.lock().map_err(|_error| IndexError::Conflict)?.len() == 5)?;
+    drop(stored_request);
+    drop(stored_profile);
+    require(live.0.load(Ordering::SeqCst) == 0)?;
     Ok(())
 }
 
@@ -308,7 +317,8 @@ fn closure_selected_roots_refuse_corrupt_transitive_child() -> TestResult {
     let root = private_root()?;
     let store = FileObjectStore::open(root.path())?;
     let mut work = budget(100)?;
-    let leaf = store.put(b"fixed leaf", &[], &mut work)?.reference;
+    let large = vec![0xa5; 128 * 1024];
+    let leaf = store.put(&large, &[], &mut work)?.reference;
     let request = store.put(b"request body", &[leaf], &mut work)?.reference;
     let profile = store.put(b"profile body", &[], &mut work)?.reference;
     drop(store);
@@ -318,15 +328,17 @@ fn closure_selected_roots_refuse_corrupt_transitive_child() -> TestResult {
     *byte ^= 1;
     fs::write(&leaf_path, wire)?;
     let reader = reader(root.path(), Arc::new(Reads::default()))?;
+    let live = Arc::new(ReadMemory::default());
+    let mut verify = budget(100)?;
+    verify.bind_memory_scope(Some(MemoryScope::new(Arc::new(BoundedReadMemory {
+        live: Arc::clone(&live),
+        limit: 96 * 1024,
+    }))));
     require(matches!(
-        reader.verify_closure_with_selected_roots(
-            &[request, profile],
-            [request, profile],
-            2,
-            &mut budget(100)?,
-        ),
-        Err(IndexError::CorruptObject(_))
+        reader.verify_closure_with_selected_roots(&[request, profile], [request, profile], 2, &mut verify),
+        Err(IndexError::CorruptObject(message)) if message == "object digest or size mismatch"
     ))?;
+    require(live.0.load(Ordering::SeqCst) == 0)?;
     Ok(())
 }
 
