@@ -387,6 +387,17 @@ fn closure_frontier_memory_work_and_original_cancel_refuse_without_reset() -> Te
     drop(store);
     let reads = Arc::new(Reads::default());
     let reader = reader(root.path(), Arc::clone(&reads))?;
+    let live = Arc::new(ReadMemory::default());
+    let mut bounded = budget(3)?;
+    bounded.bind_memory_scope(Some(MemoryScope::new(Arc::new(BoundedReadMemory {
+        live: Arc::clone(&live),
+        limit: 64 * 1024,
+    }))));
+    // The installed fixture's entry ceiling bounds pending references, even
+    // when this closure needs only two slots. All three files must be read.
+    reader.verify_closure(&[parent], 500_000, &mut bounded)?;
+    require(bounded.usage().reads == 3)?;
+    require(live.0.load(Ordering::SeqCst) == 0)?;
     require(matches!(
         reader.verify_closure(&[parent], 1, &mut budget(100)?),
         Err(IndexError::ResourceLimited)

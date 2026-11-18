@@ -239,6 +239,8 @@ seal과 보호 head 조회는 동일한 물리 marker 검증을 호출한다. So
 
 기존 Storage 테스트에 128KiB payload를 192KiB 한도에서 두 실제 getter로 읽는 회귀를 추가했다. 반환 bytes·registration과 마지막 clone 해제 시 환급을 확인한다. 별도 회귀는 decode 작업량이 남지 않은 상태에서도 손상된 헤더·payload를 SHA 오류로 반환하는지 검사한다. 둘째 16MiB 페이지의 전체 임시 wire가 제거됐다. 전체 64MiB 운영 예산에는 snapshot decode·route·SQL·FD 예약이 포함된다. 이 변경의 컴파일·회귀 실행·64MiB 및 서명 설치 수용은 **NOT_RUN**이다.
 
+**물리 closure DFS 예약.** BOOT와 restore-forward가 공용으로 사용하는 Storage reader는 기존에 파일 inventory 상한만큼의 DFS 슬롯을 일괄 예약했다. 설치 검증 fixture의 500,000개 상한에서는 실제 graph 크기와 관계없이 16,000,000B를 예약했다. DFS는 실제 대기 참조 수에 맞춰 기존 상한까지 배열을 늘리고, 재할당이 끝날 때까지 이전 배열의 grant를 보유한다. 물리 파일·전체 transitive child 인증 순서와 work/read 상한을 유지한다. 기존 실제 파일 테스트에 500,000개 상한과 64KiB 메모리에서 세 파일 읽기, 최종 0B 환급 단언을 추가했다. owning 실행과 설치 수용은 **NOT_RUN**이다.
+
 원 R16/Source23/Current 코호트를 합산하지 않으며 **`source_ready=false`**를 유지한다. 코드·정적 proof, 컴파일·owning body, signed Product 수용을 각각 판정한다.
 
 | 기존 오너에서 인수할 입력 | 인수 기준 |

@@ -135,33 +135,24 @@ impl FileObjectReader {
     ) -> Result<Option<[StoredObject; 2]>, IndexError> {
         budget.checkpoint()?;
         let maximum = usize::try_from(max_pending).map_err(|_error| IndexError::ResourceLimited)?;
-        if maximum == 0 || roots.len() > maximum {
+        if maximum == 0 {
             return Err(IndexError::ResourceLimited);
         }
-        let bytes = u64::from(max_pending)
-            .checked_mul(
-                u64::try_from(std::mem::size_of::<ObjectRef>())
-                    .map_err(|_error| IndexError::ResourceLimited)?,
-            )
-            .ok_or(IndexError::ResourceLimited)?;
-        // Locals drop in reverse order: the backing dies before its lease.
-        let _pending_memory = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
-        let mut pending = Vec::new();
-        pending
-            .try_reserve_exact(maximum)
-            .map_err(|_error| IndexError::ResourceLimited)?;
-        pending.extend(roots.iter().rev().copied());
+        let mut frontier = ClosureFrontier::default();
+        frontier.reserve(roots.len(), maximum, budget)?;
+        frontier.pending.extend(roots.iter().rev().copied());
         let mut selected_objects = [None, None];
-        while let Some(reference) = pending.pop() {
+        while let Some(reference) = frontier.pending.pop() {
             let stored = self.get(reference, budget)?;
-            let needed = pending
+            let needed = frontier
+                .pending
                 .len()
                 .checked_add(stored.registration.children.len())
                 .ok_or(IndexError::ResourceLimited)?;
-            if needed > maximum {
-                return Err(IndexError::ResourceLimited);
-            }
-            pending.extend(stored.registration.children.iter().rev().copied());
+            frontier.reserve(needed, maximum, budget)?;
+            frontier
+                .pending
+                .extend(stored.registration.children.iter().rev().copied());
             if let Some(selected) = selected {
                 for (target, slot) in selected.into_iter().zip(&mut selected_objects) {
                     if reference == target && slot.is_none() {
@@ -183,6 +174,45 @@ impl FileObjectReader {
             ])),
             None => Ok(None),
         }
+    }
+}
+
+#[derive(Default)]
+struct ClosureFrontier {
+    pending: Vec<ObjectRef>,
+    // The allocator may return capacity beyond the budgeted slot count.
+    admitted: usize,
+    // The pending allocation drops before its lease.
+    _memory: Option<MemoryLease>,
+}
+
+impl ClosureFrontier {
+    fn reserve(
+        &mut self,
+        needed: usize,
+        maximum: usize,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        if needed > maximum {
+            return Err(IndexError::ResourceLimited);
+        }
+        if needed <= self.admitted {
+            return Ok(());
+        }
+        let capacity = self.admitted.saturating_mul(2).max(needed).min(maximum);
+        let bytes = capacity
+            .checked_mul(std::mem::size_of::<ObjectRef>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(IndexError::ResourceLimited)?;
+        // Reallocation can temporarily own both buffers. Keep the old lease
+        // until the new backing is in place.
+        let memory = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
+        self.pending
+            .try_reserve_exact(capacity.saturating_sub(self.pending.len()))
+            .map_err(|_error| IndexError::ResourceLimited)?;
+        self.admitted = capacity;
+        self._memory = memory;
+        Ok(())
     }
 }
 
