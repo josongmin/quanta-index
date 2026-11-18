@@ -31,47 +31,6 @@ impl AdmittedNativeRootScopedViewReplyV1 {
 }
 
 impl<P: AsRef<Path>> NativeUdsClient<P> {
-    /// Read one candidate's actual imported RepoMap member under an exact
-    /// Published view. The returned reference is data for the signed route.
-    pub fn read_imported_repomap_member_admitted_v1(
-        &self,
-        view: quanta_index_contract::index::ViewRef,
-        instance: quanta_index_contract::index::IndexInstanceId,
-        budget: &RequestBudgetV1,
-        memory: &MemoryScope,
-    ) -> Result<
-        quanta_index_contract::native_protocol::NativeImportedRepoMapMemberReadV1,
-        NativeUdsError,
-    > {
-        read_session::admitted_budget_checkpoint(budget)?;
-        let reply = self.request_publication_admitted(
-            NativeIndexRequest::ReadImportedRepoMapMember { view, instance },
-            budget,
-            memory,
-        )?;
-        // Move the fixed DATA or canonical refusal while the reply's remaining
-        // raw and decoded grants stay live through validation. No message copy
-        // or alternate error classification is needed.
-        if let NativeIndexResponse::Error(error) = reply.response {
-            return Err(NativeUdsError::Refused(error));
-        }
-        let NativeIndexResponse::ImportedRepoMapMember(observed) = reply.response else {
-            return Err(NativeUdsError::Protocol(
-                "unexpected imported RepoMap member reply".into(),
-            ));
-        };
-        if observed.view != view
-            || observed.instance != instance
-            || observed.member_binding.0 == Digest([0; 32])
-        {
-            return Err(NativeUdsError::Protocol(
-                "imported RepoMap member differs from exact view".into(),
-            ));
-        }
-        read_session::admitted_budget_checkpoint(budget)?;
-        Ok(observed)
-    }
-
     /// Resolve a preserved RepoMap pair to the exact pinned view, member and
     /// instance selected by the installed BOOT route.
     pub fn resolve_protected_repomap_head_v1(

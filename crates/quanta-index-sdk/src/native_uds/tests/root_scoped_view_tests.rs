@@ -161,7 +161,7 @@ fn protected_repomap_admitted_decoder_accepts_contract_wire()
 }
 
 #[test]
-fn imported_repomap_member_admitted_decodes_exact_reply_and_refunds()
+fn imported_repomap_member_admitted_keeps_exact_reply_charged_until_drop()
 -> Result<(), Box<dyn std::error::Error>> {
     let view = observation()?.view.identity;
     let instance = IndexInstanceId([81; 16]);
@@ -175,22 +175,13 @@ fn imported_repomap_member_admitted_decodes_exact_reply_and_refunds()
     let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
 
     let (memory, active, admissions) = publication_scope(false);
-    let (result, body_bytes) =
+    let (owned, body_bytes) =
         exchange_request(request.clone(), Some(response.clone()), |client| {
-            client.read_imported_repomap_member_admitted_v1(view, instance, &budget, &memory)
+            client.request_publication_admitted(request.clone(), &budget, &memory)
         })?;
-    assert_eq!(result?, expected);
-    assert!(body_bytes > 0 && admissions.load(AtomicOrdering::SeqCst) > 0);
-    assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
-
-    // The raw and decoded grants remain charged while the public owner lives.
-    let (memory, active, _) = publication_scope(false);
-    let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
-    let (owned, _) = exchange_request(request.clone(), Some(response.clone()), |client| {
-        client.request_publication_admitted(request.clone(), &budget, &memory)
-    })?;
     let owned = owned?;
     assert_eq!(owned.response(), &response);
+    assert!(body_bytes > 0 && admissions.load(AtomicOrdering::SeqCst) > 0);
     assert!(active.load(AtomicOrdering::SeqCst) > 0);
     drop(owned);
     assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
@@ -222,7 +213,7 @@ fn imported_repomap_member_admitted_decodes_exact_reply_and_refunds()
         let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
         let (memory, active, admissions) = publication_scope(false);
         let (result, body_bytes) = exchange_request(request.clone(), Some(reply), |client| {
-            client.read_imported_repomap_member_admitted_v1(view, instance, &budget, &memory)
+            client.request_publication_admitted(request.clone(), &budget, &memory)
         })?;
         assert!(matches!(result, Err(NativeUdsError::Protocol(_))), "{case}");
         assert!(
@@ -238,13 +229,16 @@ fn imported_repomap_member_admitted_decodes_exact_reply_and_refunds()
     };
     let (memory, active, admissions) = publication_scope(false);
     let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
-    let (result, body_bytes) = exchange_request(
-        request,
+    let (owned, body_bytes) = exchange_request(
+        request.clone(),
         Some(NativeIndexResponse::Error(refusal.clone())),
-        |client| client.read_imported_repomap_member_admitted_v1(view, instance, &budget, &memory),
+        |client| client.request_publication_admitted(request, &budget, &memory),
     )?;
-    assert!(matches!(result, Err(NativeUdsError::Refused(actual)) if actual == refusal));
+    let owned = owned?;
+    assert!(matches!(owned.response(), NativeIndexResponse::Error(actual) if actual == &refusal));
     assert!(body_bytes > 0 && admissions.load(AtomicOrdering::SeqCst) > 0);
+    assert!(active.load(AtomicOrdering::SeqCst) > 0);
+    drop(owned);
     assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
     Ok(())
 }
