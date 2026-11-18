@@ -41,7 +41,9 @@ impl<'de> Deserialize<'de> for NativeImmutableObjectChildrenV1 {
             type Value = ();
 
             fn deserialize<D: Deserializer<'de>>(self, _: D) -> Result<(), D::Error> {
-                Err(D::Error::custom("immutable object child count exceeds 4096"))
+                Err(D::Error::custom(
+                    "immutable object child count exceeds 4096",
+                ))
             }
         }
         impl<'de> Visitor<'de> for Children {
@@ -55,7 +57,9 @@ impl<'de> Deserialize<'de> for NativeImmutableObjectChildrenV1 {
                 let mut children = Vec::new();
                 if let Some(hint) = seq.size_hint() {
                     if hint > MAX_NATIVE_PROJECTION_OUTPUT_CHILDREN {
-                        return Err(A::Error::custom("immutable object child count exceeds 4096"));
+                        return Err(A::Error::custom(
+                            "immutable object child count exceeds 4096",
+                        ));
                     }
                     children.try_reserve_exact(hint).map_err(A::Error::custom)?;
                 }
@@ -67,7 +71,9 @@ impl<'de> Deserialize<'de> for NativeImmutableObjectChildrenV1 {
                     children.push(child);
                 }
                 if seq.next_element_seed(RejectExtra)?.is_some() {
-                    return Err(A::Error::custom("immutable object child count exceeds 4096"));
+                    return Err(A::Error::custom(
+                        "immutable object child count exceeds 4096",
+                    ));
                 }
                 Ok(NativeImmutableObjectChildrenV1(children))
             }
@@ -83,10 +89,15 @@ mod tests {
 
     #[test]
     fn restored_edges_preserve_order_and_repeated_children() {
-        let edges = vec![ObjectRef(Digest([2; 32])), ObjectRef(Digest([1; 32])), ObjectRef(Digest([2; 32]))];
+        let edges = vec![
+            ObjectRef(Digest([2; 32])),
+            ObjectRef(Digest([1; 32])),
+            ObjectRef(Digest([2; 32])),
+        ];
         let children = NativeImmutableObjectChildrenV1::new(edges.clone()).expect("bounded edges");
         let encoded = serde_json::to_vec(&children).expect("encode");
-        let decoded: NativeImmutableObjectChildrenV1 = serde_json::from_slice(&encoded).expect("decode");
+        let decoded: NativeImmutableObjectChildrenV1 =
+            serde_json::from_slice(&encoded).expect("decode");
         assert_eq!(decoded.as_slice(), edges);
         assert_eq!(
             native_immutable_object_ref_v1(b"original", decoded.as_slice()),

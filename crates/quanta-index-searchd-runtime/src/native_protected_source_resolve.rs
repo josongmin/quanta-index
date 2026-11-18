@@ -3,10 +3,10 @@
 
 use super::*;
 use quanta_index_core::index::{
-    NativeProtectedSourceRoutesV1, MapValue, MemoryLifetime, WorkUsage,
-    member_map_key, native_protected_view_marker_bytes_v1,
-    native_protected_view_marker_ref_v1, with_native_protected_source_routes_v1,
+    MapValue, MemoryLifetime, NativeProtectedSourceRoutesV1, WorkUsage, member_map_key,
+    native_protected_view_marker_bytes_v1, native_protected_view_marker_ref_v1,
     ports::{ImmutableObjectPort, PersistentMapPort},
+    with_native_protected_source_routes_v1,
 };
 
 impl NativeDispatcher {
@@ -18,19 +18,46 @@ impl NativeDispatcher {
             &NativeProtectedSourceRoutesV1,
             &mut WorkBudget,
         ) -> Result<T, IndexError>,
-    ) -> Result<(T, quanta_index_core::publication_capacity::InodeKey, [u8; 32]), IndexError> {
+    ) -> Result<
+        (
+            T,
+            quanta_index_core::publication_capacity::InodeKey,
+            [u8; 32],
+        ),
+        IndexError,
+    > {
         let before = self.current_root_identity_for_view(budget)?;
-        let selected = self.catalog.native_boot_manifest(budget)?
+        let selected = self
+            .catalog
+            .native_boot_manifest(budget)?
             .ok_or(IndexError::SnapshotUnavailable)?;
-        let route = selected.protected_source_routes.ok_or(IndexError::SnapshotUnavailable)?;
+        let route = selected
+            .protected_source_routes
+            .ok_or(IndexError::SnapshotUnavailable)?;
         let stored = self.objects.get(route.object, budget)?;
         let result = with_native_protected_source_routes_v1(
-            route.object, Some(route.count), &stored, budget, |routes, budget| {
-                for view in routes.heads.iter().map(|head| head.publication.identity)
-                    .chain(routes.repomap_heads.iter().map(|head| head.publication.identity))
-                    .chain(routes.repomap_heads.iter()
-                        .filter(|head| head.source_operation.is_none())
-                        .map(|head| head.source_publication.identity))
+            route.object,
+            Some(route.count),
+            &stored,
+            budget,
+            |routes, budget| {
+                for view in routes
+                    .heads
+                    .iter()
+                    .map(|head| head.publication.identity)
+                    .chain(
+                        routes
+                            .repomap_heads
+                            .iter()
+                            .map(|head| head.publication.identity),
+                    )
+                    .chain(
+                        routes
+                            .repomap_heads
+                            .iter()
+                            .filter(|head| head.source_operation.is_none())
+                            .map(|head| head.source_publication.identity),
+                    )
                 {
                     let marker_ref = native_protected_view_marker_ref_v1(view)
                         .map_err(|message| IndexError::InvalidInput(message.into()))?;
@@ -58,13 +85,17 @@ impl NativeDispatcher {
         revision_id: &quanta_index_contract::RevisionId,
         budget: &mut WorkBudget,
     ) -> Result<NativeIndexResponse, IndexError> {
-        let (view, before, nonce) = self.with_selected_protected_routes_v1(
-            budget, |selected, routes, budget| {
-                self.catalog.resolve_selected_native_protected_source_head_v1(
-                    selected, routes, repo_id, revision_id, budget,
-                )
-            },
-        )?;
+        let (view, before, nonce) =
+            self.with_selected_protected_routes_v1(budget, |selected, routes, budget| {
+                self.catalog
+                    .resolve_selected_native_protected_source_head_v1(
+                        selected,
+                        routes,
+                        repo_id,
+                        revision_id,
+                        budget,
+                    )
+            })?;
         Ok(NativeIndexResponse::RootScopedView(
             quanta_index_contract::native_protocol::NativeRootScopedViewV1 {
                 view,
@@ -91,8 +122,12 @@ impl NativeDispatcher {
         if stored.registration.reference != actual
             || member.instance != instance
             || member.format != quanta_index_repomap::native::NATIVE_LEGACY_REPOMAP_FORMAT_V1
-            || !stored.registration.children.iter().copied().eq(
-                [Some(member.artifact), member.input.root.0].into_iter().flatten())
+            || !stored.registration.children.iter().copied().eq([
+                Some(member.artifact),
+                member.input.root.0,
+            ]
+            .into_iter()
+            .flatten())
         {
             return Err(IndexError::DigestConflict);
         }
@@ -103,25 +138,37 @@ impl NativeDispatcher {
         {
             return Err(IndexError::DigestConflict);
         }
-        let profile_bytes = u64::try_from(profile_object.payload.len())
-            .map_err(|_| IndexError::ResourceLimited)?;
-        let _profile_memory = budget.reserve_memory(
-            profile_bytes.checked_mul(32).and_then(|n| n.checked_add(65_536))
-                .ok_or(IndexError::ResourceLimited)?,
-            MemoryLifetime::Temporary,
-        )?.ok_or(IndexError::ResourceLimited)?;
-        budget.charge(WorkUsage { bytes: profile_bytes, ..Default::default() })?;
+        let profile_bytes =
+            u64::try_from(profile_object.payload.len()).map_err(|_| IndexError::ResourceLimited)?;
+        let _profile_memory = budget
+            .reserve_memory(
+                profile_bytes
+                    .checked_mul(32)
+                    .and_then(|n| n.checked_add(65_536))
+                    .ok_or(IndexError::ResourceLimited)?,
+                MemoryLifetime::Temporary,
+            )?
+            .ok_or(IndexError::ResourceLimited)?;
+        budget.charge(WorkUsage {
+            bytes: profile_bytes,
+            ..Default::default()
+        })?;
         let profile: quanta_index_contract::index::IndexProfile =
             serde_json::from_slice(&profile_object.payload)
                 .map_err(|_| IndexError::DigestConflict)?;
-        let spec = profile.instances.iter().find(|spec| spec.instance == instance)
+        let spec = profile
+            .instances
+            .iter()
+            .find(|spec| spec.instance == instance)
             .ok_or(IndexError::DigestConflict)?;
         if spec.kind != quanta_index_repomap::native::NATIVE_LEGACY_REPOMAP_KIND_V1
             || spec.schema != quanta_index_repomap::native::NATIVE_LEGACY_REPOMAP_SCHEMA_V1
             || spec.format != member.format
             || spec.activation != quanta_index_contract::index::GroupActivation::CoreRequired
-            || !matches!(spec.input_domain,
-                quanta_index_contract::index::InputDomain::Projection { .. })
+            || !matches!(
+                spec.input_domain,
+                quanta_index_contract::index::InputDomain::Projection { .. }
+            )
             || spec.policy != quanta_index_contract::native_protocol::native_repomap_rank_policy()
             || member.input.schema != spec.schema
             || member.input.policy != spec.policy
@@ -129,7 +176,10 @@ impl NativeDispatcher {
             return Err(IndexError::DigestConflict);
         }
         let _read = quanta_index_repomap::native::NativeLegacyRepoMapReadV1::open(
-            &member, view.source, self.objects.as_ref(), budget,
+            &member,
+            view.source,
+            self.objects.as_ref(),
+            budget,
         )?;
         Ok(actual)
     }
@@ -140,18 +190,24 @@ impl NativeDispatcher {
         instance: quanta_index_contract::index::IndexInstanceId,
         budget: &mut WorkBudget,
     ) -> Result<NativeIndexResponse, IndexError> {
-        self.with_read_view(quanta_index_contract::index::ViewSelection::Exact(requested), budget,
+        self.with_read_view(
+            quanta_index_contract::index::ViewSelection::Exact(requested),
+            budget,
             |view, budget| {
                 if view.identity != requested {
                     return Err(IndexError::DigestConflict);
                 }
-                let member_binding = self.verified_imported_repomap_member_v1(view, instance, budget)?;
+                let member_binding =
+                    self.verified_imported_repomap_member_v1(view, instance, budget)?;
                 Ok(NativeIndexResponse::ImportedRepoMapMember(
                     quanta_index_contract::native_protocol::NativeImportedRepoMapMemberReadV1 {
-                        view: requested, instance, member_binding,
+                        view: requested,
+                        instance,
+                        member_binding,
                     },
                 ))
-            })
+            },
+        )
     }
 
     pub(super) fn resolve_protected_repomap_head_v1(
@@ -160,18 +216,27 @@ impl NativeDispatcher {
         revision_id: &quanta_index_contract::RevisionId,
         budget: &mut WorkBudget,
     ) -> Result<NativeIndexResponse, IndexError> {
-        let ((view, instance, member_binding), before, nonce) =
-            self.with_selected_protected_routes_v1(budget, |selected, routes, budget| {
-                let head = routes.repomap_heads.iter().find(|head|
-                    &head.repo_id == repo_id && &head.revision_id == revision_id)
+        let ((view, instance, member_binding), before, nonce) = self
+            .with_selected_protected_routes_v1(budget, |selected, routes, budget| {
+                let head = routes
+                    .repomap_heads
+                    .iter()
+                    .find(|head| &head.repo_id == repo_id && &head.revision_id == revision_id)
                     .ok_or(IndexError::SnapshotUnavailable)?;
-                let view = self.catalog.resolve_selected_native_protected_repomap_head_v1(
-                    selected, routes, repo_id, revision_id, budget,
-                )?;
+                let view = self
+                    .catalog
+                    .resolve_selected_native_protected_repomap_head_v1(
+                        selected,
+                        routes,
+                        repo_id,
+                        revision_id,
+                        budget,
+                    )?;
                 if view != head.publication {
                     return Err(IndexError::DigestConflict);
                 }
-                let actual = self.verified_imported_repomap_member_v1(&view, head.instance, budget)?;
+                let actual =
+                    self.verified_imported_repomap_member_v1(&view, head.instance, budget)?;
                 if actual != head.member_binding {
                     return Err(IndexError::DigestConflict);
                 }

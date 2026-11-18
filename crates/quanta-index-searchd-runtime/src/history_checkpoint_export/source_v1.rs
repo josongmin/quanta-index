@@ -178,27 +178,28 @@ fn export_source_heads_v1(
         )?;
     }
     let mut rechecked = 0_u64;
-    let _visited = quanta_index_search_plane::readiness::visit_existing_active_search_corpus_heads_v1(
-        &root.join("activations"),
-        objects,
-        metadata,
-        budget,
-        &mut |repo, revision, active, _budget| {
-            let position = heads
-                .binary_search_by(|head| {
-                    (head.repo_id.as_str(), head.revision_id.as_str())
-                        .cmp(&(repo.as_str(), revision.as_str()))
-                })
-                .map_err(|_| IndexError::DigestConflict)?;
-            if heads[position].active != *active {
-                return Err(IndexError::DigestConflict.into());
-            }
-            rechecked = rechecked
-                .checked_add(1)
-                .ok_or(IndexError::ResourceLimited)?;
-            Ok(())
-        },
-    )?;
+    let _visited =
+        quanta_index_search_plane::readiness::visit_existing_active_search_corpus_heads_v1(
+            &root.join("activations"),
+            objects,
+            metadata,
+            budget,
+            &mut |repo, revision, active, _budget| {
+                let position = heads
+                    .binary_search_by(|head| {
+                        (head.repo_id.as_str(), head.revision_id.as_str())
+                            .cmp(&(repo.as_str(), revision.as_str()))
+                    })
+                    .map_err(|_| IndexError::DigestConflict)?;
+                if heads[position].active != *active {
+                    return Err(IndexError::DigestConflict.into());
+                }
+                rechecked = rechecked
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                Ok(())
+            },
+        )?;
     ensure!(
         rechecked == total,
         "Source activation census changed during export"

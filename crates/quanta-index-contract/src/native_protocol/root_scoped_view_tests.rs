@@ -71,14 +71,16 @@ fn root_scoped_wire_refuses_missing_and_invented_metadata_fields()
     let json = serde_json::to_value(fixture()?)?;
     for field in ["view", "root_nonce", "root_device", "root_inode"] {
         let mut bad = json.clone();
-        let removed = bad.as_object_mut()
+        let removed = bad
+            .as_object_mut()
             .ok_or("fixture not an object")?
             .remove(field);
         assert!(removed.is_some());
         assert!(serde_json::from_value::<NativeRootScopedViewV1>(bad).is_err());
     }
     let mut bad = json;
-    let previous = bad.as_object_mut()
+    let previous = bad
+        .as_object_mut()
         .ok_or("fixture not an object")?
         .insert("peer_pid".into(), serde_json::json!(123));
     assert!(previous.is_none());
@@ -94,13 +96,17 @@ fn protected_source_resolution_wire_carries_only_repository_pair()
         revision_id: crate::RevisionId::new("revision")?,
     };
     let value = serde_json::to_value(&request)?;
-    let fields = value.get("ResolveProtectedSourceHead")
+    let fields = value
+        .get("ResolveProtectedSourceHead")
         .and_then(serde_json::Value::as_object)
         .ok_or("protected Source request missing")?;
     assert_eq!(fields.len(), 2);
     assert!(fields.contains_key("repo_id"));
     assert!(fields.contains_key("revision_id"));
-    assert_eq!(serde_json::from_value::<NativeIndexRequest>(value)?, request);
+    assert_eq!(
+        serde_json::from_value::<NativeIndexRequest>(value)?,
+        request
+    );
     Ok(())
 }
 
@@ -112,27 +118,36 @@ fn protected_repomap_resolution_wire_preserves_exact_view_and_member()
         revision_id: crate::RevisionId::new("revision")?,
     };
     let request_json = serde_json::to_value(&request)?;
-    let request_fields = request_json.get("ResolveProtectedRepoMapHead")
+    let request_fields = request_json
+        .get("ResolveProtectedRepoMapHead")
         .and_then(serde_json::Value::as_object)
         .ok_or("protected RepoMap request missing")?;
     assert_eq!(request_fields.len(), 2);
-    assert_eq!(serde_json::from_value::<NativeIndexRequest>(request_json)?, request);
-    let response = NativeIndexResponse::ProtectedRepoMapHead(
-        NativeProtectedRepoMapResolutionV1 {
-            root: fixture()?,
-            instance: IndexInstanceId([51; 16]),
-            member_binding: ObjectRef(Digest([52; 32])),
-        },
+    assert_eq!(
+        serde_json::from_value::<NativeIndexRequest>(request_json)?,
+        request
     );
+    let response = NativeIndexResponse::ProtectedRepoMapHead(NativeProtectedRepoMapResolutionV1 {
+        root: fixture()?,
+        instance: IndexInstanceId([51; 16]),
+        member_binding: ObjectRef(Digest([52; 32])),
+    });
     let json = serde_json::to_value(&response)?;
-    let body = json.get("ProtectedRepoMapHead")
+    let body = json
+        .get("ProtectedRepoMapHead")
         .and_then(serde_json::Value::as_object)
         .ok_or("protected RepoMap response missing")?;
     assert_eq!(body.len(), 3);
-    assert_eq!(serde_json::from_value::<NativeIndexResponse>(json)?, response);
+    assert_eq!(
+        serde_json::from_value::<NativeIndexResponse>(json)?,
+        response
+    );
     let mut cbor = Vec::new();
     ciborium::ser::into_writer(&response, &mut cbor)?;
-    assert_eq!(ciborium::de::from_reader::<NativeIndexResponse, _>(cbor.as_slice())?, response);
+    assert_eq!(
+        ciborium::de::from_reader::<NativeIndexResponse, _>(cbor.as_slice())?,
+        response
+    );
     Ok(())
 }
 
@@ -143,19 +158,30 @@ fn imported_repomap_member_read_is_bound_to_exact_view_and_instance()
     let instance = IndexInstanceId([61; 16]);
     let request = NativeIndexRequest::ReadImportedRepoMapMember { view, instance };
     let request_json = serde_json::to_value(&request)?;
-    let fields = request_json.get("ReadImportedRepoMapMember")
-        .and_then(serde_json::Value::as_object).ok_or("member request missing")?;
+    let fields = request_json
+        .get("ReadImportedRepoMapMember")
+        .and_then(serde_json::Value::as_object)
+        .ok_or("member request missing")?;
     assert_eq!(fields.len(), 2);
-    assert_eq!(serde_json::from_value::<NativeIndexRequest>(request_json)?, request);
-    let response = NativeIndexResponse::ImportedRepoMapMember(
-        NativeImportedRepoMapMemberReadV1 {
-            view, instance, member_binding: ObjectRef(Digest([62; 32])),
-        },
+    assert_eq!(
+        serde_json::from_value::<NativeIndexRequest>(request_json)?,
+        request
     );
+    let response = NativeIndexResponse::ImportedRepoMapMember(NativeImportedRepoMapMemberReadV1 {
+        view,
+        instance,
+        member_binding: ObjectRef(Digest([62; 32])),
+    });
     let response_json = serde_json::to_value(&response)?;
-    assert_eq!(serde_json::from_value::<NativeIndexResponse>(response_json)?, response);
+    assert_eq!(
+        serde_json::from_value::<NativeIndexResponse>(response_json)?,
+        response
+    );
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&response, &mut bytes)?;
-    assert_eq!(ciborium::de::from_reader::<NativeIndexResponse, _>(bytes.as_slice())?, response);
+    assert_eq!(
+        ciborium::de::from_reader::<NativeIndexResponse, _>(bytes.as_slice())?,
+        response
+    );
     Ok(())
 }

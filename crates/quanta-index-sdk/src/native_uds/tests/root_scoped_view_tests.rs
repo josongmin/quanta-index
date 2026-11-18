@@ -87,7 +87,11 @@ fn exchange<R>(
     response: Option<NativeIndexResponse>,
     call: impl FnOnce(&NativeUdsClient<PathBuf>) -> R,
 ) -> Result<(R, usize), Box<dyn std::error::Error>> {
-    exchange_request(NativeIndexRequest::ObserveRootView(selection), response, call)
+    exchange_request(
+        NativeIndexRequest::ObserveRootView(selection),
+        response,
+        call,
+    )
 }
 
 #[test]
@@ -96,7 +100,8 @@ fn protected_repomap_client_uses_exact_pair_and_rejects_zero_member()
     let repo = quanta_index_contract::RepoId::new("repo")?;
     let revision = quanta_index_contract::RevisionId::new("revision")?;
     let request = NativeIndexRequest::ResolveProtectedRepoMapHead {
-        repo_id: repo.clone(), revision_id: revision.clone(),
+        repo_id: repo.clone(),
+        revision_id: revision.clone(),
     };
     let expected = quanta_index_contract::native_protocol::NativeProtectedRepoMapResolutionV1 {
         root: observation()?,
@@ -104,17 +109,19 @@ fn protected_repomap_client_uses_exact_pair_and_rejects_zero_member()
         member_binding: ObjectRef(Digest([82; 32])),
     };
     let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
-    let (result, _) = exchange_request(request.clone(),
-        Some(NativeIndexResponse::ProtectedRepoMapHead(expected.clone())), |client| {
-            client.resolve_protected_repomap_head_v1(repo.clone(), revision.clone(), &budget)
-        })?;
+    let (result, _) = exchange_request(
+        request.clone(),
+        Some(NativeIndexResponse::ProtectedRepoMapHead(expected.clone())),
+        |client| client.resolve_protected_repomap_head_v1(repo.clone(), revision.clone(), &budget),
+    )?;
     assert_eq!(result?, expected);
     let mut wrong = expected;
     wrong.member_binding = ObjectRef(Digest([0; 32]));
-    let (result, _) = exchange_request(request,
-        Some(NativeIndexResponse::ProtectedRepoMapHead(wrong)), |client| {
-            client.resolve_protected_repomap_head_v1(repo, revision, &budget)
-        })?;
+    let (result, _) = exchange_request(
+        request,
+        Some(NativeIndexResponse::ProtectedRepoMapHead(wrong)),
+        |client| client.resolve_protected_repomap_head_v1(repo, revision, &budget),
+    )?;
     assert!(matches!(result, Err(NativeUdsError::Protocol(_))));
     Ok(())
 }
@@ -168,9 +175,10 @@ fn imported_repomap_member_admitted_decodes_exact_reply_and_refunds()
     let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
 
     let (memory, active, admissions) = publication_scope(false);
-    let (result, body_bytes) = exchange_request(request.clone(), Some(response.clone()), |client| {
-        client.read_imported_repomap_member_admitted_v1(view, instance, &budget, &memory)
-    })?;
+    let (result, body_bytes) =
+        exchange_request(request.clone(), Some(response.clone()), |client| {
+            client.read_imported_repomap_member_admitted_v1(view, instance, &budget, &memory)
+        })?;
     assert_eq!(result?, expected);
     assert!(body_bytes > 0 && admissions.load(AtomicOrdering::SeqCst) > 0);
     assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
@@ -194,10 +202,22 @@ fn imported_repomap_member_admitted_decodes_exact_reply_and_refunds()
     let mut zero_member = expected;
     zero_member.member_binding = ObjectRef(Digest([0; 32]));
     for (case, reply) in [
-        ("foreign view", NativeIndexResponse::ImportedRepoMapMember(wrong_view)),
-        ("foreign instance", NativeIndexResponse::ImportedRepoMapMember(wrong_instance)),
-        ("zero member", NativeIndexResponse::ImportedRepoMapMember(zero_member)),
-        ("wrong variant", NativeIndexResponse::RootScopedView(observation()?)),
+        (
+            "foreign view",
+            NativeIndexResponse::ImportedRepoMapMember(wrong_view),
+        ),
+        (
+            "foreign instance",
+            NativeIndexResponse::ImportedRepoMapMember(wrong_instance),
+        ),
+        (
+            "zero member",
+            NativeIndexResponse::ImportedRepoMapMember(zero_member),
+        ),
+        (
+            "wrong variant",
+            NativeIndexResponse::RootScopedView(observation()?),
+        ),
     ] {
         let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
         let (memory, active, admissions) = publication_scope(false);
@@ -205,7 +225,10 @@ fn imported_repomap_member_admitted_decodes_exact_reply_and_refunds()
             client.read_imported_repomap_member_admitted_v1(view, instance, &budget, &memory)
         })?;
         assert!(matches!(result, Err(NativeUdsError::Protocol(_))), "{case}");
-        assert!(body_bytes > 0 && admissions.load(AtomicOrdering::SeqCst) > 0, "{case}");
+        assert!(
+            body_bytes > 0 && admissions.load(AtomicOrdering::SeqCst) > 0,
+            "{case}"
+        );
         assert_eq!(active.load(AtomicOrdering::SeqCst), 0, "{case}");
     }
 

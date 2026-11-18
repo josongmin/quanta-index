@@ -39,11 +39,15 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         instance: quanta_index_contract::index::IndexInstanceId,
         budget: &RequestBudgetV1,
         memory: &MemoryScope,
-    ) -> Result<quanta_index_contract::native_protocol::NativeImportedRepoMapMemberReadV1,
-        NativeUdsError> {
+    ) -> Result<
+        quanta_index_contract::native_protocol::NativeImportedRepoMapMemberReadV1,
+        NativeUdsError,
+    > {
         read_session::admitted_budget_checkpoint(budget)?;
         let reply = self.request_publication_admitted(
-            NativeIndexRequest::ReadImportedRepoMapMember { view, instance }, budget, memory,
+            NativeIndexRequest::ReadImportedRepoMapMember { view, instance },
+            budget,
+            memory,
         )?;
         // Move the fixed DATA or canonical refusal while the reply's remaining
         // raw and decoded grants stay live through validation. No message copy
@@ -56,7 +60,8 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
                 "unexpected imported RepoMap member reply".into(),
             ));
         };
-        if observed.view != view || observed.instance != instance
+        if observed.view != view
+            || observed.instance != instance
             || observed.member_binding.0 == Digest([0; 32])
         {
             return Err(NativeUdsError::Protocol(
@@ -74,13 +79,19 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
         repo_id: RepoId,
         revision_id: RevisionId,
         budget: &RequestBudgetV1,
-    ) -> Result<quanta_index_contract::native_protocol::NativeProtectedRepoMapResolutionV1,
-        NativeUdsError> {
+    ) -> Result<
+        quanta_index_contract::native_protocol::NativeProtectedRepoMapResolutionV1,
+        NativeUdsError,
+    > {
         read_session::admitted_budget_checkpoint(budget)?;
         let NativeIndexResponse::ProtectedRepoMapHead(resolved) = self.request(
-            NativeIndexRequest::ResolveProtectedRepoMapHead { repo_id, revision_id },
+            NativeIndexRequest::ResolveProtectedRepoMapHead {
+                repo_id,
+                revision_id,
+            },
             budget,
-        )? else {
+        )?
+        else {
             return Err(NativeUdsError::Protocol(
                 "unexpected protected RepoMap head reply".into(),
             ));
@@ -100,9 +111,13 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
     ) -> Result<NativeRootScopedViewV1, NativeUdsError> {
         read_session::admitted_budget_checkpoint(budget)?;
         let NativeIndexResponse::RootScopedView(observed) = self.request(
-            NativeIndexRequest::ResolveProtectedSourceHead { repo_id, revision_id },
+            NativeIndexRequest::ResolveProtectedSourceHead {
+                repo_id,
+                revision_id,
+            },
             budget,
-        )? else {
+        )?
+        else {
             return Err(NativeUdsError::Protocol(
                 "unexpected protected Source head reply".into(),
             ));
@@ -180,12 +195,12 @@ impl<P: AsRef<Path>> NativeUdsClient<P> {
             budget,
             memory,
         )
-        .map_err(|error| {
-            match error {
-                quanta_index_ipc::IpcError::PeerBindingRefused(cause) => NativeUdsError::PeerBindingRefused(cause),
-                _ if budget.is_cancelled() => cancelled_error(),
-                error => NativeUdsError::Transport(error.to_string()),
+        .map_err(|error| match error {
+            quanta_index_ipc::IpcError::PeerBindingRefused(cause) => {
+                NativeUdsError::PeerBindingRefused(cause)
             }
+            _ if budget.is_cancelled() => cancelled_error(),
+            error => NativeUdsError::Transport(error.to_string()),
         })?;
         let reply =
             decode_admitted_publication_reply_v1(request_id, body, budget, memory, false, false)?;
@@ -217,7 +232,10 @@ pub(super) fn validate_reply(
 pub(super) fn validate_repomap_reply(
     resolved: &quanta_index_contract::native_protocol::NativeProtectedRepoMapResolutionV1,
 ) -> Result<(), NativeUdsError> {
-    validate_reply(ViewSelection::Exact(resolved.root.view.identity), &resolved.root)?;
+    validate_reply(
+        ViewSelection::Exact(resolved.root.view.identity),
+        &resolved.root,
+    )?;
     if resolved.member_binding.0 == Digest([0; 32]) {
         return Err(NativeUdsError::Protocol(
             "protected RepoMap member is zero".into(),

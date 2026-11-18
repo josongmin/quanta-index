@@ -5,8 +5,8 @@
 
 use super::{CatalogView, Digest, ImmutableOperation, OperationKey, UpdateRequest, ViewRef};
 use crate::{
-    BatchPublishReceipt, ManifestGeneration, RepoId, RevisionId, SearchCorpusActiveHeadV1, SourceFileRevision,
-    SourcePublicationEvent,
+    BatchPublishReceipt, ManifestGeneration, RepoId, RevisionId, SearchCorpusActiveHeadV1,
+    SourceFileRevision, SourcePublicationEvent,
     native_cutover_evidence_v1::{
         NativeCutoverEvidenceSourcePublicationBindingV1, NativeCutoverEvidenceTargetV1,
     },

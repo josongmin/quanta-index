@@ -77,7 +77,10 @@ impl<'de> Deserialize<'de> for NativeImmutableObjectPayloadV1 {
             }
 
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                if seq.size_hint().is_some_and(|hint| hint > MAX_PAYLOAD_BYTES_V1) {
+                if seq
+                    .size_hint()
+                    .is_some_and(|hint| hint > MAX_PAYLOAD_BYTES_V1)
+                {
                     return Err(A::Error::custom(TOO_LARGE_V1));
                 }
                 let mut bytes = Vec::new();
@@ -114,7 +117,10 @@ mod tests {
         assert_eq!(decoded.as_slice(), b"abc");
         let json = serde_json::to_vec(&payload).unwrap();
         assert_eq!(json, b"[97,98,99]");
-        assert_eq!(serde_json::from_slice::<NativeImmutableObjectPayloadV1>(&json).unwrap(), payload);
+        assert_eq!(
+            serde_json::from_slice::<NativeImmutableObjectPayloadV1>(&json).unwrap(),
+            payload
+        );
         assert!(valid_len_v1(MAX_PAYLOAD_BYTES_V1 + 1).is_err());
     }
 }
