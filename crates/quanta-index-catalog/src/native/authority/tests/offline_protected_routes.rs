@@ -715,15 +715,30 @@ fn protected_native_import_is_atomic_exact_and_retryable() -> TestResult {
     );
     let mut bad = snapshot.clone();
     check!(bad.operation_rows.pop().is_some());
-    check!(
+    let bad_snapshot_ref = bad.object_ref_v1()?;
+    let mut bad_routes = routes.clone();
+    bad_routes
+        .native_origin
+        .as_mut()
+        .ok_or("Native origin absent")?
+        .snapshot = bad_snapshot_ref;
+    // Bind and confirm this closure so the refusal exercises the missing
+    // operation row instead of a mismatched snapshot reference.
+    let bad_snapshot = RegisteredObject::unscoped(bad_snapshot_ref, 1, bad.roots.clone());
+    new.reserve_inputs(ingress, std::slice::from_ref(&bad_snapshot))?;
+    new.confirm_inputs(ingress, std::slice::from_ref(&bad_snapshot))?;
+    let bad_route = RegisteredObject::unscoped(bad_routes.object_ref()?, 1, bad_routes.children()?);
+    new.reserve_inputs(ingress, std::slice::from_ref(&bad_route))?;
+    new.confirm_inputs(ingress, std::slice::from_ref(&bad_route))?;
+    check_eq!(
         new.restore_protected_native_heads_v1(
             new_primary.key,
             ingress,
             &bad,
-            &routes,
+            &bad_routes,
             &mut protected_budget_v1(),
-        )
-        .is_err()
+        ),
+        Err(IndexError::DigestConflict)
     );
     {
         let guard = new.lock()?;
