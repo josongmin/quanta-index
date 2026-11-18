@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use quanta_index_lexical::plan;
+
 use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 
