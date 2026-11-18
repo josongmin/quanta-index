@@ -219,6 +219,10 @@ seal 트랜잭션은 marker 목록을 한 번 생성해 ingress 검증과 custod
 
 Native restore-forward의 History 목록은 성장 전에 새 배열 전체를 예약하며 기존 배열 grant를 재할당 종료까지 유지한다. 각 항목은 복사한 repo·revision 바이트만 별도로 예약한다. 동결 proof는 아직 없다. 대형 route 서빙은 전체 marker·Catalog 읽기와 payload 기반 decode 예약을 유지하므로, 운영 지연·64MiB 예산의 실제 도달 범위는 별도 정확한 fixture와 수치가 필요하다. 이번 검증은 소스·정적 검사에 한정한다.
 
+**RR→SS 보호 route wire · 2026-11-18.** Core decoder는 저장 payload를 정규 JSON 출력과 스트리밍 대조하고, 단일 children 집합과 실제 저장 바이트에서 객체 참조를 확인한다. Contract의 typed 객체 해시도 같은 wire 도메인·헤더·children 순서를 공유하며 전체 JSON 버퍼를 만들지 않는다. 두 head 배열 상한은 Serde 역직렬화에도 적용된다. 기존 Catalog 회귀는 정규 성공, canonical ref를 붙인 비정규 JSON, 비정규 바이트 자체의 유효 hash, 잘못된 children을 다시 해시한 객체의 거절을 검사한다. Contract 회귀는 typed/raw digest 동일성과 oversized Source 배열 거절을 단언한다.
+
+현재 예약은 Core `32 × payload + 65,536`과 Catalog 보존 범위를 유지한다. Serializer 복사를 제거한 사실을 untrusted decode 예약의 감소나 대형 route 런타임 수용으로 계산하지 않는다. 매 요청의 off-pair marker·Catalog 손상까지 즉시 발견하는 현 계약에서는 point lookup도 전수 확인이 남는다. 이 계약을 유지한 정적 수리이며 컴파일·owning 회귀·설치 E2E는 **NOT_RUN**이다.
+
 원 R16/Source23/Current 코호트를 합산하지 않으며 **`source_ready=false`**를 유지한다. 코드·정적 proof, 컴파일·owning body, signed Product 수용을 각각 판정한다.
 
 | 기존 오너에서 인수할 입력 | 인수 기준 |

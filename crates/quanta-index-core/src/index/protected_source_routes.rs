@@ -1,6 +1,7 @@
 //! One Original-funded decoder for a provisional protected Source route object.
 //! Selection and producer authority must be supplied independently by callers.
 
+use super::mutations::matches_json;
 use super::{
     IndexError, MAX_NATIVE_PROTECTED_SOURCE_ROUTE_BYTES_V1, MemoryLifetime,
     NativeProtectedSourceRoutesV1, ObjectRef, StoredObject, WorkBudget, WorkUsage,
@@ -33,22 +34,18 @@ pub fn with_native_protected_source_routes_v1<T>(
     })?;
     let routes: NativeProtectedSourceRoutesV1 = serde_json::from_slice(&stored.payload)
         .map_err(|error| IndexError::CorruptObject(format!("protected Source routes: {error}")))?;
-    routes
-        .validate()
+    let children = routes
+        .children()
         .map_err(|message| IndexError::InvalidInput(message.into()))?;
     if expected_source_count
         .is_some_and(|expected| usize::try_from(expected).ok() != Some(routes.heads.len()))
-        || routes
-            .object_ref()
-            .map_err(|message| IndexError::InvalidInput(message.into()))?
-            != reference
-        || routes
-            .children()
-            .map_err(|message| IndexError::InvalidInput(message.into()))?
-            != stored.registration.children
+        || children != stored.registration.children
+        || !matches_json(&routes, &stored.payload, budget, "protected Source routes")?
+        || native_immutable_object_ref_v1(&stored.payload, &children) != Some(reference)
     {
         return Err(IndexError::DigestConflict);
     }
+    budget.checkpoint()?;
     visit(&routes, budget)
 }
 

@@ -24,8 +24,17 @@ pub fn native_immutable_object_header_v1(
 /// physical custody, registry rules and the source admission.
 #[must_use]
 pub fn native_immutable_object_ref_v1(payload: &[u8], children: &[ObjectRef]) -> Option<ObjectRef> {
+    let mut digest = native_immutable_object_hasher_v1(payload.len(), children)?;
+    digest.update(payload);
+    Some(ObjectRef(Digest(digest.finalize().into())))
+}
+
+pub(super) fn native_immutable_object_hasher_v1(
+    payload_bytes: usize,
+    children: &[ObjectRef],
+) -> Option<Sha256> {
     let header = native_immutable_object_header_v1(
-        u32::try_from(payload.len()).ok()?,
+        u32::try_from(payload_bytes).ok()?,
         u32::try_from(children.len()).ok()?,
     );
     let mut digest = Sha256::new();
@@ -34,6 +43,5 @@ pub fn native_immutable_object_ref_v1(payload: &[u8], children: &[ObjectRef]) ->
     for child in children {
         digest.update((child.0).0);
     }
-    digest.update(payload);
-    Some(ObjectRef(Digest(digest.finalize().into())))
+    Some(digest)
 }

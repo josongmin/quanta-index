@@ -2,11 +2,16 @@
 //! These bytes describe expected publications; they confer no producer authority.
 
 use super::{
-    CatalogView, ImmutableOperation, IndexInstanceId, ObjectRef, ViewRef, WorkspaceKey,
+    CatalogView, Digest, ImmutableOperation, IndexInstanceId, ObjectRef, ViewRef, WorkspaceKey,
     native_immutable_object_ref_v1,
 };
-use crate::{RepoId, RevisionId, repomap::RepoMapExpectedActiveV2};
-use serde::{Deserialize, Serialize};
+use crate::{
+    RepoId, RevisionId, bounded_cluster_members::BoundedVecV1, repomap::RepoMapExpectedActiveV2,
+};
+use serde::{Deserialize, Deserializer, Serialize};
+use sha2::{Digest as _, Sha256};
+
+use super::immutable_object_wire::native_immutable_object_hasher_v1;
 
 pub const MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1: usize = 368;
 pub const MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1: usize = 4_096;
@@ -76,8 +81,18 @@ pub struct NativeProtectedSourceRoutesV1 {
     pub wire_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_origin: Option<NativeProtectedNativeOriginV1>,
+    #[serde(deserialize_with = "deserialize_heads::<_, _, MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1>")]
     pub heads: Vec<NativeProtectedSourceHeadV1>,
+    #[serde(deserialize_with = "deserialize_heads::<_, _, MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1>")]
     pub repomap_heads: Vec<NativeProtectedRepoMapHeadV1>,
+}
+
+fn deserialize_heads<'de, D, T, const MAXIMUM: usize>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    BoundedVecV1::<T, MAXIMUM>::deserialize(deserializer).map(BoundedVecV1::into_inner)
 }
 
 fn order_unique_workspaces(order: &mut [u16], workspace: impl Fn(usize) -> WorkspaceKey) -> bool {
@@ -217,6 +232,10 @@ impl NativeProtectedSourceRoutesV1 {
     /// input reachable from the route object. The store still verifies bytes.
     pub fn children(&self) -> Result<Vec<ObjectRef>, &'static str> {
         self.validate()?;
+        self.validated_children()
+    }
+
+    fn validated_children(&self) -> Result<Vec<ObjectRef>, &'static str> {
         let mut children = Vec::new();
         if let Some(origin) = &self.native_origin {
             children.extend([origin.source_routes, origin.snapshot]);
@@ -292,13 +311,34 @@ impl NativeProtectedSourceRoutesV1 {
 
     pub fn object_ref(&self) -> Result<ObjectRef, &'static str> {
         let size = self.encoded_payload_len()?;
-        let children = self.children()?;
-        let payload = serde_json::to_vec(self).map_err(|_| "encode protected Source routes")?;
-        if payload.len() != size {
+        let children = self.validated_children()?;
+        struct HashWriter {
+            digest: Sha256,
+            remaining: usize,
+        }
+        impl std::io::Write for HashWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.remaining = self
+                    .remaining
+                    .checked_sub(bytes.len())
+                    .ok_or_else(|| std::io::Error::other("route hash exceeds counted payload"))?;
+                self.digest.update(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = HashWriter {
+            digest: native_immutable_object_hasher_v1(size, &children)
+                .ok_or("protected Source route object identity overflows")?,
+            remaining: size,
+        };
+        serde_json::to_writer(&mut output, self).map_err(|_| "encode protected Source routes")?;
+        if output.remaining != 0 {
             return Err("protected Source route payload changed during encode");
         }
-        native_immutable_object_ref_v1(&payload, &children)
-            .ok_or("protected Source route object identity overflows")
+        Ok(ObjectRef(Digest(output.digest.finalize().into())))
     }
 }
 
@@ -375,6 +415,11 @@ mod tests {
             &native_protected_view_marker_ref_v1(second.publication.identity).expect("marker")
         ));
         let identity = routes.object_ref().expect("route identity");
+        let payload = serde_json::to_vec(&routes).expect("canonical route payload");
+        assert_eq!(
+            native_immutable_object_ref_v1(&payload, &children),
+            Some(identity)
+        );
         let mut changed = routes.clone();
         changed.heads[1].publication.identity.sequence = 2;
         changed.heads[1].publication.identity.digest = changed.heads[1]
@@ -425,5 +470,19 @@ mod tests {
             routes.validate(),
             Err("protected RepoMap route order is invalid")
         );
+    }
+
+    #[test]
+    fn route_decoder_rejects_oversized_source_heads_during_deserialization() {
+        let routes = NativeProtectedSourceRoutesV1 {
+            native_origin: None,
+            wire_version: 1,
+            heads: vec![head("repo", "rev-a", 10); MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1 + 1],
+            repomap_heads: vec![],
+        };
+        let encoded = serde_json::to_vec(&routes).expect("oversized Source heads fixture");
+        let error = serde_json::from_slice::<NativeProtectedSourceRoutesV1>(&encoded)
+            .expect_err("oversized heads decoded");
+        assert!(error.to_string().contains("bounded sequence elements"));
     }
 }

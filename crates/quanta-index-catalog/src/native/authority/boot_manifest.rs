@@ -459,7 +459,6 @@ pub(super) fn validate_protected_routes(
     allowed_ingress: Option<IngressRef>,
     budget: &mut WorkBudget,
 ) -> Result<NativeBootSourceRouteRefV1, IndexError> {
-    routes.validate().map_err(|_| IndexError::DigestConflict)?;
     let payload_bytes = u64::try_from(
         routes
             .encoded_payload_len()

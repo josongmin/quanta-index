@@ -25,7 +25,7 @@ struct Writer<'a> {
 impl Writer<'_> {
     fn refuse(&mut self, error: IndexError) -> io::Error {
         self.error = Some(error);
-        io::Error::other("mutation commitment refused")
+        io::Error::other("canonical JSON commitment refused")
     }
 
     fn apply(&mut self, bytes: &[u8], next: usize) {
@@ -86,9 +86,10 @@ impl Write for Writer<'_> {
     }
 }
 fn write(
-    mutation: &OwnerMutation,
+    value: &impl serde::Serialize,
     target: Target<'_>,
     budget: Option<&WorkBudget>,
+    subject: &'static str,
 ) -> Result<(u64, bool), IndexError> {
     if let Some(budget) = budget {
         budget.checkpoint()?;
@@ -101,12 +102,11 @@ fn write(
         since_checkpoint: 0,
         error: None,
     };
-    let result = serde_json::to_writer(&mut writer, mutation);
+    let result = serde_json::to_writer(&mut writer, value);
     if let Some(error) = writer.error {
         return Err(error);
     }
-    result
-        .map_err(|error| IndexError::InvalidInput(format!("owner mutation encoding: {error}")))?;
+    result.map_err(|error| IndexError::InvalidInput(format!("{subject} encoding: {error}")))?;
     if let Some(budget) = writer.budget {
         budget.checkpoint()?;
     }
@@ -123,19 +123,28 @@ pub(super) fn length(
     mutation: &OwnerMutation,
     budget: Option<&WorkBudget>,
 ) -> Result<u64, IndexError> {
-    write(mutation, Target::Count, budget).map(|(len, _equal)| len)
+    write(mutation, Target::Count, budget, "owner mutation").map(|(len, _equal)| len)
 }
 pub(super) fn hash(
     mutation: &OwnerMutation,
     hash: &mut Sha256,
     budget: Option<&WorkBudget>,
 ) -> Result<u64, IndexError> {
-    write(mutation, Target::Hash(hash), budget).map(|(len, _equal)| len)
+    write(mutation, Target::Hash(hash), budget, "owner mutation").map(|(len, _equal)| len)
 }
 pub(super) fn matches(
     mutation: &OwnerMutation,
     expected: &[u8],
     budget: &WorkBudget,
 ) -> Result<bool, IndexError> {
-    write(mutation, Target::Compare(expected), Some(budget)).map(|(_len, equal)| equal)
+    matches_json(mutation, expected, budget, "owner mutation")
+}
+
+pub(in crate::index) fn matches_json(
+    value: &impl serde::Serialize,
+    expected: &[u8],
+    budget: &WorkBudget,
+    subject: &'static str,
+) -> Result<bool, IndexError> {
+    write(value, Target::Compare(expected), Some(budget), subject).map(|(_len, equal)| equal)
 }

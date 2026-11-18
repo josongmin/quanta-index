@@ -221,6 +221,7 @@ fn selected_two_workspace_route_survives_exact_retirement_and_reopen() -> TestRe
     )?;
     let seal_key = operation(20_003, 203).key;
     let (ingress, route_ref) = stage_routes(&catalog, &routes, seal_key)?;
+    assert_canonical_route_readback(&routes, route_ref)?;
     let wrong_fence = IngressRef {
         fence: ingress.fence + 1,
         ..ingress
@@ -348,6 +349,72 @@ fn selected_two_workspace_route_survives_exact_retirement_and_reopen() -> TestRe
         .count,
         2
     );
+    Ok(())
+}
+
+fn assert_canonical_route_readback(
+    routes: &NativeProtectedSourceRoutesV1,
+    route_ref: ObjectRef,
+) -> TestResult {
+    use quanta_index_core::index::{
+        StoredObject, native_immutable_object_ref_v1, with_native_protected_source_routes_v1,
+    };
+
+    let bytes = serde_json::to_vec(routes)?;
+    let children = routes.children()?;
+    let stored = |reference, payload: Vec<u8>, children: Vec<ObjectRef>| {
+        let wire_bytes = payload.len() + 16 + children.len() * 32;
+        Ok::<_, std::num::TryFromIntError>(StoredObject::new(
+            RegisteredObject::unscoped(reference, u64::try_from(wire_bytes)?, children),
+            payload,
+            None,
+        ))
+    };
+    let canonical = stored(route_ref, bytes.clone(), children.clone())?;
+    with_native_protected_source_routes_v1(
+        route_ref,
+        Some(2),
+        &canonical,
+        &mut protected_budget_v1(),
+        |actual, _budget| {
+            assert_eq!(actual, routes);
+            Ok(())
+        },
+    )?;
+
+    let mut noncanonical = bytes.clone();
+    noncanonical.push(b' ');
+    let raw_ref =
+        native_immutable_object_ref_v1(&noncanonical, &children).ok_or("route reference")?;
+    check!(raw_ref != route_ref);
+    for reference in [route_ref, raw_ref] {
+        let stored = stored(reference, noncanonical.clone(), children.clone())?;
+        check!(matches!(
+            with_native_protected_source_routes_v1::<()>(
+                reference,
+                Some(2),
+                &stored,
+                &mut protected_budget_v1(),
+                |_, _| panic!("noncanonical route reached the visitor"),
+            ),
+            Err(IndexError::DigestConflict)
+        ));
+    }
+    let mut wrong_children = children;
+    let _removed = wrong_children.pop().ok_or("route child missing")?;
+    let wrong_ref =
+        native_immutable_object_ref_v1(&bytes, &wrong_children).ok_or("wrong route reference")?;
+    let wrong = stored(wrong_ref, bytes, wrong_children)?;
+    check!(matches!(
+        with_native_protected_source_routes_v1::<()>(
+            wrong_ref,
+            Some(2),
+            &wrong,
+            &mut protected_budget_v1(),
+            |_, _| panic!("route with wrong children reached the visitor"),
+        ),
+        Err(IndexError::DigestConflict)
+    ));
     Ok(())
 }
 

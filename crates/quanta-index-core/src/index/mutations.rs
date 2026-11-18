@@ -3,6 +3,8 @@
 mod canonical;
 mod source_change_diff;
 
+pub(super) use canonical::matches_json;
+
 use super::{MapPageCursor, MapPageEntry, MapValue};
 
 use quanta_index_contract::index::{
