@@ -128,10 +128,12 @@ fn heads_backing_bytes<T>(count: usize) -> Option<usize> {
         .checked_add(count * (RepoId::MAX_UTF8_BYTES_V1 + RevisionId::MAX_UTF8_BYTES_V1))
 }
 
+/// Authenticate the route object and drop its owner before the visitor
+/// consumes the independently admitted decoded data.
 pub fn with_native_protected_source_routes_v1<T>(
     reference: ObjectRef,
     expected_source_count: Option<u32>,
-    stored: &StoredObject,
+    stored: StoredObject,
     budget: &mut WorkBudget,
     visit: impl FnOnce(&NativeProtectedSourceRoutesV1, &mut WorkBudget) -> Result<T, IndexError>,
 ) -> Result<T, IndexError> {
@@ -195,6 +197,7 @@ pub fn with_native_protected_source_routes_v1<T>(
             return Err(IndexError::DigestConflict);
         }
     }
+    drop(stored);
     budget.checkpoint()?;
     visit(&routes, budget)
 }

@@ -118,7 +118,7 @@ impl HeldPreviousNativeV1 {
                     with_native_protected_source_routes_v1(
                         route.object,
                         Some(route.count),
-                        &stored,
+                        stored,
                         budget,
                         |routes, budget| {
                             let observed = verify_native_source_root_quiescence_with_routes_v1(
@@ -221,7 +221,7 @@ impl HeldPreviousNativeV1 {
         let result = with_native_protected_source_routes_v1(
             route.object,
             Some(route.count),
-            &stored,
+            stored,
             budget,
             |routes, budget| {
                 let observed = verify_native_source_root_quiescence_with_routes_v1(

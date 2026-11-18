@@ -374,7 +374,7 @@ fn assert_canonical_route_readback(
     with_native_protected_source_routes_v1(
         route_ref,
         Some(2),
-        &canonical,
+        canonical,
         &mut protected_budget_v1(),
         |actual, _budget| {
             assert_eq!(actual, routes);
@@ -393,7 +393,7 @@ fn assert_canonical_route_readback(
             with_native_protected_source_routes_v1::<()>(
                 reference,
                 Some(2),
-                &stored,
+                stored,
                 &mut protected_budget_v1(),
                 |_, _| panic!("noncanonical route reached the visitor"),
             ),
@@ -409,7 +409,7 @@ fn assert_canonical_route_readback(
         with_native_protected_source_routes_v1::<()>(
             wrong_ref,
             Some(2),
-            &wrong,
+            wrong,
             &mut protected_budget_v1(),
             |_, _| panic!("route with wrong children reached the visitor"),
         ),
@@ -420,9 +420,26 @@ fn assert_canonical_route_readback(
 
 #[test]
 fn large_protected_route_decodes_inside_the_control_memory_envelope() -> TestResult {
-    use quanta_index_core::index::{
-        MemoryLifetime, StoredObject, with_native_protected_source_routes_v1,
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
     };
+
+    use quanta_index_core::index::{
+        MemoryLease, MemoryLeaseOwner, MemoryLifetime, StoredObject,
+        with_native_protected_source_routes_v1,
+    };
+
+    struct ObservedStorage {
+        released: Arc<AtomicBool>,
+        _funding: MemoryLease,
+    }
+
+    impl MemoryLeaseOwner for ObservedStorage {
+        fn release(&self, _bytes: u64) {
+            self.released.store(true, Ordering::Release);
+        }
+    }
 
     const HEADS: u16 = 1536;
     let member_binding = ObjectRef(digest_id(53));
@@ -471,29 +488,35 @@ fn large_protected_route_decodes_inside_the_control_memory_envelope() -> TestRes
         std::sync::Arc::new(memory.clone()),
     )));
     let storage_bytes = StoredObject::allocation_bytes(payload.len(), children.len())?;
-    let storage = budget.reserve_memory(storage_bytes, MemoryLifetime::Retained)?;
+    let storage = budget
+        .reserve_memory(storage_bytes, MemoryLifetime::Retained)?
+        .ok_or("raw route storage has no grant")?;
+    let raw_released = Arc::new(AtomicBool::new(false));
+    let storage = MemoryLease::new(
+        storage_bytes,
+        Arc::new(ObservedStorage {
+            released: Arc::clone(&raw_released),
+            _funding: storage,
+        }),
+    );
     let stored = StoredObject::new(
         RegisteredObject::unscoped(reference, wire_bytes, children),
         payload,
-        storage,
+        Some(storage),
     );
     with_native_protected_source_routes_v1(
         reference,
         Some(0),
-        &stored,
+        stored,
         &mut budget,
         |actual, _| {
             assert_eq!(actual, &routes);
-            assert!(memory.live.load(std::sync::atomic::Ordering::Acquire) > storage_bytes);
+            assert!(raw_released.load(Ordering::Acquire));
+            assert!(memory.live.load(Ordering::Acquire) > 0);
             Ok(())
         },
     )?;
-    check_eq!(
-        memory.live.load(std::sync::atomic::Ordering::Acquire),
-        storage_bytes
-    );
-    drop(stored);
-    check_eq!(memory.live.load(std::sync::atomic::Ordering::Acquire), 0);
+    check_eq!(memory.live.load(Ordering::Acquire), 0);
     Ok(())
 }
 

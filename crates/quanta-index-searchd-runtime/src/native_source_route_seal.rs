@@ -16,7 +16,7 @@ impl NativeDispatcher {
         budget: &mut WorkBudget,
     ) -> Result<NativeIndexResponse, IndexError> {
         let stored = self.objects.get(routes, budget)?;
-        with_native_protected_source_routes_v1(routes, None, &stored, budget, |decoded, budget| {
+        with_native_protected_source_routes_v1(routes, None, stored, budget, |decoded, budget| {
             if let Some(origin) = &decoded.native_origin {
                 let snapshot_object = self.objects.get(origin.snapshot, budget)?;
                 let old_route_object = self.objects.get(origin.source_routes, budget)?;
@@ -33,7 +33,7 @@ impl NativeDispatcher {
                         with_native_protected_source_routes_v1(
                             origin.source_routes,
                             None,
-                            &old_route_object,
+                            old_route_object,
                             budget,
                             |old, budget| {
                                 if old.heads != decoded.heads

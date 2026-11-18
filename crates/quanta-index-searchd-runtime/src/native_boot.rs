@@ -245,7 +245,7 @@ fn authenticate_with_legacy_history_v1(
         quanta_index_core::index::with_native_protected_source_routes_v1(
             route.object,
             Some(route.count),
-            &stored,
+            stored,
             budget,
             |routes, budget| {
                 quanta_index_catalog::verify_native_protected_source_routes_v1(
@@ -1313,7 +1313,7 @@ fn verify_recovery_candidate_with_legacy_history_v1(
         quanta_index_core::index::with_native_protected_source_routes_v1(
             expected_routes,
             Some(route.count),
-            &stored,
+            stored,
             budget,
             |routes, budget| {
                 quanta_index_catalog::verify_native_recovery_publications_with_routes_v1(

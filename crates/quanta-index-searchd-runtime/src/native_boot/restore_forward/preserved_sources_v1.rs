@@ -98,7 +98,7 @@ pub(super) fn verify_preserved_sources_v1(
     let repomap_files = with_native_protected_source_routes_v1(
         reference,
         Some(route.count),
-        &stored,
+        stored,
         budget,
         |routes, budget| {
             (|| -> Result<_> {

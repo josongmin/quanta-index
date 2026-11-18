@@ -56,7 +56,7 @@ pub(super) fn verify_preserved_native_v1(
                 with_native_protected_source_routes_v1(
                     route.object,
                     Some(route.count),
-                    &route_object,
+                    route_object,
                     budget,
                     |routes, budget| {
                         let origin = routes

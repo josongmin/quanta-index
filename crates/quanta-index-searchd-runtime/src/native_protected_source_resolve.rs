@@ -85,7 +85,7 @@ impl NativeDispatcher {
         let result = with_native_protected_source_routes_v1(
             route.object,
             Some(route.count),
-            &stored,
+            stored,
             budget,
             |routes, budget| {
                 self.verify_protected_view_markers_v1(routes, budget)?;

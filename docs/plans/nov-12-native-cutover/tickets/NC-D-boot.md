@@ -231,6 +231,10 @@ Native restore-forward의 History 목록은 성장 전에 새 배열 전체를 �
 
 seal과 보호 head 조회는 동일한 물리 marker 검증을 호출한다. Source와 RepoMap이 한 pair의 exact publication을 공유할 때만 marker를 한 번 읽고, RepoMap-only·genesis·기타 고유 marker는 모두 읽는다. 정규 marker를 한 번 인코딩해 객체 참조와 저장 bytes 대조에 쓰며 scratch를 예약한다. 설치 fixture의 작업량 한도는 요청당 512MiB이며 128MiB startup 한도는 별도 경로다. 최대 근처 route와 paged snapshot이 겹칠 때의 64MiB Native-origin seal peak는 별도 실제 입력 검증이 남는다. 컴파일·실제 검증은 **NOT_RUN**이다.
 
+**RR→SS 보호 route 원본 반환 · 2026-11-18.** Core visitor는 원본 `StoredObject` 소유권을 받는다. 정규 bytes·children·객체 digest 확인 뒤 원본을 해제하고, 별도로 예약한 decoded route만 visitor 종료까지 유지한다. seal·BOOT·보호 조회·restore-forward의 호출부는 기존에 가져온 소유 객체를 복제 없이 넘긴다. 기존 1,536-head 회귀는 같은 64MiB scope에서 raw grant가 visitor 전에 반환되고 decoded grant가 남아 있다가 반환 시점에 모두 풀리는 것을 단언한다. 다른 코드가 보유한 독립 Arc 참조의 수명은 그 오너를 따른다.
+
+두 번째 16MiB snapshot 페이지를 읽고 복사할 때 첫 페이지 payload·둘째 wire·둘째 payload가 겹치는 I/O 피크는 별도다. 이번 변경으로 그 시점의 새 route 원본은 제거됐다. 새 route의 decoded head와 남은 모든 객체·SQL 메모리를 포함한 64MiB 동시 한계의 실제 seal·설치 수용은 **NOT_RUN**이다.
+
 원 R16/Source23/Current 코호트를 합산하지 않으며 **`source_ready=false`**를 유지한다. 코드·정적 proof, 컴파일·owning body, signed Product 수용을 각각 판정한다.
 
 | 기존 오너에서 인수할 입력 | 인수 기준 |
