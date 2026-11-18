@@ -100,21 +100,58 @@ crate quanta_index_contract
 │   ├── struct WorkIntent: pub
 │   ├── enum WorkScope: pub
 │   ├── enum WorkStatus: pub
-│   └── mod history: pub(self)
-│       ├── struct AuxiliaryGenerationKeyV1: pub
-│       ├── struct HistorySourceCutV1: pub
-│       ├── struct HistoryTransition: pub
-│       └── mod source_input: pub(self)
-│           ├── struct HistoryReplayFenceV1: pub
-│           ├── struct HistoryReplayPublicationV1: pub
-│           └── struct HistorySourceInputV1: pub
+│   ├── mod history: pub(self)
+│   │   ├── struct AuxiliaryGenerationKeyV1: pub
+│   │   ├── struct HistoryAppendV1: pub
+│   │   ├── struct HistoryGenerationAdvanceV1: pub
+│   │   ├── struct HistoryGenerationInputV1: pub
+│   │   ├── struct HistorySourceCutV1: pub
+│   │   ├── struct HistoryTransition: pub
+│   │   ├── struct SourceHistoryTransitionV1: pub
+│   │   ├── mod native_restore: pub(self)
+│   │   │   └── struct NativeHistoryRestoreInputV1: pub
+│   │   ├── mod snapshot_checkpoint: pub(self)
+│   │   │   ├── struct HistorySnapshotCheckpointV1: pub
+│   │   │   ├── enum HistorySnapshotExportFrameV1: pub
+│   │   │   ├── struct HistorySnapshotPageV1: pub
+│   │   │   └── struct HistorySnapshotRowV1: pub
+│   │   └── mod source_input: pub(self)
+│   │       ├── struct HistoryReplayFenceV1: pub
+│   │       ├── struct HistoryReplayPublicationV1: pub
+│   │       └── struct HistorySourceInputV1: pub
+│   ├── mod immutable_object_wire: pub(self)
+│   ├── mod legacy_repomap_import: pub(self)
+│   │   ├── struct LegacyRepoMapImportPageV1: pub
+│   │   └── struct LegacyRepoMapImportV1: pub
+│   ├── mod protected_native_snapshot: pub(self)
+│   │   ├── struct NativeProtectedFrontierV1: pub
+│   │   ├── struct NativeProtectedNativeSnapshotV1: pub
+│   │   └── struct NativeProtectedSourceAuthorityV1: pub
+│   ├── mod protected_source_routes: pub(self)
+│   │   ├── struct NativeProtectedNativeOriginV1: pub
+│   │   ├── struct NativeProtectedRepoMapHeadV1: pub
+│   │   ├── struct NativeProtectedSourceHeadV1: pub
+│   │   └── struct NativeProtectedSourceRoutesV1: pub
+│   └── mod source_restore: pub(self)
+│       ├── struct DigestWriterV1: pub(self)
+│       ├── struct LegacySourceManifestDigestV1: pub
+│       ├── struct LegacySourceOriginV1: pub
+│       ├── struct LexicalSourceHeadsCommitmentV1: pub
+│       ├── struct NativeImportedSourceHeadV1: pub
+│       └── enum SourceSnapshotExportFrameV1: pub
 ├── mod ipc: pub
 │   ├── mod batch_body: pub(self)
 │   │   └── enum IngestOperationKindV1: pub
 │   ├── mod control: pub(self)
 │   │   ├── trait ActivationAckDecodePolicyV3: pub(self)
+│   │   ├── struct ActivationAckKeySeedV3: pub(self) #[cfg(feature = "quanta-native-identity-v1")]
+│   │   │   ├── type Value: pub(self)
+│   │   │   └── type Value: pub(self)
 │   │   ├── struct ActiveGenerationResolutionV1: pub
 │   │   ├── struct ActiveGenerationResolutionV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct AdmittedActivationAckPolicyV3: pub(self) #[cfg(feature = "quanta-native-identity-v1")]
+│   │   ├── struct AdmittedActivationAckSeedV3: pub(self) #[cfg(feature = "quanta-native-identity-v1")]
 │   │   │   └── type Value: pub(self)
 │   │   ├── struct CurrentGenerationRequest: pub
 │   │   ├── struct CurrentGenerationRequestVisitor: pub(self)
@@ -189,7 +226,16 @@ crate quanta_index_contract
 │   │       ├── struct ManifestDataV1: pub(self)
 │   │       ├── struct ManifestSeedV1: pub(self)
 │   │       │   └── type Value: pub(self)
-│   │       ├── enum NativeCorpusDataFailureV1: pub(super)
+│   │       ├── enum NativeCorpusDataFailureV1: pub
+│   │       ├── trait NativeCorpusDecodeAdmissionV1: pub #[cfg(feature = "quanta-native-identity-v1")]
+│   │       ├── struct NativeCorpusDecodeDataV1: pub #[cfg(feature = "quanta-native-identity-v1")]
+│   │       ├── enum NativeCorpusDecodeFailureV1: pub #[cfg(feature = "quanta-native-identity-v1")]
+│   │       ├── enum NativeCorpusDecodeRefusalV1: pub #[cfg(feature = "quanta-native-identity-v1")]
+│   │       ├── struct NativeCorpusPolicyV1: pub(self) #[cfg(feature = "quanta-native-identity-v1")]
+│   │       │   ├── type Funding: pub(self)
+│   │       │   └── type OriginalError: pub(self)
+│   │       ├── struct NativeHeadSeedV1: pub(self) #[cfg(feature = "quanta-native-identity-v1")]
+│   │       │   └── type Value: pub(self)
 │   │       ├── struct NodeSeedV1: pub(self)
 │   │       │   ├── type Value: pub(self)
 │   │       │   └── type Value: pub(self)
@@ -218,10 +264,20 @@ crate quanta_index_contract
 │   │       ├── struct TrackSeedV1: pub(self)
 │   │       │   ├── type Value: pub(self)
 │   │       │   └── type Value: pub(self)
+│   │       ├── mod admitted_cbor_v3: pub(self) #[cfg(feature = "quanta-native-identity-v1")]
+│   │       │   ├── struct AdmittedCborCorpusPolicyV3: pub(self)
+│   │       │   │   ├── type Funding: pub(self)
+│   │       │   │   └── type OriginalError: pub(self)
+│   │       │   ├── struct AdmittedCborHeadSeedV3: pub(self)
+│   │       │   │   └── type Value: pub(self)
+│   │       │   └── enum AdmittedCorpusHeadRefusalV3: pub
 │   │       └── mod borrowed_validation_v1: pub(self)
 │   │           ├── trait ExpectedActivePolicyV1: pub(self)
-│   │           └── struct OrdinaryExpectedActiveV1: pub(self)
-│   │               └── type Error: pub(self)
+│   │           ├── struct OrdinaryExpectedActiveV1: pub(self)
+│   │           │   └── type Error: pub(self)
+│   │           └── mod native_v1: pub(self) #[cfg(feature = "quanta-native-identity-v1")]
+│   │               └── struct NativeExpectedActiveV1: pub(self)
+│   │                   └── type Error: pub(self)
 │   ├── mod diagnostic_context: pub(self)
 │   │   ├── struct AttemptTokenVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
@@ -825,6 +881,7 @@ crate quanta_index_contract
 │   ├── struct NativeCutoverEvidenceHostFactsV1: pub
 │   ├── struct NativeCutoverEvidenceHostRecoveryReceiptV1: pub
 │   ├── struct NativeCutoverEvidenceHostSealV1: pub
+│   ├── struct NativeCutoverEvidenceLegacyHistoryV1: pub
 │   ├── struct NativeCutoverEvidenceLegacyPublicationV1: pub
 │   ├── enum NativeCutoverEvidenceLegacyRepoMapV1: pub
 │   ├── struct NativeCutoverEvidenceOrdinalV1: pub
@@ -833,6 +890,7 @@ crate quanta_index_contract
 │   ├── struct NativeCutoverEvidenceOutboxSemanticAdmissionMetricsV1: pub
 │   ├── struct NativeCutoverEvidencePendingApplyIntentV1: pub
 │   ├── struct NativeCutoverEvidencePreparedAuthorityV1: pub
+│   ├── struct NativeCutoverEvidencePreviousNativeSourceCoverageV1: pub
 │   ├── struct NativeCutoverEvidenceSdkBindingV1: pub
 │   ├── struct NativeCutoverEvidenceSelectedSourceV1: pub
 │   ├── enum NativeCutoverEvidenceSourceFactV1: pub
@@ -843,6 +901,7 @@ crate quanta_index_contract
 │   ├── struct NativeCutoverEvidenceV5ArtifactV1: pub
 │   ├── enum NativeCutoverHostCustodyModeV1: pub
 │   ├── enum NativeCutoverHostWatchModeV1: pub
+│   ├── struct NativeCutoverInstalledHistoryV1: pub
 │   ├── enum NativeCutoverRecoveryModeV1: pub
 │   ├── enum NativeCutoverReplayPhaseV1: pub
 │   ├── enum NativeCutoverReservationEvidenceV1: pub
@@ -864,6 +923,7 @@ crate quanta_index_contract
 │   ├── enum NativeEffortPreference: pub
 │   ├── enum NativeEffortReason: pub
 │   ├── struct NativeFilePathEntry: pub
+│   ├── struct NativeImportedRepoMapMemberReadV1: pub
 │   ├── enum NativeIndexErrorCode: pub
 │   ├── enum NativeIndexRequest: pub
 │   ├── struct NativeIndexRequestEnvelope: pub
@@ -882,6 +942,10 @@ crate quanta_index_contract
 │   ├── struct NativeProjectionOwnerLookup: pub
 │   ├── struct NativeProjectionOwnerRows: pub
 │   ├── struct NativeProjectionRead: pub
+│   ├── struct NativeProtectedRepoMapResolutionV1: pub
+│   ├── struct NativeRepositoryPathCursor: pub
+│   ├── struct NativeRepositoryPathEntry: pub
+│   ├── struct NativeRepositoryPathPage: pub
 │   ├── struct NativeRootScopedViewV1: pub
 │   ├── struct NativeSemanticHit: pub
 │   ├── struct NativeSemanticResult: pub
@@ -936,6 +1000,16 @@ crate quanta_index_contract
 │   │   ├── struct NativeOverlayTextQuery: pub
 │   │   ├── struct NativeOverlayTextResult: pub
 │   │   └── enum NativeOverlayTextSource: pub
+│   ├── mod immutable_children: pub(self)
+│   │   └── struct NativeImmutableObjectChildrenV1: pub
+│   ├── mod immutable_payload: pub(self)
+│   │   └── struct NativeImmutableObjectPayloadV1: pub
+│   ├── mod legacy_repomap: pub(self)
+│   │   ├── struct NativeImportedRepoMapCursorV1: pub
+│   │   ├── struct NativeImportedRepoMapEdgeV1: pub
+│   │   ├── struct NativeImportedRepoMapNodeV1: pub
+│   │   ├── struct NativeImportedRepoMapQueryV1: pub
+│   │   └── struct NativeImportedRepoMapResultV1: pub
 │   ├── mod projection_children: pub(self)
 │   │   ├── struct NativeProjectionOutputChildren: pub
 │   │   └── struct RejectExtra: pub(self)
@@ -943,6 +1017,8 @@ crate quanta_index_contract
 │   ├── mod read_session: pub(self)
 │   │   ├── struct NativeHybridFileHit: pub
 │   │   ├── struct NativeHybridFileResult: pub
+│   │   ├── struct NativeReadSessionHistoryCutV1: pub
+│   │   ├── struct NativeReadSessionHistoryGenerationV1: pub
 │   │   ├── struct NativeReadSessionId: pub
 │   │   ├── struct NativeReadSessionProfile: pub
 │   │   ├── enum NativeReadSessionReply: pub

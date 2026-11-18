@@ -1,6 +1,7 @@
 //! History input identity is independent of the current file SourceCut.
 mod source_input;
 mod snapshot_checkpoint;
+mod native_restore;
 use super::{Digest, IndexInstanceId, ObjectRef, SourceTransition};
 use crate::{AuxEpochV1, ManifestGeneration, RepoId, RevisionId};
 use sha2::{Digest as _, Sha256};
@@ -12,6 +13,7 @@ pub use snapshot_checkpoint::{
     HistorySnapshotCheckpointV1, HistorySnapshotExportFrameV1, HistorySnapshotPageV1, HistorySnapshotRowV1,
     MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1, MAX_HISTORY_SNAPSHOT_ROWS_PER_PAGE_V1,
 };
+pub use native_restore::NativeHistoryRestoreInputV1;
 
 /// The generation one auxiliary row belongs to. Core reexports this owner.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

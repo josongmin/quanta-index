@@ -14,6 +14,7 @@ mod mutations;
 pub mod object_install;
 mod owned_work;
 mod owner_coverage;
+mod protected_source_routes;
 pub mod ports;
 mod query;
 mod read_attempt;
@@ -55,11 +56,13 @@ pub use owned_work::{
     OwnedWorkGrant, OwnedWorkPolicy, OwnedWorkReport, OwnedWorkTerminal,
 };
 pub use owner_coverage::{pending_owner_coverage_value, read_owner_coverage};
+pub use protected_source_routes::{with_native_protected_source_routes_v1, with_native_protected_snapshot_v1};
 pub use ports::{
     AttemptContext, ObjectReadFile, ObjectReadIoPort, ObjectWriteIoPort,
     ObjectWriteSyncDirectories, ObjectWriteTicket,
 };
 pub use quanta_index_contract::index::*;
+pub use quanta_index_contract::RepoId;
 pub use query::{
     FiniteScore, FiniteScoreError, IndexQueryPort, NativeTextHitSource, QueryCoverage,
     QueryOutcome, QueryReadContext,

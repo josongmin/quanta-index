@@ -97,6 +97,20 @@ fn main() -> ExitCode {
         };
     }
     #[cfg(unix)]
+    if let Some(export) = command.source_export_command() {
+        let request =
+            quanta_index_core::RequestBudgetV1::for_duration(std::time::Duration::from_secs(600));
+        return match quanta_index_searchd_runtime::native_product::history_checkpoint_export::run_source_v1(
+            export, request,
+        ) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                log(&format!("Source snapshot export failed: {error:#}"));
+                ExitCode::from(70)
+            }
+        };
+    }
+    #[cfg(unix)]
     if let Some(recovery) = command.recovery_command() {
         let request =
             quanta_index_core::RequestBudgetV1::for_duration(std::time::Duration::from_secs(60));

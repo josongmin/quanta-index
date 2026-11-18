@@ -51,7 +51,11 @@ pub use crate::search_corpus_retention::{
     SearchCorpusIndexBytesPort,
 };
 
-pub use activation_catalog::{ActivationCatalog, ActiveGenerationRecord, ActivationReadFailureV1, ReadOnlyActivationObservationV1, inspect_existing_activation_repository_v1};
+pub use activation_catalog::{
+    ActivationCatalog, ActiveGenerationRecord, ActivationReadFailureV1,
+    ReadOnlyActivationObservationV1, inspect_existing_activation_repository_v1,
+    visit_existing_active_search_corpus_heads_v1,
+};
 mod recovery_read_io;
 pub use search_corpus_history::inspect_existing_sealed_search_corpus_v1;
 pub use aux_epoch::{AuxEpochRefusedError, AuxRead};

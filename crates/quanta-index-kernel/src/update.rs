@@ -1271,6 +1271,21 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         Ok(())
     }
 
+    /// Restore exact content-addressed bytes through the same admitted ingress.
+    /// Physical closure and final source verification remain mandatory.
+    pub fn stage_immutable_object_v1(
+        &self,
+        ingress: IngressRef,
+        output: &[u8],
+        children: &[ObjectRef],
+        budget: &mut WorkBudget,
+    ) -> Result<ObjectRef, IndexError> {
+        if children.len() > quanta_index_core::index::MAX_RECLAIM_CHILDREN {
+            return Err(IndexError::ResourceLimited);
+        }
+        self.stage_object(ingress, output, children, budget)
+    }
+
     pub fn stage_projection_owner(
         &self,
         ingress: IngressRef,

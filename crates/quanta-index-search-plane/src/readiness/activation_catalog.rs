@@ -20,7 +20,10 @@ use quanta_index_core::{CoreError, GenerationNamespaceReadPort, SourceEventState
 
 #[path = "activation_catalog/recovery_read_only.rs"]
 mod recovery_read_only;
-pub use recovery_read_only::{ActivationReadFailureV1, ReadOnlyActivationObservationV1, inspect_existing_activation_repository_v1};
+pub use recovery_read_only::{
+    ActivationReadFailureV1, ReadOnlyActivationObservationV1,
+    inspect_existing_activation_repository_v1, visit_existing_active_search_corpus_heads_v1,
+};
 mod repository_envelope;
 mod source_events;
 #[cfg(test)]

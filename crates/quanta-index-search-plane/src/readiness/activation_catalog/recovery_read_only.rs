@@ -12,7 +12,7 @@ use quanta_index_core::index::{
     IndexError, MemoryLease, MemoryLifetime, ObjectReadIoPort, WorkBudget,
 };
 use quanta_index_core::{ExistingTreeEntryKindV1, ExistingTreeMetadataIoPortV1};
-use std::{ffi::OsStr, path::Path};
+use std::{ffi::{OsStr, OsString}, path::Path};
 
 /// Observed DATA with the same Original's retained allocation. Neither this
 /// value nor a root lease substitutes for sealed-content/receipt verification.
@@ -133,6 +133,127 @@ pub fn inspect_existing_activation_repository_v1(
         head,
         _memory: retained.ok_or(IndexError::DigestConflict)?,
     })
+}
+
+/// Lend every query-visible head in deterministic physical-envelope and
+/// revision order. The caller retains the real StateRootLease and the same
+/// admitted read ports through the complete scan. Observations remain
+/// provisional until the final directory recheck succeeds; this reader does
+/// not verify sealed generation content or issue a Source receipt.
+pub fn visit_existing_active_search_corpus_heads_v1(
+    activations_root: &Path,
+    io: &dyn ObjectReadIoPort,
+    metadata: &dyn ExistingTreeMetadataIoPortV1,
+    budget: &mut WorkBudget,
+    visit: &mut dyn FnMut(
+        &RepoId,
+        &RevisionId,
+        &SearchCorpusActiveHeadV1,
+        &mut WorkBudget,
+    ) -> Result<(), ActivationReadFailureV1>,
+) -> Result<u64, ActivationReadFailureV1> {
+    budget.checkpoint()?;
+    let path_bytes = u64::try_from(activations_root.as_os_str().len())
+        .map_err(|_| IndexError::ResourceLimited)?
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(8192))
+        .ok_or(IndexError::ResourceLimited)?;
+    let _paths = budget
+        .reserve_memory(path_bytes, MemoryLifetime::Temporary)?
+        .ok_or(IndexError::ResourceLimited)?;
+    let before_directory = directory(activations_root, budget)?;
+    let incarnation_path = activations_root.join(ROOT_INCARNATION_FILE_V1);
+    let incarnation = read_existing(
+        &incarnation_path,
+        before_directory.owner,
+        u64::try_from(ROOT_INCARNATION_BYTES_V1).map_err(|_| IndexError::ResourceLimited)?,
+        io,
+        budget,
+    )?;
+    let root_incarnation: [u8; ROOT_INCARNATION_BYTES_V1] = incarnation
+        .bytes_v1()
+        .try_into()
+        .map_err(|_| IndexError::DigestConflict)?;
+    if root_incarnation.iter().all(|byte| *byte == 0) {
+        return Err(IndexError::DigestConflict.into());
+    }
+    drop(incarnation);
+
+    // The metadata port lends names in filesystem order. Fund copies and sort
+    // before opening any envelope, so a filesystem reorder cannot change the
+    // census order or hide an uninspected entry.
+    let mut names: Vec<(OsString, MemoryLease)> = Vec::new();
+    metadata.visit_directory_v1(
+        activations_root,
+        budget,
+        &mut |name, kind, _bytes, budget| {
+            let basename = Path::new(name);
+            if !is_search_corpus_root_path(basename) {
+                if kind == ExistingTreeEntryKindV1::File
+                    && basename.extension() == Some(OsStr::new("json"))
+                {
+                    return Err(IndexError::DigestConflict.into());
+                }
+                return Ok(());
+            }
+            if kind != ExistingTreeEntryKindV1::File {
+                return Err(IndexError::DigestConflict.into());
+            }
+            let width = std::mem::size_of::<(OsString, MemoryLease)>()
+                .checked_mul(4)
+                .and_then(|n| n.checked_add(name.len().checked_mul(4)?))
+                .ok_or(IndexError::ResourceLimited)?;
+            let allocation = budget
+                .reserve_memory(
+                    u64::try_from(width).map_err(|_| IndexError::ResourceLimited)?,
+                    MemoryLifetime::Temporary,
+                )?
+                .ok_or(IndexError::ResourceLimited)?;
+            names.try_reserve(1).map_err(|_| IndexError::ResourceLimited)?;
+            names.push((name.to_owned(), allocation));
+            Ok(())
+        },
+    )?;
+    names.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    if names.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(IndexError::DigestConflict.into());
+    }
+
+    let mut count = 0_u64;
+    for (name, _allocation) in &names {
+        budget.checkpoint()?;
+        let path = activations_root.join(name);
+        let envelope = read_existing(
+            &path,
+            before_directory.owner,
+            u64::try_from(repository_envelope::MAX_ENVELOPE_BYTES)
+                .map_err(|_| IndexError::ResourceLimited)?,
+            io,
+            budget,
+        )?;
+        let (repo, observed) = repository_envelope::decode(&path, envelope.bytes_v1())?;
+        let projection_bytes = u64::try_from(envelope.bytes_v1().len())
+            .map_err(|_| IndexError::ResourceLimited)?
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(4096))
+            .ok_or(IndexError::ResourceLimited)?;
+        let _projection = budget
+            .reserve_memory(projection_bytes, MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        for (key, active) in &observed.roots {
+            if key.repo_id != repo {
+                return Err(IndexError::DigestConflict.into());
+            }
+            let head = active.to_contract_v1(root_incarnation)?;
+            visit(&repo, &key.revision_id, &head, budget)?;
+            count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        }
+    }
+    if directory(activations_root, budget)? != before_directory {
+        return Err(IndexError::DigestConflict.into());
+    }
+    budget.checkpoint()?;
+    Ok(count)
 }
 
 fn require_selected_active_scope_v1<'a>(

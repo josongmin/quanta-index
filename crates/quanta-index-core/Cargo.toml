@@ -12,7 +12,7 @@ workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
+quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract", features = ["quanta-native-identity-v1"] }
 rustix.workspace = true
 sha2.workspace = true
 thiserror.workspace = true

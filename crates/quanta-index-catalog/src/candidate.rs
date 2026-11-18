@@ -173,6 +173,21 @@ pub(crate) fn has_unresolved_source_scope(
         .map_err(|error| engine_error("inspect RepoMap source scope", path, &error))
 }
 
+/// A held multi-head recovery census may retain other repositories and
+/// revisions, but it cannot discard a sealed candidate awaiting activation.
+pub(crate) fn has_unresolved_candidate_v1(
+    connection: &Connection,
+    path: &std::path::Path,
+) -> Result<bool, CoreError> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM repomap_candidate_v1 WHERE state=?1 LIMIT 1)",
+            rusqlite::params![RepoMapCandidateStateV1::Sealed.as_code()],
+            |row| row.get(0),
+        )
+        .map_err(|error| engine_error("inspect unsettled RepoMap candidates", path, &error))
+}
+
 /// Borrow the existing row validators inside the held, read-only Catalog
 /// transaction. The caller funds the row backing before this read.
 pub(crate) struct ActiveRepoMapReadbackV1 {

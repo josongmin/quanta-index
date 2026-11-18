@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
-use quanta_index_contract::index::Digest;
-use quanta_index_contract::index::AuxiliaryGenerationKeyV1;
 use quanta_index_contract::RepoId;
+use quanta_index_contract::index::AuxiliaryGenerationKeyV1;
+use quanta_index_contract::index::Digest;
 use quanta_index_contract::native_cutover_evidence_v1::NativeCutoverRecoveryModeV1;
 
 use super::native::parse_digest;
@@ -26,6 +26,7 @@ pub struct NativeRecoveryCommandV1 {
 /// The private exporter either streams one checkpoint or inventories one repo.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeHistoryExportScopeV1 {
+    Protected,
     Checkpoint(AuxiliaryGenerationKeyV1),
     Inventory(RepoId),
 }
@@ -38,6 +39,24 @@ pub struct NativeHistoryExportCommandV1 {
     pub scope: NativeHistoryExportScopeV1,
     pub config_path: PathBuf,
     pub config_digest: Digest,
+}
+
+/// Private complete Source export from one pinned active Legacy selection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeSourceExportCommandV1 {
+    pub selection_path: PathBuf,
+    pub expected_current_sha256: Digest,
+    pub config_path: PathBuf,
+    pub config_digest: Digest,
+}
+
+impl NativeSourceExportCommandV1 {
+    pub fn validate(&self) -> Result<()> {
+        if !self.selection_path.is_absolute() || !self.config_path.is_absolute() {
+            bail!("Source exporter selection and config paths must be absolute");
+        }
+        Ok(())
+    }
 }
 
 impl NativeHistoryExportCommandV1 {
@@ -78,10 +97,46 @@ pub(super) struct NativeRecoveryInput {
 }
 
 impl NativeRecoveryInput {
+    pub(super) fn finish_source_export(
+        self,
+        config_path: Option<PathBuf>,
+        config_digest: Option<String>,
+    ) -> Result<NativeSourceExportCommandV1> {
+        if self.candidate_path.is_some()
+            || self.expected_candidate_sha256.is_some()
+            || self.mode.is_some()
+            || self.parent_executable.is_some()
+            || self.parent_executable_sha256.is_some()
+        {
+            bail!("Source exporter accepts only the active selection binding");
+        }
+        let command = NativeSourceExportCommandV1 {
+            selection_path: PathBuf::from(
+                self.selection_path
+                    .ok_or_else(|| anyhow::anyhow!("Source exporter requires --selection-path"))?,
+            ),
+            expected_current_sha256: parse_digest(
+                &self.expected_current_sha256.ok_or_else(|| {
+                    anyhow::anyhow!("Source exporter requires --expected-current-sha256")
+                })?,
+                "--expected-current-sha256",
+            )?,
+            config_path: config_path
+                .ok_or_else(|| anyhow::anyhow!("Source exporter requires --config"))?,
+            config_digest: parse_digest(
+                &config_digest
+                    .ok_or_else(|| anyhow::anyhow!("Source exporter requires --config-digest"))?,
+                "--config-digest",
+            )?,
+        };
+        command.validate()?;
+        Ok(command)
+    }
     pub(super) fn finish_history_export(
         self,
         generation_json: Option<String>,
         inventory_repo_id: Option<String>,
+        protected_native_heads: Option<String>,
         config_path: Option<PathBuf>,
         config_digest: Option<String>,
     ) -> Result<NativeHistoryExportCommandV1> {
@@ -93,36 +148,49 @@ impl NativeRecoveryInput {
         {
             bail!("History exporter accepts only the active selection binding");
         }
-        let scope = match (generation_json, inventory_repo_id) {
-            (Some(raw), None) => {
+        let scope = match (generation_json, inventory_repo_id, protected_native_heads) {
+            (None, None, Some(value)) if value == "true" => NativeHistoryExportScopeV1::Protected,
+            (_, _, Some(_)) => {
+                bail!("Native protected export requires only --protected-native-heads true")
+            }
+            (Some(raw), None, None) => {
                 if raw.len() > 4096 {
                     bail!("History exporter generation exceeds input bound");
                 }
                 NativeHistoryExportScopeV1::Checkpoint(serde_json::from_str(&raw)?)
             }
-            (None, Some(raw)) => {
+            (None, Some(raw), None) => {
                 if raw.len() > 4096 {
                     bail!("History exporter repository exceeds input bound");
                 }
                 NativeHistoryExportScopeV1::Inventory(RepoId::new(raw)?)
             }
-            (Some(_), Some(_)) => {
-                bail!("History exporter requires exactly one of --generation-json and --inventory-repo-id");
+            (Some(_), Some(_), None) => {
+                bail!(
+                    "History exporter requires exactly one of --generation-json and --inventory-repo-id"
+                );
             }
-            (None, None) => {
+            (None, None, None) => {
                 bail!("History exporter requires --generation-json or --inventory-repo-id");
             }
         };
         let command = NativeHistoryExportCommandV1 {
-            selection_path: PathBuf::from(self.selection_path.ok_or_else(|| anyhow::anyhow!("History exporter requires --selection-path"))?),
+            selection_path: PathBuf::from(
+                self.selection_path
+                    .ok_or_else(|| anyhow::anyhow!("History exporter requires --selection-path"))?,
+            ),
             expected_current_sha256: parse_digest(
-                &self.expected_current_sha256.ok_or_else(|| anyhow::anyhow!("History exporter requires --expected-current-sha256"))?,
+                &self.expected_current_sha256.ok_or_else(|| {
+                    anyhow::anyhow!("History exporter requires --expected-current-sha256")
+                })?,
                 "--expected-current-sha256",
             )?,
             scope,
-            config_path: config_path.ok_or_else(|| anyhow::anyhow!("History exporter requires --config"))?,
+            config_path: config_path
+                .ok_or_else(|| anyhow::anyhow!("History exporter requires --config"))?,
             config_digest: parse_digest(
-                &config_digest.ok_or_else(|| anyhow::anyhow!("History exporter requires --config-digest"))?,
+                &config_digest
+                    .ok_or_else(|| anyhow::anyhow!("History exporter requires --config-digest"))?,
                 "--config-digest",
             )?,
         };

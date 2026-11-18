@@ -30,6 +30,9 @@ pub(crate) fn request_authorized(
         NativeIndexRequest::ReadSession(_)
         | NativeIndexRequest::ReadView(_)
         | NativeIndexRequest::ObserveRootView(_)
+        | NativeIndexRequest::ResolveProtectedSourceHead { .. }
+            | NativeIndexRequest::ResolveProtectedRepoMapHead { .. }
+            | NativeIndexRequest::ReadImportedRepoMapMember { .. }
         | NativeIndexRequest::PublishedViewMetadata(_)
         | NativeIndexRequest::ReadProjection { .. }
         | NativeIndexRequest::LookupSourceOwners { .. }
@@ -42,6 +45,7 @@ pub(crate) fn request_authorized(
         | NativeIndexRequest::SearchText { .. }
         | NativeIndexRequest::SearchSemantic { .. }
         | NativeIndexRequest::QueryGraph { .. }
+        | NativeIndexRequest::QueryImportedRepoMap { .. }
         | NativeIndexRequest::QueryRepoMap { .. }
         | NativeIndexRequest::QueryEffortStream { .. } => {
             matches!(plane, IpcPlane::Query | IpcPlane::Control)
@@ -149,6 +153,17 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 let mut work = WorkBudget::with_request(self.limits, budget.clone());
                 crate::native_graph_transport::query(self, selection, instance, query, &mut work)
                     .map(NativeReply::Graph)
+            }
+            NativeIndexRequest::QueryImportedRepoMap {
+                selection,
+                instance,
+                query,
+            } => {
+                let mut work = WorkBudget::with_request(self.limits, budget.clone());
+                crate::native_imported_repomap_transport::query(
+                    self, selection, instance, query, &mut work,
+                )
+                .map(NativeReply::ImportedRepoMap)
             }
             NativeIndexRequest::QueryRepoMap {
                 selection,
@@ -303,12 +318,14 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 "progressive effort requires the stream route".into(),
             )),
             other @ (NativeIndexRequest::CreateWorkspace { .. }
+            | NativeIndexRequest::SealCandidateWithSourceRoutes { .. }
             | NativeIndexRequest::BeginInput(_)
             | NativeIndexRequest::StageSource { .. }
             | NativeIndexRequest::StageSources { .. }
             | NativeIndexRequest::StageRepositorySources { .. }
             | NativeIndexRequest::StageProfile { .. }
             | NativeIndexRequest::StageProjectionOutput { .. }
+            | NativeIndexRequest::StageImmutableObject { .. }
             | NativeIndexRequest::StageProjectionOwner { .. }
             | NativeIndexRequest::StageProjectionCertificate { .. }
             | NativeIndexRequest::StageMutationPage { .. }
@@ -316,6 +333,9 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
             | NativeIndexRequest::DiscardInput(_)
             | NativeIndexRequest::ReadView(_)
             | NativeIndexRequest::ObserveRootView(_)
+            | NativeIndexRequest::ResolveProtectedSourceHead { .. }
+            | NativeIndexRequest::ResolveProtectedRepoMapHead { .. }
+            | NativeIndexRequest::ReadImportedRepoMapMember { .. }
             | NativeIndexRequest::PublishedViewMetadata(_)
             | NativeIndexRequest::ReadProjection { .. }
             | NativeIndexRequest::Status(_)
@@ -326,7 +346,11 @@ impl IpcDispatcher<NativeIndexRequest, NativeReply> for NativeDispatcher {
                 let is_discard = matches!(&other, NativeIndexRequest::DiscardInput(_));
                 let is_read_view = matches!(
                     &other,
-                    NativeIndexRequest::ReadView(_) | NativeIndexRequest::ObserveRootView(_)
+                    NativeIndexRequest::ReadView(_)
+                        | NativeIndexRequest::ObserveRootView(_)
+                        | NativeIndexRequest::ResolveProtectedSourceHead { .. }
+            | NativeIndexRequest::ResolveProtectedRepoMapHead { .. }
+            | NativeIndexRequest::ReadImportedRepoMapMember { .. }
                 );
                 let mut work = WorkBudget::with_request(self.limits, budget.clone());
                 let mut read_view_stage = ReadFailureStage::Checkpoint;
@@ -423,6 +447,30 @@ mod tests {
             stream_epoch: 1,
             sequence: 7,
         })
+    }
+
+    #[test]
+    fn repository_path_request_uses_authenticated_read_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let NativeIndexRequest::PublishedViewMetadata(operation) = published_metadata_request() else {
+            return Err("invalid operation fixture".into());
+        };
+        let request = NativeIndexRequest::QueryRepositoryPaths {
+            selection: quanta_index_contract::index::ViewSelection::Latest {
+                workspace: operation.workspace,
+                epoch: operation.epoch,
+            },
+            instance: quanta_index_contract::index::IndexInstanceId([7; 16]),
+            prefix: String::new(),
+            after: None,
+            limit: 1,
+        };
+        let observer = Some(PeerCredentials { uid: 1001, gid: 100, pid: None });
+        assert!(request_authorized(IpcPlane::Query, observer, 1000, &request));
+        assert!(request_authorized(IpcPlane::Control, observer, 1000, &request));
+        assert!(!request_authorized(IpcPlane::Ingest, observer, 1000, &request));
+        assert!(!request_authorized(IpcPlane::Query, None, 1000, &request));
+        Ok(())
     }
 
     #[test]

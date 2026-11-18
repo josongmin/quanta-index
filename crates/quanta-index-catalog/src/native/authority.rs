@@ -15,16 +15,27 @@ mod boot_manifest;
 mod read_only;
 mod read_settlement;
 pub use read_only::{
-    LegacyCatalogQuiescenceV1, LegacyHistoryProducerScopeV1, LegacyHistorySnapshotObservationV1, LegacyHistorySourceProofV1, NativeBootCatalogCandidate, NativeBootCatalogSnapshot,
-    NativeBootPublishedOperation, NativeBootQuiescentCatalogV1, TerminalBatchReadError,
-    VerifiedLegacyTerminalBatch, observe_legacy_history_snapshot_v1, verify_legacy_catalog_quiescence_v1,
+    LegacyActiveCatalogCensusV1, LegacyCatalogQuiescenceV1, LegacyHistoryProducerScopeV1,
+    LegacyHistorySnapshotObservationV1, LegacyHistorySourceProofV1, NativeBootCatalogCandidate,
+    NativeBootCatalogSnapshot, NativeBootPublishedOperation, NativeBootQuiescentCatalogV1,
+    TerminalBatchReadError, VerifiedLegacyTerminalBatch, lookup_native_protected_source_head_v1,
+    visit_native_protected_snapshot_rows_v1, verify_native_protected_snapshot_install_v1,
+    observe_legacy_history_snapshot_v1, resolve_native_protected_source_head_if_current_v1,
+    verify_legacy_active_repomap_receipts_with_siblings_v1, verify_legacy_catalog_quiescence_v1,
     verify_legacy_history_source_inventory_v1, verify_legacy_history_sources_v1,
-    visit_legacy_history_checkpoint_pages_v1, visit_legacy_history_checkpoint_rows_v1, visit_legacy_history_generation_keys_v1, visit_legacy_history_snapshot_rows_v1,
-    verify_legacy_terminal_batch_receipt, verify_native_boot_candidate,
-    verify_native_boot_current_candidate, verify_native_boot_catalog,
-    verify_native_published_operation, verify_native_rollback_catalog,
-    verify_native_legacy_history_recovery_publications_v1, verify_native_rollback_with_source_publications, verify_native_source_root_publications_v1,
-    verify_native_source_root_quiescence_v1,
+    verify_legacy_terminal_batch_receipt, verify_native_boot_candidate, verify_native_boot_catalog,
+    verify_native_boot_current_candidate, verify_native_legacy_history_recovery_publications_v1,
+    verify_native_legacy_history_recovery_publications_with_routes_v1,
+    verify_native_protected_source_routes_if_current_v1, verify_native_protected_source_routes_v1,
+    verify_native_published_operation, verify_native_published_view_v1,
+    verify_native_published_view_with_routes_v1,
+    verify_native_recovery_publications_with_routes_v1, verify_native_rollback_catalog,
+    verify_native_rollback_with_source_publications, verify_native_source_root_publications_v1,
+    verify_native_source_root_publications_with_routes_v1,
+    verify_native_source_root_quiescence_v1, verify_native_source_root_quiescence_with_routes_v1,
+    visit_legacy_active_catalog_heads_v1,
+    visit_legacy_history_checkpoint_pages_v1, visit_legacy_history_checkpoint_rows_v1,
+    visit_legacy_history_generation_keys_v1, visit_legacy_history_snapshot_rows_v1,
 };
 mod bootstrap;
 mod capture_format;
@@ -34,6 +45,7 @@ mod managed_install;
 mod object_install;
 mod owned_work;
 mod publication_result;
+mod protected_native_import;
 mod reclaim;
 mod registration_codec;
 mod renewal_diagnostic;
@@ -64,7 +76,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::connection::{SqliteCatalog, engine_error};
 
-pub use boot_manifest::NativeBootManifest;
+pub use boot_manifest::{NativeBootManifest, NativeBootSourceRouteRefV1};
 
 /// Only native tables are added here; no competing `SQLite` file or head.
 const SCHEMA: &str = "
@@ -4407,6 +4419,8 @@ mod tests {
 
     mod checked_registration;
     mod confirmation_shadows;
+    mod offline_protected_routes;
+    mod offline_protected_native_snapshot;
     mod offline_rollback;
     mod offline_source_quiescence;
     mod operation_ref_storage;
@@ -4862,7 +4876,8 @@ mod tests {
             OperationStatus::Refused(Refusal::InvalidInput)
         );
         check_eq!(
-            catalog.select_native_boot_manifest_if_current(first_op.key, &mut admission_budget())?,
+            catalog
+                .select_native_boot_manifest_if_current(first_op.key, &mut admission_budget())?,
             selected
         );
         check_eq!(
@@ -4993,6 +5008,7 @@ mod tests {
                 },
             },
             publication,
+            protected_source_routes: None,
         };
         check!(serde_json::to_vec(&manifest)?.len() <= 4096);
         check_eq!(manifest.protected_roots(), [Some(object); 5]);
@@ -13589,15 +13605,27 @@ mod tests {
             "INSERT INTO temp.native_gc_namespace_v1 VALUES(1, ?1, ?2)",
             params![&original.0, &original.1],
         )?;
-        check!(matches!(reclaim::is_bound(&guard), Err(IndexError::Storage(_))));
-        check!(matches!(reclaim::require_bound(&guard), Err(IndexError::Storage(_))));
+        check!(matches!(
+            reclaim::is_bound(&guard),
+            Err(IndexError::Storage(_))
+        ));
+        check!(matches!(
+            reclaim::require_bound(&guard),
+            Err(IndexError::Storage(_))
+        ));
         let _changed = guard.execute("DELETE FROM temp.native_gc_namespace_v1", [])?;
         let _changed = guard.execute(
             "INSERT INTO temp.native_gc_namespace_v1 VALUES(2, ?1, ?2)",
             params![&original.0, &original.1],
         )?;
-        check!(matches!(reclaim::is_bound(&guard), Err(IndexError::Storage(_))));
-        check!(matches!(reclaim::require_bound(&guard), Err(IndexError::Storage(_))));
+        check!(matches!(
+            reclaim::is_bound(&guard),
+            Err(IndexError::Storage(_))
+        ));
+        check!(matches!(
+            reclaim::require_bound(&guard),
+            Err(IndexError::Storage(_))
+        ));
         drop(guard);
         Ok(())
     }

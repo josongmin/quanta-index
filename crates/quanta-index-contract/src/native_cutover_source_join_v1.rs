@@ -4,7 +4,7 @@
 //! This borrowed projection is not a cutover permit. The receiver must still
 //! compare the actual Q publication, root custody, FDs, host and deployment.
 
-use crate::index::{UpdateKind, UpdateRequest};
+use crate::index::{NativeImportedSourceHeadV1, UpdateKind, UpdateRequest};
 use crate::native_cutover_evidence_v1::{
     MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1, NativeCutoverAstWorkPhaseV1,
     NativeCutoverAttemptFenceWireV1, NativeCutoverDigest64V1, NativeCutoverEvidenceCheckpointAckV1,
@@ -65,6 +65,7 @@ pub struct NativeCutoverJoinedSourceFactsV1<'a> {
     completed_source_requests: &'a [Fact],
     native_initial_sources: &'a [Fact],
     native_sdk_sources: &'a [Fact],
+    imported_legacy_sources: &'a [Fact],
 }
 
 impl<'a> NativeCutoverJoinedSourceFactsV1<'a> {
@@ -155,6 +156,43 @@ impl<'a> NativeCutoverJoinedSourceFactsV1<'a> {
         match self.native_sdk_sources.get(row)? {
             Fact::NativeSdkSourceBinding { source, aggregate_identity_digest, .. } =>
                 Some((source, aggregate_identity_digest.as_str())),
+            _ => None,
+        }
+    }
+
+    /// A signed imported origin is available only after the complete Source
+    /// join has authenticated its independent sibling Initial/V9 association.
+    #[must_use]
+    pub fn imported_legacy_source_for_pair_v1(
+        &self,
+        repo: &crate::RepoId,
+        revision: &crate::RevisionId,
+    ) -> Option<&'a NativeImportedSourceHeadV1> {
+        self.imported_legacy_source_inputs_for_pair_v1(repo, revision)
+            .map(|(head, _, _)| head)
+    }
+
+    #[must_use]
+    pub fn imported_legacy_source_count_v1(&self) -> usize {
+        self.imported_legacy_sources.len()
+    }
+
+    /// Exact retained target and request were checked against their genuine
+    /// reservation and terminal V9 rows before this borrowed lookup is lent.
+    #[must_use]
+    pub fn imported_legacy_source_inputs_for_pair_v1(
+        &self,
+        repo: &crate::RepoId,
+        revision: &crate::RevisionId,
+    ) -> Option<(&'a NativeImportedSourceHeadV1, &'a NativeCutoverEvidenceTargetV1,
+        &'a UpdateRequest)> {
+        let row = self.imported_legacy_sources.binary_search_by(|fact| match fact {
+            Fact::ImportedLegacySource { head, .. } =>
+                (&head.origin.repo_id, &head.origin.revision_id).cmp(&(repo, revision)),
+            _ => Ordering::Less,
+        }).ok()?;
+        match self.imported_legacy_sources.get(row)? {
+            Fact::ImportedLegacySource { head, target, request } => Some((head, target, request)),
             _ => None,
         }
     }
@@ -262,6 +300,7 @@ fn sort_lineage_rows<E>(
 /// Heap sorting is fallible and charges every comparison, O(N log N).
 fn fold_native_source_lineage_v1<'e, 's, E>(
     evidence: &'e NativeCutoverEvidenceV1,
+    imports: &[Fact],
     reservation_rows: &'s mut Vec<usize>,
     replay_rows: &'s mut Vec<usize>,
     charge: &mut impl FnMut(u64) -> Result<(), E>,
@@ -286,8 +325,16 @@ fn fold_native_source_lineage_v1<'e, 's, E>(
                     return Err(refuse("duplicate Source allocator"));
                 }
             }
-            Fact::Reservation { .. } => reservation_rows.push(index),
-            Fact::Replay { native_update_request: Some(_), .. } => replay_rows.push(index),
+            Fact::Reservation { target, .. } => {
+                if imported_for_operation_v1(imports, target.operation, charge)?.is_none() {
+                    reservation_rows.push(index);
+                }
+            }
+            Fact::Replay { native_update_request: Some(request), .. } => {
+                if imported_for_operation_v1(imports, request.operation, charge)?.is_none() {
+                    replay_rows.push(index);
+                }
+            }
             _ => {}
         }
     }
@@ -444,6 +491,9 @@ fn fold_native_source_lineage_v1<'e, 's, E>(
             return Err(refuse("V5 artifact operation is duplicated or unsorted"));
         }
         previous_v5_operation = Some(artifact.operation);
+        if imported_for_operation_v1(imports, artifact.operation, charge)?.is_some() {
+            continue;
+        }
         let replay_row = replay_rows.binary_search_by(|row| match evidence.source_facts.get(*row) {
             Some(Fact::Replay { native_update_request: Some(request), .. }) =>
                 request.operation.cmp(&artifact.operation),
@@ -970,6 +1020,7 @@ fn join_native_bound_sources_v1<E>(
     evidence: &NativeCutoverEvidenceV1,
     lineage: &NativeCutoverSourceLineageV1<'_, '_>,
     sources: &[Fact],
+    imports: &[Fact],
     expect_sdk: bool,
     charge: &mut impl FnMut(u64) -> Result<(), E>,
 ) -> Result<(), NativeCutoverSourceJoinErrorV1<E>> {
@@ -982,6 +1033,15 @@ fn join_native_bound_sources_v1<E>(
             | (true, Fact::NativeSdkSourceBinding { operation, .. }) => operation,
             _ => return Err(refuse("Native bound Source category differs")),
         };
+        if imported_for_operation_v1(imports, *operation, charge)?.is_some() {
+            if expect_sdk {
+                return Err(refuse("imported sibling Source has unexpected SDK association"));
+            }
+            continue;
+        }
+        if previous_operation == Some(*operation) && !expect_sdk {
+            return Err(refuse("Native initial Source operation duplicated"));
+        }
         if previous_operation.is_some_and(|prior| prior >= *operation) {
             return Err(refuse("Native initial Source operation duplicated or unsorted"));
         }
@@ -1038,9 +1098,14 @@ pub fn join_native_cutover_source_facts_v1<'a, E>(
 ) -> Result<NativeCutoverJoinedSourceFactsV1<'a>, NativeCutoverSourceJoinErrorV1<E>> {
     validate_completed_watch_inventory_v1(evidence, reservation_rows, replay_rows, charge)?;
     validate_ast_inventory_v1(evidence, reservation_rows, replay_rows, charge)?;
-    let lineage = fold_native_source_lineage_v1(evidence, reservation_rows, replay_rows, charge)?;
+    let ranges = mixed_ranges(&evidence.source_facts, charge)?;
+    let imports = mixed_slice(&evidence.source_facts, &ranges, 15)?;
+    let lineage = fold_native_source_lineage_v1(evidence, imports, reservation_rows, replay_rows, charge)?;
     if lineage.len() == 1 {
-        return join_initial_only_source_facts_v1(evidence, charge);
+        let mut joined = join_initial_only_source_facts_v1(evidence, imports, charge)?;
+        validate_imported_source_groups_v1(evidence, imports, joined.baseline_candidate_root_nonce, charge)?;
+        joined.imported_legacy_sources = imports;
+        return Ok(joined);
     }
     let facts = &evidence.source_facts;
     let ranges = &mixed_ranges(facts, charge)?;
@@ -1048,9 +1113,14 @@ pub fn join_native_cutover_source_facts_v1<'a, E>(
     let (_, completed_watch_sources) = split_completed_source_requests_v1(completed_source_requests, charge)?;
     join_completed_watch_sources_v1(&lineage, completed_watch_sources, charge)?;
     let native_initial_sources = mixed_slice(facts, ranges, 13)?;
-    join_native_bound_sources_v1(evidence, &lineage, native_initial_sources, false, charge)?;
+    join_native_bound_sources_v1(evidence, &lineage, native_initial_sources, imports, false, charge)?;
     let native_sdk_sources = mixed_slice(facts, ranges, 14)?;
-    join_native_bound_sources_v1(evidence, &lineage, native_sdk_sources, true, charge)?;
+    join_native_bound_sources_v1(evidence, &lineage, native_sdk_sources, imports, true, charge)?;
+    let baseline_nonce = match lineage.original_full_v1() {
+        Some((Fact::Reservation { candidate_root_nonce: Some(nonce), .. }, _)) => Some(*nonce),
+        _ => None,
+    };
+    validate_imported_source_groups_v1(evidence, imports, baseline_nonce, charge)?;
     let (initial_reservation, initial_replay) = lineage.original_full_v1()
         .ok_or_else(|| refuse("original FULL association absent"))?;
     let (current_reservation, current_replay) = lineage.current_v1()
@@ -1119,6 +1189,7 @@ pub fn join_native_cutover_source_facts_v1<'a, E>(
         completed_source_requests,
         native_initial_sources,
         native_sdk_sources,
+        imported_legacy_sources: mixed_slice(facts, ranges, 15)?,
     };
     if current_target.operation == evidence.baseline.operation {
         join_initial_full_history(&joined, None, charge)?;
@@ -1470,13 +1541,22 @@ fn initial_full_identity<E>(
 /// It is intentionally strict: unrelated history cannot be silently skipped.
 fn join_initial_only_source_facts_v1<'a, E>(
     evidence: &'a NativeCutoverEvidenceV1,
+    imports: &[Fact],
     charge: &mut impl FnMut(u64) -> Result<(), E>,
 ) -> Result<NativeCutoverJoinedSourceFactsV1<'a>, NativeCutoverSourceJoinErrorV1<E>> {
     if evidence.source_facts.len() > MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1 {
         return Err(refuse("source fact count exceeds bound"));
     }
-    if evidence.v5_artifacts.len() != 1 {
-        return Err(refuse("initial FULL requires exactly one V5 artifact"));
+    let mut prior_v5_operation = None;
+    for artifact in &evidence.v5_artifacts {
+        work(charge, std::mem::size_of::<NativeCutoverEvidenceV5ArtifactV1>())?;
+        if prior_v5_operation.is_some_and(|prior| prior >= artifact.operation) {
+            return Err(refuse("initial FULL V5 operation duplicated or unsorted"));
+        }
+        prior_v5_operation = Some(artifact.operation);
+        if artifact.operation != evidence.header.original_full_operation {
+            return Err(refuse("initial FULL has a foreign V5 artifact"));
+        }
     }
     let baseline = &evidence.baseline;
     let full = evidence.header.original_full_operation;
@@ -1491,7 +1571,8 @@ fn join_initial_only_source_facts_v1<'a, E>(
     }
     let v5_artifact = evidence
         .v5_artifacts
-        .first()
+        .iter()
+        .find(|artifact| artifact.operation == full)
         .ok_or_else(|| refuse("initial FULL V5 artifact absent"))?;
     let fresh_sdk = &evidence.fresh_sdk;
     work(charge, 1 + 64 * 2)?;
@@ -1527,6 +1608,23 @@ fn join_initial_only_source_facts_v1<'a, E>(
     let mixed_legacy = evidence.legacy_publication.is_some();
     for fact in &evidence.source_facts {
         work(charge, 1)?;
+        let operation = match fact {
+            Fact::Reservation { target, .. } => Some(target.operation),
+            Fact::Replay { native_update_request: Some(request), .. } => Some(request.operation),
+            Fact::NativeInitialSourceBinding { operation, .. } => Some(*operation),
+            _ => None,
+        };
+        if let Some(operation) = operation {
+            if imported_for_operation_v1(imports, operation, charge)?.is_some() {
+                continue;
+            }
+        }
+        if let Fact::PendingStoreCheckpoint { aggregate_identity_digest, .. } = fact {
+            if imported_for_aggregate_v1(&evidence.source_facts, imports,
+                aggregate_identity_digest, charge)? {
+                continue;
+            }
+        }
         match fact {
             Fact::Allocator {
                 next_operation_sequence,
@@ -1719,6 +1817,7 @@ fn join_initial_only_source_facts_v1<'a, E>(
             Fact::NativeSdkSourceBinding { .. } => {
                 return Err(refuse("initial FULL has SDK Source without SDK reservation"));
             }
+            Fact::ImportedLegacySource { .. } => {}
         }
     }
     let Some(initial_reservation) = reservation else {
@@ -1736,11 +1835,8 @@ fn join_initial_only_source_facts_v1<'a, E>(
             initial_reservation, replay.ok_or_else(|| refuse("initial Native V9 absent"))?,
             false, charge)?;
     }
-    let native_initial_sources: &'a [Fact] = match native_initial_source {
-        Some(fact) => std::slice::from_ref(fact),
-        None => &[],
-    };
     let completed_ranges = mixed_ranges(&evidence.source_facts, charge)?;
+    let native_initial_sources = mixed_slice(&evidence.source_facts, &completed_ranges, 13)?;
     let completed_source_requests = mixed_slice(&evidence.source_facts, &completed_ranges, 12)?;
     let (_, completed_watch_sources) = split_completed_source_requests_v1(completed_source_requests, charge)?;
     if !completed_watch_sources.is_empty() {
@@ -1773,6 +1869,7 @@ fn join_initial_only_source_facts_v1<'a, E>(
         completed_source_requests,
         native_initial_sources,
         native_sdk_sources: &[],
+        imported_legacy_sources: mixed_slice(&evidence.source_facts, &completed_ranges, 15)?,
     };
     join_history(&joined, first_custody, evidence, charge)?;
     if mixed_legacy {
@@ -2239,6 +2336,16 @@ fn join_checkpoint_ack<E>(
     joined: &NativeCutoverJoinedSourceFactsV1<'_>,
     charge: &mut impl FnMut(u64) -> Result<(), E>,
 ) -> Result<(), NativeCutoverSourceJoinErrorV1<E>> {
+    let replay = joined.replay.ok_or_else(|| refuse("checkpoint lacks exact V9 replay"))?;
+    let checkpoint = joined.checkpoint_ack.ok_or_else(|| refuse("ACKed V9 lacks durable checkpoint ACK"))?;
+    join_checkpoint_ack_pair_v1(replay, checkpoint, charge)
+}
+
+fn join_checkpoint_ack_pair_v1<E>(
+    replay: &Fact,
+    checkpoint: &Fact,
+    charge: &mut impl FnMut(u64) -> Result<(), E>,
+) -> Result<(), NativeCutoverSourceJoinErrorV1<E>> {
     let Some(Fact::Replay {
         workspace_root,
         contract_key,
@@ -2248,7 +2355,7 @@ fn join_checkpoint_ack<E>(
         terminal_aggregate_receipt_digest,
         checkpoint_ack,
         ..
-    }) = joined.replay
+    }) = Some(replay)
     else {
         return Err(refuse("checkpoint lacks exact V9 replay"));
     };
@@ -2260,7 +2367,7 @@ fn join_checkpoint_ack<E>(
         terminal_aggregate_receipt_digest: k_terminal,
         ack,
         ..
-    }) = joined.checkpoint_ack
+    }) = Some(checkpoint)
     else {
         return Err(refuse("ACKed V9 lacks durable checkpoint ACK"));
     };
@@ -2320,7 +2427,7 @@ fn canonical_hex_digest_bytes(value: &[u8]) -> bool {
 fn join_ast_lineage<'a, E>(
     evidence: &'a NativeCutoverEvidenceV1,
     lineage: &NativeCutoverSourceLineageV1<'a, '_>,
-    ranges: &[Range<usize>; 15],
+    ranges: &[Range<usize>; 16],
     joined: &mut NativeCutoverJoinedSourceFactsV1<'a>,
     charge: &mut impl FnMut(u64) -> Result<(), E>,
 ) -> Result<(), NativeCutoverSourceJoinErrorV1<E>> {
@@ -2836,6 +2943,10 @@ mod tests {
         WorkspaceKey, WorktreeId,
     };
     use crate::native_cutover_evidence_v1::NativeCutoverEvidenceLegacyPublicationV1;
+    use crate::index::{CatalogView, ImmutableOperation, LegacySourceOriginV1,
+        LexicalSourceHeadsCommitmentV1, imported_legacy_source_completed_digest_v1,
+        imported_legacy_source_manifest_digest_v1};
+    use crate::SourcePublicationEvent;
     use crate::native_cutover_evidence_v1::{
         NativeCutoverByteStringV1, NativeCutoverEvidenceBeforeSelectionV1,
         NativeCutoverEvidenceCheckpointAckV1, NativeCutoverEvidenceFileIdentityV1,
@@ -3152,6 +3263,258 @@ mod tests {
         evidence
     }
 
+    fn initial_with_imported_sibling_v1() -> (NativeCutoverEvidenceV1, RepoId, RevisionId) {
+        let mut evidence = native_only_initial_full_evidence();
+        let (_, legacy) = signed_mixed_legacy_fixture();
+        let publication = legacy.legacy_publication.expect("sealed Legacy fixture");
+        let repo = RepoId::new("sibling").expect("canonical sibling");
+        let revision = RevisionId::new("d".repeat(64)).expect("canonical revision");
+        let mut active = publication.activation.active;
+        active.generation.lexical.repo_id = repo.clone();
+        active.generation.lexical.revision_id = revision.clone();
+        active.generation.semantic.repo_id = repo.clone();
+        active.generation.semantic.revision_id = revision.clone();
+        let mut applied_ack = publication.receipt;
+        applied_ack.applied = true;
+        let origin = LegacySourceOriginV1 {
+            repo_id: repo.clone(), revision_id: revision.clone(), active, applied_ack,
+            source_publication_event: SourcePublicationEvent {
+                stream_id: "sibling-source".into(), event_id: "initial".into(),
+                expected_base_event_id: None, payload_sha256: [31; 32],
+            },
+            source_heads: LexicalSourceHeadsCommitmentV1 {
+                root_sha256: Some([32; 32]), entries: 1,
+            },
+        };
+        assert!(origin.is_canonical_v1());
+
+        let mut target = evidence.baseline;
+        target.operation.workspace.slot = SlotId([44; 16]);
+        target.operation.sequence = 11;
+        target.expected_view.workspace = target.operation.workspace;
+        target.canonical_target_digest = Digest([41; 32]);
+        let mut request = evidence.source_facts.iter().find_map(|fact| match fact {
+            Fact::Replay { native_update_request: Some(request), .. } => Some(request.clone()),
+            _ => None,
+        }).expect("primary Initial V9 request");
+        request.operation = target.operation;
+        request.expected_view = target.expected_view;
+        let UpdateKind::SourceAdvance(transition) = &mut request.kind else {
+            panic!("primary Initial request is Source FULL");
+        };
+        transition.events = vec![SourceEvent {
+            producer: target.operation.producer,
+            stream: target.operation.stream,
+            stream_epoch: target.operation.stream_epoch,
+            predecessor: 0, sequence: 1, payload: Digest([0; 32]),
+        }];
+        transition.events[0].payload = transition.owner_digest().expect("Source capture");
+        let mut view = CatalogView {
+            identity: ViewRef { workspace: target.operation.workspace,
+                epoch: target.operation.epoch, sequence: 2, digest: Digest([0; 32]) },
+            profile: target.expected_profile,
+            source: target.expected_source,
+            projections: MapRoot(None), members: MapRoot(None), coverage: MapRoot(None),
+        };
+        view.identity.digest = view.identity_digest().expect("canonical sibling view");
+        let accepted_transcript_sha256 = Digest([33; 32]);
+        let source_manifest_sha256 = Digest([34; 32]);
+        let source_operation = ImmutableOperation {
+            key: target.operation, request: ObjectRef(Digest([42; 32])),
+            source_mode: target.source_mode,
+        };
+        let manifest_digest = imported_legacy_source_manifest_digest_v1(
+            &origin, accepted_transcript_sha256, source_manifest_sha256,
+            27, Digest([22; 32]), &target, &request,
+        ).expect("complete historical manifest");
+        let completed_journal_digest = imported_legacy_source_completed_digest_v1(
+            manifest_digest, &source_operation, &view,
+        ).expect("historical completion");
+        let binding = NativeCutoverEvidenceSourcePublicationBindingV1 {
+            transition_digest: NativeCutoverDigest64V1(sa_payload_to_hex(&manifest_digest)),
+            completion_pointer_digest: NativeCutoverDigest64V1(sa_payload_to_hex(&completed_journal_digest)),
+            physical_target_source_digest: NativeCutoverDigest64V1(sa_payload_to_hex(&source_manifest_sha256)),
+            target_snapshot_id: 27,
+        };
+        let head = NativeImportedSourceHeadV1 {
+            origin,
+            candidate_root_nonce: Digest([22; 32]),
+            source_operation,
+            source_publication: view,
+            source_binding: binding,
+            original_snapshot_id: 27,
+            accepted_transcript_sha256,
+            source_manifest_sha256,
+            completed_journal_digest,
+        };
+        assert!(head.matches_completed_binding_v1(&target, &request));
+        evidence.source_facts.push(Fact::ImportedLegacySource { head, target, request });
+        evidence.source_facts.sort_by(|left, right| mixed_rank(left).cmp(&mixed_rank(right))
+            .then_with(|| mixed_key(left).cmp(&mixed_key(right))));
+        (evidence, repo, revision)
+    }
+
+    fn rebind_import_fact_v1(fact: &mut Fact) {
+        let Fact::ImportedLegacySource { head, target, request } = fact else {
+            panic!("historical import fact");
+        };
+        let manifest = imported_legacy_source_manifest_digest_v1(
+            &head.origin, head.accepted_transcript_sha256, head.source_manifest_sha256,
+            head.original_snapshot_id, head.candidate_root_nonce, target, request,
+        ).expect("rebound historical manifest");
+        let completed = imported_legacy_source_completed_digest_v1(
+            manifest, &head.source_operation, &head.source_publication,
+        ).expect("rebound historical completion");
+        head.completed_journal_digest = completed;
+        head.source_binding.transition_digest = NativeCutoverDigest64V1(sa_payload_to_hex(&manifest));
+        head.source_binding.completion_pointer_digest = NativeCutoverDigest64V1(sa_payload_to_hex(&completed));
+        head.source_binding.physical_target_source_digest =
+            NativeCutoverDigest64V1(sa_payload_to_hex(&head.source_manifest_sha256));
+        assert!(head.matches_completed_binding_v1(target, request));
+    }
+
+    #[test]
+    fn imported_sibling_initial_group_joins_exact_retained_inputs() {
+        let (evidence, repo, revision) = initial_with_imported_sibling_v1();
+        let joined = join_test(&evidence, &mut |_| Ok::<_, ()>(()))
+            .expect("primary and one independent sibling Initial group");
+        assert_eq!(joined.imported_legacy_source_count_v1(), 1);
+        let (head, target, request) = joined
+            .imported_legacy_source_inputs_for_pair_v1(&repo, &revision)
+            .expect("exact sibling origin and retained input");
+        assert_eq!(head.origin.repo_id, repo);
+        assert_eq!(head.origin.revision_id, revision);
+        assert_eq!(head.source_operation.key, target.operation);
+        assert_eq!(request.operation, target.operation);
+        assert_ne!(head.source_operation.key.workspace,
+            evidence.header.selected_source.workspace);
+        assert_ne!(head.source_operation.key.sequence,
+            head.source_publication.identity.sequence);
+        assert_eq!(joined.baseline.operation, evidence.baseline.operation);
+        assert_eq!(joined.current_native_target.operation, evidence.baseline.operation);
+        assert!(joined.imported_legacy_source_inputs_for_pair_v1(
+            &RepoId::new("other").expect("canonical"), &revision).is_none());
+    }
+
+    #[test]
+    fn imported_sibling_group_rejects_mismatched_or_missing_authority_rows() {
+        let refuses = |evidence: &NativeCutoverEvidenceV1| {
+            assert!(matches!(join_test(evidence, &mut |_| Ok::<_, ()>(())),
+                Err(NativeCutoverSourceJoinErrorV1::Refused(_))));
+        };
+        let (baseline, _, _) = initial_with_imported_sibling_v1();
+        let operation = baseline.source_facts.iter().find_map(|fact| match fact {
+            Fact::ImportedLegacySource { head, .. } => Some(head.source_operation.key),
+            _ => None,
+        }).expect("sibling operation");
+        let mut wrong_reservation = baseline.clone();
+        let sibling_target = wrong_reservation.source_facts.iter().find_map(|fact| match fact {
+            Fact::ImportedLegacySource { target, .. } => Some(*target),
+            _ => None,
+        }).expect("historical target");
+        wrong_reservation.source_facts.push(Fact::Reservation {
+            target: sibling_target,
+            evidence: NativeCutoverReservationEvidenceV1::Initial,
+            candidate_root_nonce: Some(Digest([22; 32])),
+        });
+        wrong_reservation.source_facts.sort_by_key(mixed_rank);
+        refuses(&wrong_reservation);
+        let mut wrong_binding = baseline.clone();
+        for fact in &mut wrong_binding.source_facts {
+            if let Fact::ImportedLegacySource { head, .. } = fact {
+                head.source_binding.target_snapshot_id += 1;
+            }
+        }
+        refuses(&wrong_binding);
+        let mut wrong_nonce = baseline.clone();
+        for fact in &mut wrong_nonce.source_facts {
+            if let Fact::ImportedLegacySource { head, .. } = fact {
+                head.candidate_root_nonce = Digest([99; 32]);
+            }
+        }
+        refuses(&wrong_nonce);
+        let mut wrong_snapshot = baseline.clone();
+        for fact in &mut wrong_snapshot.source_facts {
+            if let Fact::ImportedLegacySource { head, .. } = fact {
+                head.original_snapshot_id += 1;
+            }
+        }
+        refuses(&wrong_snapshot);
+        let mut wrong_target = baseline.clone();
+        for fact in &mut wrong_target.source_facts {
+            if let Fact::ImportedLegacySource { target, .. } = fact {
+                target.expected_view.sequence += 1;
+            }
+        }
+        refuses(&wrong_target);
+        let mut wrong_request = baseline.clone();
+        for fact in &mut wrong_request.source_facts {
+            if let Fact::ImportedLegacySource { request, .. } = fact {
+                request.expected_view.sequence += 1;
+            }
+        }
+        refuses(&wrong_request);
+        let mut wrong_source_capture = baseline.clone();
+        for fact in &mut wrong_source_capture.source_facts {
+            if let Fact::ImportedLegacySource { request, .. } = fact {
+                let UpdateKind::SourceAdvance(transition) = &mut request.kind else {
+                    panic!("historical Source advance");
+                };
+                transition.events[0].payload = Digest([99; 32]);
+                rebind_import_fact_v1(fact);
+            }
+        }
+        refuses(&wrong_source_capture);
+        let mut duplicate = baseline.clone();
+        let row = duplicate.source_facts.iter().find(|fact|
+            matches!(fact, Fact::ImportedLegacySource { .. })).expect("import").clone();
+        duplicate.source_facts.push(row.clone());
+        refuses(&duplicate);
+        let mut duplicate_operation = baseline.clone();
+        let mut foreign_pair = row.clone();
+        if let Fact::ImportedLegacySource { head, .. } = &mut foreign_pair {
+            head.origin.repo_id = RepoId::new("zzz").expect("canonical foreign repo");
+            head.origin.revision_id = RevisionId::new("e".repeat(64))
+                .expect("canonical foreign revision");
+            head.origin.active.generation.lexical.repo_id = head.origin.repo_id.clone();
+            head.origin.active.generation.lexical.revision_id = head.origin.revision_id.clone();
+            head.origin.active.generation.semantic.repo_id = head.origin.repo_id.clone();
+            head.origin.active.generation.semantic.revision_id = head.origin.revision_id.clone();
+        }
+        rebind_import_fact_v1(&mut foreign_pair);
+        duplicate_operation.source_facts.push(foreign_pair);
+        refuses(&duplicate_operation);
+        let mut duplicate_pair = baseline.clone();
+        let mut second_operation = row;
+        if let Fact::ImportedLegacySource { head, target, request } = &mut second_operation {
+            head.source_operation.key.sequence += 1;
+            target.operation.sequence += 1;
+            request.operation.sequence += 1;
+        }
+        rebind_import_fact_v1(&mut second_operation);
+        duplicate_pair.source_facts.push(second_operation);
+        refuses(&duplicate_pair);
+        for field in 0..3 {
+            let mut tampered = baseline.clone();
+            for fact in &mut tampered.source_facts {
+                if let Fact::ImportedLegacySource { head, .. } = fact {
+                    match field {
+                        0 => head.accepted_transcript_sha256 = Digest([91; 32]),
+                        1 => head.source_manifest_sha256 = Digest([92; 32]),
+                        _ => head.completed_journal_digest = Digest([93; 32]),
+                    }
+                }
+            }
+            refuses(&tampered);
+        }
+        let mut fake_v5 = baseline.clone();
+        let mut artifact = fake_v5.v5_artifacts[0].clone();
+        artifact.operation = operation;
+        fake_v5.v5_artifacts.push(artifact);
+        fake_v5.v5_artifacts.sort_by_key(|artifact| artifact.operation);
+        refuses(&fake_v5);
+    }
+
     // Association fixture only. Pending/ACK, actual Published Q metadata and
     // Source M ownership are validated by separate consumers before cutover.
     fn native_lineage_evidence(successors: u64) -> NativeCutoverEvidenceV1 {
@@ -3206,7 +3569,7 @@ mod tests {
         let mut reservations = Vec::with_capacity(evidence.source_facts.len());
         let mut replays = Vec::with_capacity(evidence.source_facts.len());
         let lineage = fold_native_source_lineage_v1(
-            evidence, &mut reservations, &mut replays, &mut |_| Ok::<_, &'static str>(()),
+            evidence, &[], &mut reservations, &mut replays, &mut |_| Ok::<_, &'static str>(()),
         )?;
         (0..lineage.len()).map(|index| {
             let Some((Fact::Reservation { target, .. }, Fact::Replay {
@@ -3389,7 +3752,7 @@ mod tests {
         let evidence = native_lineage_evidence(2);
         let mut unfunded_reservations = Vec::new();
         let mut unfunded_replays = Vec::new();
-        assert!(matches!(fold_native_source_lineage_v1(&evidence,
+        assert!(matches!(fold_native_source_lineage_v1(&evidence, &[],
             &mut unfunded_reservations, &mut unfunded_replays,
             &mut |_| Ok::<_, &'static str>(())),
             Err(NativeCutoverSourceJoinErrorV1::Refused(_))));
@@ -3397,7 +3760,7 @@ mod tests {
         let evidence = native_lineage_evidence(2);
         let mut reservations = Vec::with_capacity(evidence.source_facts.len());
         let mut replays = Vec::with_capacity(evidence.source_facts.len());
-        assert!(matches!(fold_native_source_lineage_v1(&evidence, &mut reservations,
+        assert!(matches!(fold_native_source_lineage_v1(&evidence, &[], &mut reservations,
             &mut replays, &mut |_| Err::<(), _>("work refused")),
             Err(NativeCutoverSourceJoinErrorV1::Work("work refused"))));
     }
@@ -5911,7 +6274,129 @@ fn mixed_rank(fact: &Fact) -> usize {
         Fact::CompletedSourceRequest { .. } => 12,
         Fact::NativeInitialSourceBinding { .. } => 13,
         Fact::NativeSdkSourceBinding { .. } => 14,
+        Fact::ImportedLegacySource { .. } => 15,
     }
+}
+
+fn imported_for_operation_v1<'a, E>(
+    imports: &'a [Fact],
+    operation: crate::index::OperationKey,
+    charge: &mut impl FnMut(u64) -> Result<(), E>,
+) -> Result<Option<&'a NativeImportedSourceHeadV1>, NativeCutoverSourceJoinErrorV1<E>> {
+    let mut found = None;
+    for fact in imports {
+        work(charge, std::mem::size_of::<crate::index::OperationKey>())?;
+        let Fact::ImportedLegacySource { head, .. } = fact else {
+            return Err(refuse("imported Legacy Source category differs"));
+        };
+        if head.source_operation.key == operation && found.replace(head).is_some() {
+            return Err(refuse("imported Legacy Source operation duplicated"));
+        }
+    }
+    Ok(found)
+}
+
+fn imported_for_aggregate_v1<E>(
+    facts: &[Fact],
+    imports: &[Fact],
+    aggregate: &str,
+    charge: &mut impl FnMut(u64) -> Result<(), E>,
+) -> Result<bool, NativeCutoverSourceJoinErrorV1<E>> {
+    let mut found = false;
+    for fact in facts {
+        work(charge, aggregate.len().saturating_add(1))?;
+        if let Fact::Replay {
+            aggregate_identity_digest,
+            native_update_request: Some(request), ..
+        } = fact
+            && aggregate_identity_digest == aggregate
+            && imported_for_operation_v1(imports, request.operation, charge)?.is_some()
+        {
+            if found {
+                return Err(refuse("imported Source aggregate duplicated"));
+            }
+            found = true;
+        }
+    }
+    Ok(found)
+}
+
+/// Each imported pair is a distinct completed historical-import V9 purpose.
+/// Its Original journal binds the complete old-body manifest, exact request
+/// and actual Q publication. It does not pretend to be a current RepoState V5.
+fn validate_imported_source_groups_v1<E>(
+    evidence: &NativeCutoverEvidenceV1,
+    imports: &[Fact],
+    baseline_nonce: Option<crate::index::Digest>,
+    charge: &mut impl FnMut(u64) -> Result<(), E>,
+) -> Result<(), NativeCutoverSourceJoinErrorV1<E>> {
+    let baseline_nonce = baseline_nonce.ok_or_else(|| refuse("selected candidate root nonce absent"))?;
+    for (index, fact) in imports.iter().enumerate() {
+        let Fact::ImportedLegacySource { head, target: retained_target,
+            request: retained_request } = fact else {
+            return Err(refuse("imported Legacy Source category differs"));
+        };
+        work(charge, std::mem::size_of::<NativeImportedSourceHeadV1>())?;
+        let operation = head.source_operation.key;
+        if !head.is_canonical_v1()
+            || head.candidate_root_nonce != baseline_nonce
+            || operation.workspace == evidence.header.selected_source.workspace {
+            return Err(refuse("imported Legacy Source scope or operation differs"));
+        }
+        for prior in &imports[..index] {
+            work(charge, std::mem::size_of::<crate::index::OperationKey>())?;
+            if matches!(prior, Fact::ImportedLegacySource { head: earlier, .. }
+                if earlier.source_operation.key == operation
+                    || earlier.source_operation.key.workspace == operation.workspace) {
+                return Err(refuse("imported Legacy Source scope or operation differs"));
+            }
+        }
+        // The standard Source rows carry a V5 current-repository purpose.
+        // A historical import may not borrow them to simulate that purpose.
+        for row in &evidence.source_facts {
+            work(charge, 1 + std::mem::size_of::<crate::index::OperationKey>())?;
+            match row {
+                Fact::Reservation { target, .. } if target.operation == operation =>
+                    return Err(refuse("historical import has ordinary Source reservation")),
+                Fact::Replay { native_update_request: Some(request), .. }
+                    if request.operation == operation =>
+                    return Err(refuse("historical import has ordinary Source V9")),
+                Fact::NativeInitialSourceBinding { operation: actual, .. }
+                    if *actual == operation =>
+                    return Err(refuse("historical import has ordinary Source completion")),
+                _ => {}
+            }
+        }
+        if evidence.v5_artifacts.iter().any(|artifact| artifact.operation == operation) {
+            return Err(refuse("historical import has current RepoState V5"));
+        }
+        work(charge, std::mem::size_of::<crate::index::SourceTransition>())?;
+        if !head.matches_completed_binding_v1(retained_target, retained_request)
+            || retained_target.operation != operation
+            || retained_target.source_mode != crate::index::SourceOperationMode::Advance
+            || retained_target.event_predecessor != 0
+            || retained_target.event_sequence != 1
+            || retained_request.expected_view != retained_target.expected_view
+            || !matches!(&retained_request.kind, UpdateKind::SourceAdvance(transition)
+                if transition.expected_source == retained_target.expected_source
+                    && matches!(transition.events.as_slice(), [event]
+                        if event.producer == operation.producer
+                            && event.stream == operation.stream
+                            && event.stream_epoch == operation.stream_epoch
+                            && event.predecessor == retained_target.event_predecessor
+                            && event.sequence == retained_target.event_sequence
+                            && transition.owner_digest().ok() == Some(event.payload)))
+            || head.source_operation.source_mode != retained_target.source_mode
+            || head.source_publication.identity.sequence
+                != retained_target.expected_view.sequence.checked_add(1)
+                    .ok_or_else(|| refuse("imported Source view sequence exhausted"))?
+            || head.source_publication.identity.workspace != operation.workspace
+            || head.source_publication.identity.epoch != operation.epoch
+            || head.source_publication.profile != retained_target.expected_profile {
+            return Err(refuse("historical import completion or publication differs"));
+        }
+    }
+    Ok(())
 }
 
 fn mixed_key(fact: &Fact) -> Option<(&str, u32, u64)> {
@@ -5962,7 +6447,7 @@ fn mixed_key(fact: &Fact) -> Option<(&str, u32, u64)> {
 }
 
 fn mixed_range<E>(
-    ranges: &[Range<usize>; 15],
+    ranges: &[Range<usize>; 16],
     rank: usize,
 ) -> Result<Range<usize>, NativeCutoverSourceJoinErrorV1<E>> {
     ranges
@@ -5973,7 +6458,7 @@ fn mixed_range<E>(
 
 fn mixed_slice<'a, E>(
     facts: &'a [Fact],
-    ranges: &[Range<usize>; 15],
+    ranges: &[Range<usize>; 16],
     rank: usize,
 ) -> Result<&'a [Fact], NativeCutoverSourceJoinErrorV1<E>> {
     facts
@@ -5984,13 +6469,42 @@ fn mixed_slice<'a, E>(
 fn mixed_ranges<E>(
     facts: &[Fact],
     charge: &mut impl FnMut(u64) -> Result<(), E>,
-) -> Result<[Range<usize>; 15], NativeCutoverSourceJoinErrorV1<E>> {
-    let mut ranges: [Range<usize>; 15] = std::array::from_fn(|_| 0..0);
+) -> Result<[Range<usize>; 16], NativeCutoverSourceJoinErrorV1<E>> {
+    let mut ranges: [Range<usize>; 16] = std::array::from_fn(|_| 0..0);
     let mut prior_rank = 0;
     let mut prior_key: Option<(&str, u32, u64)> = None;
+    let mut prior_import_pair: Option<(&str, &str)> = None;
+    let mut prior_initial_source_operation = None;
+    let mut prior_sdk_source_operation = None;
     for (index, fact) in facts.iter().enumerate() {
         work(charge, 1)?;
         let rank = mixed_rank(fact);
+        if let Fact::ImportedLegacySource { head, .. } = fact {
+            let pair = (head.origin.repo_id.as_str(), head.origin.revision_id.as_str());
+            work(charge, pair.0.len().saturating_add(pair.1.len()))?;
+            if prior_import_pair.is_some_and(|prior| prior >= pair) {
+                return Err(refuse("imported Legacy Source pair duplicated or unsorted"));
+            }
+            prior_import_pair = Some(pair);
+        }
+        match fact {
+            Fact::NativeInitialSourceBinding { operation, .. } => {
+                if prior_initial_source_operation == Some(*operation) {
+                    return Err(refuse("Native initial Source operation duplicated"));
+                }
+                if prior_initial_source_operation.is_some_and(|prior| prior >= *operation) {
+                    return Err(refuse("Native initial Source operation duplicated or unsorted"));
+                }
+                prior_initial_source_operation = Some(*operation);
+            }
+            Fact::NativeSdkSourceBinding { operation, .. } => {
+                if prior_sdk_source_operation.is_some_and(|prior| prior >= *operation) {
+                    return Err(refuse("Native SDK Source operation duplicated or unsorted"));
+                }
+                prior_sdk_source_operation = Some(*operation);
+            }
+            _ => {}
+        }
         if rank < prior_rank {
             return Err(refuse("mixed Source inventory order differs"));
         }
@@ -6222,6 +6736,7 @@ fn join_mixed_legacy<'a, E>(
             completed_source_requests: &[],
             native_initial_sources: &[],
             native_sdk_sources: &[],
+            imported_legacy_sources: &[],
         };
         join_checkpoint_ack(&historical, charge)?;
         if let Some(binding) = ordinary_source_binding {
@@ -6382,7 +6897,7 @@ fn join_mixed_legacy<'a, E>(
 
 fn join_mixed_pending_group<'a, E>(
     facts: &'a [Fact],
-    ranges: &[Range<usize>; 15],
+    ranges: &[Range<usize>; 16],
     replay: &'a Fact,
     carrier: &'a Fact,
     charge: &mut impl FnMut(u64) -> Result<(), E>,

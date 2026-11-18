@@ -12,6 +12,10 @@ use std::{
 };
 
 use anyhow::{Context as _, Result};
+#[path = "native_source_route_seal.rs"]
+mod source_route_seal;
+#[path = "native_protected_source_resolve.rs"]
+mod protected_source_resolve;
 use quanta_index_catalog::{SqliteCatalog, WalReclaimOutcome};
 use quanta_index_contract::{
     SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
@@ -399,6 +403,12 @@ pub(super) struct NativeDispatcher {
             quanta_index_repomap::native::NativeRepoMapRankPage,
         >,
     >,
+    pub(super) imported_repomap_graph: OnceLock<
+        QueryAdapterRegistry<
+            quanta_index_contract::native_protocol::NativeImportedRepoMapQueryV1,
+            quanta_index_repomap::native::NativeLegacyRepoMapGraphPageV1,
+        >,
+    >,
     pub(super) overlay: OnceLock<Arc<crate::native_overlay::NativeOverlay>>,
     pub(super) stub_ast:
         OnceLock<Arc<dyn quanta_index_lexical::native::stub::StubAstCertificatePort>>,
@@ -774,6 +784,14 @@ impl NativeDispatcher {
             }
         })?;
         let result = match request {
+            NativeIndexRequest::SealCandidateWithSourceRoutes { primary, ingress, routes } =>
+                self.seal_source_routes_v1(primary, ingress, routes, budget),
+            NativeIndexRequest::ResolveProtectedSourceHead { repo_id, revision_id } =>
+                self.resolve_protected_source_head_v1(&repo_id, &revision_id, budget),
+            NativeIndexRequest::ResolveProtectedRepoMapHead { repo_id, revision_id } =>
+                self.resolve_protected_repomap_head_v1(&repo_id, &revision_id, budget),
+            NativeIndexRequest::ReadImportedRepoMapMember { view, instance } =>
+                self.read_imported_repomap_member_v1(view, instance, budget),
             NativeIndexRequest::CreateWorkspace { workspace, epoch } => self
                 .kernel
                 .create_workspace(workspace, epoch, budget)
@@ -823,6 +841,22 @@ impl NativeDispatcher {
                     &bytes,
                     children.as_slice(),
                     budget,
+                )?;
+                Ok(NativeIndexResponse::Staged(reference))
+            }
+            NativeIndexRequest::StageImmutableObject { ingress, bytes, children } => {
+                let wire_bytes = u64::try_from(bytes.len())
+                    .ok()
+                    .and_then(|payload| payload.checked_add(16))
+                    .and_then(|payload| {
+                        payload.checked_add(u64::try_from(children.as_slice().len()).ok()?.checked_mul(32)?)
+                    })
+                    .ok_or(IndexError::ResourceLimited)?;
+                if wire_bytes > quanta_index_contract::native_protocol::MAX_NATIVE_IMMUTABLE_OBJECT_WIRE_BYTES_V1 {
+                    return Err(IndexError::ResourceLimited);
+                }
+                let reference = self.kernel.stage_immutable_object_v1(
+                    ingress, &bytes, children.as_slice(), budget,
                 )?;
                 Ok(NativeIndexResponse::Staged(reference))
             }
@@ -930,6 +964,7 @@ impl NativeDispatcher {
             | NativeIndexRequest::BindOverlaySave(_)
             | NativeIndexRequest::CompleteOverlaySave(_)
             | NativeIndexRequest::QueryGraph { .. }
+            | NativeIndexRequest::QueryImportedRepoMap { .. }
             | NativeIndexRequest::QueryRepoMap { .. }
             | NativeIndexRequest::LookupSourceOwners { .. }
             | NativeIndexRequest::LookupProjectionOwners { .. }
@@ -1944,6 +1979,20 @@ impl NativeIndexService {
             .map_err(|_readers| IndexError::Conflict)
     }
 
+    pub fn configure_imported_repomap_graph(
+        &self,
+        readers: QueryAdapterRegistry<
+            quanta_index_contract::native_protocol::NativeImportedRepoMapQueryV1,
+            quanta_index_repomap::native::NativeLegacyRepoMapGraphPageV1,
+        >,
+    ) -> Result<(), IndexError> {
+        readers.validate_reservation(self.dispatcher.interactive_need)?;
+        self.dispatcher
+            .imported_repomap_graph
+            .set(readers)
+            .map_err(|_readers| IndexError::Conflict)
+    }
+
     /// Configure bounded ephemeral text before serving. Authentication reuses
     /// the same finite publisher lease as activity, without renewing it.
     pub fn configure_overlay(
@@ -2454,6 +2503,7 @@ impl NativeIndexService {
             interaction: OnceLock::new(),
             graph: OnceLock::new(),
             repomap: OnceLock::new(),
+            imported_repomap_graph: OnceLock::new(),
             overlay: OnceLock::new(),
             stub_ast: OnceLock::new(),
             root_lease: Arc::clone(&lease),
@@ -2904,6 +2954,7 @@ mod native_closeout_tests {
                 NativeReply::Plain(_)
                 | NativeReply::Error(_)
                 | NativeReply::ReadSessionProfile { .. }
+                | NativeReply::RepositoryPath(_)
                 | NativeReply::ReadSessionHistoryCut { .. }
                 | NativeReply::Text(_)
                 | NativeReply::TextPage(_)
@@ -2912,6 +2963,7 @@ mod native_closeout_tests {
                 | NativeReply::Semantic(_)
                 | NativeReply::Graph(_)
                 | NativeReply::RepoMapRanked(_)
+                | NativeReply::ImportedRepoMap(_)
                 | NativeReply::Stub(_)
                 | NativeReply::Overlay(_)
                 | NativeReply::OverlayText(_)

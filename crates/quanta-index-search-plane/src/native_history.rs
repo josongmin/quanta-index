@@ -8,7 +8,7 @@ mod query;
 mod reader;
 pub use build::{
     NativeHistoryBootSourceV1, NativeHistoryBuildV1, with_native_history_boot_source_v1,
-    with_native_history_source_input_v1,
+    with_native_history_restore_member_v1, with_native_history_source_input_v1,
 };
 pub use reader::{NativeHistoryReaderV1, PlannedNativeHistoryReadV1, plan_native_history_read_v1};
 
@@ -55,6 +55,7 @@ const REPLAY_HISTORY_MANIFEST: u32 = 1;
 const APPEND_HISTORY_MANIFEST: u32 = 2;
 const SNAPSHOT_HISTORY_MANIFEST: u32 = 3;
 const SUCCESSOR_HISTORY_MANIFEST: u32 = 4;
+const NATIVE_RESTORE_HISTORY_MANIFEST: u32 = 5;
 
 #[must_use]
 pub fn native_history_policy_v1() -> Digest {
@@ -114,7 +115,7 @@ impl Manifest {
         self.cut().input_context_v1().map_err(invalid)
     }
     fn validate(&self) -> Result<(), CoreError> {
-        if !matches!(self.format, REPLAY_HISTORY_MANIFEST | APPEND_HISTORY_MANIFEST | SNAPSHOT_HISTORY_MANIFEST | SUCCESSOR_HISTORY_MANIFEST)
+        if !matches!(self.format, REPLAY_HISTORY_MANIFEST | APPEND_HISTORY_MANIFEST | SNAPSHOT_HISTORY_MANIFEST | SUCCESSOR_HISTORY_MANIFEST | NATIVE_RESTORE_HISTORY_MANIFEST)
             || self.epoch == AuxEpochV1::GENESIS
             || self.sequence == 0
             || self.snapshot == Digest([0; 32])
@@ -248,6 +249,49 @@ pub fn prepare_native_history_snapshot_full_v1(
     prepare(&source, None, source_input, SNAPSHOT_HISTORY_MANIFEST, context)
 }
 
+fn prepare_native_history_restore_full_v1(
+    old: &Manifest,
+    source_input: ObjectRef,
+    context: &mut AttemptContext<'_>,
+) -> Result<PreparedNativeHistoryV1, CoreError> {
+    let bytes = old.repo.as_str().len()
+        .checked_add(old.revision.as_str().len())
+        .and_then(|bytes| bytes.checked_add(old.source_manifest.as_ref().map_or(0, String::len)))
+        .and_then(|bytes| {
+            old.predecessor.as_ref().map_or(Some(bytes), |cut| {
+                bytes.checked_add(cut.generation.repo_id.as_str().len())
+                    .and_then(|bytes| bytes.checked_add(cut.generation.revision_id.as_str().len()))
+            })
+        })
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Manifest>() + 512))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(|| invalid("Native History restore manifest allocation bound overflow"))?;
+    let memory = context.budget.reserve_memory(bytes, MemoryLifetime::Retained)
+        .map_err(|error| history_work_error(context.budget, error))?;
+    let manifest = Manifest {
+        format: NATIVE_RESTORE_HISTORY_MANIFEST,
+        repo: old.repo.clone(),
+        revision: old.revision.clone(),
+        generation: old.generation,
+        epoch: old.epoch,
+        snapshot: old.snapshot,
+        replay: old.replay,
+        sequence: old.sequence,
+        source_manifest: old.source_manifest.clone(),
+        predecessor: old.predecessor.clone(),
+        source_input,
+        rows: old.rows,
+        row_count: old.row_count,
+        maximum_row_bytes: old.maximum_row_bytes,
+    };
+    manifest.validate()?;
+    let payload = encode_json(&manifest, context.budget)?;
+    let row_child = manifest.rows.0.ok_or_else(|| invalid("Native History restore rows are absent"))?;
+    let artifact = context.put(&payload.bytes, &[row_child, source_input])
+        .map_err(|error| history_work_error(context.budget, error))?;
+    Ok(PreparedNativeHistoryV1 { artifact, manifest, _manifest_memory: memory })
+}
+
 impl NativeHistoryReadV1 {
     pub fn source_cut(&self) -> &HistorySourceCutV1 {
         self.source.cut()
@@ -355,7 +399,16 @@ pub fn read_native_history_generation_v1(
     context: &mut QueryReadContext<'_>,
 ) -> Result<(ObjectRef, ObjectRef, quanta_index_contract::index::HistoryGenerationInputV1, Digest), IndexError> {
     (|| {
-        let prepared = open_ticket_manifest(context)?;
+        let mut prepared = open_ticket_manifest(context)?;
+        let member = prepared.artifact;
+        let published_source_input = prepared.manifest.source_input;
+        while prepared.manifest.format == NATIVE_RESTORE_HISTORY_MANIFEST {
+            prepared = verify_manifest_source_step_v1(
+                &prepared.manifest,
+                &mut |reference, budget| context.objects.get(reference, budget),
+                context.budget,
+            )?.ok_or_else(|| invalid("Native History restore source is absent"))?;
+        }
         if prepared.manifest.format != SUCCESSOR_HISTORY_MANIFEST {
             return Err(CoreError::NotReady("History generation outputs were not published by a Source advance".into()));
         }
@@ -370,7 +423,7 @@ pub fn read_native_history_generation_v1(
         context.budget.charge(WorkUsage { bytes: bytes as u64, ..WorkUsage::default() })
             .map_err(|error| history_work_error(context.budget, error))?;
         let predecessor_context = predecessor.input_context_v1().map_err(invalid)?;
-        Ok((prepared.artifact, reference, inputs, predecessor_context))
+        Ok((member, published_source_input, inputs, predecessor_context))
     })().map_err(|error| index_error(error, context.budget))
 }
 
@@ -463,14 +516,19 @@ pub fn verify_native_history_boot_member_v1(
     expected: &HistorySourceCutV1,
     source: &RegisteredObject,
     input: &NativeHistoryBootSourceV1<'_>,
-    get: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<StoredObject, IndexError>,
+    mut get: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<StoredObject, IndexError>,
     budget: &mut WorkBudget,
 ) -> Result<PreparedNativeHistoryV1, IndexError> {
     let prepared = decode_manifest(member.artifact, stored, budget)
         .map_err(|error| index_error(error, budget))?;
     let manifest = &prepared.manifest;
-    if !matches!(manifest.format, REPLAY_HISTORY_MANIFEST | SNAPSHOT_HISTORY_MANIFEST)
-        || manifest.predecessor.is_some()
+    if !matches!(
+        (input, manifest.format),
+        (NativeHistoryBootSourceV1::Replay(_), REPLAY_HISTORY_MANIFEST)
+            | (NativeHistoryBootSourceV1::Snapshot(_), SNAPSHOT_HISTORY_MANIFEST)
+            | (NativeHistoryBootSourceV1::NativeRestore(_), NATIVE_RESTORE_HISTORY_MANIFEST)
+    )
+        || (manifest.predecessor.is_some() && manifest.format != NATIVE_RESTORE_HISTORY_MANIFEST)
         || &manifest.cut() != expected
         || member.format != NATIVE_HISTORY_FORMAT_V1
         || member.input.schema != NATIVE_HISTORY_SCHEMA_V1
@@ -492,6 +550,12 @@ pub fn verify_native_history_boot_member_v1(
             checkpoint.terminal_ack.durable_sequence,
             checkpoint.terminal_ack.manifest_digest.as_deref(),
         ),
+        NativeHistoryBootSourceV1::NativeRestore(input) => {
+            if input.cut != *expected || input.member.0 == Digest([0; 32]) {
+                return Err(IndexError::DigestConflict);
+            }
+            (manifest.sequence, manifest.source_manifest.as_deref())
+        }
     };
     if manifest.sequence != sequence || manifest.source_manifest.as_deref() != source_manifest {
         return Err(IndexError::DigestConflict);
@@ -499,11 +563,31 @@ pub fn verify_native_history_boot_member_v1(
     if let NativeHistoryBootSourceV1::Snapshot(checkpoint) = input {
         verify_source_snapshot_rows(
             expected,
-            |budget, visit| build::visit_snapshot_checkpoint_rows_v1(checkpoint, get, budget, visit),
+            |budget, visit| build::visit_snapshot_checkpoint_rows_v1(checkpoint, &mut get, budget, visit),
             budget,
             |_, _| Ok(()),
         )
         .map_err(|error| index_error(error, budget))?;
+    }
+    if let NativeHistoryBootSourceV1::NativeRestore(input) = input {
+        if input.instance != member.instance {
+            return Err(IndexError::DigestConflict);
+        }
+        let stored = get(input.member, budget)?;
+        let old = decode_manifest(input.member, &stored, budget)
+            .map_err(|error| index_error(error, budget))?;
+        if old.manifest.cut() != *expected
+            || old.manifest.rows != manifest.rows
+            || old.manifest.row_count != manifest.row_count
+            || old.manifest.maximum_row_bytes != manifest.maximum_row_bytes
+            || old.manifest.sequence != manifest.sequence
+            || old.manifest.source_manifest != manifest.source_manifest
+            || old.manifest.predecessor != manifest.predecessor
+        {
+            return Err(IndexError::DigestConflict);
+        }
+        verify_manifest_source_with_v1(&old.manifest, |reference, budget| get(reference, budget), budget)
+            .map_err(|error| index_error(error, budget))?;
     }
     budget.checkpoint()?;
     Ok(prepared)
@@ -514,26 +598,81 @@ fn verify_manifest_source(
     objects: &dyn quanta_index_core::index::ports::ImmutableObjectPort,
     budget: &mut WorkBudget,
 ) -> Result<(), CoreError> {
-    let origin = objects.get(manifest.source_input, budget)
+    verify_manifest_source_with_v1(manifest, |reference, budget| objects.get(reference, budget), budget)
+}
+
+fn verify_manifest_source_with_v1(
+    manifest: &Manifest,
+    mut get: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<StoredObject, IndexError>,
+    budget: &mut WorkBudget,
+) -> Result<(), CoreError> {
+    let mut restored = None;
+    loop {
+        let current = restored.as_ref().map_or(manifest, |value: &PreparedNativeHistoryV1| &value.manifest);
+        let next = verify_manifest_source_step_v1(current, &mut get, budget)?;
+        match next {
+            Some(previous) => restored = Some(previous),
+            None => return Ok(()),
+        }
+    }
+}
+
+fn verify_manifest_source_step_v1(
+    manifest: &Manifest,
+    get: &mut impl FnMut(ObjectRef, &mut WorkBudget) -> Result<StoredObject, IndexError>,
+    budget: &mut WorkBudget,
+) -> Result<Option<PreparedNativeHistoryV1>, CoreError> {
+    budget.checkpoint().map_err(|error| history_work_error(budget, error))?;
+    let origin = get(manifest.source_input, budget)
         .map_err(|error| history_work_error(budget, error))?;
     validate_manifest_source_registration(manifest, &origin.registration)?;
-    if manifest.format == SUCCESSOR_HISTORY_MANIFEST {
-        let _verified_closure =
-            generation_input::decode_closure(manifest.source_input, &origin, budget)?;
+    match manifest.format {
+        SUCCESSOR_HISTORY_MANIFEST => {
+            let _verified_closure =
+                generation_input::decode_closure(manifest.source_input, &origin, budget)?;
+            Ok(None)
+        }
+        NATIVE_RESTORE_HISTORY_MANIFEST => {
+            let input: build::SourceInputData<quanta_index_contract::index::NativeHistoryRestoreInputV1> =
+                build::decode_history_object_allow_children(manifest.source_input, &origin, budget)?;
+            input.value.verify_children_v1(&origin.registration.children).map_err(invalid)?;
+            if input.value.cut != manifest.cut() {
+                return Err(invalid("Native History restore source cut differs from manifest"));
+            }
+            let stored = get(input.value.member, budget)
+                .map_err(|error| history_work_error(budget, error))?;
+            let previous = decode_manifest(input.value.member, &stored, budget)?;
+            if previous.manifest.cut() != manifest.cut()
+                || previous.manifest.rows != manifest.rows
+                || previous.manifest.row_count != manifest.row_count
+                || previous.manifest.maximum_row_bytes != manifest.maximum_row_bytes
+                || previous.manifest.sequence != manifest.sequence
+                || previous.manifest.source_manifest != manifest.source_manifest
+                || previous.manifest.predecessor != manifest.predecessor
+            {
+                return Err(invalid("Native History restored member differs from immutable predecessor"));
+            }
+            Ok(Some(previous))
+        }
+        _ => Ok(None),
     }
-    Ok(())
 }
 
 fn validate_manifest_source_registration(
     manifest: &Manifest,
     source: &RegisteredObject,
 ) -> Result<(), CoreError> {
-    if manifest.source_input != source.reference
-        || (manifest.format != SUCCESSOR_HISTORY_MANIFEST
-            && (manifest.format == SNAPSHOT_HISTORY_MANIFEST) == source.children.is_empty())
-    {
+    if manifest.source_input != source.reference {
         return Err(invalid("History source input child graph differs"));
     }
+    match manifest.format {
+        REPLAY_HISTORY_MANIFEST | APPEND_HISTORY_MANIFEST if !source.children.is_empty() =>
+            Err(invalid("History source input child graph differs")),
+        SNAPSHOT_HISTORY_MANIFEST | SUCCESSOR_HISTORY_MANIFEST | NATIVE_RESTORE_HISTORY_MANIFEST
+            if source.children.is_empty() =>
+            Err(invalid("History source input child graph differs")),
+        _ => Ok(()),
+    }?;
     Ok(())
 }
 

@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use anyhow::{Context as _, Result};
 
 use super::native::{NativeCommandInput, NativeCommandModeV1, NativeStateCommandV1};
-use super::recovery::{NativeHistoryExportCommandV1, NativeRecoveryCommandV1, NativeRecoveryInput};
+use super::recovery::{
+    NativeHistoryExportCommandV1, NativeRecoveryCommandV1, NativeRecoveryInput,
+    NativeSourceExportCommandV1,
+};
 use crate::DiagnosticCaptureLimitsV1;
 use crate::app::config::SearchdConfig;
 use crate::app::state_migration::{OfflineStateCommandV1, OfflineStateOperationV1};
@@ -30,6 +33,7 @@ pub struct SearchdCommand {
     native_command: Option<NativeStateCommandV1>,
     recovery_command: Option<NativeRecoveryCommandV1>,
     history_export_command: Option<NativeHistoryExportCommandV1>,
+    source_export_command: Option<NativeSourceExportCommandV1>,
     offline: Option<OfflineStateCommandV1>,
 }
 
@@ -47,6 +51,7 @@ impl SearchdCommand {
         let mut recovery_input = NativeRecoveryInput::default();
         let mut history_generation_json: Option<String> = None;
         let mut history_inventory_repo_id: Option<String> = None;
+        let mut protected_native_heads: Option<String> = None;
         let mut native_mode: Option<NativeCommandModeV1> = None;
         let mut legacy_serve = false;
         let mut source_root: Option<PathBuf> = None;
@@ -66,11 +71,25 @@ impl SearchdCommand {
                 "export-native-history-checkpoint" => {
                     select_command(&mut selected_command, "export-native-history-checkpoint")?;
                 }
+                "export-native-source-snapshot" => {
+                    select_command(&mut selected_command, "export-native-source-snapshot")?;
+                }
                 "--generation-json" => {
                     set_once(&mut history_generation_json, &mut args, "--generation-json")?;
                 }
+                "--protected-native-heads" => {
+                    set_once(
+                        &mut protected_native_heads,
+                        &mut args,
+                        "--protected-native-heads",
+                    )?;
+                }
                 "--inventory-repo-id" => {
-                    set_once(&mut history_inventory_repo_id, &mut args, "--inventory-repo-id")?;
+                    set_once(
+                        &mut history_inventory_repo_id,
+                        &mut args,
+                        "--inventory-repo-id",
+                    )?;
                 }
                 "serve-native" => {
                     select_command(&mut selected_command, "serve-native")?;
@@ -125,6 +144,11 @@ impl SearchdCommand {
                     &mut native_input.source_cut_digest,
                     &mut args,
                     "--source-cut-digest",
+                )?,
+                "--protected-source-routes" => set_once(
+                    &mut native_input.protected_source_routes,
+                    &mut args,
+                    "--protected-source-routes",
                 )?,
                 "--config-digest" => set_once(
                     &mut native_input.config_digest,
@@ -222,27 +246,71 @@ impl SearchdCommand {
                 "--trace-max-output-bytes requires --diagnostic-trace"
             ));
         }
-        if (history_generation_json.is_some() || history_inventory_repo_id.is_some())
+        if (history_generation_json.is_some()
+            || history_inventory_repo_id.is_some()
+            || protected_native_heads.is_some())
             && selected_command != Some("export-native-history-checkpoint")
         {
-            return Err(anyhow::anyhow!("History export scope requires export-native-history-checkpoint"));
+            return Err(anyhow::anyhow!(
+                "History export scope requires export-native-history-checkpoint"
+            ));
         }
-        let history_export_command = if selected_command == Some("export-native-history-checkpoint") {
-            if native_mode.is_some() || legacy_serve || operation.is_some()
-                || source_root.is_some() || destination_root.is_some()
-                || state_root_override.is_some() || diagnostic_trace_path.is_some()
+        let history_export_command = if selected_command == Some("export-native-history-checkpoint")
+        {
+            if native_mode.is_some()
+                || legacy_serve
+                || operation.is_some()
+                || source_root.is_some()
+                || destination_root.is_some()
+                || state_root_override.is_some()
+                || diagnostic_trace_path.is_some()
             {
-                return Err(anyhow::anyhow!("History exporter cannot be mixed with service, offline or diagnostic flags"));
+                return Err(anyhow::anyhow!(
+                    "History exporter cannot be mixed with service, offline or diagnostic flags"
+                ));
             }
             let config_path = native_input.config_path.take();
             let config_digest = native_input.config_digest.take();
             if native_input.has_any() {
-                return Err(anyhow::anyhow!("History exporter accepts config binding without Native state command flags"));
+                return Err(anyhow::anyhow!(
+                    "History exporter accepts config binding without Native state command flags"
+                ));
             }
             Some(recovery_input.clone().finish_history_export(
-                history_generation_json.take(), history_inventory_repo_id.take(),
-                config_path, config_digest,
+                history_generation_json.take(),
+                history_inventory_repo_id.take(),
+                protected_native_heads.take(),
+                config_path,
+                config_digest,
             )?)
+        } else {
+            None
+        };
+        let source_export_command = if selected_command == Some("export-native-source-snapshot") {
+            if native_mode.is_some()
+                || legacy_serve
+                || operation.is_some()
+                || source_root.is_some()
+                || destination_root.is_some()
+                || state_root_override.is_some()
+                || diagnostic_trace_path.is_some()
+            {
+                return Err(anyhow::anyhow!(
+                    "Source exporter cannot be mixed with service, offline or diagnostic flags"
+                ));
+            }
+            let config_path = native_input.config_path.take();
+            let config_digest = native_input.config_digest.take();
+            if native_input.has_any() {
+                return Err(anyhow::anyhow!(
+                    "Source exporter accepts config binding without Native state command flags"
+                ));
+            }
+            Some(
+                recovery_input
+                    .clone()
+                    .finish_source_export(config_path, config_digest)?,
+            )
         } else {
             None
         };
@@ -267,7 +335,10 @@ impl SearchdCommand {
                 ));
             }
             Some(recovery_input.finish(config_path, config_digest)?)
-        } else if recovery_input.has_any() && history_export_command.is_none() {
+        } else if recovery_input.has_any()
+            && history_export_command.is_none()
+            && source_export_command.is_none()
+        {
             return Err(anyhow::anyhow!("recovery flags require recover-native"));
         } else {
             None
@@ -342,6 +413,7 @@ impl SearchdCommand {
             native_command,
             recovery_command,
             history_export_command,
+            source_export_command,
             offline,
         })
     }
@@ -371,8 +443,11 @@ impl SearchdCommand {
     #[must_use]
     pub fn native_config_path(&self) -> Option<&PathBuf> {
         self.native_command.as_ref().and_then(|command| {
-            matches!(command.mode, NativeCommandModeV1::Serve | NativeCommandModeV1::ServeCandidate)
-                .then_some(&command.config_path)
+            matches!(
+                command.mode,
+                NativeCommandModeV1::Serve | NativeCommandModeV1::ServeCandidate
+            )
+            .then_some(&command.config_path)
         })
     }
 
@@ -391,8 +466,16 @@ impl SearchdCommand {
         self.history_export_command.as_ref()
     }
 
+    #[must_use]
+    pub fn source_export_command(&self) -> Option<&NativeSourceExportCommandV1> {
+        self.source_export_command.as_ref()
+    }
+
     pub fn into_config(self) -> Result<SearchdConfig> {
-        if self.recovery_command.is_some() || self.history_export_command.is_some() {
+        if self.recovery_command.is_some()
+            || self.history_export_command.is_some()
+            || self.source_export_command.is_some()
+        {
             return Err(anyhow::anyhow!(
                 "recovery command has no legacy serve config"
             ));
@@ -452,8 +535,8 @@ mod tests {
 
     #[test]
     fn history_export_requires_exact_private_binding() -> Result<()> {
-        use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
         use quanta_index_contract::index::AuxiliaryGenerationKeyV1;
+        use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
         let generation = AuxiliaryGenerationKeyV1 {
             repo_id: RepoId::new("repo")?,
             revision_id: RevisionId::new("rev")?,
@@ -462,12 +545,22 @@ mod tests {
         let generation_json = serde_json::to_string(&generation)?;
         let digest = "11".repeat(32);
         let args = [
-            "export-native-history-checkpoint", "--selection-path", "/tmp/active.json",
-            "--expected-current-sha256", &digest, "--generation-json", &generation_json,
-            "--config", "/tmp/native.json", "--config-digest", &digest,
+            "export-native-history-checkpoint",
+            "--selection-path",
+            "/tmp/active.json",
+            "--expected-current-sha256",
+            &digest,
+            "--generation-json",
+            &generation_json,
+            "--config",
+            "/tmp/native.json",
+            "--config-digest",
+            &digest,
         ];
         let parsed = parse(&args)?;
-        let export = parsed.history_export_command().ok_or_else(|| anyhow::anyhow!("export command absent"))?;
+        let export = parsed
+            .history_export_command()
+            .ok_or_else(|| anyhow::anyhow!("export command absent"))?;
         ensure!(matches!(
             &export.scope,
             super::super::NativeHistoryExportScopeV1::Checkpoint(actual) if actual == &generation
@@ -492,12 +585,21 @@ mod tests {
         use quanta_index_contract::RepoId;
         let digest = "11".repeat(32);
         let args = [
-            "export-native-history-checkpoint", "--selection-path", "/tmp/active.json",
-            "--expected-current-sha256", &digest, "--inventory-repo-id", "repo",
-            "--config", "/tmp/native.json", "--config-digest", &digest,
+            "export-native-history-checkpoint",
+            "--selection-path",
+            "/tmp/active.json",
+            "--expected-current-sha256",
+            &digest,
+            "--inventory-repo-id",
+            "repo",
+            "--config",
+            "/tmp/native.json",
+            "--config-digest",
+            &digest,
         ];
         let parsed = parse(&args)?;
-        let export = parsed.history_export_command()
+        let export = parsed
+            .history_export_command()
             .ok_or_else(|| anyhow::anyhow!("inventory export command absent"))?;
         ensure!(matches!(
             &export.scope,
@@ -510,11 +612,87 @@ mod tests {
             drop(missing.drain(index..index + 2));
             ensure!(parse(&missing).is_err());
         }
-        ensure!(parse(&["--inventory-repo-id", "repo"])
-            .unwrap_err().to_string().contains("requires export-native-history-checkpoint"));
+        ensure!(
+            parse(&["--inventory-repo-id", "repo"])
+                .unwrap_err()
+                .to_string()
+                .contains("requires export-native-history-checkpoint")
+        );
         let mut duplicate = args.to_vec();
         duplicate.extend(["--inventory-repo-id", "repo"]);
         ensure!(parse(&duplicate).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn protected_native_export_requires_one_exact_scope() -> Result<()> {
+        let digest = "11".repeat(32);
+        let args = [
+            "export-native-history-checkpoint",
+            "--selection-path",
+            "/tmp/active.json",
+            "--expected-current-sha256",
+            &digest,
+            "--protected-native-heads",
+            "true",
+            "--config",
+            "/tmp/native.json",
+            "--config-digest",
+            &digest,
+        ];
+        let parsed = parse(&args)?;
+        ensure!(matches!(
+            parsed.history_export_command().map(|export| &export.scope),
+            Some(super::super::NativeHistoryExportScopeV1::Protected)
+        ));
+        for index in (1..args.len()).step_by(2) {
+            let mut missing = args.to_vec();
+            drop(missing.drain(index..index + 2));
+            ensure!(parse(&missing).is_err());
+        }
+        for conflicting in ["--inventory-repo-id", "--generation-json"] {
+            let mut mixed = args.to_vec();
+            mixed.extend([conflicting, "repo"]);
+            ensure!(parse(&mixed).is_err());
+        }
+        let mut invalid = args.to_vec();
+        invalid[6] = "false";
+        ensure!(parse(&invalid).is_err());
+        ensure!(parse(&["--protected-native-heads", "true"]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn source_export_requires_exact_private_binding() -> Result<()> {
+        let digest = "11".repeat(32);
+        let args = [
+            "export-native-source-snapshot",
+            "--selection-path",
+            "/tmp/active.json",
+            "--expected-current-sha256",
+            &digest,
+            "--config",
+            "/tmp/native.json",
+            "--config-digest",
+            &digest,
+        ];
+        let parsed = parse(&args)?;
+        let export = parsed
+            .source_export_command()
+            .ok_or_else(|| anyhow::anyhow!("source export command absent"))?;
+        ensure!(export.selection_path == std::path::Path::new("/tmp/active.json"));
+        ensure!(parsed.into_config().is_err());
+        for index in (1..args.len()).step_by(2) {
+            let mut missing = args.to_vec();
+            drop(missing.drain(index..index + 2));
+            ensure!(parse(&missing).is_err());
+        }
+        let mut mixed = args.to_vec();
+        mixed.extend(["--candidate-path", "/tmp/candidate.json"]);
+        ensure!(parse(&mixed).is_err());
+        let mut history_scope = args.to_vec();
+        history_scope.extend(["--inventory-repo-id", "repo"]);
+        ensure!(parse(&history_scope).is_err());
         Ok(())
     }
 
@@ -972,18 +1150,34 @@ mod tests {
         args.extend(["--config-digest".into(), "44".repeat(32)]);
         ensure!(SearchdCommand::from_args(args.clone()).is_err());
         args.extend([
-            "--root-nonce".into(), "11".repeat(32),
-            "--source-cut-digest".into(), "22".repeat(32),
+            "--root-nonce".into(),
+            "11".repeat(32),
+            "--source-cut-digest".into(),
+            "22".repeat(32),
         ]);
-        let selected = SearchdCommand::from_args(args)?;
+        let selected = SearchdCommand::from_args(args.clone())?;
         let command = selected
             .native_command()
             .ok_or_else(|| anyhow::anyhow!("candidate selection command absent"))?;
-        ensure!(command.mode == NativeCommandModeV1::SelectCandidate {
-            root_nonce: [0x11; 32],
-            source_cut_digest: quanta_index_contract::index::Digest([0x22; 32]),
-        });
+        ensure!(
+            command.mode
+                == NativeCommandModeV1::SelectCandidate {
+                    root_nonce: [0x11; 32],
+                    source_cut_digest: quanta_index_contract::index::Digest([0x22; 32]),
+                    protected_source_routes: None,
+                }
+        );
         ensure!(command.config_digest == Some(quanta_index_contract::index::Digest([0x44; 32])));
+        args.extend(["--protected-source-routes".into(), "33".repeat(32)]);
+        let routed = SearchdCommand::from_args(args)?;
+        ensure!(routed.native_command().is_some_and(|command| command.mode
+            == NativeCommandModeV1::SelectCandidate {
+                root_nonce: [0x11; 32],
+                source_cut_digest: quanta_index_contract::index::Digest([0x22; 32]),
+                protected_source_routes: Some(quanta_index_contract::index::ObjectRef(
+                    quanta_index_contract::index::Digest([0x33; 32])
+                )),
+            }));
         Ok(())
     }
 

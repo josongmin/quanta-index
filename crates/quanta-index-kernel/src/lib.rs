@@ -26,6 +26,7 @@ mod update;
 
 pub use boot::{
     verify_native_boot_captured_request_v1, verify_native_boot_inputs,
+    with_native_boot_history_request_v1,
     verify_native_boot_source_target_v1, verify_native_published_full_target_v1,
     verify_native_published_source_target_v1, with_native_boot_history_full_v1,
 };

@@ -635,6 +635,9 @@ fn known_identifier(value: &str) -> bool {
             | "View"
             | "PublishedViewMetadata"
             | "RootScopedView"
+            | "ProtectedRepoMapHead"
+            | "ImportedRepoMapMember"
+            | "member_binding"
             | "root_nonce"
             | "root_device"
             | "root_inode"
@@ -811,6 +814,8 @@ enum PublicationVariant {
     View,
     PublishedViewMetadata,
     RootScopedView,
+    ProtectedRepoMapHead,
+    ImportedRepoMapMember,
     Status,
     Error,
     InputOpened,
@@ -839,6 +844,8 @@ const PUBLICATION_VARIANTS: &[&str] = &[
     "View",
     "PublishedViewMetadata",
     "RootScopedView",
+    "ProtectedRepoMapHead",
+    "ImportedRepoMapMember",
     "Status",
     "Error",
     "InputOpened",
@@ -878,6 +885,8 @@ impl<'de> serde::Deserialize<'de> for PublicationVariant {
                     "View" => Ok(PublicationVariant::View),
                     "PublishedViewMetadata" => Ok(PublicationVariant::PublishedViewMetadata),
                     "RootScopedView" => Ok(PublicationVariant::RootScopedView),
+                    "ProtectedRepoMapHead" => Ok(PublicationVariant::ProtectedRepoMapHead),
+                    "ImportedRepoMapMember" => Ok(PublicationVariant::ImportedRepoMapMember),
                     "Status" => Ok(PublicationVariant::Status),
                     "Error" => Ok(PublicationVariant::Error),
                     "InputOpened" => Ok(PublicationVariant::InputOpened),
@@ -951,6 +960,12 @@ impl<'de> serde::Deserialize<'de> for PublicationPayload {
                     ),
                     PublicationVariant::RootScopedView => NativeIndexResponse::RootScopedView(
                         variant.newtype_variant::<quanta_index_contract::native_protocol::NativeRootScopedViewV1>()?,
+                    ),
+                    PublicationVariant::ProtectedRepoMapHead => NativeIndexResponse::ProtectedRepoMapHead(
+                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeProtectedRepoMapResolutionV1>()?,
+                    ),
+                    PublicationVariant::ImportedRepoMapMember => NativeIndexResponse::ImportedRepoMapMember(
+                        variant.newtype_variant::<quanta_index_contract::native_protocol::NativeImportedRepoMapMemberReadV1>()?,
                     ),
                     PublicationVariant::View => {
                         NativeIndexResponse::View(variant.newtype_variant::<CatalogView>()?)

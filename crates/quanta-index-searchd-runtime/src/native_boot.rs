@@ -8,7 +8,7 @@ mod receipt;
 #[path = "native_boot/restore_forward.rs"]
 mod restore_forward;
 
-pub(crate) use restore_forward::RestoreForwardSourceRefusalV1;
+pub(crate) use restore_forward::{RestoreForwardSourceRefusalV1, HeldPreviousNativeV1};
 pub(super) use restore_forward::publish_v1 as publish_restore_forward_under_locked_selection_v1;
 
 use std::{fs, sync::Arc};
@@ -55,6 +55,7 @@ fn identity(nonce: [u8; 32], manifest: &NativeBootManifest) -> Result<NativeBoot
         manifest_operation: manifest.operation.key,
         manifest_object: manifest.operation.request,
         source_cut_digest: manifest.source_cut_digest()?,
+        protected_source_routes: manifest.protected_source_routes.map(|routes| routes.object),
     })
 }
 
@@ -126,6 +127,11 @@ pub(crate) struct FundedInstalledHistoryV1 {
     pub(crate) _memory: Option<MemoryLease>,
 }
 
+pub(super) struct FundedNativeRestoreInputV1 {
+    pub(super) value: quanta_index_contract::index::NativeHistoryRestoreInputV1,
+    pub(super) _memory: Option<MemoryLease>,
+}
+
 pub(crate) struct RestoreForwardHistoryV1<'a> {
     pub(crate) retained_terminal: Option<&'a NativeCutoverControlTerminalV1>,
     pub(crate) selected: &'a mut Option<FundedInstalledHistoryV1>,
@@ -135,13 +141,28 @@ impl RestoreForwardHistoryV1<'_> {
     fn matches_retained_v1(&self, selected: Option<&NativeCutoverInstalledHistoryV1>) -> bool {
         use NativeCutoverControlTerminalV1 as Terminal;
         match self.retained_terminal {
-            Some(terminal @ (Terminal::Applied { .. }
-            | Terminal::Reconciled { .. }
-            | Terminal::AppliedHistory { .. }
-            | Terminal::ReconciledHistory { .. })) => terminal.installed_history_v1() == selected,
+            Some(
+                terminal @ (Terminal::Applied { .. }
+                | Terminal::Reconciled { .. }
+                | Terminal::AppliedHistory { .. }
+                | Terminal::ReconciledHistory { .. }),
+            ) => terminal.installed_history_v1() == selected,
             _ => true,
         }
     }
+}
+
+/// Keep the saved Native selection, physical root lease and Catalog snapshot
+/// alive while an installed producer borrows its immutable History inventory.
+pub(crate) fn with_selected_native_history_v1<T>(
+    selection: &crate::deployment_selection::DeploymentSelectionDocumentV1,
+    budget: &mut WorkBudget,
+    read: impl FnOnce(&restore_forward::HeldPreviousNativeV1, &mut WorkBudget) -> Result<T>,
+) -> Result<T> {
+    let held = restore_forward::HeldPreviousNativeV1::acquire_v1(selection, budget)?;
+    let result = read(&held, budget)?;
+    held.require_current_and_retired_v1(budget)?;
+    Ok(result)
 }
 
 fn authenticate(
@@ -151,11 +172,22 @@ fn authenticate(
     registry: &AdapterRegistry,
     maximum: u64,
     recovery: Option<&RecoveryCapture<'_, '_>>,
+    require_current_routes: bool,
     budget: &mut WorkBudget,
 ) -> Result<()> {
     authenticate_with_legacy_history_v1(
-        authority, snapshot, manifest, registry, maximum, recovery, None, budget,
-    ).map(|_| ())
+        authority,
+        snapshot,
+        manifest,
+        registry,
+        maximum,
+        recovery,
+        None,
+        None,
+        require_current_routes,
+        budget,
+    )
+    .map(|_| ())
 }
 
 fn authenticate_with_legacy_history_v1(
@@ -166,6 +198,8 @@ fn authenticate_with_legacy_history_v1(
     maximum: u64,
     recovery: Option<&RecoveryCapture<'_, '_>>,
     legacy_history: Option<LegacyHistoryRecoveryV1<'_>>,
+    native_history: Option<&[FundedNativeRestoreInputV1]>,
+    require_current_routes: bool,
     budget: &mut WorkBudget,
 ) -> Result<Option<FundedInstalledHistoryV1>> {
     let root = authority.lease.state_root_identity_v1();
@@ -191,9 +225,9 @@ fn authenticate_with_legacy_history_v1(
     if snapshot.namespace != Some(reader.namespace_binding()?) {
         return Err(IndexError::DigestConflict.into());
     }
-    let mut roots = [manifest.operation.request; 5];
+    let mut roots = [manifest.operation.request; 6];
     let mut count = 0usize;
-    for root in manifest.protected_roots().into_iter().flatten() {
+    for root in manifest.all_protected_roots() {
         *roots.get_mut(count).ok_or(IndexError::ResourceLimited)? = root;
         count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
     }
@@ -206,6 +240,34 @@ fn authenticate_with_legacy_history_v1(
         maximum,
         budget,
     )?;
+    if let Some(route) = manifest.protected_source_routes {
+        let stored = reader.get(route.object, budget)?;
+        quanta_index_core::index::with_native_protected_source_routes_v1(
+            route.object,
+            Some(route.count),
+            &stored,
+            budget,
+            |routes, budget| {
+                quanta_index_catalog::verify_native_protected_source_routes_v1(
+                    root,
+                    authority.io.as_ref(),
+                    manifest,
+                    routes,
+                    budget,
+                )?;
+                if require_current_routes {
+                    quanta_index_catalog::verify_native_protected_source_routes_if_current_v1(
+                        root,
+                        authority.io.as_ref(),
+                        manifest,
+                        routes,
+                        budget,
+                    )?;
+                }
+                Ok(())
+            },
+        )?;
+    }
     verify_native_boot_inputs(
         &manifest.operation,
         &manifest.publication,
@@ -222,6 +284,7 @@ fn authenticate_with_legacy_history_v1(
             &profile,
             capture,
             legacy_history,
+            native_history,
             maximum,
             budget,
         )?
@@ -265,6 +328,7 @@ fn authenticate_recovery_capture(
     selected_profile: &quanta_index_core::index::StoredObject,
     capture: &RecoveryCapture<'_, '_>,
     legacy_history: Option<LegacyHistoryRecoveryV1<'_>>,
+    native_history: Option<&[FundedNativeRestoreInputV1]>,
     maximum: u32,
     budget: &mut WorkBudget,
 ) -> Result<Option<FundedInstalledHistoryV1>> {
@@ -312,14 +376,16 @@ fn authenticate_recovery_capture(
         current_identified,
         budget,
     )?;
+    let has_history =
+        legacy_history.is_some() || native_history.is_some_and(|expected| !expected.is_empty());
     if selected.publication.source != current_publication.source
-        || (legacy_history.is_none() && selected.publication.profile != current_publication.profile)
+        || (!has_history && selected.publication.profile != current_publication.profile)
     {
         return Err(IndexError::DigestConflict.into());
     }
     let history_prior = if let Some(ast) = capture.source.ast_work.as_ref() {
         let ast_request = ast.request;
-        let (operation, publication) = if legacy_history.is_some() {
+        let (operation, publication) = if has_history {
             capture
                 .full
                 .published_for(ast.operation)
@@ -346,7 +412,7 @@ fn authenticate_recovery_capture(
         if transition.target_source != selected.publication.source {
             return Err(IndexError::DigestConflict.into());
         }
-        if legacy_history.is_some() {
+        if has_history {
             let ast_object = reader.get(operation.request, budget)?;
             quanta_index_kernel::verify_native_boot_captured_request_v1(
                 ast_request,
@@ -364,7 +430,7 @@ fn authenticate_recovery_capture(
         }
         publication
     } else {
-        if legacy_history.is_none() {
+        if !has_history {
             if selected.operation != *current_operation
                 || selected.publication.identity != current_publication.identity
             {
@@ -407,11 +473,10 @@ fn authenticate_recovery_capture(
                     } else {
                         None
                     };
-                    let (request, profile) = intermediate
-                        .as_ref()
-                        .map_or((selected_request, selected_profile), |(request, profile)| {
-                            (request, profile)
-                        });
+                    let (request, profile) = intermediate.as_ref().map_or(
+                        (selected_request, selected_profile),
+                        |(request, profile)| (request, profile),
+                    );
                     quanta_index_kernel::with_native_boot_history_full_v1(
                         prior,
                         &step.operation,
@@ -451,6 +516,9 @@ fn authenticate_recovery_capture(
                                             },
                                             matching_required.is_some(),
                                         ),
+                                        NativeHistoryBootSourceV1::NativeRestore(_) => {
+                                            return Err(IndexError::DigestConflict);
+                                        }
                                     };
                                     verify(&transition.next, proof, budget)?;
                                     found_required |= proves_required;
@@ -469,7 +537,9 @@ fn authenticate_recovery_capture(
                             drop(stored);
                             let member = prepared.verify_boot_rows_v1(
                                 |reference, budget| reader.get(reference, budget),
-                                |root, after, limit, budget| reader.scan_map(root, after, limit, budget),
+                                |root, after, limit, budget| {
+                                    reader.scan_map(root, after, limit, budget)
+                                },
                                 budget,
                             )?;
                             if step.operation.key == selected.operation.key {
@@ -502,6 +572,151 @@ fn authenticate_recovery_capture(
             return Err(IndexError::SnapshotUnavailable.into());
         }
     }
+    if let Some(expected) = native_history {
+        use quanta_index_search_plane::native_history::NativeHistoryBootSourceV1;
+        if !expected.is_empty() {
+            let seen_bytes =
+                u64::try_from(expected.len()).map_err(|_| IndexError::ResourceLimited)?;
+            let _seen_memory = budget
+                .reserve_memory(
+                    seen_bytes,
+                    quanta_index_core::index::MemoryLifetime::Temporary,
+                )?
+                .ok_or(IndexError::ResourceLimited)?;
+            let mut seen = Vec::new();
+            seen.try_reserve_exact(expected.len())
+                .map_err(|_| IndexError::ResourceLimited)?;
+            seen.resize(expected.len(), false);
+            let mut prior = history_prior;
+            for step in capture
+                .full
+                .snapshot()
+                .history_predecessors()
+                .iter()
+                .chain(std::iter::once(selected))
+            {
+                let prior_profile = reader.get(prior.profile, budget)?;
+                let intermediate = if step.operation.key != selected.operation.key {
+                    Some((
+                        reader.get(step.operation.request, budget)?,
+                        reader.get(step.publication.profile, budget)?,
+                    ))
+                } else {
+                    None
+                };
+                let (request, profile) = intermediate.as_ref().map_or(
+                    (selected_request, selected_profile),
+                    |(request, profile)| (request, profile),
+                );
+                quanta_index_kernel::with_native_boot_history_full_v1(
+                    prior,
+                    &step.operation,
+                    &step.publication,
+                    request,
+                    &prior_profile,
+                    profile,
+                    budget,
+                    |transition, budget| {
+                        let index = expected
+                            .binary_search_by(|old| {
+                                old.value
+                                    .cut
+                                    .generation
+                                    .repo_id
+                                    .cmp(&transition.next.generation.repo_id)
+                                    .then_with(|| {
+                                        old.value.cut.generation.bootstrap_order_key_v1().cmp(
+                                            &transition.next.generation.bootstrap_order_key_v1(),
+                                        )
+                                    })
+                            })
+                            .map_err(|_| IndexError::DigestConflict)?;
+                        let old = &expected[index];
+                        if old.value.instance != transition.instance {
+                            return Err(IndexError::DigestConflict);
+                        }
+                        if seen[index] || transition.next != old.value.cut {
+                            return Err(IndexError::DigestConflict);
+                        }
+                        let stored = reader.get(transition.input, budget)?;
+                        let prepared = quanta_index_search_plane::native_history::with_native_history_boot_source_v1(
+                            transition.input,
+                            &stored,
+                            budget,
+                            |input, budget| {
+                                let NativeHistoryBootSourceV1::NativeRestore(actual) = &input else {
+                                    return Err(IndexError::DigestConflict);
+                                };
+                                if *actual != &old.value {
+                                    return Err(IndexError::DigestConflict);
+                                }
+                                verify_installed_history_member_v1(
+                                    reader,
+                                    &selected.publication,
+                                    transition,
+                                    &stored.registration,
+                                    &input,
+                                    budget,
+                                )
+                            },
+                        )?;
+                        let member = prepared.verify_boot_rows_v1(
+                            |reference, budget| reader.get(reference, budget),
+                            |root, after, limit, budget| {
+                                reader.scan_map(root, after, limit, budget)
+                            },
+                            budget,
+                        )?;
+                        seen[index] = true;
+                        if step.operation.key == selected.operation.key {
+                            installed_history = Some(fund_installed_history_v1(
+                                &step.operation,
+                                &selected.publication,
+                                transition,
+                                member,
+                                budget,
+                            )?);
+                        }
+                        Ok(())
+                    },
+                )?;
+                prior = &step.publication;
+            }
+            if seen.iter().any(|seen| !seen) || installed_history.is_none() {
+                return Err(IndexError::DigestConflict.into());
+            }
+        }
+        let profile_bytes = u64::try_from(selected_profile.payload.len())?
+            .checked_mul(32)
+            .and_then(|bytes| bytes.checked_add(4096))
+            .ok_or(IndexError::ResourceLimited)?;
+        let _profile_memory = budget
+            .reserve_memory(
+                profile_bytes,
+                quanta_index_core::index::MemoryLifetime::Temporary,
+            )?
+            .ok_or(IndexError::ResourceLimited)?;
+        let final_profile: quanta_index_core::index::IndexProfile =
+            serde_json::from_slice(&selected_profile.payload)?;
+        let final_history_count = final_profile
+            .instances
+            .iter()
+            .filter(|instance| {
+                instance.input_domain == quanta_index_core::index::InputDomain::History
+            })
+            .count();
+        if final_history_count != expected.len() {
+            return Err(IndexError::DigestConflict.into());
+        }
+        if !expected.is_empty() {
+            let members = selected
+                .publication
+                .members
+                .0
+                .ok_or(IndexError::SnapshotUnavailable)?;
+            reader.verify_closure(&[members], maximum, budget)?;
+        }
+    }
     budget.checkpoint()?;
     Ok(installed_history)
 }
@@ -513,10 +728,17 @@ fn fund_installed_history_v1(
     member: ObjectRef,
     budget: &mut WorkBudget,
 ) -> Result<FundedInstalledHistoryV1, IndexError> {
-    let bytes = transition.next.generation.repo_id.as_str().len()
+    let bytes = transition
+        .next
+        .generation
+        .repo_id
+        .as_str()
+        .len()
         .checked_add(transition.next.generation.revision_id.as_str().len())
-        .and_then(|size| u64::try_from(size).ok()).ok_or(IndexError::ResourceLimited)?;
-    let memory = budget.reserve_memory(bytes, quanta_index_core::index::MemoryLifetime::Retained)?;
+        .and_then(|size| u64::try_from(size).ok())
+        .ok_or(IndexError::ResourceLimited)?;
+    let memory =
+        budget.reserve_memory(bytes, quanta_index_core::index::MemoryLifetime::Retained)?;
     let value = NativeCutoverInstalledHistoryV1 {
         operation: operation.key,
         view: publication.identity,
@@ -525,8 +747,13 @@ fn fund_installed_history_v1(
         source_input: transition.input,
         cut: transition.next.clone(),
     };
-    value.validate_v1().map_err(|error| IndexError::CorruptObject(error.to_string()))?;
-    Ok(FundedInstalledHistoryV1 { value, _memory: memory })
+    value
+        .validate_v1()
+        .map_err(|error| IndexError::CorruptObject(error.to_string()))?;
+    Ok(FundedInstalledHistoryV1 {
+        value,
+        _memory: memory,
+    })
 }
 
 fn verify_installed_history_member_v1(
@@ -538,14 +765,18 @@ fn verify_installed_history_member_v1(
     budget: &mut WorkBudget,
 ) -> Result<quanta_index_search_plane::native_history::PreparedNativeHistoryV1, IndexError> {
     let key = quanta_index_core::index::member_map_key(transition.instance);
-    let reference = reader.lookup_map_object(publication.members, &key, budget)?
+    let reference = reader
+        .lookup_map_object(publication.members, &key, budget)?
         .ok_or(IndexError::SnapshotUnavailable)?;
     let stored = reader.get(reference, budget)?;
     let member = quanta_index_core::index::decode_member_binding(&stored.payload, budget)?;
     if member.instance != transition.instance
-        || !stored.registration.children.iter().copied().eq(
-            [Some(member.artifact), member.input.root.0].into_iter().flatten(),
-        )
+        || !stored.registration.children.iter().copied().eq([
+            Some(member.artifact),
+            member.input.root.0,
+        ]
+        .into_iter()
+        .flatten())
     {
         return Err(IndexError::DigestConflict);
     }
@@ -764,7 +995,13 @@ pub(super) fn execute(
                         .select_operation
                         .ok_or_else(|| anyhow!("missing native operation"))?;
                     let candidate =
-                        if matches!(command.mode, NativeCommandModeV1::SelectCandidate { .. }) {
+                        if matches!(
+                            command.mode,
+                            NativeCommandModeV1::SelectCandidate {
+                                protected_source_routes: None,
+                                ..
+                            }
+                        ) {
                             verify_native_boot_current_candidate(
                                 &root,
                                 authority.io.as_ref(),
@@ -779,14 +1016,38 @@ pub(super) fn execute(
                                 &mut budget,
                             )?
                         };
-                    let expected = identity(candidate.snapshot().root_nonce, candidate.manifest())?;
+                    let presealed = match command.mode {
+                        NativeCommandModeV1::SelectCandidate {
+                            protected_source_routes: Some(reference),
+                            ..
+                        } => {
+                            let selected = candidate
+                                .snapshot()
+                                .selected
+                                .as_ref()
+                                .ok_or(IndexError::SnapshotUnavailable)?;
+                            if selected.protected_source_routes.map(|route| route.object)
+                                != Some(reference)
+                                || selected.operation != candidate.manifest().operation
+                                || selected.publication != candidate.manifest().publication
+                            {
+                                return Err(IndexError::DigestConflict.into());
+                            }
+                            Some(selected.clone())
+                        }
+                        _ => None,
+                    };
+                    let manifest = presealed.as_ref().unwrap_or_else(|| candidate.manifest());
+                    let expected = identity(candidate.snapshot().root_nonce, manifest)?;
                     if let NativeCommandModeV1::SelectCandidate {
                         root_nonce,
                         source_cut_digest,
+                        protected_source_routes,
                     } = command.mode
                     {
                         if expected.root_nonce != root_nonce
                             || expected.source_cut_digest != source_cut_digest
+                            || expected.protected_source_routes != protected_source_routes
                         {
                             return Err(IndexError::DigestConflict.into());
                         }
@@ -794,7 +1055,7 @@ pub(super) fn execute(
                             .snapshot()
                             .selected
                             .as_ref()
-                            .is_some_and(|selected| selected != candidate.manifest())
+                            .is_some_and(|selected| selected != manifest)
                         {
                             // Candidate preparation may retry the same selection after an
                             // uncertain receipt write. It cannot replace another BOOT.
@@ -804,14 +1065,15 @@ pub(super) fn execute(
                     authenticate(
                         &authority,
                         candidate.snapshot(),
-                        candidate.manifest(),
+                        manifest,
                         registry,
                         maximum,
                         None,
+                        presealed.is_some(),
                         &mut budget,
                     )?;
                     drop(candidate);
-                    {
+                    if presealed.is_none() {
                         let _funding = authority.io.enter_maintenance_scope()?;
                         let mut catalog = SqliteCatalog::open_with_io_admission_and_writer_cache(
                             &root,
@@ -862,6 +1124,7 @@ pub(super) fn execute(
                         registry,
                         maximum,
                         None,
+                        presealed.is_some(),
                         &mut budget,
                     )?;
                     let io = NativeObjectReadIo::new(Arc::clone(&authority.physical));
@@ -914,6 +1177,7 @@ pub(super) fn execute(
                     registry,
                     maximum,
                     None,
+                    false,
                     &mut budget,
                 )?;
                 if let Some(expected) = command.install_catalog_digest {
@@ -969,8 +1233,9 @@ fn verify_recovery_candidate_with_source_capture_v1(
     budget: &mut WorkBudget,
 ) -> Result<quanta_index_catalog::NativeBootPublishedOperation> {
     verify_recovery_candidate_with_legacy_history_v1(
-        authority, command, registry, source, maximum, None, budget,
-    ).map(|(full, _)| full)
+        authority, command, registry, source, maximum, None, None, budget,
+    )
+    .map(|(full, _)| full)
 }
 
 fn verify_recovery_candidate_with_legacy_history_v1(
@@ -980,8 +1245,15 @@ fn verify_recovery_candidate_with_legacy_history_v1(
     source: &RecoverySourceInputs<'_>,
     maximum: u64,
     legacy_history: Option<LegacyHistoryRecoveryV1<'_>>,
+    native_history: Option<&[FundedNativeRestoreInputV1]>,
     budget: &mut WorkBudget,
-) -> Result<(quanta_index_catalog::NativeBootPublishedOperation, Option<FundedInstalledHistoryV1>)> {
+) -> Result<(
+    quanta_index_catalog::NativeBootPublishedOperation,
+    Option<FundedInstalledHistoryV1>,
+)> {
+    if legacy_history.is_some() && native_history.is_some() {
+        return Err(IndexError::DigestConflict.into());
+    }
     let root = authority.lease.state_root_identity_v1();
     let witness_operation = match (legacy_history, source.ast_work.as_ref()) {
         (Some(_), Some(ast)) => {
@@ -992,18 +1264,62 @@ fn verify_recovery_candidate_with_legacy_history_v1(
         }
         _ => source.current_target.operation,
     };
-    let observe = if legacy_history.is_some() {
-        verify_native_legacy_history_recovery_publications_v1
+    let capture_history =
+        legacy_history.is_some() || native_history.is_some_and(|expected| !expected.is_empty());
+    let full = if let Some(expected_routes) = command
+        .identity
+        .and_then(|identity| identity.protected_source_routes)
+    {
+        let snapshot = verify_native_boot_catalog(root, authority.io.as_ref(), budget)?;
+        let selected = snapshot
+            .selected
+            .as_ref()
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        if Some(identity(snapshot.root_nonce, selected)?) != command.identity {
+            return Err(IndexError::DigestConflict.into());
+        }
+        let route = selected
+            .protected_source_routes
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        let objects = root.join("native-objects");
+        let io = Arc::new(NativeObjectReadIo::new(Arc::clone(&authority.physical)));
+        let lock = io.open(&objects.join(".object-namespace.lease"), budget)?;
+        let reader = FileObjectReader::open_existing(&objects, lock, io, budget)?;
+        if snapshot.namespace != Some(reader.namespace_binding()?) {
+            return Err(IndexError::DigestConflict.into());
+        }
+        let stored = reader.get(expected_routes, budget)?;
+        quanta_index_core::index::with_native_protected_source_routes_v1(
+            expected_routes,
+            Some(route.count),
+            &stored,
+            budget,
+            |routes, budget| {
+                quanta_index_catalog::verify_native_recovery_publications_with_routes_v1(
+                    root,
+                    authority.io.as_ref(),
+                    source.target.operation,
+                    witness_operation,
+                    routes,
+                    capture_history,
+                    budget,
+                )
+            },
+        )?
     } else {
-        verify_native_rollback_with_source_publications
+        let observe = if capture_history {
+            verify_native_legacy_history_recovery_publications_v1
+        } else {
+            verify_native_rollback_with_source_publications
+        };
+        observe(
+            root,
+            authority.io.as_ref(),
+            source.target.operation,
+            witness_operation,
+            budget,
+        )?
     };
-    let full = observe(
-        root,
-        authority.io.as_ref(),
-        source.target.operation,
-        witness_operation,
-        budget,
-    )?;
     let snapshot = full.snapshot();
     let selected = snapshot
         .selected
@@ -1023,6 +1339,8 @@ fn verify_recovery_candidate_with_legacy_history_v1(
             full: &full,
         }),
         legacy_history,
+        native_history,
+        false,
         budget,
     )?;
     require_retired(authority)?;
@@ -1161,7 +1479,13 @@ fn verify_legacy_publication_v1(
         return Err(IndexError::DigestConflict.into());
     }
     let repomap = verify_legacy_repomap_v1(
-        authority, &quiescence, &publication.repomap, native, config, locked, budget,
+        authority,
+        &quiescence,
+        &publication.repomap,
+        native,
+        config,
+        locked,
+        budget,
     )?;
     let has_history_rows = quiescence.has_history_rows_v1();
     if publication.history.is_some() && !has_history_rows {
@@ -1268,7 +1592,8 @@ fn verify_legacy_repomap_v1(
         locator_digest,
         publish,
         activation,
-    } = expected else {
+    } = expected
+    else {
         if config.legacy_repomap_selection.is_some()
             || quiescence.active_repomap_candidate_v1().is_some()
         {
@@ -1372,6 +1697,39 @@ pub(crate) fn with_legacy_checkpoint_catalog_v1<T>(
     Ok(result)
 }
 
+/// Lend the same held, offline Legacy root and read-only physical ports to a
+/// complete Source export. The callback cannot outlive the root lease.
+pub(crate) fn with_legacy_source_export_v1<T>(
+    selection: &crate::deployment_selection::DeploymentSelectionDocumentV1,
+    budget: &mut WorkBudget,
+    read: impl FnOnce(
+        &std::path::Path,
+        &dyn quanta_index_catalog::CatalogReadOnlyIoAdmission,
+        &dyn quanta_index_core::index::ports::ObjectReadIoPort,
+        &dyn quanta_index_core::ExistingTreeMetadataIoPortV1,
+        usize,
+        u64,
+        &mut WorkBudget,
+    ) -> Result<T>,
+) -> Result<T> {
+    let (lease, memory) = acquire_recovery_root_v1(selection.state_root_v1(), budget)?;
+    let authority = legacy_read_factory::LegacyReadAuthorityV1::acquire_for_checkpoint_export_v1(
+        selection, lease, memory, budget,
+    )?;
+    let result = read(
+        authority.root(),
+        authority.catalog(),
+        authority.objects(),
+        authority.metadata(),
+        authority.maximum_objects(),
+        authority.repomap_candidate_file_bytes_v1(),
+        budget,
+    )?;
+    authority.retire_catalog(budget)?;
+    authority.require_current_root_v1()?;
+    Ok(result)
+}
+
 /// Both recovery directions retain the same physical/Original authorities
 /// through the single canonical selection publisher and its final checks.
 fn publish_with_held_recovery_roots_v1(
@@ -1391,10 +1749,15 @@ fn publish_with_held_recovery_roots_v1(
             .require_state_root_v1(native.lease.state_root_identity_v1())?;
         custody_checkpoint(budget)?;
         if let Some(repomap) = repomap {
-            let root = repomap.separate.as_ref().or(legacy_for_repomap)
+            let root = repomap
+                .separate
+                .as_ref()
+                .or(legacy_for_repomap)
                 .ok_or_else(|| anyhow!("RepoMap proof lost its retained Legacy root"))?;
             root.require_repomap_locator_v1(repomap.locator, budget)?;
-            repomap.files.require_current_v1(root.root(), root.objects(), budget)?;
+            repomap
+                .files
+                .require_current_v1(root.root(), root.objects(), budget)?;
             if let Some(separate) = &repomap.separate {
                 let selection = config
                     .legacy_repomap_selection

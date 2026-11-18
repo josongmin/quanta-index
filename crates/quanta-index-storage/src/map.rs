@@ -1486,14 +1486,10 @@ impl crate::FileObjectReader {
         key: &[u8],
         budget: &mut WorkBudget,
     ) -> Result<Option<ObjectRef>, IndexError> {
-        let mut result = [None];
-        original_lookup::lookup_batch_with(root, &[key], &mut result, budget, |reference, budget| {
-            decode_node(&self.get(reference, budget)?, budget)
-        })?;
-        match result {
-            [Some(MapValue::Object(reference))] => Ok(Some(reference)),
-            [None] => Ok(None),
-            [Some(MapValue::Inline(_))] => Err(IndexError::CorruptObject(
+        match self.lookup_map_value_v1(root, key, budget)? {
+            Some(MapValue::Object(reference)) => Ok(Some(reference)),
+            None => Ok(None),
+            Some(MapValue::Inline(_)) => Err(IndexError::CorruptObject(
                 "map object lookup resolved to an inline value".into(),
             )),
         }
@@ -1560,6 +1556,24 @@ impl FileObjectStore {
         let frame = frames.pop().ok_or_else(|| {
             IndexError::BackendViolation("sorted map build has no frame to seal".into())
         })?;
+    /// Read a canonical inline value or object edge under an existing namespace.
+    pub fn lookup_map_value_v1(
+        &self,
+        root: MapRoot,
+        key: &[u8],
+        budget: &mut WorkBudget,
+    ) -> Result<Option<MapValue>, IndexError> {
+        let mut result = [None];
+        original_lookup::lookup_batch_with(
+            root,
+            &[key],
+            &mut result,
+            budget,
+            |reference, budget| decode_node(&self.get(reference, budget)?, budget),
+        )?;
+        Ok(result[0])
+    }
+
         let parent_len = frames.last().map_or(0, |parent| parent.full_prefix.len());
         let suffix_at = if frames.is_empty() {
             0

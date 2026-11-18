@@ -4,7 +4,7 @@ use super::*;
 use crate::HistorySourceReplayV1;
 use quanta_index_contract::index::{
     HistoryAppendV1, HistoryGenerationAdvanceV1, HistorySnapshotCheckpointV1, HistorySnapshotPageV1, HistorySourceInputV1,
-    HistoryTransition, InstanceSpec, MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1,
+    HistoryTransition, InstanceSpec, NativeHistoryRestoreInputV1, MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1,
     MAX_HISTORY_SOURCE_INPUT_BYTES_V1,
 };
 use quanta_index_core::index::{StoredObject, effort::ResourceNeed, ports::IndexHistoryBuildPort};
@@ -76,11 +76,13 @@ pub(super) struct SourceInputData<T> {
 pub enum NativeHistoryBootSourceV1<'a> {
     Replay(&'a HistorySourceInputV1),
     Snapshot(&'a HistorySnapshotCheckpointV1),
+    NativeRestore(&'a NativeHistoryRestoreInputV1),
 }
 
 enum LoadedBootSourceV1 {
     Replay(SourceInputData<HistorySourceInputV1>),
     Snapshot(SourceInputData<HistorySnapshotCheckpointV1>),
+    NativeRestore(SourceInputData<NativeHistoryRestoreInputV1>),
 }
 
 #[derive(Deserialize)]
@@ -121,6 +123,12 @@ fn decode_boot_source_v1(
             input.value.validate_shape().map_err(invalid)?;
             validate_checkpoint_children_v1(&input.value, stored, budget)?;
             Ok(LoadedBootSourceV1::Snapshot(input))
+        }
+        3 => {
+            let input: SourceInputData<NativeHistoryRestoreInputV1> =
+                decode_history_object_allow_children(reference, stored, budget)?;
+            input.value.verify_children_v1(&stored.registration.children).map_err(invalid)?;
+            Ok(LoadedBootSourceV1::NativeRestore(input))
         }
         _ => Err(invalid("History boot source version is invalid")),
     }
@@ -222,7 +230,39 @@ pub fn with_native_history_boot_source_v1<T>(
         LoadedBootSourceV1::Snapshot(input) => {
             verify(NativeHistoryBootSourceV1::Snapshot(&input.value), budget)
         }
+        LoadedBootSourceV1::NativeRestore(input) => {
+            verify(NativeHistoryBootSourceV1::NativeRestore(&input.value), budget)
+        }
     }
+}
+
+/// Verify an old selected Native artifact under the caller's held root. This
+/// reads its source closure and complete immutable row map before lending the
+/// cut and old source-input reference. Selection authority stays with caller.
+pub fn with_native_history_restore_member_v1<T>(
+    artifact: ObjectRef,
+    instance: &InstanceSpec,
+    mut get: impl FnMut(ObjectRef, &mut WorkBudget) -> Result<StoredObject, IndexError>,
+    scan: impl FnMut(MapRoot, Option<&[u8]>, u32, &mut WorkBudget) -> Result<MapPage, IndexError>,
+    budget: &mut WorkBudget,
+    visit: impl FnOnce(&HistorySourceCutV1, MapRoot, ObjectRef, &mut WorkBudget) -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    super::validate_instance(instance).map_err(|error| index_error(error, budget))?;
+    let stored = get(artifact, budget)?;
+    let prepared = super::decode_manifest(artifact, &stored, budget)
+        .map_err(|error| index_error(error, budget))?;
+    super::verify_manifest_source_with_v1(&prepared.manifest, |reference, budget| get(reference, budget), budget)
+        .map_err(|error| index_error(error, budget))?;
+    drop(super::load_rows_with_v1(&prepared.manifest, get, scan, budget)
+        .map_err(|error| index_error(error, budget))?);
+    let bytes = prepared.manifest.repo.as_str().len()
+        .checked_add(prepared.manifest.revision.as_str().len())
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<HistorySourceCutV1>()))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(IndexError::ResourceLimited)?;
+    let _cut_memory = budget.reserve_memory(bytes, MemoryLifetime::Retained)?;
+    let cut = prepared.manifest.cut();
+    visit(&cut, prepared.manifest.rows, prepared.manifest.source_input, budget)
 }
 fn load_source(
     reference: ObjectRef,
@@ -423,6 +463,25 @@ fn verify(
                         context,
                     )?
                 }
+                LoadedBootSourceV1::NativeRestore(input) => {
+                    if input.value.instance != instance.instance
+                        || input.value.cut != transition.next
+                    {
+                        return Err(invalid("Native History restore target differs from requested FULL"));
+                    }
+                    let old = super::open_manifest(
+                        input.value.member, context.objects, context.budget,
+                    )?;
+                    if old.manifest.cut() != input.value.cut {
+                        return Err(invalid("Native History restore member cut differs"));
+                    }
+                    drop(super::load_rows(
+                        &old.manifest, context.objects, context.maps, context.budget,
+                    )?);
+                    super::prepare_native_history_restore_full_v1(
+                        &old.manifest, transition.input, context,
+                    )?
+                }
             }
         }
         (Some(prior), Some(expected)) => {
@@ -439,7 +498,7 @@ fn verify(
             validate_member(prior, instance, &old.manifest)?;
             if !matches!(
                 old.manifest.format,
-                REPLAY_HISTORY_MANIFEST | SNAPSHOT_HISTORY_MANIFEST
+                REPLAY_HISTORY_MANIFEST | SNAPSHOT_HISTORY_MANIFEST | NATIVE_RESTORE_HISTORY_MANIFEST
             ) || old.manifest.cut() != *expected
                 || old.manifest.epoch.checked_next() != Some(transition.next.durable_epoch)
                 || input.value.fence.first_replay != expected.replay_start
@@ -588,7 +647,7 @@ mod snapshot_checkpoint_tests {
     use super::*;
     use quanta_index_contract::{
         batch_digest_token_v1,
-        index::{native_immutable_object_ref_v1, Digest, HistorySnapshotRowV1, IndexInstanceId},
+        index::{native_immutable_object_ref_v1, CollectionId, Digest, HistorySnapshotRowV1, IndexInstanceId, SlotId, TenantId, WorktreeId, WorkspaceKey},
     };
     use quanta_index_core::index::{MapValue, RegisteredObject, WorkLimits};
     use std::time::{Duration, Instant};
@@ -671,6 +730,97 @@ mod snapshot_checkpoint_tests {
         assert!(
             decode_boot_source_v1(root, &stored(&unrecorded, children), &mut budget()).is_err()
         );
+    }
+
+    #[test]
+    fn native_restore_source_retains_old_member_and_rejects_changed_rows() {
+        let cut = checkpoint().cut;
+        let old_source = ObjectRef(Digest([21; 32]));
+        let row_root = ObjectRef(Digest([22; 32]));
+        let old_artifact = ObjectRef(Digest([23; 32]));
+        let restore_source = ObjectRef(Digest([24; 32]));
+        let old = Manifest {
+            format: SNAPSHOT_HISTORY_MANIFEST,
+            repo: cut.generation.repo_id.clone(),
+            revision: cut.generation.revision_id.clone(),
+            generation: cut.generation.generation,
+            epoch: cut.durable_epoch,
+            snapshot: cut.snapshot_digest,
+            replay: cut.replay_start,
+            sequence: 7,
+            source_manifest: Some("source".into()),
+            predecessor: None,
+            source_input: old_source,
+            rows: MapRoot(Some(row_root)),
+            row_count: 2,
+            maximum_row_bytes: 20,
+        };
+        let old_payload = serde_json::to_vec(&old).expect("old manifest");
+        let old_stored = StoredObject::new(
+            RegisteredObject::unscoped(old_artifact, old_payload.len() as u64, vec![row_root, old_source]),
+            old_payload,
+            None,
+        );
+        let input = NativeHistoryRestoreInputV1 {
+            wire_version: 3,
+            source_root_nonce: Digest([25; 32]),
+            source_view: ViewRef {
+                workspace: WorkspaceKey {
+                    tenant: TenantId([1; 16]),
+                    collection: CollectionId([2; 16]),
+                    worktree: WorktreeId([3; 16]),
+                    slot: SlotId([4; 16]),
+                },
+                epoch: 1,
+                sequence: 1,
+                digest: Digest([26; 32]),
+            },
+            instance: IndexInstanceId([7; 16]),
+            member: old_artifact,
+            cut,
+        };
+        let source_payload = serde_json::to_vec(&input).expect("restore source");
+        let source_stored = StoredObject::new(
+            RegisteredObject::unscoped(restore_source, source_payload.len() as u64, vec![old_artifact]),
+            source_payload,
+            None,
+        );
+        let original_source = StoredObject::new(
+            RegisteredObject::unscoped(old_source, 0, vec![ObjectRef(Digest([27; 32]))]),
+            Vec::new(),
+            None,
+        );
+        let mut restored = old.clone();
+        restored.format = NATIVE_RESTORE_HISTORY_MANIFEST;
+        restored.source_input = restore_source;
+        let verify = |restored: &Manifest| {
+            verify_manifest_source_with_v1(
+                restored,
+                |reference, _| match reference {
+                    value if value == restore_source => Ok(source_stored.clone()),
+                    value if value == old_artifact => Ok(old_stored.clone()),
+                    value if value == old_source => Ok(original_source.clone()),
+                    _ => Err(IndexError::SnapshotUnavailable),
+                },
+                &mut budget(),
+            )
+        };
+        assert!(verify(&restored).is_ok());
+        restored.rows = MapRoot(Some(ObjectRef(Digest([28; 32]))));
+        assert!(matches!(
+            verify(&restored),
+            Err(CoreError::InvalidContract(message)) if message.contains("restored member differs")
+        ));
+        let extra = StoredObject::new(
+            RegisteredObject::unscoped(
+                restore_source,
+                source_stored.payload.len() as u64,
+                vec![old_artifact, ObjectRef(Digest([29; 32]))],
+            ),
+            source_stored.payload.clone(),
+            None,
+        );
+        assert!(decode_boot_source_v1(restore_source, &extra, &mut budget()).is_err());
     }
 
     #[test]

@@ -178,7 +178,7 @@ pub(super) fn decode_document(
                 "source_cut_digest_hex",
                 "install_catalog_digest_hex",
             ],
-            &[],
+            &["protected_source_routes_hex"],
         )?;
         let nonce = hex(text(receipt, "root_nonce_hex")?)?;
         let source = hex(text(receipt, "source_cut_digest_hex")?)?;
@@ -199,6 +199,9 @@ pub(super) fn decode_document(
                 manifest_operation: operation,
                 manifest_object: ObjectRef(hex(text(receipt, "manifest_object_hex")?)?),
                 source_cut_digest: source,
+                protected_source_routes: receipt.get("protected_source_routes_hex")
+                    .map(|_| text(receipt, "protected_source_routes_hex").and_then(hex).map(ObjectRef))
+                    .transpose()?,
             }),
             config_digest: Some(config_digest),
             install_catalog_digest: Some(hex(text(receipt, "install_catalog_digest_hex")?)?),

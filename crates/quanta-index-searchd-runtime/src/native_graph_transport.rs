@@ -23,13 +23,13 @@ use crate::{
 
 pub(crate) type ScopedNativeGraphResult = ScopedNativeResult<NativeGraphResult>;
 
-struct GraphAnchor {
-    value: RepoMapNodeRef,
-    _memory: Option<MemoryLease>,
+pub(crate) struct GraphAnchor {
+    pub(crate) value: RepoMapNodeRef,
+    memory: Option<MemoryLease>,
 }
 
 impl GraphAnchor {
-    fn capture(source: &RepoMapNodeRef, budget: &WorkBudget) -> Result<Self, IndexError> {
+    pub(crate) fn capture(source: &RepoMapNodeRef, budget: &WorkBudget) -> Result<Self, IndexError> {
         let text = match source {
             RepoMapNodeRef::File(id) => id.as_str(),
             RepoMapNodeRef::Module(id) => id.as_str(),
@@ -57,8 +57,12 @@ impl GraphAnchor {
         };
         Ok(Self {
             value,
-            _memory: memory,
+            memory,
         })
+    }
+
+    pub(crate) fn into_parts(self) -> (RepoMapNodeRef, Option<MemoryLease>) {
+        (self.value, self.memory)
     }
 }
 

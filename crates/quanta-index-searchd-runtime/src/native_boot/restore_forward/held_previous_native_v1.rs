@@ -3,18 +3,23 @@
 
 use super::*;
 use quanta_index_catalog::{
-    NativeBootQuiescentCatalogV1, verify_native_source_root_publications_v1,
-    verify_native_source_root_quiescence_v1,
+    NativeBootQuiescentCatalogV1, verify_native_boot_catalog,
+    verify_native_source_root_publications_v1,
+    verify_native_source_root_publications_with_routes_v1, verify_native_source_root_quiescence_v1,
+    verify_native_source_root_quiescence_with_routes_v1,
 };
 use quanta_index_contract::{
     native_cutover_evidence_v1::{
-        MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1, NativeCutoverEvidenceSourceFactV1 as Fact,
-        NativeCutoverEvidenceV1, NativeCutoverReplayPhaseV1,
-        NativeCutoverAstWorkPhaseV1,
+        MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1, NativeCutoverAstWorkPhaseV1,
+        NativeCutoverEvidenceSourceFactV1 as Fact, NativeCutoverEvidenceV1,
+        NativeCutoverReplayPhaseV1,
     },
     native_cutover_source_join_v1::NativeCutoverJoinedSourceFactsV1,
 };
-use quanta_index_core::index::{MemoryLease, MemoryLifetime, OperationKey, ViewRef, WorkUsage};
+use quanta_index_core::index::{
+    MemoryLease, MemoryLifetime, NativeProtectedSourceRoutesV1, OperationKey, ViewRef, WorkUsage,
+    with_native_protected_source_routes_v1,
+};
 use quanta_index_searchd::cli::NativeBootIdentityV1;
 
 struct FundedSelectedConfigV1 {
@@ -57,7 +62,7 @@ fn read_selected_config_v1(
     })
 }
 
-pub(in crate::native_product::boot) struct HeldPreviousNativeV1 {
+pub(crate) struct HeldPreviousNativeV1 {
     // Drop the funded Catalog snapshot before its physical read owner.
     observed: NativeBootQuiescentCatalogV1,
     authority: NativeBootAuthority,
@@ -74,7 +79,7 @@ pub(in crate::native_product::boot) struct PreviousNativeSourceRowsV1 {
 }
 
 impl HeldPreviousNativeV1 {
-    pub(in crate::native_product::boot) fn selected_config_v1(&self) -> &super::super::super::ValidatedConfig {
+    pub(crate) fn selected_config_v1(&self) -> &super::super::super::ValidatedConfig {
         &self.selected.config
     }
 
@@ -95,12 +100,51 @@ impl HeldPreviousNativeV1 {
         let registry = super::super::super::compose_boot_registry(config)?;
         let (observed, authority) =
             with_recovery_boot_authority(config, budget, |authority, budget| {
-                let observed = verify_native_source_root_quiescence_v1(
-                    authority.lease.state_root_identity_v1(),
-                    authority.io.as_ref(),
-                    expected.manifest_operation.workspace,
-                    budget,
-                )?;
+                let root = authority.lease.state_root_identity_v1();
+                let initial = verify_native_boot_catalog(root, authority.io.as_ref(), budget)?;
+                let observed = if let Some(route) = initial
+                    .selected
+                    .as_ref()
+                    .and_then(|selected| selected.protected_source_routes)
+                {
+                    let objects = root.join("native-objects");
+                    let io = Arc::new(NativeObjectReadIo::new(Arc::clone(&authority.physical)));
+                    let lock = io.open(&objects.join(".object-namespace.lease"), budget)?;
+                    let reader = FileObjectReader::open_existing(&objects, lock, io, budget)?;
+                    if Some(reader.namespace_binding()?) != initial.namespace {
+                        return Err(IndexError::DigestConflict.into());
+                    }
+                    let stored = reader.get(route.object, budget)?;
+                    with_native_protected_source_routes_v1(
+                        route.object,
+                        Some(route.count),
+                        &stored,
+                        budget,
+                        |routes, budget| {
+                            let observed = verify_native_source_root_quiescence_with_routes_v1(
+                                root,
+                                authority.io.as_ref(),
+                                expected.manifest_operation.workspace,
+                                routes,
+                                budget,
+                            )?;
+                            if observed.snapshot.root_nonce != initial.root_nonce
+                                || observed.snapshot.selected != initial.selected
+                                || observed.snapshot.namespace != initial.namespace
+                            {
+                                return Err(IndexError::DigestConflict);
+                            }
+                            Ok(observed)
+                        },
+                    )?
+                } else {
+                    verify_native_source_root_quiescence_v1(
+                        root,
+                        authority.io.as_ref(),
+                        expected.manifest_operation.workspace,
+                        budget,
+                    )?
+                };
                 Self::check_selected_v1(
                     &authority, &observed, expected, config, &registry, budget,
                 )?;
@@ -137,6 +181,7 @@ impl HeldPreviousNativeV1 {
             registry,
             config.resources.physical.inventory.max_entries,
             None,
+            false,
             budget,
         )?;
         require_retired(authority)?;
@@ -145,8 +190,209 @@ impl HeldPreviousNativeV1 {
         Ok(())
     }
 
-    pub(in crate::native_product::boot) fn observed_v1(&self) -> &NativeBootQuiescentCatalogV1 {
+    pub(crate) fn observed_v1(&self) -> &NativeBootQuiescentCatalogV1 {
         &self.observed
+    }
+
+    pub(crate) fn catalog_io_v1(&self) -> &dyn quanta_index_catalog::CatalogReadOnlyIoAdmission {
+        self.authority.io.as_ref()
+    }
+
+    fn with_routes_from_reader_v1<T>(
+        &self,
+        reader: &FileObjectReader,
+        budget: &mut WorkBudget,
+        visit: impl FnOnce(&NativeProtectedSourceRoutesV1, &mut WorkBudget) -> Result<T>,
+    ) -> Result<T> {
+        let root = self.authority.lease.state_root_identity_v1();
+        let selected = self
+            .observed
+            .snapshot
+            .selected
+            .as_ref()
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        let route = selected
+            .protected_source_routes
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        if Some(reader.namespace_binding()?) != self.observed.snapshot.namespace {
+            return Err(IndexError::DigestConflict.into());
+        }
+        let stored = reader.get(route.object, budget)?;
+        let result = with_native_protected_source_routes_v1(
+            route.object,
+            Some(route.count),
+            &stored,
+            budget,
+            |routes, budget| {
+                let observed = verify_native_source_root_quiescence_with_routes_v1(
+                    root,
+                    self.authority.io.as_ref(),
+                    selected.operation.key.workspace,
+                    routes,
+                    budget,
+                )?;
+                if observed.snapshot.root_nonce != self.observed.snapshot.root_nonce
+                    || observed.snapshot.selected != self.observed.snapshot.selected
+                    || observed.snapshot.namespace != self.observed.snapshot.namespace
+                    || observed.current_head != self.observed.current_head
+                {
+                    return Err(IndexError::DigestConflict);
+                }
+                Ok(visit(routes, budget))
+            },
+        )?;
+        result
+    }
+
+    pub(crate) fn with_protected_routes_v1<T>(
+        &self,
+        budget: &mut WorkBudget,
+        visit: impl FnOnce(
+            &NativeProtectedSourceRoutesV1,
+            &FileObjectReader,
+            &mut WorkBudget,
+        ) -> Result<T>,
+    ) -> Result<T> {
+        let root = self.authority.lease.state_root_identity_v1();
+        let objects = root.join("native-objects");
+        let io = Arc::new(NativeObjectReadIo::new(Arc::clone(
+            &self.authority.physical,
+        )));
+        let lock = io.open(&objects.join(".object-namespace.lease"), budget)?;
+        let reader = FileObjectReader::open_existing(&objects, lock, io, budget)?;
+        self.with_routes_from_reader_v1(&reader, budget, |routes, budget| {
+            visit(routes, &reader, budget)
+        })
+    }
+
+    pub(crate) fn visit_history_members_v1(
+        &self,
+        repo: Option<&quanta_index_contract::RepoId>,
+        budget: &mut WorkBudget,
+        mut visit: impl FnMut(
+            &quanta_index_contract::index::NativeHistoryRestoreInputV1,
+            &FileObjectReader,
+            &mut WorkBudget,
+        ) -> Result<()>,
+    ) -> Result<u64> {
+        use quanta_index_core::index::{InputDomain, decode_member_binding, member_map_key};
+
+        let view = &self.observed.current_head;
+        let root = self.authority.lease.state_root_identity_v1();
+        let objects = root.join("native-objects");
+        let io = Arc::new(NativeObjectReadIo::new(Arc::clone(
+            &self.authority.physical,
+        )));
+        let lock = io.open(&objects.join(".object-namespace.lease"), budget)?;
+        let reader = FileObjectReader::open_existing(&objects, lock, io, budget)?;
+        if Some(reader.namespace_binding()?) != self.observed.snapshot.namespace {
+            return Err(IndexError::DigestConflict.into());
+        }
+        let profile_object = reader.get(view.profile, budget)?;
+        if !profile_object.registration.children.is_empty() {
+            return Err(IndexError::DigestConflict.into());
+        }
+        let size = u64::try_from(profile_object.payload.len())?
+            .checked_mul(32)
+            .and_then(|size| size.checked_add(4096))
+            .ok_or(IndexError::ResourceLimited)?;
+        let _profile_memory = budget
+            .reserve_memory(size, MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let mut profile: quanta_index_core::index::IndexProfile =
+            serde_json::from_slice(&profile_object.payload)?;
+        if profile.instances.len()
+            > quanta_index_contract::native_protocol::MAX_NATIVE_READ_PROFILE_INSTANCES
+        {
+            return Err(IndexError::DigestConflict.into());
+        }
+        // Persisted profiles need not be sorted. Census order is independent
+        // from profile identity and cannot reject a valid unsorted profile.
+        profile.instances.sort_unstable_by_key(|spec| spec.instance);
+        if profile
+            .instances
+            .windows(2)
+            .any(|pair| pair[0].instance == pair[1].instance)
+        {
+            return Err(IndexError::DigestConflict.into());
+        }
+        let mut count = 0_u64;
+        for instance in &profile.instances {
+            budget.checkpoint()?;
+            if instance.input_domain != InputDomain::History {
+                continue;
+            }
+            let key = member_map_key(instance.instance);
+            let reference = reader
+                .lookup_map_object(view.members, &key, budget)?
+                .ok_or(IndexError::SnapshotUnavailable)?;
+            let object = reader.get(reference, budget)?;
+            let member = decode_member_binding(&object.payload, budget)?;
+            if member.instance != instance.instance
+                || member.format != instance.format
+                || member.input.schema != instance.schema
+                || member.input.policy != instance.policy
+                || !object.registration.children.iter().copied().eq([
+                    Some(member.artifact),
+                    member.input.root.0,
+                ]
+                .into_iter()
+                .flatten())
+            {
+                return Err(IndexError::DigestConflict.into());
+            }
+            quanta_index_search_plane::native_history::with_native_history_restore_member_v1(
+                member.artifact,
+                instance,
+                |reference, budget| reader.get(reference, budget),
+                |root, after, limit, budget| reader.scan_map(root, after, limit, budget),
+                budget,
+                |cut, rows, _source_input, budget| {
+                    if member.input.context
+                        != cut
+                            .input_context_v1()
+                            .map_err(|message| IndexError::InvalidInput(message.into()))?
+                        || member.logical_commitment != cut.snapshot_digest
+                        || member.input.root != rows
+                    {
+                        return Err(IndexError::DigestConflict);
+                    }
+                    if repo.is_some_and(|repo| repo != &cut.generation.repo_id) {
+                        return Ok(());
+                    }
+                    let bytes = cut
+                        .generation
+                        .repo_id
+                        .as_str()
+                        .len()
+                        .checked_add(cut.generation.revision_id.as_str().len())
+                        .and_then(|n| u64::try_from(n).ok())
+                        .ok_or(IndexError::ResourceLimited)?;
+                    let _cut_memory = budget
+                        .reserve_memory(bytes, MemoryLifetime::Temporary)?
+                        .ok_or(IndexError::ResourceLimited)?;
+                    let input = quanta_index_contract::index::NativeHistoryRestoreInputV1 {
+                        wire_version: 3,
+                        source_root_nonce: quanta_index_core::index::Digest(
+                            self.observed.snapshot.root_nonce,
+                        ),
+                        source_view: view.identity,
+                        instance: instance.instance,
+                        member: member.artifact,
+                        cut: cut.clone(),
+                    };
+                    visit(&input, &reader, budget).map_err(|cause| {
+                        cause
+                            .downcast::<IndexError>()
+                            .unwrap_or_else(|cause| IndexError::Storage(cause.to_string()))
+                    })?;
+                    count = count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+                    Ok(())
+                },
+            )?;
+        }
+        self.require_current_and_retired_v1(budget)?;
+        Ok(count)
     }
 
     /// Reconcile every actual Published Q row with the canonical joined Source
@@ -203,149 +449,113 @@ impl HeldPreviousNativeV1 {
         }
         let mut published_count = 0_u64;
         let mut ast_count = 0_u64;
+        let mut history_count = 0_u64;
+        let mut sibling_count = 0_u64;
         let mut found_boot = false;
         let mut found_head = None;
-        let observed = verify_native_source_root_publications_v1(
-            root,
-            self.authority.io.as_ref(),
-            latest_operation.workspace,
-            budget,
-            |snapshot, head, operation, publication, budget| {
-                if snapshot.root_nonce != self.observed.snapshot.root_nonce
-                    || snapshot.selected != self.observed.snapshot.selected
-                    || snapshot.namespace != self.observed.snapshot.namespace
-                    || head != &self.observed.current_head
+        let mut visit = |routes: Option<&NativeProtectedSourceRoutesV1>,
+                         snapshot: &quanta_index_catalog::NativeBootCatalogSnapshot,
+                         head: &quanta_index_core::index::CatalogView,
+                         operation: &quanta_index_core::index::ImmutableOperation,
+                         publication: &quanta_index_core::index::CatalogView,
+                         budget: &mut WorkBudget| {
+            if snapshot.root_nonce != self.observed.snapshot.root_nonce
+                || snapshot.selected != self.observed.snapshot.selected
+                || snapshot.namespace != self.observed.snapshot.namespace
+            {
+                return Err(IndexError::DigestConflict);
+            }
+            if operation.key.workspace != latest_operation.workspace {
+                // The route-aware Catalog cursor admits only workspaces
+                // whose exact selected head/basis have been authenticated by
+                // check_selected_v1. Historical terminal requests can already
+                // be reclaimed; their canonical persisted ledger is copied
+                // and independently compared by preserved_native_v1.
+                if publication.identity.workspace != operation.key.workspace
+                    || head.identity.workspace != operation.key.workspace
                 {
                     return Err(IndexError::DigestConflict);
                 }
-                let mut ast = None;
-                for fact in &evidence.source_facts {
-                    budget.charge(WorkUsage {
-                        reads: 1,
-                        bytes: u64::try_from(std::mem::size_of::<OperationKey>())
-                            .map_err(|_| IndexError::ResourceLimited)?,
-                        ..Default::default()
-                    })?;
-                    if let Fact::AstWork {
-                        ast_operation: Some(key),
-                        candidate_root_nonce,
-                        phase: NativeCutoverAstWorkPhaseV1::Published,
-                        source_operation,
-                        source_view,
-                        source_cut,
-                        published_view: Some(view),
-                        request: Some(request),
-                        ..
-                    } = fact && *key == operation.key {
-                        if *candidate_root_nonce != Some(root_nonce)
-                            || ast.replace((*source_operation, *source_view, *source_cut,
-                                *view, request)).is_some()
-                        {
-                            return Err(IndexError::DigestConflict);
-                        }
-                    }
-                }
-                if let Some((source_operation, source_view, source_cut, ast_view, request)) = ast {
-                    let source = quanta_index_catalog::verify_native_published_operation(
-                        root, self.authority.io.as_ref(), source_operation, budget,
-                    )?;
-                    if source.snapshot().root_nonce != snapshot.root_nonce
-                        || source.publication() != source_view
-                        || source.publication_metadata().source != source_cut
-                        || publication.identity != ast_view
-                        || publication.source != source_cut
+                sibling_count = sibling_count
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                published_count = published_count
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                return Ok(());
+            }
+            if head != &self.observed.current_head {
+                return Err(IndexError::DigestConflict);
+            }
+            let mut ast = None;
+            for fact in &evidence.source_facts {
+                budget.charge(WorkUsage {
+                    reads: 1,
+                    bytes: u64::try_from(std::mem::size_of::<OperationKey>())
+                        .map_err(|_| IndexError::ResourceLimited)?,
+                    ..Default::default()
+                })?;
+                if let Fact::AstWork {
+                    ast_operation: Some(key),
+                    candidate_root_nonce,
+                    phase: NativeCutoverAstWorkPhaseV1::Published,
+                    source_operation,
+                    source_view,
+                    source_cut,
+                    published_view: Some(view),
+                    request: Some(request),
+                    ..
+                } = fact
+                    && *key == operation.key
+                {
+                    if *candidate_root_nonce != Some(root_nonce)
+                        || ast
+                            .replace((*source_operation, *source_view, *source_cut, *view, request))
+                            .is_some()
                     {
                         return Err(IndexError::DigestConflict);
                     }
-                    let max_pending = u32::try_from(
-                        self.selected.config.resources.physical.inventory.max_entries,
-                    ).map_err(|_| IndexError::ResourceLimited)?;
-                    let [stored_request, _profile] = reader.verify_closure_with_selected_roots(
-                        &[operation.request, publication.profile],
-                        [operation.request, publication.profile], max_pending, budget,
-                    )?;
-                    quanta_index_kernel::verify_native_boot_captured_request_v1(
-                        request, operation, &stored_request, budget,
-                    )?;
-                    ast_count = ast_count.checked_add(1).ok_or(IndexError::ResourceLimited)?;
-                    published_count = published_count.checked_add(1)
-                        .ok_or(IndexError::ResourceLimited)?;
-                    if snapshot.selected.as_ref()
-                        .is_some_and(|selected| selected.operation.key == operation.key)
-                    {
-                        found_boot = true;
-                    }
-                    if publication.identity == head.identity {
-                        if found_head.replace(source_operation).is_some() {
-                            return Err(IndexError::DigestConflict);
-                        }
-                    }
-                    return Ok(());
                 }
-                let mut matched = None;
-                for fact in &evidence.source_facts {
-                    budget.charge(WorkUsage {
-                        reads: 1,
-                        bytes: u64::try_from(std::mem::size_of::<OperationKey>())
-                            .map_err(|_| IndexError::ResourceLimited)?,
-                        ..Default::default()
-                    })?;
-                    if let Fact::Reservation {
-                        target,
-                        candidate_root_nonce,
-                        ..
-                    } = fact
-                        && target.operation == operation.key
-                    {
-                        if *candidate_root_nonce != Some(root_nonce)
-                            || matched.replace(target).is_some()
-                        {
-                            return Err(IndexError::DigestConflict);
-                        }
-                    }
-                }
-                // Only lexical SourceAdvance reaches this path. Published AST
-                // was checked against its own signed work and physical request.
-                let target = matched.ok_or(IndexError::DigestConflict)?;
-                let mut request = None;
-                for fact in &evidence.source_facts {
-                    budget.charge(WorkUsage {
-                        reads: 1,
-                        bytes: u64::try_from(std::mem::size_of::<OperationKey>())
-                            .map_err(|_| IndexError::ResourceLimited)?,
-                        ..Default::default()
-                    })?;
-                    if let Fact::Replay {
-                        native_update_request: Some(next),
-                        phase,
-                        ..
-                    } = fact
-                        && next.operation == operation.key
-                    {
-                        if !matches!(
-                            phase,
-                            NativeCutoverReplayPhaseV1::Acked | NativeCutoverReplayPhaseV1::Cleaned
-                        ) || request.replace(next).is_some()
-                        {
-                            return Err(IndexError::DigestConflict);
-                        }
-                    }
-                }
-                let request = request.ok_or(IndexError::DigestConflict)?;
-                let identified = quanta_index_kernel::identify_update_request_with(
-                    request,
+            }
+            if let Some((source_operation, source_view, source_cut, ast_view, request)) = ast {
+                let source = quanta_index_catalog::verify_native_published_operation(
+                    root,
+                    self.authority.io.as_ref(),
+                    source_operation,
                     budget,
-                    |payload, children, budget| reader.identify(payload, children, budget),
                 )?;
-                quanta_index_kernel::verify_native_published_source_target_v1(
-                    target,
+                if source.snapshot().root_nonce != snapshot.root_nonce
+                    || source.publication() != source_view
+                    || source.publication_metadata().source != source_cut
+                    || publication.identity != ast_view
+                    || publication.source != source_cut
+                {
+                    return Err(IndexError::DigestConflict);
+                }
+                let max_pending = u32::try_from(
+                    self.selected
+                        .config
+                        .resources
+                        .physical
+                        .inventory
+                        .max_entries,
+                )
+                .map_err(|_| IndexError::ResourceLimited)?;
+                let [stored_request, _profile] = reader.verify_closure_with_selected_roots(
+                    &[operation.request, publication.profile],
+                    [operation.request, publication.profile],
+                    max_pending,
+                    budget,
+                )?;
+                quanta_index_kernel::verify_native_boot_captured_request_v1(
                     request,
                     operation,
-                    publication.identity,
-                    publication.profile,
-                    identified,
+                    &stored_request,
                     budget,
                 )?;
+                ast_count = ast_count
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
                 published_count = published_count
                     .checked_add(1)
                     .ok_or(IndexError::ResourceLimited)?;
@@ -357,19 +567,231 @@ impl HeldPreviousNativeV1 {
                     found_boot = true;
                 }
                 if publication.identity == head.identity {
-                    if found_head.replace(operation.key).is_some() {
+                    if found_head.replace(source_operation).is_some() {
                         return Err(IndexError::DigestConflict);
                     }
                 }
-                Ok(())
-            },
-        )?;
+                return Ok(());
+            }
+            let mut matched = None;
+            for fact in &evidence.source_facts {
+                budget.charge(WorkUsage {
+                    reads: 1,
+                    bytes: u64::try_from(std::mem::size_of::<OperationKey>())
+                        .map_err(|_| IndexError::ResourceLimited)?,
+                    ..Default::default()
+                })?;
+                if let Fact::Reservation {
+                    target,
+                    candidate_root_nonce,
+                    ..
+                } = fact
+                    && target.operation == operation.key
+                {
+                    if *candidate_root_nonce != Some(root_nonce)
+                        || matched.replace(target).is_some()
+                    {
+                        return Err(IndexError::DigestConflict);
+                    }
+                }
+            }
+            // History-only publications do not issue Source events. Their
+            // immutable request must preserve the exact prior Source and
+            // projection roots; every Source publication still requires
+            // the signed reservation/replay correspondence below.
+            let Some(target) = matched else {
+                let maximum = u32::try_from(
+                    self.selected
+                        .config
+                        .resources
+                        .physical
+                        .inventory
+                        .max_entries,
+                )
+                .map_err(|_| IndexError::ResourceLimited)?;
+                let [stored_request, profile] = reader.verify_closure_with_selected_roots(
+                    &[operation.request, publication.profile],
+                    [operation.request, publication.profile],
+                    maximum,
+                    budget,
+                )?;
+                quanta_index_kernel::with_native_boot_history_request_v1(
+                    operation,
+                    publication,
+                    &stored_request,
+                    budget,
+                    |request, budget| {
+                        let prior = if let Some(routes) = routes {
+                            quanta_index_catalog::verify_native_published_view_with_routes_v1(
+                                root,
+                                self.authority.io.as_ref(),
+                                request.expected_view,
+                                routes,
+                                budget,
+                            )?
+                        } else {
+                            quanta_index_catalog::verify_native_published_view_v1(
+                                root,
+                                self.authority.io.as_ref(),
+                                request.expected_view,
+                                budget,
+                            )?
+                        };
+                        if prior.source != publication.source
+                            || prior.projections != publication.projections
+                        {
+                            return Err(IndexError::DigestConflict);
+                        }
+                        match &request.kind {
+                            quanta_index_core::index::UpdateKind::HistoryAdvance(transition)
+                                if transition.expected.is_none() =>
+                            {
+                                let previous_profile = reader.get(prior.profile, budget)?;
+                                quanta_index_kernel::with_native_boot_history_full_v1(
+                                    &prior,
+                                    operation,
+                                    publication,
+                                    &stored_request,
+                                    &previous_profile,
+                                    &profile,
+                                    budget,
+                                    |_, _| Ok(()),
+                                )?;
+                            }
+                            quanta_index_core::index::UpdateKind::HistoryAdvance(_)
+                            | quanta_index_core::index::UpdateKind::HistoryAppend(_)
+                                if prior.profile == publication.profile => {}
+                            _ => return Err(IndexError::DigestConflict),
+                        }
+                        Ok(())
+                    },
+                )?;
+                history_count = history_count
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                published_count = published_count
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                if snapshot
+                    .selected
+                    .as_ref()
+                    .is_some_and(|selected| selected.operation.key == operation.key)
+                {
+                    found_boot = true;
+                }
+                if publication.identity == head.identity {
+                    let source = quanta_index_catalog::verify_native_published_operation(
+                        root,
+                        self.authority.io.as_ref(),
+                        latest_operation,
+                        budget,
+                    )?;
+                    if source.snapshot().root_nonce != snapshot.root_nonce
+                        || source.publication_metadata().source != publication.source
+                        || found_head.replace(latest_operation).is_some()
+                    {
+                        return Err(IndexError::DigestConflict);
+                    }
+                }
+                return Ok(());
+            };
+            let mut request = None;
+            for fact in &evidence.source_facts {
+                budget.charge(WorkUsage {
+                    reads: 1,
+                    bytes: u64::try_from(std::mem::size_of::<OperationKey>())
+                        .map_err(|_| IndexError::ResourceLimited)?,
+                    ..Default::default()
+                })?;
+                if let Fact::Replay {
+                    native_update_request: Some(next),
+                    phase,
+                    ..
+                } = fact
+                    && next.operation == operation.key
+                {
+                    if !matches!(
+                        phase,
+                        NativeCutoverReplayPhaseV1::Acked | NativeCutoverReplayPhaseV1::Cleaned
+                    ) || request.replace(next).is_some()
+                    {
+                        return Err(IndexError::DigestConflict);
+                    }
+                }
+            }
+            let request = request.ok_or(IndexError::DigestConflict)?;
+            let identified = quanta_index_kernel::identify_update_request_with(
+                request,
+                budget,
+                |payload, children, budget| reader.identify(payload, children, budget),
+            )?;
+            quanta_index_kernel::verify_native_published_source_target_v1(
+                target,
+                request,
+                operation,
+                publication.identity,
+                publication.profile,
+                identified,
+                budget,
+            )?;
+            published_count = published_count
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?;
+            if snapshot
+                .selected
+                .as_ref()
+                .is_some_and(|selected| selected.operation.key == operation.key)
+            {
+                found_boot = true;
+            }
+            if publication.identity == head.identity {
+                if found_head.replace(operation.key).is_some() {
+                    return Err(IndexError::DigestConflict);
+                }
+            }
+            Ok(())
+        };
+        let observed = if self
+            .observed
+            .snapshot
+            .selected
+            .as_ref()
+            .and_then(|selected| selected.protected_source_routes)
+            .is_some()
+        {
+            self.with_routes_from_reader_v1(&reader, budget, |routes, budget| {
+                Ok(verify_native_source_root_publications_with_routes_v1(
+                    root,
+                    self.authority.io.as_ref(),
+                    latest_operation.workspace,
+                    routes,
+                    budget,
+                    |snapshot, head, operation, publication, budget| {
+                        visit(Some(routes), snapshot, head, operation, publication, budget)
+                    },
+                )?)
+            })?
+        } else {
+            verify_native_source_root_publications_v1(
+                root,
+                self.authority.io.as_ref(),
+                latest_operation.workspace,
+                budget,
+                |snapshot, head, operation, publication, budget| {
+                    visit(None, snapshot, head, operation, publication, budget)
+                },
+            )?
+        };
         drop(reader);
         if observed.snapshot.root_nonce != self.observed.snapshot.root_nonce
             || observed.current_head != self.observed.current_head
             || published_count == 0
-            || published_count != source_count.checked_add(ast_count)
-                .ok_or(IndexError::ResourceLimited)?
+            || published_count
+                != source_count
+                    .checked_add(ast_count)
+                    .and_then(|count| count.checked_add(history_count))
+                    .and_then(|count| count.checked_add(sibling_count))
+                    .ok_or(IndexError::ResourceLimited)?
             || !found_boot
             || found_head != Some(latest_operation)
         {
@@ -401,12 +823,31 @@ impl HeldPreviousNativeV1 {
             .identity
             .ok_or(IndexError::SnapshotUnavailable)?;
         let registry = super::super::super::compose_boot_registry(config)?;
-        let observed = verify_native_source_root_quiescence_v1(
-            self.authority.lease.state_root_identity_v1(),
-            self.authority.io.as_ref(),
-            expected.manifest_operation.workspace,
-            budget,
-        )?;
+        let observed = if self
+            .observed
+            .snapshot
+            .selected
+            .as_ref()
+            .and_then(|selected| selected.protected_source_routes)
+            .is_some()
+        {
+            self.with_protected_routes_v1(budget, |routes, _reader, budget| {
+                Ok(verify_native_source_root_quiescence_with_routes_v1(
+                    self.authority.lease.state_root_identity_v1(),
+                    self.authority.io.as_ref(),
+                    expected.manifest_operation.workspace,
+                    routes,
+                    budget,
+                )?)
+            })?
+        } else {
+            verify_native_source_root_quiescence_v1(
+                self.authority.lease.state_root_identity_v1(),
+                self.authority.io.as_ref(),
+                expected.manifest_operation.workspace,
+                budget,
+            )?
+        };
         if observed.snapshot.root_nonce != self.observed.snapshot.root_nonce
             || observed.current_head != self.observed.current_head
         {

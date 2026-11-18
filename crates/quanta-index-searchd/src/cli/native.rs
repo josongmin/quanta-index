@@ -12,6 +12,7 @@ pub enum NativeCommandModeV1 {
     SelectCandidate {
         root_nonce: [u8; 32],
         source_cut_digest: Digest,
+        protected_source_routes: Option<ObjectRef>,
     },
     ServeCandidate,
 }
@@ -22,6 +23,7 @@ pub struct NativeBootIdentityV1 {
     pub manifest_operation: OperationKey,
     pub manifest_object: ObjectRef,
     pub source_cut_digest: Digest,
+    pub protected_source_routes: Option<ObjectRef>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -48,6 +50,13 @@ impl NativeStateCommandV1 {
         {
             bail!("native root nonce must be nonzero");
         }
+        if self.identity.is_some_and(|identity| {
+            identity
+                .protected_source_routes
+                .is_some_and(|reference| reference.0 == Digest([0; 32]))
+        }) {
+            bail!("protected Source route reference must be nonzero");
+        }
         match self.mode {
             NativeCommandModeV1::Select | NativeCommandModeV1::SelectCandidate { .. } => {
                 if self.identity.is_some()
@@ -67,12 +76,17 @@ impl NativeStateCommandV1 {
                 if let NativeCommandModeV1::SelectCandidate {
                     root_nonce,
                     source_cut_digest,
+                    protected_source_routes,
                 } = self.mode
                     && (self.config_digest.is_none()
                         || root_nonce == [0; 32]
-                        || source_cut_digest == Digest([0; 32]))
+                        || source_cut_digest == Digest([0; 32])
+                        || protected_source_routes
+                            .is_some_and(|reference| reference.0 == Digest([0; 32])))
                 {
-                    bail!("select-native-candidate requires pinned config, root and SourceCut digests");
+                    bail!(
+                        "select-native-candidate requires pinned config, root and SourceCut digests"
+                    );
                 }
             }
             NativeCommandModeV1::Verify | NativeCommandModeV1::VerifyCandidate => {
@@ -118,6 +132,7 @@ pub(super) struct NativeCommandInput {
     pub manifest_operation: Option<String>,
     pub manifest_object: Option<String>,
     pub source_cut_digest: Option<String>,
+    pub protected_source_routes: Option<String>,
     pub config_digest: Option<String>,
     pub install_catalog_digest: Option<String>,
     pub receipt_path: Option<PathBuf>,
@@ -130,6 +145,7 @@ impl NativeCommandInput {
             || self.manifest_operation.is_some()
             || self.manifest_object.is_some()
             || self.source_cut_digest.is_some()
+            || self.protected_source_routes.is_some()
             || self.config_digest.is_some()
             || self.install_catalog_digest.is_some()
             || self.receipt_path.is_some()
@@ -138,18 +154,28 @@ impl NativeCommandInput {
     pub(super) fn finish_candidate(self) -> Result<NativeStateCommandV1> {
         let mut input = self;
         let root_nonce = parse_hex32(
-            &input.root_nonce.take().ok_or_else(|| anyhow::anyhow!(
-                "select-native-candidate requires --root-nonce"
-            ))?,
+            &input
+                .root_nonce
+                .take()
+                .ok_or_else(|| anyhow::anyhow!("select-native-candidate requires --root-nonce"))?,
             "--root-nonce",
         )?;
         let source_cut_digest = parse_digest(
-            &input.source_cut_digest.take().ok_or_else(|| anyhow::anyhow!(
-                "select-native-candidate requires --source-cut-digest"
-            ))?,
+            &input.source_cut_digest.take().ok_or_else(|| {
+                anyhow::anyhow!("select-native-candidate requires --source-cut-digest")
+            })?,
             "--source-cut-digest",
         )?;
-        input.finish(NativeCommandModeV1::SelectCandidate { root_nonce, source_cut_digest })
+        let protected_source_routes = input
+            .protected_source_routes
+            .take()
+            .map(|value| parse_digest(&value, "--protected-source-routes").map(ObjectRef))
+            .transpose()?;
+        input.finish(NativeCommandModeV1::SelectCandidate {
+            root_nonce,
+            source_cut_digest,
+            protected_source_routes,
+        })
     }
 
     pub(super) fn finish(self, mode: NativeCommandModeV1) -> Result<NativeStateCommandV1> {
@@ -168,10 +194,14 @@ impl NativeCommandInput {
             .map(|value| parse_digest(&value, "--config-digest"))
             .transpose()?;
 
-        if matches!(mode, NativeCommandModeV1::Select | NativeCommandModeV1::SelectCandidate { .. }) {
+        if matches!(
+            mode,
+            NativeCommandModeV1::Select | NativeCommandModeV1::SelectCandidate { .. }
+        ) {
             if self.root_nonce.is_some()
                 || self.manifest_object.is_some()
                 || self.source_cut_digest.is_some()
+                || self.protected_source_routes.is_some()
                 || self.install_catalog_digest.is_some()
             {
                 bail!(
@@ -213,12 +243,15 @@ impl NativeCommandInput {
         let has_identity = self.root_nonce.is_some()
             || manifest_operation.is_some()
             || self.manifest_object.is_some()
-            || self.source_cut_digest.is_some();
+            || self.source_cut_digest.is_some()
+            || self.protected_source_routes.is_some();
         if mode == NativeCommandModeV1::ServeCandidate && has_identity {
             bail!("serve-native-candidate cannot name an installed BOOT identity");
         }
-        if matches!(mode, NativeCommandModeV1::Serve | NativeCommandModeV1::ServeCandidate)
-            && !has_identity
+        if matches!(
+            mode,
+            NativeCommandModeV1::Serve | NativeCommandModeV1::ServeCandidate
+        ) && !has_identity
         {
             let command = NativeStateCommandV1 {
                 mode,
@@ -279,6 +312,10 @@ impl NativeCommandInput {
                 manifest_operation,
                 manifest_object,
                 source_cut_digest,
+                protected_source_routes: self
+                    .protected_source_routes
+                    .map(|value| parse_digest(&value, "--protected-source-routes").map(ObjectRef))
+                    .transpose()?,
             }),
             config_digest: Some(config_digest),
             install_catalog_digest,

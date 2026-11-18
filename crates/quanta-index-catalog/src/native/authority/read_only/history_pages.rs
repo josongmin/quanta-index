@@ -10,7 +10,9 @@ use quanta_index_contract::{
         MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1, MAX_HISTORY_SNAPSHOT_ROWS_PER_PAGE_V1, OperationKey,
         ProducerId, SlotId, StreamId, TenantId, WorkspaceKey, WorktreeId,
     },
-    native_protocol::{NativeIndexRequest, NativeIndexRequestEnvelope, NativeProjectionOutputChildren},
+    native_protocol::{
+        NativeIndexRequest, NativeIndexRequestEnvelope, NativeProjectionOutputChildren,
+    },
 };
 use quanta_index_core::{
     AuxiliaryGenerationKeyV1, AuxiliaryRowV1, CoreError,
@@ -273,7 +275,10 @@ impl Pages<'_> {
         let row_bytes = encoded_len(&payload, budget)?;
         if self.active.is_none() {
             self.active = Some(PageBuffer::new(
-                self.generation, self.next_ordinal, self.maximum_bytes, budget,
+                self.generation,
+                self.next_ordinal,
+                self.maximum_bytes,
+                budget,
             )?);
         }
         if !self
@@ -283,7 +288,10 @@ impl Pages<'_> {
         {
             self.flush(budget)?;
             self.active = Some(PageBuffer::new(
-                self.generation, self.next_ordinal, self.maximum_bytes, budget,
+                self.generation,
+                self.next_ordinal,
+                self.maximum_bytes,
+                budget,
             )?);
         }
         self.active
@@ -357,8 +365,8 @@ mod tests {
         let bound = maximum_staged_page_bytes(&mut budget)
             .expect("determine the admitted History page payload bound");
         assert!(bound > 0);
-        let within_request = stage_page_request(vec![b'0'; bound])
-            .expect("build the maximal History page request");
+        let within_request =
+            stage_page_request(vec![b'0'; bound]).expect("build the maximal History page request");
         let within = quanta_index_ipc::cbor_payload_len(&within_request)
             .expect("encode the maximal History page request");
         let outside_request = stage_page_request(vec![b'0'; bound + 1])

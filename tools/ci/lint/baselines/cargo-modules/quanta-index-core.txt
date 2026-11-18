@@ -512,6 +512,7 @@ crate quanta_index_core
 │   │   ├── trait WorkActionCursor: pub
 │   │   ├── trait WorkClaimPort: pub
 │   │   └── struct WorkRetirementCursor: pub
+│   ├── mod protected_source_routes: pub(self)
 │   ├── mod query: pub(self)
 │   │   ├── trait IndexQueryPort: pub
 │   │   ├── enum NativeTextHitSource: pub
@@ -562,6 +563,8 @@ crate quanta_index_core
 │   │   ├── struct SourceChange: pub
 │   │   ├── struct SourceDelta: pub
 │   │   ├── struct SourcePathKey: pub
+│   │   ├── enum SourcePathOwners: pub
+│   │   ├── struct SourcePathRepositoryKey: pub
 │   │   ├── struct SourceRecordOwner: pub
 │   │   ├── struct StagedObjectReferenceIter: pub
 │   │   ├── struct StagedObjectReferences: pub
@@ -584,6 +587,7 @@ crate quanta_index_core
 │   ├── mod searchable: pub(self)
 │   │   ├── struct SearchableParentPreparation: pub
 │   │   └── struct SearchablePreparation: pub
+│   ├── mod source_paths: pub(self)
 │   ├── mod staging_payload: pub(self)
 │   │   ├── struct InputMemory: pub(self)
 │   │   ├── struct JsonWriter: pub(self)

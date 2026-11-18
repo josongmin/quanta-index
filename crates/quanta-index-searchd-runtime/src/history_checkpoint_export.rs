@@ -4,7 +4,7 @@
 
 use std::{io, os::fd::AsFd as _};
 
-use anyhow::{Context as _, Result, anyhow, ensure};
+use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use quanta_index_contract::{
     RepoId,
     index::{
@@ -21,11 +21,46 @@ use serde::Serialize;
 use super::{boot, with_native_recovery_control_v1};
 use crate::deployment_selection;
 
+#[path = "history_checkpoint_export/native_v1.rs"]
+mod native_v1;
+#[path = "history_checkpoint_export/source_v1.rs"]
+mod source_v1;
+
+pub use source_v1::run_source_v1;
+
 const MAX_FRAME_BYTES: usize = MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1 + 4096;
 
 #[derive(Serialize)]
 #[serde(tag = "kind", content = "body", rename_all = "snake_case")]
 enum ExportFrame<'a> {
+    NativeProtectedComplete {
+        source_root_nonce: quanta_index_core::index::Digest,
+        source_routes: quanta_index_core::index::ObjectRef,
+        snapshot: Option<quanta_index_core::index::ObjectRef>,
+    },
+    NativeObjectBegin {
+        reference: quanta_index_core::index::ObjectRef,
+        payload_bytes: u64,
+        children: &'a [quanta_index_core::index::ObjectRef],
+    },
+    NativeObjectChunk {
+        offset: u64,
+        bytes: &'a [u8],
+    },
+    NativeObjectEnd {
+        reference: quanta_index_core::index::ObjectRef,
+    },
+    NativeHistory {
+        source_root_nonce: Digest,
+        source_view: quanta_index_core::index::ViewRef,
+        instance: quanta_index_core::index::IndexInstanceId,
+        member: quanta_index_core::index::ObjectRef,
+        cut: &'a quanta_index_contract::index::HistorySourceCutV1,
+    },
+    NativeInventoryComplete {
+        repo_id: &'a RepoId,
+        count: u64,
+    },
     Page(&'a HistorySnapshotPageV1),
     InventoryKey {
         generation: &'a AuxiliaryGenerationKeyV1,
@@ -72,9 +107,9 @@ impl io::Write for FrameCensus<'_> {
     }
 }
 
-fn write_frame(
+fn write_frame<T: Serialize>(
     output: &mut impl io::Write,
-    frame: &ExportFrame<'_>,
+    frame: &T,
     budget: &mut WorkBudget,
 ) -> Result<()> {
     let mut census = FrameCensus {
@@ -114,11 +149,19 @@ pub fn run(command: &NativeHistoryExportCommandV1, request: RequestBudgetV1) -> 
         |_context, budget| {
             let output = io::stdout();
             let mut output = output.lock();
-            deployment_selection::with_locked_legacy_export_selection_v1(
+            deployment_selection::with_locked_export_selection_v1(
                 &command.selection_path,
                 command.expected_current_sha256,
                 budget,
                 |selection, budget| {
+                    if selection.native_command_v1().is_some() {
+                        return native_v1::export_v1(
+                            selection,
+                            &command.scope,
+                            &mut output,
+                            budget,
+                        );
+                    }
                     boot::with_legacy_checkpoint_catalog_v1(
                         selection,
                         budget,
@@ -164,6 +207,9 @@ pub fn run(command: &NativeHistoryExportCommandV1, request: RequestBudgetV1) -> 
                                         budget,
                                     )
                                     .context("History completion frame")?;
+                                }
+                                NativeHistoryExportScopeV1::Protected => {
+                                    bail!("protected Native export requires a Native selection");
                                 }
                                 NativeHistoryExportScopeV1::Inventory(repo_id) => {
                                     let count = quanta_index_catalog::visit_legacy_history_generation_keys_v1(

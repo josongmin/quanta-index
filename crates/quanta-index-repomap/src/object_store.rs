@@ -294,6 +294,25 @@ fn verify_recovery_layout(
     Ok(())
 }
 
+/// Lend the exact canonical compiled payload from one active Legacy candidate
+/// while its original root, object file, receipts and allocation remain held.
+/// The caller must supply the Catalog's independently observed active row.
+/// This issues no Native projection certificate or replacement authority.
+pub fn visit_existing_active_repomap_compiled_payload_v1(
+    root: &Path,
+    candidate: &quanta_index_catalog::RepoMapCandidateRowV1,
+    receipts: Option<(&RepoMapTerminalReceiptV2, &RepoMapTerminalReceiptV2)>,
+    owner: u32,
+    maximum_bytes: u64,
+    io: &dyn ObjectReadIoPort,
+    budget: &mut WorkBudget,
+    visit: &mut dyn FnMut(&[u8], &mut WorkBudget) -> Result<(), ExistingFileReadFailureV1>,
+) -> Result<VerifiedActiveRepoMapFilesV1, ExistingFileReadFailureV1> {
+    RepoMapObjectStore::with_existing_active_candidate_compiled_payload_v1(
+        root, candidate, receipts, owner, maximum_bytes, io, budget, visit,
+    ).map(|(files, ())| files)
+}
+
 impl RepoMapObjectStore {
     /// Verify the already active Legacy candidate under the caller's held
     /// read-only root and budget. Reuse the serving decoder without opening
@@ -307,6 +326,22 @@ impl RepoMapObjectStore {
         io: &dyn quanta_index_core::index::ObjectReadIoPort,
         budget: &mut quanta_index_core::index::WorkBudget,
     ) -> Result<VerifiedActiveRepoMapFilesV1, ExistingFileReadFailureV1> {
+        Self::with_existing_active_candidate_compiled_payload_v1(
+            root, candidate, receipts, owner, maximum_bytes, io, budget,
+            &mut |_payload, _budget| Ok(()),
+        ).map(|(files, ())| files)
+    }
+
+    fn with_existing_active_candidate_compiled_payload_v1<R>(
+        root: &Path,
+        candidate: &quanta_index_catalog::RepoMapCandidateRowV1,
+        receipts: Option<(&RepoMapTerminalReceiptV2, &RepoMapTerminalReceiptV2)>,
+        owner: u32,
+        maximum_bytes: u64,
+        io: &dyn ObjectReadIoPort,
+        budget: &mut WorkBudget,
+        visit: &mut dyn FnMut(&[u8], &mut WorkBudget) -> Result<R, ExistingFileReadFailureV1>,
+    ) -> Result<(VerifiedActiveRepoMapFilesV1, R), ExistingFileReadFailureV1> {
         let _frame = recovery_path_memory(root, budget)?;
         let layout = root.join("repo-map");
         let root = layout.as_path();
@@ -392,13 +427,14 @@ impl RepoMapObjectStore {
             }
         }
         crate::materializer::validate_compiled_payload(envelope.compiled_payload())?;
+        let visited = visit(envelope.compiled_payload(), budget)?;
         budget.checkpoint()?;
-        Ok(VerifiedActiveRepoMapFilesV1 {
+        Ok((VerifiedActiveRepoMapFilesV1 {
             digest,
             owner,
             uuid: uuid_identity,
             object: object_identity,
-        })
+        }, visited))
     }
 
     /// Open (creating if needed) the layout-V3 root and its security

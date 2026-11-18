@@ -13,6 +13,8 @@ use quanta_index_core::index::{
 
 use super::{namespace::NamespaceLease, read_io};
 
+mod source_files;
+
 pub struct FileObjectReader {
     objects: PathBuf,
     namespace: NamespaceLease,

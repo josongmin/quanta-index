@@ -76,7 +76,7 @@ impl NativeGraphReader {
         Ok(Self { need })
     }
 
-    pub(super) fn pinned_member(
+    pub(crate) fn pinned_member(
         context: &mut QueryReadContext<'_>,
     ) -> Result<MemberBinding, IndexError> {
         let InputDomain::Projection {

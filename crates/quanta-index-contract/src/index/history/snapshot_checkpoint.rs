@@ -61,6 +61,34 @@ impl HistorySnapshotPageV1 {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "body", rename_all = "snake_case")]
 pub enum HistorySnapshotExportFrameV1 {
+    NativeProtectedComplete {
+        source_root_nonce: crate::index::Digest,
+        source_routes: ObjectRef,
+        snapshot: Option<ObjectRef>,
+    },
+    NativeObjectBegin {
+        reference: ObjectRef,
+        payload_bytes: u64,
+        children: Vec<ObjectRef>,
+    },
+    NativeObjectChunk {
+        offset: u64,
+        bytes: Vec<u8>,
+    },
+    NativeObjectEnd {
+        reference: ObjectRef,
+    },
+    NativeHistory {
+        source_root_nonce: crate::index::Digest,
+        source_view: crate::index::ViewRef,
+        instance: crate::index::IndexInstanceId,
+        member: ObjectRef,
+        cut: HistorySourceCutV1,
+    },
+    NativeInventoryComplete {
+        repo_id: RepoId,
+        count: u64,
+    },
     Page(HistorySnapshotPageV1),
     Complete {
         generation: AuxiliaryGenerationKeyV1,

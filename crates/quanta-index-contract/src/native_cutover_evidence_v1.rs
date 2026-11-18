@@ -5,7 +5,7 @@
 //! authority while holding the actual root lease.
 
 use crate::index::{
-    Digest, HistorySourceCutV1, IndexInstanceId, ObjectRef, OperationKey, ProducerId, Refusal, SourceCut, SourceOperationMode,
+    Digest, HistorySourceCutV1, IndexInstanceId, NativeImportedSourceHeadV1, ObjectRef, OperationKey, ProducerId, Refusal, SourceCut, SourceOperationMode,
     SourceTextAdmission, StreamId, UpdateRequest, ViewRef, WorkspaceKey,
 };
 pub use quanta_index_contract_base::NativeCutoverDigest64V1;
@@ -520,6 +520,15 @@ pub enum NativeCutoverEvidenceSourceFactV1 {
         aggregate_identity_digest: String,
         source: NativeCutoverEvidenceSourcePublicationBindingV1,
     },
+    /// One sibling Source FULL issued from the completed physical Legacy
+    /// inventory under the producer's Original and retained FD6 custody.
+    ImportedLegacySource {
+        head: NativeImportedSourceHeadV1,
+        /// Borrowed after SourceJoin checks the genuine reservation fact.
+        target: NativeCutoverEvidenceTargetV1,
+        /// Borrowed after SourceJoin checks the genuine settled V9 fact.
+        request: UpdateRequest,
+    },
 }
 crate::native_serde_enum!(NativeCutoverEvidenceSourceFactV1 {
     units {}
@@ -689,6 +698,11 @@ crate::native_serde_enum!(NativeCutoverEvidenceSourceFactV1 {
             operation: OperationKey,
             aggregate_identity_digest: String,
             source: NativeCutoverEvidenceSourcePublicationBindingV1
+        },
+        ImportedLegacySource = 16 {
+            head: NativeImportedSourceHeadV1,
+            target: NativeCutoverEvidenceTargetV1,
+            request: UpdateRequest
         }
     }
 });
@@ -702,6 +716,15 @@ impl NativeCutoverEvidenceSourceFactV1 {
         selected: &NativeCutoverEvidenceSelectedSourceV1,
     ) -> Result<(), NativeCutoverEvidenceSyntaxErrorV1> {
         let (operation, source) = match self {
+            Self::ImportedLegacySource { head, target, request } => {
+                return if head.matches_completed_binding_v1(target, request)
+                    && target.operation == head.source_operation.key
+                    && request.operation == target.operation {
+                    Ok(())
+                } else {
+                    Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical)
+                };
+            }
             Self::CompletedSourceRequest { native_operation, source, event_ids } => {
                 if event_ids.len() > MAX_NATIVE_CUTOVER_EVIDENCE_SEQUENCE_ITEMS_V1 {
                     return Err(NativeCutoverEvidenceSyntaxErrorV1::SequenceTooLarge);
@@ -1440,7 +1463,26 @@ impl NativeCutoverEvidenceV1 {
             return Err(NativeCutoverEvidenceSyntaxErrorV1::SequenceTooLarge);
         }
         for fact in &self.source_facts {
-            fact.validate_source_publication_v1(&self.header.selected_source)?;
+            if let NativeCutoverEvidenceSourceFactV1::NativeInitialSourceBinding { operation, .. } = fact
+                && operation.workspace != self.header.selected_source.workspace
+            {
+                let imported = self.source_facts.iter().any(|other| matches!(other,
+                    NativeCutoverEvidenceSourceFactV1::ImportedLegacySource { head, .. }
+                        if head.source_operation.key == *operation));
+                if !imported {
+                    return Err(NativeCutoverEvidenceSyntaxErrorV1::NonCanonical);
+                }
+                fact.validate_source_publication_v1(&NativeCutoverEvidenceSelectedSourceV1 {
+                    workspace: operation.workspace,
+                    workspace_epoch: operation.epoch,
+                    producer: operation.producer,
+                    stream: operation.stream,
+                    stream_epoch: operation.stream_epoch,
+                    text_admission: self.header.selected_source.text_admission,
+                })?;
+            } else {
+                fact.validate_source_publication_v1(&self.header.selected_source)?;
+            }
         }
         if let Some(legacy) = &self.legacy_publication {
             legacy.repomap.validate_structure_v1()?;

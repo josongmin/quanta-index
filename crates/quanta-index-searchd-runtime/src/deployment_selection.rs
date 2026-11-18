@@ -138,6 +138,19 @@ pub(crate) fn with_locked_legacy_export_selection_v1<T>(
     budget: &mut WorkBudget,
     read: impl FnOnce(&DeploymentSelectionDocumentV1, &mut WorkBudget) -> Result<T>,
 ) -> Result<T> {
+    with_locked_export_selection_v1(path, expected, budget, |selected, budget| {
+        ensure!(selected.native_command_v1().is_none(), "active selection is not Legacy");
+        read(selected, budget)
+    })
+}
+
+/// Read the exact selected deployment while holding its existing lock.
+pub(crate) fn with_locked_export_selection_v1<T>(
+    path: &Path,
+    expected: Digest,
+    budget: &mut WorkBudget,
+    read: impl FnOnce(&DeploymentSelectionDocumentV1, &mut WorkBudget) -> Result<T>,
+) -> Result<T> {
     let _memory = budget
         .reserve_memory(MEMORY_BYTES, MemoryLifetime::Temporary)?
         .ok_or_else(|| anyhow!("History export requires admitted Control memory"))?;
@@ -161,7 +174,6 @@ pub(crate) fn with_locked_legacy_export_selection_v1<T>(
     let (bytes, version, _file) = read_active_control(&directory, path, budget)?;
     let selected = codec::decode(&bytes, budget)?;
     ensure!(selected.fingerprint_v1() == expected, "active selection fingerprint changed");
-    ensure!(selected.native_command_v1().is_none(), "active selection is not Legacy");
     let result = read(&selected, budget)?;
     let (after_bytes, after_version, _after_file) = read_active_control(&directory, path, budget)?;
     ensure!(after_version == version && after_bytes == bytes, "active selection changed during History export");

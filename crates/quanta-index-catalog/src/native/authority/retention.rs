@@ -1,14 +1,16 @@
 //! Explicit Exact-admission floor and bounded retirement of catalog view rows.
 
+use quanta_index_contract::index::native_protected_view_marker_ref_v1;
 use quanta_index_core::index::ports::{CatalogExactHistoryPort, ViewRetirementPage};
 use quanta_index_core::index::{
-    CatalogView, Digest, IndexError, ViewRef, WorkBudget, WorkUsage, WorkspaceKey,
+    CatalogView, Digest, IndexError, MemoryLifetime, ObjectRef, ViewRef, WorkBudget, WorkUsage,
+    WorkspaceKey,
 };
 use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params, types::ValueRef};
 
 use super::{
-    SqliteCatalog, begin, current_view, distinct_roots, exactly_one, fields_digest, int,
-    read_view_row, sql, uint, workspace_key,
+    SqliteCatalog, begin, boot_manifest, current_view, distinct_roots, exactly_one, fields_digest,
+    int, object_key, read_view_row, require_object, sql, uint, workspace_key,
 };
 
 const FLOOR_DIGEST_DOMAIN: &[u8] = b"qidx.native.exactfloor.v1";
@@ -364,6 +366,7 @@ fn charged_view_roots_and_read(
 fn blocked_by_pin_or_work(
     connection: &Connection,
     identity: ViewRef,
+    route_object: Option<ObjectRef>,
     budget: &mut WorkBudget,
 ) -> Result<bool, IndexError> {
     let workspace_blob = workspace_key(identity.workspace)?;
@@ -389,7 +392,45 @@ fn blocked_by_pin_or_work(
             |row| row.get(0),
         )
         .map_err(|error| sql(&error))?;
-    Ok(pinned != 0 || work != 0)
+    if pinned != 0 || work != 0 {
+        return Ok(true);
+    }
+    // The selected immutable route object has one registered, childless
+    // marker per exact preserved view. Unlike a process read pin, this edge
+    // survives a cold restart and is retired only with the BOOT selection.
+    let Some(route_object) = route_object else {
+        return Ok(false);
+    };
+    let _marker_memory = budget.reserve_memory(1024, MemoryLifetime::Temporary)?;
+    budget.charge(WorkUsage {
+        bytes: 1024,
+        ..WorkUsage::default()
+    })?;
+    let marker =
+        native_protected_view_marker_ref_v1(identity).map_err(|_| IndexError::DigestConflict)?;
+    budget.charge(WorkUsage {
+        reads: 1,
+        bytes: 64,
+        ..WorkUsage::default()
+    })?;
+    let parent = object_key(route_object);
+    let child = object_key(marker);
+    let expected_digest = fields_digest(b"qidx.native.edge.v1", &(&parent, &child))?;
+    let protected: Option<bool> = connection
+        .query_row(
+            "SELECT row_digest FROM native_object_edge_v1 WHERE parent=?1 AND child=?2",
+            params![&parent, &child],
+            |row| {
+                Ok(matches!(row.get_ref(0)?, ValueRef::Blob(digest) if digest == expected_digest))
+            },
+        )
+        .optional()
+        .map_err(|error| sql(&error))?;
+    match protected {
+        Some(true) => Ok(true),
+        Some(false) => Err(IndexError::DigestConflict),
+        None => Ok(false),
+    }
 }
 
 fn delete_retired_view(
@@ -644,6 +685,20 @@ impl CatalogExactHistoryPort for SqliteCatalog {
                 has_more: false,
             });
         }
+        let route_object = boot_manifest::read_stored(&tx)?
+            .and_then(|selected| selected.protected_source_routes.map(|route| route.object));
+        let _route_registration = if let Some(route_object) = route_object {
+            let registration = budget.reserve_memory(4_259_840, MemoryLifetime::Temporary)?;
+            budget.charge(WorkUsage {
+                reads: 12,
+                bytes: 4_259_840,
+                ..WorkUsage::default()
+            })?;
+            require_object(&tx, route_object)?;
+            registration
+        } else {
+            None
+        };
         let mut cursor = after;
         let mut examined = 0_u32;
         let mut retired = 0_u32;
@@ -659,7 +714,7 @@ impl CatalogExactHistoryPort for SqliteCatalog {
                     "current view appears below retention floor".into(),
                 ));
             }
-            let protected = blocked_by_pin_or_work(&tx, identity, budget)?;
+            let protected = blocked_by_pin_or_work(&tx, identity, route_object, budget)?;
             if protected {
                 blocked = blocked.checked_add(1).ok_or(IndexError::ResourceLimited)?;
             } else {

@@ -24,7 +24,7 @@ pub use materializer::{
     snapshot_from_projection,
 };
 pub use model::{RepoMapEntry, RepoMapIndexedSnapshot, RepoMapSnapshot, RepoMapSnapshotIndex};
-pub use object_store::VerifiedActiveRepoMapFilesV1;
+pub use object_store::{VerifiedActiveRepoMapFilesV1, visit_existing_active_repomap_compiled_payload_v1};
 pub use pinned::PinnedRepoMapSnapshotV1;
 pub use query::RepoMapQueryEngine;
 pub use store::RepoMapGcOutcomeV1;

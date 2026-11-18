@@ -705,7 +705,7 @@ fn encode_graph_bytes(graph: &CompiledRepoMapGraphV1) -> Vec<u8> {
     writer.into_bytes()
 }
 
-fn encode_compiled_payload(
+pub(crate) fn encode_compiled_payload(
     graph: &CompiledRepoMapGraphV1,
     projection: &[CompiledRepoMapProjectionEntryV1],
 ) -> Vec<u8> {
@@ -936,34 +936,52 @@ pub fn decode_compiled_payload(
         edges: Vec::new(),
     };
     let mut projection = Vec::new();
-    visit_compiled_payload(bytes, |entry| match entry {
-        CompiledPayloadEntry::Node(node) => graph.nodes.push(node),
-        CompiledPayloadEntry::Edge(edge) => graph.edges.push(edge),
-        CompiledPayloadEntry::Projection(entry) => projection.push(entry),
+    visit_compiled_payload_with(bytes, |error| error, |entry| {
+        match entry {
+            CompiledPayloadEntry::Node(node) => graph.nodes.push(node),
+            CompiledPayloadEntry::Edge(edge) => graph.edges.push(edge),
+            CompiledPayloadEntry::Projection(entry) => projection.push(entry),
+        }
+        Ok(())
     })?;
     Ok((graph, projection))
 }
 
 /// Use the serving decoder's validation without retaining decoded tables.
 pub(crate) fn validate_compiled_payload(bytes: &[u8]) -> Result<(), quanta_index_core::CoreError> {
-    visit_compiled_payload(bytes, drop)
+    visit_compiled_payload_with(bytes, |error| error, |_entry| Ok(()))
 }
 
-enum CompiledPayloadEntry {
+/// One canonical row from the old compiler payload. The visitor sees rows in
+/// table order and can refuse before retaining any unbounded decoded table.
+#[derive(Debug, Eq, PartialEq)]
+pub enum CompiledPayloadEntry {
     Node(CompiledRepoMapNodeV1),
     Edge(CompiledRepoMapEdgeV1),
     Projection(CompiledRepoMapProjectionEntryV1),
 }
 
-fn visit_compiled_payload(
+pub fn visit_compiled_payload_with<E>(
     bytes: &[u8],
-    mut visit: impl FnMut(CompiledPayloadEntry),
-) -> Result<(), quanta_index_core::CoreError> {
-    let refuse = |detail: String| -> quanta_index_core::CoreError {
-        quanta_index_core::CoreError::Typed {
+    map_error: impl Fn(quanta_index_core::CoreError) -> E,
+    mut visit: impl FnMut(CompiledPayloadEntry) -> Result<(), E>,
+) -> Result<(), E> {
+    visit_compiled_payload_with_span(bytes, map_error, |row, _span| visit(row))
+}
+
+/// The span points at the exact canonical row in the original immutable CBOR
+/// payload, including its three/five-field tuple header. It can be persisted
+/// as an inline Native map value without duplicating the old graph's rows.
+pub fn visit_compiled_payload_with_span<E>(
+    bytes: &[u8],
+    map_error: impl Fn(quanta_index_core::CoreError) -> E,
+    mut visit: impl FnMut(CompiledPayloadEntry, std::ops::Range<usize>) -> Result<(), E>,
+) -> Result<(), E> {
+    let refuse = |detail: String| -> E {
+        map_error(quanta_index_core::CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
             message: format!("repomap compiled payload decode refused: {detail}"),
-        }
+        })
     };
     let mut reader = CompileCborReader::new(bytes);
     // The compiler's payload frame is: a top-level array header whose
@@ -980,6 +998,7 @@ fn visit_compiled_payload(
         return Err(refuse(format!("node table holds {nodes_len} entries")));
     }
     for _ in 0..nodes_len {
+        let start = reader.position;
         let entry_len = reader.array_header("node").map_err(refuse)?;
         if entry_len != 3 {
             return Err(refuse(format!(
@@ -993,13 +1012,14 @@ fn visit_compiled_payload(
             identity,
             degree_in,
             degree_out,
-        }));
+        }), start..reader.position)?;
     }
     let edges_len = reader.array_header("edges").map_err(refuse)?;
     if !matches!(edges_len, 0..=20_000_000) {
         return Err(refuse(format!("edge table holds {edges_len} entries")));
     }
     for _ in 0..edges_len {
+        let start = reader.position;
         let entry_len = reader.array_header("edge").map_err(refuse)?;
         if entry_len != 3 {
             return Err(refuse(format!(
@@ -1013,7 +1033,7 @@ fn visit_compiled_payload(
             kind,
             source,
             target,
-        }));
+        }), start..reader.position)?;
     }
     let projection_len = reader.array_header("projection").map_err(refuse)?;
     if !matches!(projection_len, 0..=2_000_000) {
@@ -1022,6 +1042,7 @@ fn visit_compiled_payload(
         )));
     }
     for _ in 0..projection_len {
+        let start = reader.position;
         let entry_len = reader.array_header("projection-entry").map_err(refuse)?;
         if entry_len != 5 {
             return Err(refuse(format!(
@@ -1043,9 +1064,109 @@ fn visit_compiled_payload(
                 search_text: search_text.to_owned(),
                 final_score_millis,
             },
-        ));
+        ), start..reader.position)?;
     }
     reader.expect_end().map_err(refuse)
+}
+
+/// Decode one authenticated index span without allocating the complete old
+/// graph. The caller must first join its span to a verified import header and
+/// compare the returned full identity with the requested digest-keyed row.
+pub fn decode_compiled_payload_span_v1(
+    bytes: &[u8],
+    column: usize,
+    start: usize,
+    end: usize,
+) -> Result<CompiledPayloadEntry, quanta_index_core::CoreError> {
+    let refuse = |detail: String| quanta_index_core::CoreError::Typed {
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+        message: format!("repomap compiled span decode refused: {detail}"),
+    };
+    let span = bytes.get(start..end).ok_or_else(|| refuse("row bounds differ".into()))?;
+    let mut reader = CompileCborReader::new(span);
+    let row = match column {
+        0 => {
+            if reader.array_header("node").map_err(refuse)? != 3 {
+                return Err(refuse("node tuple length differs".into()));
+            }
+            CompiledPayloadEntry::Node(CompiledRepoMapNodeV1 {
+                identity: reader.node_ref("node.identity").map_err(refuse)?,
+                degree_in: reader.u32_value("node.degree_in").map_err(refuse)?,
+                degree_out: reader.u32_value("node.degree_out").map_err(refuse)?,
+            })
+        }
+        1 => {
+            if reader.array_header("edge").map_err(refuse)? != 3 {
+                return Err(refuse("edge tuple length differs".into()));
+            }
+            CompiledPayloadEntry::Edge(CompiledRepoMapEdgeV1 {
+                kind: reader.edge_kind("edge.kind").map_err(refuse)?,
+                source: reader.node_ref("edge.source").map_err(refuse)?,
+                target: reader.node_ref("edge.target").map_err(refuse)?,
+            })
+        }
+        2 => {
+            if reader.array_header("projection-entry").map_err(refuse)? != 5 {
+                return Err(refuse("projection tuple length differs".into()));
+            }
+            CompiledPayloadEntry::Projection(CompiledRepoMapProjectionEntryV1 {
+                subject: reader.node_ref("projection.subject").map_err(refuse)?,
+                doc_type: reader.doc_type("projection.doc_type").map_err(refuse)?,
+                owner_path: reader.path_id("projection.owner_path").map_err(refuse)?,
+                search_text: reader.text("projection.search_text").map_err(refuse)?.to_owned(),
+                final_score_millis: reader.i64_value("projection.final_score_millis").map_err(refuse)?,
+            })
+        }
+        _ => return Err(refuse("row column differs".into())),
+    };
+    reader.expect_end().map_err(refuse)?;
+    Ok(row)
+}
+
+#[cfg(test)]
+mod native_span_tests {
+    use super::*;
+
+    #[test]
+    fn canonical_compiler_rows_reopen_from_exact_spans() {
+        let first = RepoMapNodeRef::File(FileId::new("src/a.rs"));
+        let second = RepoMapNodeRef::File(FileId::new("src/b.rs"));
+        let graph = CompiledRepoMapGraphV1 {
+            nodes: vec![
+                CompiledRepoMapNodeV1 { identity: first.clone(), degree_in: 0, degree_out: 1 },
+                CompiledRepoMapNodeV1 { identity: second.clone(), degree_in: 1, degree_out: 0 },
+            ],
+            edges: vec![CompiledRepoMapEdgeV1 {
+                kind: RepoMapEdgeKind::Contains,
+                source: first.clone(),
+                target: second,
+            }],
+        };
+        let projection = vec![CompiledRepoMapProjectionEntryV1 {
+            subject: first,
+            doc_type: RepoMapDocType::File,
+            owner_path: RepoRelativePath::new("src/a.rs"),
+            search_text: "alpha".into(),
+            final_score_millis: 500,
+        }];
+        let bytes = encode_compiled_payload(&graph, &projection);
+        let mut seen = 0;
+        let mut last_end = 0;
+        visit_compiled_payload_with_span(&bytes, |error| error, |row, span| {
+            assert!(span.start >= last_end && span.start < span.end);
+            let column = match row {
+                CompiledPayloadEntry::Node(_) => 0,
+                CompiledPayloadEntry::Edge(_) => 1,
+                CompiledPayloadEntry::Projection(_) => 2,
+            };
+            assert_eq!(decode_compiled_payload_span_v1(&bytes, column, span.start, span.end)?, row);
+            assert!(decode_compiled_payload_span_v1(&bytes, column, span.start, span.end - 1).is_err());
+            last_end = span.end;
+            seen += 1;
+            Ok::<_, quanta_index_core::CoreError>(())
+        }).expect("canonical spans");
+        assert_eq!(seen, 4);
+    }
 }
 
 /// Minimal strict CBOR reader for the compiler's canonical payload schema:

@@ -1,18 +1,25 @@
 //! Selected boot custody uses the existing operation-object relation.
 //! It preserves the original request and source/profile, not old search results.
 
+use quanta_index_contract::{
+    RepoId, RevisionId,
+    index::{
+        MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1, NativeProtectedRepoMapHeadV1,
+        NativeProtectedSourceRoutesV1,
+    },
+};
 use quanta_index_core::index::{
-    CatalogView, Digest, ImmutableOperation, IndexError, MemoryLifetime, ObjectRef, OperationKey,
-    OperationStatus, ViewRef, WorkBudget, WorkUsage,
+    CatalogView, Digest, ImmutableOperation, IndexError, IngressRef, MemoryLifetime, ObjectRef,
+    OperationKey, OperationStatus, ViewRef, WorkBudget, WorkUsage,
 };
 use rusqlite::{Connection, OptionalExtension as _, params, types::ValueRef};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    SqliteCatalog, begin, exactly_one, fields_digest, int, object_key, operation_key,
-    read_operation, read_view_row, reclaim, require_object, retention, sql, uint, workspace_key,
-    write_operation,
+    SqliteCatalog, begin, check_ingress, confirmed_ingress_membership, delete_ingress, exactly_one,
+    fields_digest, int, object_key, operation_key, read_operation, read_view_row, reclaim,
+    require_object, retention, sql, uint, workspace_key, write_operation,
 };
 
 const MAX_BYTES: usize = 4096;
@@ -32,6 +39,17 @@ pub struct NativeBootManifest {
     /// Canonical publication metadata permits digest validation after its view
     /// row retires. Its other query roots are not protected by this selection.
     pub publication: CatalogView,
+    /// An immutable, physically verified route object holds all additional
+    /// source/revision heads and their original boot roots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected_source_routes: Option<NativeBootSourceRouteRefV1>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeBootSourceRouteRefV1 {
+    pub object: ObjectRef,
+    pub count: u32,
 }
 
 impl NativeBootManifest {
@@ -46,6 +64,17 @@ impl NativeBootManifest {
             self.publication.source.paths.0,
             self.publication.source.frontiers.0,
         ]
+    }
+
+    /// Every selected root is retained through the original operation's
+    /// custody row. The route object's direct immutable children cover all
+    /// additional heads after physical closure verification.
+    pub fn all_protected_roots(&self) -> impl Iterator<Item = ObjectRef> + '_ {
+        self.protected_roots().into_iter().flatten().chain(
+            self.protected_source_routes
+                .iter()
+                .map(|route| route.object),
+        )
     }
 
     /// Canonical source-root identity, distinct from a mutation/event capture.
@@ -109,6 +138,15 @@ pub(super) fn read_stored(
                         ))));
                     }
                 };
+                if selected.protected_source_routes.is_some_and(|route| {
+                    usize::try_from(route.count)
+                        .ok()
+                        .is_none_or(|count| count > MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1)
+                }) {
+                    return Ok(Err(IndexError::Storage(
+                        "boot Source route count is invalid".into(),
+                    )));
+                }
                 if selected.operation.key.workspace != selected.publication.identity.workspace
                     || selected.operation.key.epoch != selected.publication.identity.epoch
                 {
@@ -136,7 +174,7 @@ pub(super) fn protected_roots(
     connection: &Connection,
     key: OperationKey,
     budget: &mut WorkBudget,
-) -> Result<[Option<ObjectRef>; 5], IndexError> {
+) -> Result<[Option<ObjectRef>; 6], IndexError> {
     budget.charge(WorkUsage {
         reads: 1,
         bytes: 4160,
@@ -147,7 +185,12 @@ pub(super) fn protected_roots(
     if let Some(selected) = selected.as_ref() {
         validate_custody(connection, selected, budget)?;
     }
-    Ok(selected.map_or([None; 5], |selected| selected.protected_roots()))
+    Ok(selected.map_or([None; 6], |selected| {
+        let mut roots = [None; 6];
+        roots[..5].copy_from_slice(&selected.protected_roots());
+        roots[5] = selected.protected_source_routes.map(|route| route.object);
+        roots
+    }))
 }
 
 pub(super) fn validate_custody(
@@ -166,7 +209,7 @@ pub(super) fn validate_custody(
         ));
     }
     let operation = operation_key(selected.operation.key)?;
-    for object in selected.protected_roots().into_iter().flatten() {
+    for object in selected.all_protected_roots() {
         budget.charge(WorkUsage {
             reads: 1,
             bytes: 64,
@@ -201,7 +244,7 @@ pub(super) fn refuse_selected_orphan(
     })?;
     let _scratch = budget.reserve_memory(SCRATCH_BYTES, MemoryLifetime::Temporary)?;
     if read_stored(connection)?
-        .is_some_and(|selected| selected.protected_roots().contains(&Some(object)))
+        .is_some_and(|selected| selected.all_protected_roots().any(|root| root == object))
     {
         return Err(IndexError::Storage(
             "selected boot root lost its custody relation".into(),
@@ -302,7 +345,7 @@ fn protect(
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
     let operation = operation_key(selected.operation.key)?;
-    for object in selected.protected_roots().into_iter().flatten() {
+    for object in selected.all_protected_roots() {
         budget.checkpoint()?;
         budget.charge(WorkUsage {
             reads: 1,
@@ -383,6 +426,349 @@ fn requeue_previous(
     Ok(())
 }
 
+fn verify_repomap_source_publication(
+    connection: &Connection,
+    head: &NativeProtectedRepoMapHeadV1,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    if let Some(source_operation) = &head.source_operation {
+        charge_operation(connection, source_operation.key, budget)?;
+        let source = read_operation(connection, source_operation.key)?
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        if source.immutable != *source_operation
+            || source.status != OperationStatus::Published(head.source_publication.identity)
+            || source.published_view.as_ref() != Some(&head.source_publication)
+        {
+            return Err(IndexError::DigestConflict);
+        }
+    } else if head.source_publication.identity.sequence != 0
+        || retention::charged_exact_view(connection, head.source_publication.identity, budget)?
+            != head.source_publication
+    {
+        return Err(IndexError::DigestConflict);
+    }
+    Ok(())
+}
+
+pub(super) fn validate_protected_routes(
+    connection: &Connection,
+    primary: OperationKey,
+    route_object: ObjectRef,
+    routes: &NativeProtectedSourceRoutesV1,
+    require_current: bool,
+    allowed_ingress: Option<IngressRef>,
+    budget: &mut WorkBudget,
+) -> Result<NativeBootSourceRouteRefV1, IndexError> {
+    routes.validate().map_err(|_| IndexError::DigestConflict)?;
+    let payload_bytes = u64::try_from(
+        routes
+            .encoded_payload_len()
+            .map_err(|_| IndexError::DigestConflict)?,
+    )
+    .map_err(|_| IndexError::ResourceLimited)?;
+    let _route_memory = budget.reserve_memory(
+        payload_bytes
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(4_259_840))
+            .ok_or(IndexError::ResourceLimited)?,
+        MemoryLifetime::Temporary,
+    )?;
+    budget.charge(WorkUsage {
+        bytes: payload_bytes,
+        ..WorkUsage::default()
+    })?;
+    if routes
+        .object_ref()
+        .map_err(|_| IndexError::DigestConflict)?
+        != route_object
+    {
+        return Err(IndexError::DigestConflict);
+    }
+    let count = u32::try_from(routes.heads.len()).map_err(|_| IndexError::ResourceLimited)?;
+    for head in &routes.heads {
+        budget.checkpoint()?;
+        charge_operation(connection, head.source_operation.key, budget)?;
+        let source = read_operation(connection, head.source_operation.key)?
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        if source.immutable != head.source_operation
+            || source.status != OperationStatus::Published(head.source_publication.identity)
+            || source.published_view.as_ref() != Some(&head.source_publication)
+            || head.source_publication.source != head.publication.source
+        {
+            return Err(IndexError::DigestConflict);
+        }
+        charge_operation(connection, head.operation.key, budget)?;
+        let operation = read_operation(connection, head.operation.key)?
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        if operation.immutable != head.operation
+            || operation.status != OperationStatus::Published(head.publication.identity)
+            || operation.published_view.as_ref() != Some(&head.publication)
+            || retention::charged_exact_view(connection, head.publication.identity, budget)?
+                != head.publication
+        {
+            return Err(IndexError::DigestConflict);
+        }
+        if require_current
+            && retention::charged_current_view(connection, head.operation.key.workspace, budget)?
+                .as_ref()
+                != Some(&head.publication)
+        {
+            return Err(IndexError::Conflict);
+        }
+    }
+    if require_current {
+        charge_operation(connection, primary, budget)?;
+        let (_primary_operation, primary_publication) =
+            super::read_only::read_published_operation(connection, primary, budget)?;
+        if retention::charged_current_view(connection, primary.workspace, budget)?.as_ref()
+            != Some(&primary_publication)
+        {
+            return Err(IndexError::Conflict);
+        }
+        super::read_only::check_quiescent_protected_routes(
+            connection,
+            primary_publication.identity,
+            routes,
+            allowed_ingress,
+            budget,
+        )?;
+    }
+    for head in &routes.repomap_heads {
+        budget.checkpoint()?;
+        verify_repomap_source_publication(connection, head, budget)?;
+        charge_operation(connection, head.operation.key, budget)?;
+        let operation = read_operation(connection, head.operation.key)?
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        if operation.immutable != head.operation
+            || operation.status != OperationStatus::Published(head.publication.identity)
+            || operation.published_view.as_ref() != Some(&head.publication)
+            || retention::charged_exact_view(connection, head.publication.identity, budget)?
+                != head.publication
+        {
+            return Err(IndexError::DigestConflict);
+        }
+        if require_current
+            && retention::charged_current_view(connection, head.operation.key.workspace, budget)?
+                .as_ref()
+                != Some(&head.publication)
+        {
+            return Err(IndexError::Conflict);
+        }
+        require_object(connection, head.member_binding)?;
+    }
+    require_object(connection, route_object)?;
+    let registration = super::object_install::read_metadata(
+        connection,
+        route_object,
+        super::object_install::MetadataLedger::Registered,
+        || IndexError::DigestConflict,
+        |bytes| {
+            budget.charge(WorkUsage {
+                reads: 1,
+                bytes,
+                ..WorkUsage::default()
+            })
+        },
+    )?
+    .ok_or(IndexError::SnapshotUnavailable)?;
+    if registration.children != routes.children().map_err(|_| IndexError::DigestConflict)? {
+        return Err(IndexError::DigestConflict);
+    }
+    Ok(NativeBootSourceRouteRefV1 {
+        object: route_object,
+        count,
+    })
+}
+
+fn route_marker_refs(
+    routes: &NativeProtectedSourceRoutesV1,
+    route_object: ObjectRef,
+) -> Result<Vec<ObjectRef>, IndexError> {
+    let mut objects = Vec::with_capacity(routes.heads.len() + routes.repomap_heads.len() + 1);
+    objects.push(route_object);
+    for head in &routes.heads {
+        objects.push(
+            quanta_index_contract::index::native_protected_view_marker_ref_v1(
+                head.publication.identity,
+            )
+            .map_err(|_| IndexError::DigestConflict)?,
+        );
+    }
+    for head in &routes.repomap_heads {
+        objects.push(
+            quanta_index_contract::index::native_protected_view_marker_ref_v1(
+                head.publication.identity,
+            )
+            .map_err(|_| IndexError::DigestConflict)?,
+        );
+        if head.source_operation.is_none() {
+            objects.push(
+                quanta_index_contract::index::native_protected_view_marker_ref_v1(
+                    head.source_publication.identity,
+                )
+                .map_err(|_| IndexError::DigestConflict)?,
+            );
+        }
+    }
+    objects.sort_unstable();
+    objects.dedup();
+    if objects.len() < 2 {
+        return Err(IndexError::DigestConflict);
+    }
+    Ok(objects)
+}
+
+fn validate_route_ingress(
+    connection: &Connection,
+    primary: OperationKey,
+    ingress: IngressRef,
+    route_object: ObjectRef,
+    routes: &NativeProtectedSourceRoutesV1,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    if ingress.operation == primary
+        || ingress.operation.workspace != primary.workspace
+        || ingress.operation.epoch != primary.epoch
+        || read_operation(connection, ingress.operation)?.is_some()
+        || check_ingress(connection, ingress)?.sealed.is_some()
+    {
+        return Err(IndexError::Conflict);
+    }
+    let _objects_memory = budget.reserve_memory(32_768, MemoryLifetime::Temporary)?;
+    let objects = route_marker_refs(routes, route_object)?;
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM native_ingress_object_v1 WHERE operation=?1",
+            params![operation_key(ingress.operation)?],
+            |row| row.get(0),
+        )
+        .map_err(|error| sql(&error))?;
+    let actual = usize::try_from(count).map_err(|_| IndexError::DigestConflict)?;
+    if (routes.native_origin.is_none() && actual != objects.len()) || actual < objects.len() {
+        return Err(IndexError::Conflict);
+    }
+    for object in objects {
+        budget.charge(WorkUsage {
+            reads: 1,
+            bytes: 64,
+            ..WorkUsage::default()
+        })?;
+        if !confirmed_ingress_membership(connection, ingress.operation, object)? {
+            return Err(IndexError::Conflict);
+        }
+    }
+    Ok(())
+}
+
+fn transfer_and_retire_route_ingress(
+    connection: &Connection,
+    primary: OperationKey,
+    ingress: IngressRef,
+    route_object: ObjectRef,
+    routes: &NativeProtectedSourceRoutesV1,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    let ingress_key = operation_key(ingress.operation)?;
+    let primary_key = operation_key(primary)?;
+    let _objects_memory = budget.reserve_memory(32_768, MemoryLifetime::Temporary)?;
+    let objects = route_marker_refs(routes, route_object)?;
+    for object in &objects {
+        budget.checkpoint()?;
+        let child = object_key(*object);
+        budget.charge(WorkUsage {
+            reads: 2,
+            writes: 2,
+            bytes: 192,
+            mutations: 2,
+        })?;
+        let expected = fields_digest(b"qidx.native.opobject.v1", &(&primary_key, &child))?;
+        let _inserted = connection
+            .execute(
+                "INSERT INTO native_operation_object_v1(operation_id,object,row_digest)
+             VALUES ((SELECT operation_id FROM native_operation_v1 WHERE operation=?1),?2,?3)
+             ON CONFLICT(operation_id,object) DO NOTHING",
+                params![&primary_key, &child, &expected],
+            )
+            .map_err(|error| sql(&error))?;
+        let valid: Option<bool> = connection.query_row(
+            "SELECT row_digest FROM native_operation_object_v1 WHERE operation_id=(SELECT operation_id FROM native_operation_v1 WHERE operation=?1) AND object=?2",
+            params![&primary_key, &child],
+            |row| Ok(matches!(row.get_ref(0)?, ValueRef::Blob(digest) if digest == expected)),
+        ).optional().map_err(|error| sql(&error))?;
+        if valid != Some(true) {
+            return Err(IndexError::DigestConflict);
+        }
+        reclaim::adopt_if_known(connection, *object)?;
+    }
+    if routes.native_origin.is_some() {
+        // The route now holds the complete transferred closure through its
+        // registered child edges. Retire the loan with the normal bounded GC
+        // path: unrelated staged objects receive no permanent BOOT custody.
+        return delete_ingress(connection, ingress.operation, budget);
+    }
+    let mut statement = connection
+        .prepare("SELECT object FROM native_ingress_intent_v1 WHERE operation=?1 ORDER BY object")
+        .map_err(|error| sql(&error))?;
+    let mut rows = statement
+        .query(params![&ingress_key])
+        .map_err(|error| sql(&error))?;
+    let mut intent_count = 0usize;
+    while let Some(row) = rows.next().map_err(|error| sql(&error))? {
+        budget.charge(WorkUsage {
+            reads: 1,
+            bytes: 64,
+            ..WorkUsage::default()
+        })?;
+        let ValueRef::Blob(object) = row.get_ref(0).map_err(|error| sql(&error))? else {
+            return Err(IndexError::DigestConflict);
+        };
+        if object.len() != 32
+            || !objects
+                .iter()
+                .any(|expected| object_key(*expected) == object)
+        {
+            return Err(IndexError::DigestConflict);
+        }
+        intent_count = intent_count
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+    }
+    drop(rows);
+    drop(statement);
+    budget.charge(WorkUsage {
+        writes: u64::try_from(intent_count + objects.len() + 1)
+            .map_err(|_| IndexError::ResourceLimited)?,
+        mutations: u64::try_from(intent_count + objects.len() + 1)
+            .map_err(|_| IndexError::ResourceLimited)?,
+        ..WorkUsage::default()
+    })?;
+    let removed_intents = connection
+        .execute(
+            "DELETE FROM native_ingress_intent_v1 WHERE operation=?1",
+            params![&ingress_key],
+        )
+        .map_err(|error| sql(&error))?;
+    let removed_objects = connection
+        .execute(
+            "DELETE FROM native_ingress_object_v1 WHERE operation=?1",
+            params![&ingress_key],
+        )
+        .map_err(|error| sql(&error))?;
+    if removed_intents != intent_count || removed_objects != objects.len() {
+        return Err(IndexError::DigestConflict);
+    }
+    exactly_one(
+        connection
+            .execute(
+                "DELETE FROM native_ingress_v1 WHERE operation=?1",
+                params![&ingress_key],
+            )
+            .map_err(|error| sql(&error))?,
+        "retire protected Source route ingress",
+    )?;
+    Ok(())
+}
+
 impl SqliteCatalog {
     /// Select an existing published manifest and protect only its boot roots.
     /// Selection is atomic with custody; it does not authenticate disk bodies.
@@ -391,7 +777,7 @@ impl SqliteCatalog {
         key: OperationKey,
         budget: &mut WorkBudget,
     ) -> Result<NativeBootManifest, IndexError> {
-        self.select_native_boot_manifest_impl(key, budget, false)
+        self.select_native_boot_manifest_impl(key, budget, false, None)
     }
 
     /// Candidate selection requires the current Published view and quiescence,
@@ -402,7 +788,27 @@ impl SqliteCatalog {
         key: OperationKey,
         budget: &mut WorkBudget,
     ) -> Result<NativeBootManifest, IndexError> {
-        self.select_native_boot_manifest_impl(key, budget, true)
+        self.select_native_boot_manifest_impl(key, budget, true, None)
+    }
+
+    /// Select a complete, physically staged Source route set in the same
+    /// transaction as its actual Published/current heads and RepoMap activations.
+    /// The caller must independently authenticate the producer-signed route
+    /// list and physical immutable-object bytes before invoking this method.
+    pub fn select_native_boot_manifest_with_protected_routes_if_current(
+        &self,
+        key: OperationKey,
+        route_object: ObjectRef,
+        routes: &NativeProtectedSourceRoutesV1,
+        ingress: IngressRef,
+        budget: &mut WorkBudget,
+    ) -> Result<NativeBootManifest, IndexError> {
+        self.select_native_boot_manifest_impl(
+            key,
+            budget,
+            true,
+            Some((route_object, routes, ingress)),
+        )
     }
 
     fn select_native_boot_manifest_impl(
@@ -410,6 +816,7 @@ impl SqliteCatalog {
         key: OperationKey,
         budget: &mut WorkBudget,
         require_current: bool,
+        protected_routes: Option<(ObjectRef, &NativeProtectedSourceRoutesV1, IngressRef)>,
     ) -> Result<NativeBootManifest, IndexError> {
         budget.checkpoint()?;
         let _scratch = budget.reserve_memory(SCRATCH_BYTES, MemoryLifetime::Temporary)?;
@@ -429,9 +836,15 @@ impl SqliteCatalog {
         let OperationStatus::Published(identity) = row.status else {
             return Err(IndexError::Conflict);
         };
-        let selected = if let Some(previous) =
-            previous.as_ref().filter(|value| value.operation.key == key)
-        {
+        let route_ref = protected_routes
+            .map(|(object, routes, ingress)| {
+                validate_route_ingress(&tx, key, ingress, object, routes, budget)?;
+                validate_protected_routes(&tx, key, object, routes, true, Some(ingress), budget)
+            })
+            .transpose()?;
+        let selected = if let Some(previous) = previous.as_ref().filter(|value| {
+            value.operation.key == key && value.protected_source_routes == route_ref
+        }) {
             if previous.operation != row.immutable || previous.publication.identity != identity {
                 return Err(IndexError::Storage(
                     "selected boot operation changed".into(),
@@ -443,6 +856,7 @@ impl SqliteCatalog {
             NativeBootManifest {
                 operation: row.immutable,
                 publication: view,
+                protected_source_routes: route_ref,
             }
         };
         if require_current {
@@ -451,7 +865,17 @@ impl SqliteCatalog {
             if current != selected.publication {
                 return Err(IndexError::Conflict);
             }
-            super::read_only::check_quiescent_rows(&tx, key.workspace, current.identity, budget)?;
+            if route_ref.is_none() {
+                super::read_only::check_quiescent_rows(
+                    &tx,
+                    key.workspace,
+                    current.identity,
+                    budget,
+                )?;
+            }
+        }
+        if let Some((object, routes, ingress)) = protected_routes {
+            transfer_and_retire_route_ingress(&tx, key, ingress, object, routes, budget)?;
         }
         protect(&tx, &selected, budget)?;
         if previous.as_ref() != Some(&selected) {
@@ -501,6 +925,88 @@ impl SqliteCatalog {
         budget.checkpoint()?;
         drop(guard);
         Ok(selected)
+    }
+
+    /// Resolve a selected exact head on the serving Catalog connection.
+    /// The caller authenticates the route object's physical payload and
+    /// children; this method rechecks its selected Catalog relation while the
+    /// serving connection's mutex prevents a concurrent publication.
+    pub fn resolve_selected_native_protected_source_head_v1(
+        &self,
+        expected_manifest: &NativeBootManifest,
+        routes: &NativeProtectedSourceRoutesV1,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        budget: &mut WorkBudget,
+    ) -> Result<CatalogView, IndexError> {
+        let guard = self.lock_native_budget(budget)?;
+        if read_stored(&guard)?.as_ref() != Some(expected_manifest) {
+            return Err(IndexError::DigestConflict);
+        }
+        validate_custody(&guard, expected_manifest, budget)?;
+        let selected = expected_manifest
+            .protected_source_routes
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        if usize::try_from(selected.count).ok() != Some(routes.heads.len()) {
+            return Err(IndexError::DigestConflict);
+        }
+        let _binding = validate_protected_routes(
+            &guard,
+            expected_manifest.operation.key,
+            selected.object,
+            routes,
+            false,
+            None,
+            budget,
+        )?;
+        let publication = routes
+            .heads
+            .iter()
+            .find(|head| &head.repo_id == repo_id && &head.revision_id == revision_id)
+            .map(|head| head.publication.clone())
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        budget.checkpoint()?;
+        Ok(publication)
+    }
+
+    /// Resolve the exact imported RepoMap view selected by the protected
+    /// route, including a view retained after its workspace head advances.
+    pub fn resolve_selected_native_protected_repomap_head_v1(
+        &self,
+        expected_manifest: &NativeBootManifest,
+        routes: &NativeProtectedSourceRoutesV1,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        budget: &mut WorkBudget,
+    ) -> Result<CatalogView, IndexError> {
+        let guard = self.lock_native_budget(budget)?;
+        if read_stored(&guard)?.as_ref() != Some(expected_manifest) {
+            return Err(IndexError::DigestConflict);
+        }
+        validate_custody(&guard, expected_manifest, budget)?;
+        let selected = expected_manifest
+            .protected_source_routes
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        if usize::try_from(selected.count).ok() != Some(routes.heads.len()) {
+            return Err(IndexError::DigestConflict);
+        }
+        let _binding = validate_protected_routes(
+            &guard,
+            expected_manifest.operation.key,
+            selected.object,
+            routes,
+            false,
+            None,
+            budget,
+        )?;
+        let publication = routes
+            .repomap_heads
+            .iter()
+            .find(|head| &head.repo_id == repo_id && &head.revision_id == revision_id)
+            .map(|head| head.publication.clone())
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        budget.checkpoint()?;
+        Ok(publication)
     }
 
     /// Explicitly retire selection, atomically re-enabling bounded terminal

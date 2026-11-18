@@ -1,5 +1,6 @@
 //! Root observations do not grant publication, EX or Original authority.
 use super::*;
+use quanta_index_contract::{RepoId, RevisionId};
 
 /// One exact admitted reply and its same-connection kernel peer observation.
 /// Both raw and decoded grants remain alive throughout every scoped borrow.
@@ -30,6 +31,87 @@ impl AdmittedNativeRootScopedViewReplyV1 {
 }
 
 impl<P: AsRef<Path>> NativeUdsClient<P> {
+    /// Read one candidate's actual imported RepoMap member under an exact
+    /// Published view. The returned reference is data for the signed route.
+    pub fn read_imported_repomap_member_admitted_v1(
+        &self,
+        view: quanta_index_contract::index::ViewRef,
+        instance: quanta_index_contract::index::IndexInstanceId,
+        budget: &RequestBudgetV1,
+        memory: &MemoryScope,
+    ) -> Result<quanta_index_contract::native_protocol::NativeImportedRepoMapMemberReadV1,
+        NativeUdsError> {
+        read_session::admitted_budget_checkpoint(budget)?;
+        let reply = self.request_publication_admitted(
+            NativeIndexRequest::ReadImportedRepoMapMember { view, instance }, budget, memory,
+        )?;
+        // Move the fixed DATA or canonical refusal while the reply's remaining
+        // raw and decoded grants stay live through validation. No message copy
+        // or alternate error classification is needed.
+        if let NativeIndexResponse::Error(error) = reply.response {
+            return Err(NativeUdsError::Refused(error));
+        }
+        let NativeIndexResponse::ImportedRepoMapMember(observed) = reply.response else {
+            return Err(NativeUdsError::Protocol(
+                "unexpected imported RepoMap member reply".into(),
+            ));
+        };
+        if observed.view != view || observed.instance != instance
+            || observed.member_binding.0 == Digest([0; 32])
+        {
+            return Err(NativeUdsError::Protocol(
+                "imported RepoMap member differs from exact view".into(),
+            ));
+        }
+        read_session::admitted_budget_checkpoint(budget)?;
+        Ok(observed)
+    }
+
+    /// Resolve a preserved RepoMap pair to the exact pinned view, member and
+    /// instance selected by the installed BOOT route.
+    pub fn resolve_protected_repomap_head_v1(
+        &self,
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        budget: &RequestBudgetV1,
+    ) -> Result<quanta_index_contract::native_protocol::NativeProtectedRepoMapResolutionV1,
+        NativeUdsError> {
+        read_session::admitted_budget_checkpoint(budget)?;
+        let NativeIndexResponse::ProtectedRepoMapHead(resolved) = self.request(
+            NativeIndexRequest::ResolveProtectedRepoMapHead { repo_id, revision_id },
+            budget,
+        )? else {
+            return Err(NativeUdsError::Protocol(
+                "unexpected protected RepoMap head reply".into(),
+            ));
+        };
+        validate_repomap_reply(&resolved)?;
+        read_session::admitted_budget_checkpoint(budget)?;
+        Ok(resolved)
+    }
+
+    /// Resolve a selected, protected Source revision to its exact view. The
+    /// server derives BOOT route custody; callers cannot supply an object ref.
+    pub fn resolve_protected_source_head_v1(
+        &self,
+        repo_id: RepoId,
+        revision_id: RevisionId,
+        budget: &RequestBudgetV1,
+    ) -> Result<NativeRootScopedViewV1, NativeUdsError> {
+        read_session::admitted_budget_checkpoint(budget)?;
+        let NativeIndexResponse::RootScopedView(observed) = self.request(
+            NativeIndexRequest::ResolveProtectedSourceHead { repo_id, revision_id },
+            budget,
+        )? else {
+            return Err(NativeUdsError::Protocol(
+                "unexpected protected Source head reply".into(),
+            ));
+        };
+        validate_reply(ViewSelection::Exact(observed.view.identity), &observed)?;
+        read_session::admitted_budget_checkpoint(budget)?;
+        Ok(observed)
+    }
+
     /// Pin the connected Q process on an empty root before any publication
     /// side effect. No workspace request or response is sent on this socket.
     /// The installed provider must authenticate its executable and root.
@@ -129,5 +211,17 @@ pub(super) fn validate_reply(
     }
     // Device/inode are observed DATA, not portable authorization heuristics.
     // Matching them against the installed provider remains that owner's work.
+    Ok(())
+}
+
+pub(super) fn validate_repomap_reply(
+    resolved: &quanta_index_contract::native_protocol::NativeProtectedRepoMapResolutionV1,
+) -> Result<(), NativeUdsError> {
+    validate_reply(ViewSelection::Exact(resolved.root.view.identity), &resolved.root)?;
+    if resolved.member_binding.0 == Digest([0; 32]) {
+        return Err(NativeUdsError::Protocol(
+            "protected RepoMap member is zero".into(),
+        ));
+    }
     Ok(())
 }

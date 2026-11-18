@@ -97,7 +97,9 @@ impl LegacyReadAuthorityV1 {
         // A tiny tree can refuse a multi-handle SQLite open; it never raises a
         // saved policy or guesses a deployment default to make recovery pass.
         let inherited_handles = match native_io {
-            Some(native_io) => native_io.recovery_reader_handle_ceiling_v1(policy.global_sqlite_handles)?,
+            Some(native_io) => {
+                native_io.recovery_reader_handle_ceiling_v1(policy.global_sqlite_handles)?
+            }
             None => usize::try_from(policy.global_sqlite_handles)?,
         };
         let handles = usize::try_from(policy.binder.reader_handles)?
@@ -111,7 +113,9 @@ impl LegacyReadAuthorityV1 {
             inventory.max_path_bytes,
         )?;
         let vfs_bytes = match native_io {
-            Some(native_io) => native_io.recovery_sibling_allocation_bytes_v1(entries, inventory.max_path_bytes)?,
+            Some(native_io) => {
+                native_io.recovery_sibling_allocation_bytes_v1(entries, inventory.max_path_bytes)?
+            }
             None => SqliteCapacityVfs::initial_recovery_allocation_bytes_v1(
                 entries,
                 inventory.max_path_bytes,
@@ -136,7 +140,9 @@ impl LegacyReadAuthorityV1 {
         )?;
         let catalog = match native_io {
             Some(native_io) => native_io.register_recovery_sibling_v1(
-                Arc::clone(&physical), policy.global_sqlite_handles, budget,
+                Arc::clone(&physical),
+                policy.global_sqlite_handles,
+                budget,
             )?,
             None => SqliteCapacityVfs::register_funded(
                 Arc::clone(&physical),
@@ -176,6 +182,10 @@ impl LegacyReadAuthorityV1 {
     }
     pub(super) fn maximum_objects(&self) -> usize {
         self.observed_files
+    }
+
+    pub(super) fn repomap_candidate_file_bytes_v1(&self) -> u64 {
+        self.repomap_candidate_file_bytes
     }
 
     pub(super) fn require_repomap_locator_v1(
@@ -243,6 +253,38 @@ impl LegacyReadAuthorityV1 {
                 budget,
             )?,
         )
+    }
+    /// Lend one Catalog-selected Legacy RepoMap compiled body while the saved
+    /// root, its physical read port and the caller's WorkBudget remain held.
+    pub(super) fn visit_active_repomap_compiled_v1(
+        &self,
+        candidate: &quanta_index_catalog::RepoMapCandidateRowV1,
+        receipts: Option<(
+            &quanta_index_contract::RepoMapTerminalReceiptV2,
+            &quanta_index_contract::RepoMapTerminalReceiptV2,
+        )>,
+        budget: &mut WorkBudget,
+        visit: &mut dyn FnMut(
+            &[u8],
+            &mut WorkBudget,
+        ) -> std::result::Result<
+            (),
+            quanta_index_core::index::existing_file::ExistingFileReadFailureV1,
+        >,
+    ) -> Result<quanta_index_repomap::VerifiedActiveRepoMapFilesV1> {
+        self.require_current_root_v1()?;
+        let files = quanta_index_repomap::visit_existing_active_repomap_compiled_payload_v1(
+            self.root(),
+            candidate,
+            receipts,
+            rustix::process::geteuid().as_raw(),
+            self.repomap_candidate_file_bytes,
+            &self.objects,
+            budget,
+            visit,
+        )?;
+        self.require_current_root_v1()?;
+        Ok(files)
     }
     pub(super) fn require_current_and_retired(&self, budget: &mut WorkBudget) -> Result<()> {
         budget.charge(WorkUsage {

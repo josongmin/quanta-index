@@ -28,8 +28,8 @@ fn observation() -> Result<NativeRootScopedViewV1, Box<dyn std::error::Error>> {
     })
 }
 
-fn exchange<R>(
-    selection: ViewSelection,
+fn exchange_request<R>(
+    expected_request: NativeIndexRequest,
     response: Option<NativeIndexResponse>,
     call: impl FnOnce(&NativeUdsClient<PathBuf>) -> R,
 ) -> Result<(R, usize), Box<dyn std::error::Error>> {
@@ -59,8 +59,8 @@ fn exchange<R>(
             .map_err(|e| e.to_string())?;
         let request: NativeIndexRequestEnvelope =
             quanta_index_ipc::decode_request(&mut stream).map_err(|e| e.to_string())?;
-        if request.payload != NativeIndexRequest::ObserveRootView(selection) {
-            return Err("root observation changed the selected view".into());
+        if request.payload != expected_request {
+            return Err("root observation changed the selected request".into());
         }
         let Some(payload) = response else {
             return Ok(0);
@@ -80,6 +80,150 @@ fn exchange<R>(
         peer.join()
             .map_err(|_| "root observation peer panicked")??,
     ))
+}
+
+fn exchange<R>(
+    selection: ViewSelection,
+    response: Option<NativeIndexResponse>,
+    call: impl FnOnce(&NativeUdsClient<PathBuf>) -> R,
+) -> Result<(R, usize), Box<dyn std::error::Error>> {
+    exchange_request(NativeIndexRequest::ObserveRootView(selection), response, call)
+}
+
+#[test]
+fn protected_repomap_client_uses_exact_pair_and_rejects_zero_member()
+-> Result<(), Box<dyn std::error::Error>> {
+    let repo = quanta_index_contract::RepoId::new("repo")?;
+    let revision = quanta_index_contract::RevisionId::new("revision")?;
+    let request = NativeIndexRequest::ResolveProtectedRepoMapHead {
+        repo_id: repo.clone(), revision_id: revision.clone(),
+    };
+    let expected = quanta_index_contract::native_protocol::NativeProtectedRepoMapResolutionV1 {
+        root: observation()?,
+        instance: IndexInstanceId([81; 16]),
+        member_binding: ObjectRef(Digest([82; 32])),
+    };
+    let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+    let (result, _) = exchange_request(request.clone(),
+        Some(NativeIndexResponse::ProtectedRepoMapHead(expected.clone())), |client| {
+            client.resolve_protected_repomap_head_v1(repo.clone(), revision.clone(), &budget)
+        })?;
+    assert_eq!(result?, expected);
+    let mut wrong = expected;
+    wrong.member_binding = ObjectRef(Digest([0; 32]));
+    let (result, _) = exchange_request(request,
+        Some(NativeIndexResponse::ProtectedRepoMapHead(wrong)), |client| {
+            client.resolve_protected_repomap_head_v1(repo, revision, &budget)
+        })?;
+    assert!(matches!(result, Err(NativeUdsError::Protocol(_))));
+    Ok(())
+}
+
+#[test]
+fn protected_repomap_admitted_decoder_accepts_contract_wire()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = observation()?;
+    let view = root.view.identity;
+    let instance = IndexInstanceId([81; 16]);
+    let member_binding = ObjectRef(Digest([82; 32]));
+    for payload in [
+        NativeIndexResponse::ProtectedRepoMapHead(
+            quanta_index_contract::native_protocol::NativeProtectedRepoMapResolutionV1 {
+                root,
+                instance,
+                member_binding,
+            },
+        ),
+        NativeIndexResponse::ImportedRepoMapMember(
+            quanta_index_contract::native_protocol::NativeImportedRepoMapMemberReadV1 {
+                view,
+                instance,
+                member_binding,
+            },
+        ),
+    ] {
+        let envelope = NativeIndexResponseEnvelope {
+            request_id: 71,
+            payload,
+        };
+        let frame = quanta_index_ipc::encode_response(&envelope)?;
+        let body = frame.get(4..).ok_or("short response frame")?;
+        assert_eq!(admitted_reply_v1::decode(body)?, envelope);
+    }
+    Ok(())
+}
+
+#[test]
+fn imported_repomap_member_admitted_decodes_exact_reply_and_refunds()
+-> Result<(), Box<dyn std::error::Error>> {
+    let view = observation()?.view.identity;
+    let instance = IndexInstanceId([81; 16]);
+    let expected = quanta_index_contract::native_protocol::NativeImportedRepoMapMemberReadV1 {
+        view,
+        instance,
+        member_binding: ObjectRef(Digest([82; 32])),
+    };
+    let request = NativeIndexRequest::ReadImportedRepoMapMember { view, instance };
+    let response = NativeIndexResponse::ImportedRepoMapMember(expected);
+    let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+
+    let (memory, active, admissions) = publication_scope(false);
+    let (result, body_bytes) = exchange_request(request.clone(), Some(response.clone()), |client| {
+        client.read_imported_repomap_member_admitted_v1(view, instance, &budget, &memory)
+    })?;
+    assert_eq!(result?, expected);
+    assert!(body_bytes > 0 && admissions.load(AtomicOrdering::SeqCst) > 0);
+    assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
+
+    // The raw and decoded grants remain charged while the public owner lives.
+    let (memory, active, _) = publication_scope(false);
+    let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+    let (owned, _) = exchange_request(request.clone(), Some(response.clone()), |client| {
+        client.request_publication_admitted(request.clone(), &budget, &memory)
+    })?;
+    let owned = owned?;
+    assert_eq!(owned.response(), &response);
+    assert!(active.load(AtomicOrdering::SeqCst) > 0);
+    drop(owned);
+    assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
+
+    let mut wrong_view = expected;
+    wrong_view.view.sequence += 1;
+    let mut wrong_instance = expected;
+    wrong_instance.instance = IndexInstanceId([83; 16]);
+    let mut zero_member = expected;
+    zero_member.member_binding = ObjectRef(Digest([0; 32]));
+    for (case, reply) in [
+        ("foreign view", NativeIndexResponse::ImportedRepoMapMember(wrong_view)),
+        ("foreign instance", NativeIndexResponse::ImportedRepoMapMember(wrong_instance)),
+        ("zero member", NativeIndexResponse::ImportedRepoMapMember(zero_member)),
+        ("wrong variant", NativeIndexResponse::RootScopedView(observation()?)),
+    ] {
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+        let (memory, active, admissions) = publication_scope(false);
+        let (result, body_bytes) = exchange_request(request.clone(), Some(reply), |client| {
+            client.read_imported_repomap_member_admitted_v1(view, instance, &budget, &memory)
+        })?;
+        assert!(matches!(result, Err(NativeUdsError::Protocol(_))), "{case}");
+        assert!(body_bytes > 0 && admissions.load(AtomicOrdering::SeqCst) > 0, "{case}");
+        assert_eq!(active.load(AtomicOrdering::SeqCst), 0, "{case}");
+    }
+
+    let refusal = NativeIndexWireError {
+        code: NativeIndexErrorCode::Conflict,
+        message: "fixed imported RepoMap member refusal".into(),
+    };
+    let (memory, active, admissions) = publication_scope(false);
+    let budget = RequestBudgetV1::for_duration(Duration::from_secs(5));
+    let (result, body_bytes) = exchange_request(
+        request,
+        Some(NativeIndexResponse::Error(refusal.clone())),
+        |client| client.read_imported_repomap_member_admitted_v1(view, instance, &budget, &memory),
+    )?;
+    assert!(matches!(result, Err(NativeUdsError::Refused(actual)) if actual == refusal));
+    assert!(body_bytes > 0 && admissions.load(AtomicOrdering::SeqCst) > 0);
+    assert_eq!(active.load(AtomicOrdering::SeqCst), 0);
+    Ok(())
 }
 
 #[test]

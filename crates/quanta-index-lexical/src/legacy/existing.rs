@@ -36,7 +36,7 @@ fn width(n: usize) -> Result<u64, Failure> {
 fn corrupt(root: &Path, name: &str, reason: &str) -> Failure {
     sidecar_corrupt(root, name, reason).into()
 }
-fn decoder_memory(bytes: usize, budget: &mut WorkBudget) -> Result<MemoryLease, Failure> {
+pub(super) fn decoder_memory(bytes: usize, budget: &mut WorkBudget) -> Result<MemoryLease, Failure> {
     // Typed compact roots can encounter one cautious 1MiB Vec preallocation
     // before a malformed field fails. Prior completed fields are bounded by
     // actual input. Cover that transient, ordinary typed/round-trip copies and

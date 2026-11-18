@@ -12,7 +12,11 @@ use quanta_index_contract::{
     AuxEpochV1, BatchPublishReceipt, CandidateCommitmentV1, IngestOperationKindV1,
     ManifestGeneration, RepoId, RepoMapMutationPhaseV2, RepoMapTerminalReceiptV2, RevisionId,
     SearchPlaneErrorCodeV2,
-    index::{HistorySnapshotCheckpointV1, HistorySourceCutV1, HistorySourceInputV1},
+    index::{
+        HistorySnapshotCheckpointV1, HistorySourceCutV1, HistorySourceInputV1,
+        MAX_NATIVE_PROTECTED_SNAPSHOT_BYTES_V1, NativeProtectedSourceHeadV1,
+        NativeProtectedSourceRoutesV1,
+    },
     native_cutover_evidence_v1::NativeCutoverEvidenceLegacyHistoryV1,
 };
 use quanta_index_core::{
@@ -20,9 +24,9 @@ use quanta_index_core::{
     OperationJournalStateV1,
     domains::auxiliary::HistorySnapshotDigestV1,
     index::{
-        CatalogView, Digest, ImmutableOperation, IndexError, MemoryLease, MemoryLifetime,
-        ObjectNamespaceBinding, OperationKey, OperationStatus, ViewRef, WorkBudget, WorkUsage,
-        WorkspaceKey,
+        CatalogView, Digest, ImmutableOperation, IndexError, IngressRef, MemoryLease,
+        MemoryLifetime, ObjectNamespaceBinding, OperationKey, OperationStatus, ViewRef, WorkBudget,
+        WorkUsage, WorkspaceKey,
     },
 };
 use rusqlite::{
@@ -30,8 +34,8 @@ use rusqlite::{
 };
 
 use super::{
-    NativeBootManifest, boot_manifest, capture_format, decode, owned_work, read_operation,
-    read_work_by_key, reclaim, retention, sql, uint, workspace_key,
+    NativeBootManifest, boot_manifest, capture_format, decode, encode, operation_key, owned_work,
+    read_operation, read_work_by_key, reclaim, retention, sql, uint, workspace_key,
 };
 use crate::{
     CATALOG_FILE_NAME, CatalogReadOnlyIoAdmission, candidate::ActiveRepoMapReadbackV1, catalog_dir,
@@ -41,6 +45,16 @@ use crate::{
 #[path = "read_only/history_pages.rs"]
 mod history_pages;
 pub use history_pages::visit_legacy_history_checkpoint_pages_v1;
+#[path = "read_only/protected_native_snapshot.rs"]
+mod protected_native_snapshot;
+#[cfg(test)]
+pub(super) use protected_native_snapshot::visit_native_protected_snapshot_connection_v1;
+pub use protected_native_snapshot::visit_native_protected_snapshot_rows_v1;
+#[path = "read_only/protected_native_install.rs"]
+mod protected_native_install;
+#[cfg(test)]
+pub(super) use protected_native_install::verify_imported_exact_views_v1;
+pub use protected_native_install::verify_native_protected_snapshot_install_v1;
 
 /// Metadata observed in one `SQLite` read transaction. This is not a physical
 /// object proof, a producer completion seal or a deployable boot receipt.
@@ -169,51 +183,364 @@ impl LegacyCatalogQuiescenceV1 {
         activate: &RepoMapTerminalReceiptV2,
         budget: &mut WorkBudget,
     ) -> Result<&crate::RepoMapCandidateRowV1, IndexError> {
-        let active = self.active_repomap.as_ref().ok_or(IndexError::DigestConflict)?;
-        let candidate = &active.candidate;
-        let head = &active.activation;
-        let publish_ack = &publish.mutation;
-        let activate_ack = &activate.mutation;
-        let bytes = [publish_ack, activate_ack].into_iter().try_fold(256_u64, |total, ack| {
+        let active = self
+            .active_repomap
+            .as_ref()
+            .ok_or(IndexError::DigestConflict)?;
+        require_active_repomap_ack_row_v1(active, publish, activate, budget)
+    }
+}
+
+fn require_active_repomap_ack_row_v1<'a>(
+    active: &'a ActiveRepoMapReadbackV1,
+    publish: &RepoMapTerminalReceiptV2,
+    activate: &RepoMapTerminalReceiptV2,
+    budget: &mut WorkBudget,
+) -> Result<&'a crate::RepoMapCandidateRowV1, IndexError> {
+    let candidate = &active.candidate;
+    let head = &active.activation;
+    let publish_ack = &publish.mutation;
+    let activate_ack = &activate.mutation;
+    let bytes = [publish_ack, activate_ack]
+        .into_iter()
+        .try_fold(256_u64, |total, ack| {
             [
                 ack.repo_id.as_str(),
                 ack.revision_id.as_str(),
                 &ack.new_candidate_commitment,
-                ack.prior_candidate_commitment.as_deref().unwrap_or_default(),
+                ack.prior_candidate_commitment
+                    .as_deref()
+                    .unwrap_or_default(),
             ]
             .into_iter()
-            .try_fold(total, |total, field| total.checked_add(field.len().try_into().ok()?))
-        }).ok_or(IndexError::ResourceLimited)?;
-        budget.charge(WorkUsage { bytes, ..WorkUsage::default() })?;
-        let parse = |wire: &str| {
-            CandidateCommitmentV1::from_wire_str(wire)
-                .map(|commitment| *commitment.as_bytes())
-                .map_err(|_| IndexError::DigestConflict)
-        };
-        if publish.phase != RepoMapMutationPhaseV2::Publish
-            || activate.phase != RepoMapMutationPhaseV2::Activate
-            || publish_ack.prior_candidate_commitment.is_some()
-            || publish_ack.activation_epoch != 0
-            || u64::try_from(candidate.terminal_sequence).ok() != Some(publish_ack.terminal_sequence)
-            || u64::try_from(head.terminal_sequence).ok() != Some(activate_ack.terminal_sequence)
-            || head.activation_sequence != head.terminal_sequence
-            || head.epoch != activate_ack.activation_epoch
-            || activate_ack.prior_candidate_commitment.as_deref().map(parse).transpose()?
-                != active.prior_commitment
+            .try_fold(total, |total, field| {
+                total.checked_add(field.len().try_into().ok()?)
+            })
+        })
+        .ok_or(IndexError::ResourceLimited)?;
+    budget.charge(WorkUsage {
+        bytes,
+        ..WorkUsage::default()
+    })?;
+    let parse = |wire: &str| {
+        CandidateCommitmentV1::from_wire_str(wire)
+            .map(|commitment| *commitment.as_bytes())
+            .map_err(|_| IndexError::DigestConflict)
+    };
+    if publish.phase != RepoMapMutationPhaseV2::Publish
+        || activate.phase != RepoMapMutationPhaseV2::Activate
+        || publish_ack.prior_candidate_commitment.is_some()
+        || publish_ack.activation_epoch != 0
+        || u64::try_from(candidate.terminal_sequence).ok() != Some(publish_ack.terminal_sequence)
+        || u64::try_from(head.terminal_sequence).ok() != Some(activate_ack.terminal_sequence)
+        || head.activation_sequence != head.terminal_sequence
+        || head.epoch != activate_ack.activation_epoch
+        || activate_ack
+            .prior_candidate_commitment
+            .as_deref()
+            .map(parse)
+            .transpose()?
+            != active.prior_commitment
+    {
+        return Err(IndexError::DigestConflict);
+    }
+    for ack in [publish_ack, activate_ack] {
+        if ack.repo_id.as_str() != candidate.repo_id
+            || ack.revision_id.as_str() != candidate.revision_id
+            || ack.manifest_generation.get() != candidate.manifest_generation
+            || parse(&ack.new_candidate_commitment)? != candidate.candidate_commitment
         {
             return Err(IndexError::DigestConflict);
         }
-        for ack in [publish_ack, activate_ack] {
-            if ack.repo_id.as_str() != candidate.repo_id
-                || ack.revision_id.as_str() != candidate.revision_id
-                || ack.manifest_generation.get() != candidate.manifest_generation
-                || parse(&ack.new_candidate_commitment)? != candidate.candidate_commitment
-            {
-                return Err(IndexError::DigestConflict);
-            }
-        }
-        Ok(candidate)
     }
+    Ok(candidate)
+}
+
+/// Rejoin the two Original RepoMap terminal receipts to one current candidate
+/// and activation in a held Legacy Catalog snapshot that may contain other
+/// active Source and RepoMap revisions. The caller still verifies the active
+/// candidate's immutable physical payload under the same root lease.
+pub fn verify_legacy_active_repomap_receipts_with_siblings_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    publish: &RepoMapTerminalReceiptV2,
+    activate: &RepoMapTerminalReceiptV2,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    let repo = &publish.mutation.repo_id;
+    let revision = &publish.mutation.revision_id;
+    with_admitted_connection(
+        state_root,
+        io,
+        budget,
+        0,
+        |error| error,
+        |connection, path, budget, _| {
+            configure_read_connection(connection, budget)?;
+            idempotency::verify_installed_schema(connection, path).map_err(core)?;
+            crate::sequence::verify_installed_schema(connection, path).map_err(core)?;
+            crate::auxiliary::verify_installed_schema(connection, path).map_err(core)?;
+            crate::candidate::verify_installed_schema(connection, path).map_err(core)?;
+            let _journal = idempotency::visit_admitted_quiescent_journal_v1(
+                connection,
+                path,
+                budget,
+                &mut |_, _, _| Ok(()),
+            )
+            .map_err(journal_read_error)?;
+            crate::sequence::verify_allocator_exact(connection, path).map_err(core)?;
+            crate::integrity::verify_integrity_admitted(connection, path, budget).map_err(
+                |error| match error {
+                    crate::integrity::IntegrityCheckError::Admission(error) => error,
+                    crate::integrity::IntegrityCheckError::Integrity(error) => core(error),
+                },
+            )?;
+            let row_bytes: i64 = connection
+                .query_row(
+                    "SELECT 2 * (length(CAST(a.repo_id AS BLOB)) + length(CAST(a.revision_id AS BLOB)))
+                            + COALESCE(length(CAST(a.invalidation_reason AS BLOB)), 0)
+                            + COALESCE(length(CAST(c.projection_meta AS BLOB)), 0)
+                            + COALESCE(length(CAST(p.invalidation_reason AS BLOB)), 0)
+                            + COALESCE(length(CAST(pc.projection_meta AS BLOB)), 0)
+                     FROM repomap_activation_v1 AS a
+                     JOIN repomap_candidate_v1 AS c
+                       ON (c.repo_id,c.revision_id,c.manifest_generation)
+                        = (a.repo_id,a.revision_id,a.manifest_generation)
+                     LEFT JOIN repomap_activation_v1 AS p
+                       ON (p.repo_id,p.revision_id,p.epoch)
+                        = (a.repo_id,a.revision_id,a.epoch - 1)
+                     LEFT JOIN repomap_candidate_v1 AS pc
+                       ON (pc.repo_id,pc.revision_id,pc.manifest_generation)
+                        = (p.repo_id,p.revision_id,p.manifest_generation)
+                     WHERE a.repo_id=?1 AND a.revision_id=?2 AND a.active=1",
+                    params![repo.as_str(), revision.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| sql(&error))?
+                .ok_or(IndexError::DigestConflict)?;
+            let memory_bytes = u64::try_from(row_bytes)
+                .map_err(|_| IndexError::ResourceLimited)?
+                .checked_mul(8)
+                .and_then(|bytes| bytes.checked_add(8192))
+                .ok_or(IndexError::ResourceLimited)?;
+            budget.charge(WorkUsage {
+                reads: 1,
+                bytes: memory_bytes,
+                ..WorkUsage::default()
+            })?;
+            let _row_memory = budget
+                .reserve_memory(memory_bytes, MemoryLifetime::Temporary)?
+                .ok_or(IndexError::ResourceLimited)?;
+            let active =
+                crate::candidate::read_active_recovery_candidate_v1(connection, repo, revision)
+                    .map_err(core)?
+                    .ok_or(IndexError::DigestConflict)?;
+            let _candidate = require_active_repomap_ack_row_v1(&active, publish, activate, budget)?;
+            connection
+                .execute_batch("COMMIT")
+                .map_err(|error| sql(&error))?;
+            Ok(())
+        },
+    )
+}
+
+/// Complete physical ledger observation for a held Legacy Catalog. SearchCorpus
+/// receipts and active RepoMap rows are borrowed only during their callbacks;
+/// neither callback may issue Source authority. Counts become final only after
+/// the read transaction, SQLite close and physical input check all succeed.
+pub struct LegacyActiveCatalogCensusV1 {
+    pub terminal_journal_rows: u64,
+    pub published_search_corpus_rows: u64,
+    pub active_repomap_heads: u64,
+    pub last_fence: u64,
+    /// Global physical History presence in the same held Catalog snapshot.
+    pub has_history_rows: bool,
+}
+
+pub fn visit_legacy_active_catalog_heads_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    budget: &mut WorkBudget,
+    visit_search_corpus: &mut dyn FnMut(
+        &IdempotencyKeyV1,
+        &BatchPublishReceipt,
+        u64,
+        &mut WorkBudget,
+    ) -> Result<(), IndexError>,
+    visit_repomap: &mut dyn FnMut(
+        &crate::RepoMapCandidateRowV1,
+        &crate::RepoMapActivationRowV1,
+        &mut WorkBudget,
+    ) -> Result<(), IndexError>,
+) -> Result<LegacyActiveCatalogCensusV1, IndexError> {
+    with_admitted_connection(
+        state_root,
+        io,
+        budget,
+        0,
+        |error| error,
+        |connection, path, budget, _| {
+            configure_read_connection(connection, budget)?;
+            idempotency::verify_installed_schema(connection, path).map_err(core)?;
+            crate::sequence::verify_installed_schema(connection, path).map_err(core)?;
+            crate::auxiliary::verify_installed_schema(connection, path).map_err(core)?;
+            crate::candidate::verify_installed_schema(connection, path).map_err(core)?;
+            if crate::candidate::has_unresolved_candidate_v1(connection, path).map_err(core)? {
+                return Err(IndexError::Conflict);
+            }
+            let mut published_search_corpus_rows = 0_u64;
+            let (terminal_journal_rows, last_fence) =
+                idempotency::visit_admitted_quiescent_journal_v1(
+                    connection,
+                    path,
+                    budget,
+                    &mut |key, inspected, budget| {
+                        if key.kind == IngestOperationKindV1::SearchCorpus
+                            && let quanta_index_core::OperationInspectV1::Committed {
+                                receipt,
+                                durable_sequence,
+                            } = inspected
+                        {
+                            visit_search_corpus(key, receipt, *durable_sequence, budget)
+                                .map_err(idempotency::AdmittedJournalError::Admission)?;
+                            published_search_corpus_rows = published_search_corpus_rows
+                                .checked_add(1)
+                                .ok_or(IndexError::ResourceLimited)?;
+                        }
+                        Ok(())
+                    },
+                )
+                .map_err(journal_read_error)?;
+            crate::sequence::verify_allocator_exact(connection, path).map_err(core)?;
+            crate::integrity::verify_integrity_admitted(connection, path, budget).map_err(
+                |error| match error {
+                    crate::integrity::IntegrityCheckError::Admission(error) => error,
+                    crate::integrity::IntegrityCheckError::Integrity(error) => core(error),
+                },
+            )?;
+
+            let mut statement = connection
+                .prepare(
+                    "SELECT repo_id, revision_id FROM repomap_activation_v1
+                     WHERE active=1 ORDER BY repo_id, revision_id",
+                )
+                .map_err(|error| sql(&error))?;
+            let mut rows = statement.query([]).map_err(|error| sql(&error))?;
+            let mut active_repomap_heads = 0_u64;
+            while let Some(row) = rows.next().map_err(|error| sql(&error))? {
+                budget.checkpoint()?;
+                budget.charge(WorkUsage {
+                    reads: 1,
+                    bytes: 128,
+                    ..WorkUsage::default()
+                })?;
+                let raw_repo = match row.get_ref(0).map_err(|error| sql(&error))? {
+                    ValueRef::Text(value) => value,
+                    _ => return Err(IndexError::DigestConflict),
+                };
+                let raw_revision = match row.get_ref(1).map_err(|error| sql(&error))? {
+                    ValueRef::Text(value) => value,
+                    _ => return Err(IndexError::DigestConflict),
+                };
+                let width = raw_repo
+                    .len()
+                    .checked_add(raw_revision.len())
+                    .and_then(|n| n.checked_mul(8))
+                    .and_then(|n| n.checked_add(4096))
+                    .ok_or(IndexError::ResourceLimited)?;
+                let _key_memory = budget
+                    .reserve_memory(
+                        u64::try_from(width).map_err(|_| IndexError::ResourceLimited)?,
+                        MemoryLifetime::Temporary,
+                    )?
+                    .ok_or(IndexError::ResourceLimited)?;
+                let repo = RepoId::new(
+                    std::str::from_utf8(raw_repo).map_err(|_| IndexError::DigestConflict)?,
+                )
+                .map_err(|_| IndexError::DigestConflict)?;
+                let revision = RevisionId::new(
+                    std::str::from_utf8(raw_revision).map_err(|_| IndexError::DigestConflict)?,
+                )
+                .map_err(|_| IndexError::DigestConflict)?;
+                let projection_bytes: i64 = connection
+                    .query_row(
+                        "SELECT 2 * (length(CAST(a.repo_id AS BLOB)) + length(CAST(a.revision_id AS BLOB)))
+                                + COALESCE(length(CAST(a.invalidation_reason AS BLOB)), 0)
+                                + COALESCE(length(CAST(c.projection_meta AS BLOB)), 0)
+                                + COALESCE(length(CAST(p.invalidation_reason AS BLOB)), 0)
+                                + COALESCE(length(CAST(pc.projection_meta AS BLOB)), 0)
+                         FROM repomap_activation_v1 AS a
+                         JOIN repomap_candidate_v1 AS c
+                           ON (c.repo_id,c.revision_id,c.manifest_generation)
+                            = (a.repo_id,a.revision_id,a.manifest_generation)
+                         LEFT JOIN repomap_activation_v1 AS p
+                           ON (p.repo_id,p.revision_id,p.epoch)
+                            = (a.repo_id,a.revision_id,a.epoch - 1)
+                         LEFT JOIN repomap_candidate_v1 AS pc
+                           ON (pc.repo_id,pc.revision_id,pc.manifest_generation)
+                            = (p.repo_id,p.revision_id,p.manifest_generation)
+                         WHERE a.repo_id=?1 AND a.revision_id=?2 AND a.active=1",
+                        params![repo.as_str(), revision.as_str()],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| sql(&error))?;
+                let projection_bytes = u64::try_from(projection_bytes)
+                    .map_err(|_| IndexError::ResourceLimited)?
+                    .checked_mul(8)
+                    .and_then(|n| n.checked_add(8192))
+                    .ok_or(IndexError::ResourceLimited)?;
+                budget.charge(WorkUsage {
+                    reads: 1,
+                    bytes: projection_bytes,
+                    ..WorkUsage::default()
+                })?;
+                let _row_memory = budget
+                    .reserve_memory(projection_bytes, MemoryLifetime::Temporary)?
+                    .ok_or(IndexError::ResourceLimited)?;
+                let active = crate::candidate::read_active_recovery_candidate_v1(
+                    connection, &repo, &revision,
+                )
+                .map_err(core)?
+                .ok_or(IndexError::DigestConflict)?;
+                if active.candidate.repo_id != repo.as_str()
+                    || active.candidate.revision_id != revision.as_str()
+                    || active.activation.repo_id != repo.as_str()
+                    || active.activation.revision_id != revision.as_str()
+                {
+                    return Err(IndexError::DigestConflict);
+                }
+                visit_repomap(&active.candidate, &active.activation, budget)?;
+                active_repomap_heads = active_repomap_heads
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+            }
+            drop(rows);
+            drop(statement);
+            budget.charge(WorkUsage {
+                reads: 1,
+                bytes: 8,
+                ..WorkUsage::default()
+            })?;
+            let has_history_rows: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM auxiliary_rows_v1 WHERE domain='history' LIMIT 1)",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| sql(&error))?;
+            connection
+                .execute_batch("COMMIT")
+                .map_err(|error| sql(&error))?;
+            Ok(LegacyActiveCatalogCensusV1 {
+                terminal_journal_rows,
+                published_search_corpus_rows,
+                active_repomap_heads,
+                last_fence: u64::try_from(last_fence).map_err(|_| IndexError::ResourceLimited)?,
+                has_history_rows,
+            })
+        },
+    )
 }
 
 /// Canonically verified Legacy SearchCorpus receipt from an existing Catalog.
@@ -475,7 +802,9 @@ pub fn verify_legacy_catalog_quiescence_v1(
             )
             .map_err(core)?;
             let repomap_allocation = active_repomap.as_ref().map(|_| repomap_allocation);
-            connection.execute_batch("COMMIT").map_err(|error| engine(&error))?;
+            connection
+                .execute_batch("COMMIT")
+                .map_err(|error| engine(&error))?;
             Ok(LegacyCatalogQuiescenceV1 {
                 terminal_rows,
                 latest_retained_search_corpus_sequence,
@@ -679,42 +1008,35 @@ pub fn visit_legacy_history_generation_keys_v1(
     budget: &mut WorkBudget,
     visit: &mut dyn FnMut(&AuxiliaryGenerationKeyV1, &mut WorkBudget) -> Result<(), IndexError>,
 ) -> Result<u64, IndexError> {
-    with_quiescent_legacy_history_v1(
-        state_root,
-        io,
-        repo,
-        budget,
-        |connection, _path, budget| {
-            scan_legacy_history_generation_rows_v1(connection, repo, budget, |row, budget| {
-                let raw_revision = match row.get_ref(0).map_err(|error| sql(&error))? {
-                    ValueRef::Text(bytes) => bytes,
-                    _ => return Err(IndexError::DigestConflict),
-                };
-                let backing = std::mem::size_of::<AuxiliaryGenerationKeyV1>()
-                    .checked_add(repo.as_str().len())
-                    .and_then(|bytes| bytes.checked_add(raw_revision.len()))
-                    .ok_or(IndexError::ResourceLimited)?;
-                let backing = u64::try_from(backing).map_err(|_| IndexError::ResourceLimited)?;
-                budget.charge(WorkUsage {
-                    bytes: backing,
-                    ..WorkUsage::default()
-                })?;
-                let _key_backing = budget
-                    .reserve_memory(backing, MemoryLifetime::Temporary)?
-                    .ok_or(IndexError::ResourceLimited)?;
-                let revision = std::str::from_utf8(raw_revision)
-                    .map_err(|_| IndexError::DigestConflict)?;
-                let generation = uint(row.get::<_, i64>(1).map_err(|error| sql(&error))?)?;
-                let key = AuxiliaryGenerationKeyV1 {
-                    repo_id: repo.clone(),
-                    revision_id: RevisionId::new(revision)
-                        .map_err(|_| IndexError::DigestConflict)?,
-                    generation: ManifestGeneration::new(generation),
-                };
-                visit(&key, budget)
-            })
-        },
-    )
+    with_quiescent_legacy_history_v1(state_root, io, repo, budget, |connection, _path, budget| {
+        scan_legacy_history_generation_rows_v1(connection, repo, budget, |row, budget| {
+            let raw_revision = match row.get_ref(0).map_err(|error| sql(&error))? {
+                ValueRef::Text(bytes) => bytes,
+                _ => return Err(IndexError::DigestConflict),
+            };
+            let backing = std::mem::size_of::<AuxiliaryGenerationKeyV1>()
+                .checked_add(repo.as_str().len())
+                .and_then(|bytes| bytes.checked_add(raw_revision.len()))
+                .ok_or(IndexError::ResourceLimited)?;
+            let backing = u64::try_from(backing).map_err(|_| IndexError::ResourceLimited)?;
+            budget.charge(WorkUsage {
+                bytes: backing,
+                ..WorkUsage::default()
+            })?;
+            let _key_backing = budget
+                .reserve_memory(backing, MemoryLifetime::Temporary)?
+                .ok_or(IndexError::ResourceLimited)?;
+            let revision =
+                std::str::from_utf8(raw_revision).map_err(|_| IndexError::DigestConflict)?;
+            let generation = uint(row.get::<_, i64>(1).map_err(|error| sql(&error))?)?;
+            let key = AuxiliaryGenerationKeyV1 {
+                repo_id: repo.clone(),
+                revision_id: RevisionId::new(revision).map_err(|_| IndexError::DigestConflict)?,
+                generation: ManifestGeneration::new(generation),
+            };
+            visit(&key, budget)
+        })
+    })
 }
 
 /// Count or lend physical keys through the same primary-key-ordered cursor.
@@ -769,7 +1091,12 @@ pub fn verify_legacy_history_sources_v1(
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
     verify_legacy_history_source_inventory_v1(
-        state_root, io, repo, producer, budget, |budget, verify| {
+        state_root,
+        io,
+        repo,
+        producer,
+        budget,
+        |budget, verify| {
             for (cut, input) in sources {
                 if &cut.generation.revision_id != revision {
                     return Err(IndexError::DigestConflict);
@@ -794,63 +1121,75 @@ pub fn verify_legacy_history_source_inventory_v1(
         &mut LegacyHistorySourceVerifier<'_>,
     ) -> Result<(), IndexError>,
 ) -> Result<(), IndexError> {
-    with_quiescent_legacy_history_v1(
-        state_root,
-        io,
-        repo,
-        budget,
-        |connection, path, budget| {
-            let retained_count =
-                scan_legacy_history_generation_rows_v1(connection, repo, budget, |_, _| Ok(()))?;
-            let mut count = 0u64;
-            let mut previous: Option<(ManifestGeneration, RevisionId, MemoryLease)> = None;
-            sources(budget, &mut |cut, input, budget| {
-                if count == retained_count
-                    || &cut.generation.repo_id != repo
-                    || previous.as_ref().is_some_and(|(generation, revision, _)| {
-                        (*generation, revision) >= cut.generation.bootstrap_order_key_v1()
-                    })
-                {
-                    return Err(IndexError::DigestConflict);
-                }
-                drop(previous.take());
-                match input {
-                    LegacyHistorySourceProofV1::Replay(input) => {
-                        verify_legacy_history_source_v1(connection, path, producer, cut, input, budget)?;
-                    }
-                    LegacyHistorySourceProofV1::Snapshot { checkpoint, required } => {
-                        let legacy_root = state_root.to_str().ok_or(IndexError::DigestConflict)?;
-                        verify_legacy_history_checkpoint(
-                            connection, path, [producer.writer_state_root, producer.workspace_root,
-                                producer.contract_key, legacy_root], cut, checkpoint, required, budget,
-                        )?;
-                    }
-                }
-                let revision = &cut.generation.revision_id;
-                let revision_bytes = std::mem::size_of::<RevisionId>()
-                    .checked_add(revision.as_str().len())
-                    .ok_or(IndexError::ResourceLimited)?;
-                let allocation = budget
-                    .reserve_memory(
-                        u64::try_from(revision_bytes).map_err(|_| IndexError::ResourceLimited)?,
-                        MemoryLifetime::Retained,
-                    )?
-                    .ok_or(IndexError::ResourceLimited)?;
-                previous = Some((cut.generation.generation, revision.clone(), allocation));
-                count += 1;
-                Ok(())
-            })?;
-            if count != retained_count {
+    with_quiescent_legacy_history_v1(state_root, io, repo, budget, |connection, path, budget| {
+        let retained_count =
+            scan_legacy_history_generation_rows_v1(connection, repo, budget, |_, _| Ok(()))?;
+        let mut count = 0u64;
+        let mut previous: Option<(ManifestGeneration, RevisionId, MemoryLease)> = None;
+        sources(budget, &mut |cut, input, budget| {
+            if count == retained_count
+                || &cut.generation.repo_id != repo
+                || previous.as_ref().is_some_and(|(generation, revision, _)| {
+                    (*generation, revision) >= cut.generation.bootstrap_order_key_v1()
+                })
+            {
                 return Err(IndexError::DigestConflict);
             }
+            drop(previous.take());
+            match input {
+                LegacyHistorySourceProofV1::Replay(input) => {
+                    verify_legacy_history_source_v1(
+                        connection, path, producer, cut, input, budget,
+                    )?;
+                }
+                LegacyHistorySourceProofV1::Snapshot {
+                    checkpoint,
+                    required,
+                } => {
+                    let legacy_root = state_root.to_str().ok_or(IndexError::DigestConflict)?;
+                    verify_legacy_history_checkpoint(
+                        connection,
+                        path,
+                        [
+                            producer.writer_state_root,
+                            producer.workspace_root,
+                            producer.contract_key,
+                            legacy_root,
+                        ],
+                        cut,
+                        checkpoint,
+                        required,
+                        budget,
+                    )?;
+                }
+            }
+            let revision = &cut.generation.revision_id;
+            let revision_bytes = std::mem::size_of::<RevisionId>()
+                .checked_add(revision.as_str().len())
+                .ok_or(IndexError::ResourceLimited)?;
+            let allocation = budget
+                .reserve_memory(
+                    u64::try_from(revision_bytes).map_err(|_| IndexError::ResourceLimited)?,
+                    MemoryLifetime::Retained,
+                )?
+                .ok_or(IndexError::ResourceLimited)?;
+            previous = Some((cut.generation.generation, revision.clone(), allocation));
+            count += 1;
             Ok(())
-        },
-    )
+        })?;
+        if count != retained_count {
+            return Err(IndexError::DigestConflict);
+        }
+        Ok(())
+    })
 }
 
-type LegacyHistorySourceVerifier<'a> =
-    dyn FnMut(&HistorySourceCutV1, LegacyHistorySourceProofV1<'_>, &mut WorkBudget) -> Result<(), IndexError>
-        + 'a;
+type LegacyHistorySourceVerifier<'a> = dyn FnMut(
+        &HistorySourceCutV1,
+        LegacyHistorySourceProofV1<'_>,
+        &mut WorkBudget,
+    ) -> Result<(), IndexError>
+    + 'a;
 
 fn verify_legacy_history_checkpoint(
     connection: &Connection,
@@ -861,11 +1200,19 @@ fn verify_legacy_history_checkpoint(
     required: Option<&NativeCutoverEvidenceLegacyHistoryV1>,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    checkpoint.validate_shape().map_err(|error| IndexError::InvalidInput(error.into()))?;
+    checkpoint
+        .validate_shape()
+        .map_err(|error| IndexError::InvalidInput(error.into()))?;
     if checkpoint.cut != *cut {
         return Err(IndexError::DigestConflict);
     }
-    let actual = observe_history_in_snapshot(connection, path, &cut.generation, budget, &mut |_, _| Ok(()))?;
+    let actual = observe_history_in_snapshot(
+        connection,
+        path,
+        &cut.generation,
+        budget,
+        &mut |_, _| Ok(()),
+    )?;
     if actual.durable_epoch != cut.durable_epoch
         || actual.snapshot_digest != cut.snapshot_digest
         || actual.row_count != checkpoint.row_count
@@ -874,12 +1221,19 @@ fn verify_legacy_history_checkpoint(
         return Err(IndexError::DigestConflict);
     }
     let replay = quanta_index_ipc::history_snapshot_checkpoint_replay_with_progress_v1(
-        scope, &cut.generation, actual.durable_epoch, actual.snapshot_digest,
-        &actual.terminal_receipt, &mut |bytes| budget.charge(WorkUsage {
-            bytes: u64::try_from(bytes).map_err(|_| IndexError::ResourceLimited)?,
-            ..WorkUsage::default()
-        }),
-    ).map_err(history_hash_error)?;
+        scope,
+        &cut.generation,
+        actual.durable_epoch,
+        actual.snapshot_digest,
+        &actual.terminal_receipt,
+        &mut |bytes| {
+            budget.charge(WorkUsage {
+                bytes: u64::try_from(bytes).map_err(|_| IndexError::ResourceLimited)?,
+                ..WorkUsage::default()
+            })
+        },
+    )
+    .map_err(history_hash_error)?;
     if replay != cut.replay_start {
         return Err(IndexError::DigestConflict);
     }
@@ -899,7 +1253,11 @@ fn verify_required_checkpoint_ack(
     if required.generation != cut.generation {
         return Err(IndexError::DigestConflict);
     }
-    let key_bytes = cut.generation.repo_id.as_str().len()
+    let key_bytes = cut
+        .generation
+        .repo_id
+        .as_str()
+        .len()
         .saturating_add(cut.generation.revision_id.as_str().len())
         .saturating_add(required.batch_digest.len());
     let _memory = budget.reserve_memory(
@@ -913,8 +1271,9 @@ fn verify_required_checkpoint_ack(
         generation: cut.generation.generation,
         batch_digest: required.batch_digest.clone(),
     };
-    let (_, receipt, _receipt_memory) = idempotency::inspect_admitted_terminal(connection, path, &key, budget)
-        .map_err(journal_read_error)?;
+    let (_, receipt, _receipt_memory) =
+        idempotency::inspect_admitted_terminal(connection, path, &key, budget)
+            .map_err(journal_read_error)?;
     if !matches!(receipt, quanta_index_core::OperationInspectV1::Committed { receipt, durable_sequence }
         if durable_sequence == required.durable_sequence && receipt.applied
             && receipt.generation == key.generation && receipt.batch_digest == key.batch_digest)
@@ -1040,7 +1399,13 @@ fn verify_legacy_history_source_v1(
     if replay != fence.final_replay || sequence != fence.final_durable_sequence {
         return Err(IndexError::DigestConflict);
     }
-    let (epoch, digest, _) = read_legacy_history_row_commitment(connection, path, &cut.generation, budget, &mut |_, _| Ok(()))?;
+    let (epoch, digest, _) = read_legacy_history_row_commitment(
+        connection,
+        path,
+        &cut.generation,
+        budget,
+        &mut |_, _| Ok(()),
+    )?;
     if epoch != cut.durable_epoch || digest != cut.snapshot_digest {
         return Err(IndexError::DigestConflict);
     }
@@ -1063,10 +1428,14 @@ fn read_legacy_history_row_commitment(
         generation,
         budget,
         &mut |row, budget| {
-            count = count.checked_add(1).ok_or_else(|| CoreError::Storage("Legacy History row count overflow".into()))?;
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| CoreError::Storage("Legacy History row count overflow".into()))?;
             if row.key.family == AuxiliaryRowFamilyV1::Epoch {
                 if epoch.is_some() || !row.key.row_key.is_empty() {
-                    return Err(CoreError::Storage("invalid Legacy History epoch row".into()));
+                    return Err(CoreError::Storage(
+                        "invalid Legacy History epoch row".into(),
+                    ));
                 }
                 let value: AuxEpochV1 = quanta_index_ipc::decode_cbor_payload(&row.value)
                     .map_err(|error| CoreError::Storage(error.to_string()))?;
@@ -1077,7 +1446,11 @@ fn read_legacy_history_row_commitment(
         },
     )
     .map_err(core)?;
-    Ok((epoch.ok_or(IndexError::SnapshotUnavailable)?, hash.finish(), count))
+    Ok((
+        epoch.ok_or(IndexError::SnapshotUnavailable)?,
+        hash.finish(),
+        count,
+    ))
 }
 
 fn history_hash_error(
@@ -1139,7 +1512,9 @@ enum RollbackCheck<'a> {
     None,
     Expected(&'a NativeBootManifest),
     Selected,
+    SelectedWithRoutes(&'a NativeProtectedSourceRoutesV1),
     SelectedWithHistory(OperationKey),
+    SelectedWithHistoryRoutes(OperationKey, &'a NativeProtectedSourceRoutesV1),
 }
 
 type Verification = (
@@ -1305,6 +1680,26 @@ pub fn verify_native_source_root_quiescence_v1(
         state_root,
         io,
         expected_workspace,
+        None,
+        budget,
+        None,
+    )
+}
+
+/// Observe an offline selected Native root with every protected workspace
+/// authenticated against its exact currently selected route head.
+pub fn verify_native_source_root_quiescence_with_routes_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    expected_workspace: WorkspaceKey,
+    routes: &NativeProtectedSourceRoutesV1,
+    budget: &mut WorkBudget,
+) -> Result<NativeBootQuiescentCatalogV1, IndexError> {
+    verify_native_source_root_quiescence_with_visitor_v1(
+        state_root,
+        io,
+        expected_workspace,
+        Some(routes),
         budget,
         None,
     )
@@ -1333,6 +1728,33 @@ pub fn verify_native_source_root_publications_v1(
         state_root,
         io,
         expected_workspace,
+        None,
+        budget,
+        Some(&mut visit),
+    )
+}
+
+/// Visit all durable Published rows from every selected protected workspace.
+/// The route body must first be physically authenticated by the caller.
+pub fn verify_native_source_root_publications_with_routes_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    expected_workspace: WorkspaceKey,
+    routes: &NativeProtectedSourceRoutesV1,
+    budget: &mut WorkBudget,
+    mut visit: impl FnMut(
+        &NativeBootCatalogSnapshot,
+        &CatalogView,
+        &ImmutableOperation,
+        &CatalogView,
+        &mut WorkBudget,
+    ) -> Result<(), IndexError>,
+) -> Result<NativeBootQuiescentCatalogV1, IndexError> {
+    verify_native_source_root_quiescence_with_visitor_v1(
+        state_root,
+        io,
+        expected_workspace,
+        Some(routes),
         budget,
         Some(&mut visit),
     )
@@ -1351,6 +1773,7 @@ fn verify_native_source_root_quiescence_with_visitor_v1(
     state_root: &Path,
     io: &dyn CatalogReadOnlyIoAdmission,
     expected_workspace: WorkspaceKey,
+    routes: Option<&NativeProtectedSourceRoutesV1>,
     budget: &mut WorkBudget,
     mut visit: Option<&mut PublishedVisitorV1<'_>>,
 ) -> Result<NativeBootQuiescentCatalogV1, IndexError> {
@@ -1375,15 +1798,63 @@ fn verify_native_source_root_quiescence_with_visitor_v1(
                 .selected
                 .as_ref()
                 .ok_or(IndexError::SnapshotUnavailable)?;
-            let current_head =
-                check_source_root_quiescence(connection, selected, expected_workspace, budget)?;
+            let current_head = if let Some(routes) = routes {
+                if selected.operation.key.workspace != expected_workspace
+                    || selected.publication.identity.workspace != expected_workspace
+                {
+                    return Err(IndexError::DigestConflict);
+                }
+                let route_ref = selected
+                    .protected_source_routes
+                    .ok_or(IndexError::SnapshotUnavailable)?;
+                if usize::try_from(route_ref.count).ok() != Some(routes.heads.len()) {
+                    return Err(IndexError::DigestConflict);
+                }
+                boot_manifest::validate_custody(connection, selected, budget)?;
+                let _verified = boot_manifest::validate_protected_routes(
+                    connection,
+                    selected.operation.key,
+                    route_ref.object,
+                    routes,
+                    true,
+                    None,
+                    budget,
+                )?;
+                let head = retention::charged_current_view(connection, expected_workspace, budget)?
+                    .ok_or(IndexError::SnapshotUnavailable)?;
+                head
+            } else {
+                check_source_root_quiescence(connection, selected, expected_workspace, budget)?
+            };
             if let Some(visit) = visit.as_deref_mut() {
-                visit_quiescent_published_rows_v1(
+                visit_quiescent_published_rows_with_routes_v1(
                     connection,
                     expected_workspace,
+                    routes,
                     budget,
                     |operation, publication, budget| {
-                        visit(&snapshot, &current_head, operation, publication, budget)
+                        let head = routes
+                            .and_then(|routes| {
+                                routes
+                                    .heads
+                                    .iter()
+                                    .find(|head| {
+                                        head.operation.key.workspace == operation.key.workspace
+                                    })
+                                    .map(|head| &head.publication)
+                                    .or_else(|| {
+                                        routes
+                                            .repomap_heads
+                                            .iter()
+                                            .find(|head| {
+                                                head.operation.key.workspace
+                                                    == operation.key.workspace
+                                            })
+                                            .map(|head| &head.publication)
+                                    })
+                            })
+                            .unwrap_or(&current_head);
+                        visit(&snapshot, head, operation, publication, budget)
                     },
                 )?;
             }
@@ -1399,9 +1870,20 @@ fn verify_native_source_root_quiescence_with_visitor_v1(
 /// This second pass borrows each actual Published row without building a new
 /// retained inventory. The same SQLite transaction prevents an intervening
 /// head change; close and file-input checks still run before success returns.
+#[cfg(test)]
 pub(super) fn visit_quiescent_published_rows_v1(
     connection: &Connection,
     workspace: WorkspaceKey,
+    budget: &mut WorkBudget,
+    visit: impl FnMut(&ImmutableOperation, &CatalogView, &mut WorkBudget) -> Result<(), IndexError>,
+) -> Result<(), IndexError> {
+    visit_quiescent_published_rows_with_routes_v1(connection, workspace, None, budget, visit)
+}
+
+pub(super) fn visit_quiescent_published_rows_with_routes_v1(
+    connection: &Connection,
+    workspace: WorkspaceKey,
+    routes: Option<&NativeProtectedSourceRoutesV1>,
     budget: &mut WorkBudget,
     mut visit: impl FnMut(&ImmutableOperation, &CatalogView, &mut WorkBudget) -> Result<(), IndexError>,
 ) -> Result<(), IndexError> {
@@ -1432,21 +1914,26 @@ pub(super) fn visit_quiescent_published_rows_v1(
             ..WorkUsage::default()
         })?;
         let key: OperationKey = decode(key)?;
-        boot_manifest::charge_operation(connection, key, budget)?;
-        let observed = read_operation(connection, key)?.ok_or(IndexError::SnapshotUnavailable)?;
-        if observed.immutable.key.workspace != workspace {
+        let (_row_loan, observed) = read_quiescent_operation_v1(connection, key, routes, budget)?;
+        if observed.immutable.key.workspace != workspace
+            && !routes.is_some_and(|routes| {
+                routes
+                    .heads
+                    .iter()
+                    .any(|head| head.operation.key.workspace == observed.immutable.key.workspace)
+                    || routes.repomap_heads.iter().any(|head| {
+                        head.operation.key.workspace == observed.immutable.key.workspace
+                    })
+            })
+        {
             return Err(IndexError::Conflict);
         }
-        match observed.status {
-            OperationStatus::Published(_) => {
-                let (operation, publication) = read_published_operation(connection, key, budget)?;
-                visit(&operation, &publication, budget)?;
-                budget.checkpoint()?;
-            }
-            OperationStatus::Refused(_) => {}
-            OperationStatus::Unknown | OperationStatus::Pending(_) => {
-                return Err(IndexError::Conflict);
-            }
+        if matches!(&observed.status, OperationStatus::Published(_)) {
+            let (operation, publication) = published_quiescent_row_v1(observed)?;
+            visit(&operation, &publication, budget)?;
+            budget.checkpoint()?;
+        } else if !matches!(&observed.status, OperationStatus::Refused(_)) {
+            return Err(IndexError::Conflict);
         }
     }
     budget.checkpoint()
@@ -1545,6 +2032,250 @@ pub fn verify_native_published_operation(
     })
 }
 
+/// Resolve an exact historical view only through its durable Published
+/// operation. Query-view retention is deliberately not used: the view row may
+/// already have retired while the operation's publication remains durable.
+pub fn verify_native_published_view_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    expected: ViewRef,
+    budget: &mut WorkBudget,
+) -> Result<CatalogView, IndexError> {
+    verify_native_published_view_impl_v1(state_root, io, expected, None, budget)
+}
+
+/// Resolve a historical Published view on an authenticated selected Native
+/// route. The caller verifies the immutable route object in the held root;
+/// this read rechecks its selected Catalog relation and complete quiescence.
+pub fn verify_native_published_view_with_routes_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    expected: ViewRef,
+    routes: &NativeProtectedSourceRoutesV1,
+    budget: &mut WorkBudget,
+) -> Result<CatalogView, IndexError> {
+    verify_native_published_view_impl_v1(state_root, io, expected, Some(routes), budget)
+}
+
+fn verify_native_published_view_impl_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    expected: ViewRef,
+    routes: Option<&NativeProtectedSourceRoutesV1>,
+    budget: &mut WorkBudget,
+) -> Result<CatalogView, IndexError> {
+    with_admitted_connection(
+        state_root,
+        io,
+        budget,
+        0,
+        |error| error,
+        |connection, path, budget, _| {
+            configure_read_connection(connection, budget)?;
+            if capture_format::preflight_capture_format(connection, path).map_err(core)? {
+                return Err(IndexError::RebuildRequired);
+            }
+            let _stamp = capture_format::verify_stamp(connection, path).map_err(core)?;
+            verify_native_published_view_connection_v1(connection, expected, routes, budget)
+        },
+    )
+}
+
+pub(super) fn verify_native_published_view_connection_v1(
+    connection: &Connection,
+    expected: ViewRef,
+    routes: Option<&NativeProtectedSourceRoutesV1>,
+    budget: &mut WorkBudget,
+) -> Result<CatalogView, IndexError> {
+    if let Some(routes) = routes {
+        let selected =
+            boot_manifest::read_stored(connection)?.ok_or(IndexError::SnapshotUnavailable)?;
+        boot_manifest::validate_custody(connection, &selected, budget)?;
+        let binding = selected
+            .protected_source_routes
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        if usize::try_from(binding.count).ok() != Some(routes.heads.len()) {
+            return Err(IndexError::DigestConflict);
+        }
+        let _validated = boot_manifest::validate_protected_routes(
+            connection,
+            selected.operation.key,
+            binding.object,
+            routes,
+            true,
+            None,
+            budget,
+        )?;
+        if expected.workspace != selected.operation.key.workspace
+            && !routes
+                .heads
+                .iter()
+                .any(|head| head.operation.key.workspace == expected.workspace)
+            && !routes
+                .repomap_heads
+                .iter()
+                .any(|head| head.operation.key.workspace == expected.workspace)
+        {
+            return Err(IndexError::SnapshotUnavailable);
+        }
+    }
+    let mut statement = connection
+        .prepare("SELECT operation FROM native_operation_v1 ORDER BY operation_id")
+        .map_err(|error| sql(&error))?;
+    let mut rows = statement.query([]).map_err(|error| sql(&error))?;
+    let mut found = None;
+    loop {
+        budget.charge(WorkUsage {
+            reads: 1,
+            ..WorkUsage::default()
+        })?;
+        let Some(row) = rows.next().map_err(|error| sql(&error))? else {
+            break;
+        };
+        let ValueRef::Blob(key_bytes) = row.get_ref(0).map_err(|error| sql(&error))? else {
+            return Err(IndexError::Storage(
+                "Native operation key type mismatch".into(),
+            ));
+        };
+        if key_bytes.is_empty() || key_bytes.len() > 4096 {
+            return Err(IndexError::Storage(
+                "Native operation key size mismatch".into(),
+            ));
+        }
+        budget.charge(WorkUsage {
+            bytes: 4096,
+            ..WorkUsage::default()
+        })?;
+        let key: OperationKey = decode(key_bytes)?;
+        if key.workspace != expected.workspace || key.epoch != expected.epoch {
+            continue;
+        }
+        let (_row_loan, observed) = read_quiescent_operation_v1(connection, key, routes, budget)?;
+        if observed.status == OperationStatus::Published(expected) {
+            let (_, publication) = if routes.is_some() {
+                published_quiescent_row_v1(observed)?
+            } else {
+                read_published_operation(connection, key, budget)?
+            };
+            if publication.identity != expected || found.replace(publication).is_some() {
+                return Err(IndexError::DigestConflict);
+            }
+        }
+    }
+    budget.checkpoint()?;
+    found.ok_or(IndexError::SnapshotUnavailable)
+}
+
+/// Validate a physically decoded selected route set against the persisted
+/// Catalog selection and every durable Published/Exact row. The caller first
+/// verifies the immutable object bytes and signed producer scope.
+pub fn verify_native_protected_source_routes_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    manifest: &NativeBootManifest,
+    routes: &NativeProtectedSourceRoutesV1,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    verify_native_protected_source_routes_inner_v1(state_root, io, manifest, routes, false, budget)
+}
+
+/// Recheck every selected route against the current workspace heads and
+/// quiescent Catalog state immediately before candidate selection.
+pub fn verify_native_protected_source_routes_if_current_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    manifest: &NativeBootManifest,
+    routes: &NativeProtectedSourceRoutesV1,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    verify_native_protected_source_routes_inner_v1(state_root, io, manifest, routes, true, budget)
+}
+
+fn verify_native_protected_source_routes_inner_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    manifest: &NativeBootManifest,
+    routes: &NativeProtectedSourceRoutesV1,
+    require_current: bool,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    with_admitted_connection(
+        state_root,
+        io,
+        budget,
+        0,
+        |error| error,
+        |connection, path, budget, _| {
+            configure_read_connection(connection, budget)?;
+            if capture_format::preflight_capture_format(connection, path).map_err(core)? {
+                return Err(IndexError::RebuildRequired);
+            }
+            let _stamp = capture_format::verify_stamp(connection, path).map_err(core)?;
+            if boot_manifest::read_stored(connection)?.as_ref() != Some(manifest) {
+                return Err(IndexError::DigestConflict);
+            }
+            boot_manifest::validate_custody(connection, manifest, budget)?;
+            let selected = manifest
+                .protected_source_routes
+                .ok_or(IndexError::SnapshotUnavailable)?;
+            if usize::try_from(selected.count).ok() != Some(routes.heads.len()) {
+                return Err(IndexError::DigestConflict);
+            }
+            let _verified_routes = boot_manifest::validate_protected_routes(
+                connection,
+                manifest.operation.key,
+                selected.object,
+                routes,
+                require_current,
+                None,
+                budget,
+            )?;
+            budget.checkpoint()
+        },
+    )
+}
+
+/// Resolve a source revision to its exact selected head only after the
+/// immutable route body and Catalog selection have been rejoined. This does
+/// not infer a workspace key from the repository or revision spelling.
+pub fn lookup_native_protected_source_head_v1<'a>(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    manifest: &NativeBootManifest,
+    routes: &'a NativeProtectedSourceRoutesV1,
+    repo_id: &RepoId,
+    revision_id: &RevisionId,
+    budget: &mut WorkBudget,
+) -> Result<&'a NativeProtectedSourceHeadV1, IndexError> {
+    verify_native_protected_source_routes_v1(state_root, io, manifest, routes, budget)?;
+    routes
+        .heads
+        .iter()
+        .find(|head| &head.repo_id == repo_id && &head.revision_id == revision_id)
+        .ok_or(IndexError::SnapshotUnavailable)
+}
+
+/// Resolve one protected pair while it is still a current head. The selected
+/// manifest equality and every route's Catalog relation are checked in the
+/// same admitted read-only transaction before this exact pair is returned.
+pub fn resolve_native_protected_source_head_if_current_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    manifest: &NativeBootManifest,
+    routes: &NativeProtectedSourceRoutesV1,
+    repo_id: &RepoId,
+    revision_id: &RevisionId,
+    budget: &mut WorkBudget,
+) -> Result<CatalogView, IndexError> {
+    verify_native_protected_source_routes_if_current_v1(state_root, io, manifest, routes, budget)?;
+    routes
+        .heads
+        .iter()
+        .find(|head| &head.repo_id == repo_id && &head.revision_id == revision_id)
+        .map(|head| head.publication.clone())
+        .ok_or(IndexError::SnapshotUnavailable)
+}
+
 /// Observe the Original FULL and the independently keyed current Native
 /// SourceAdvance publication with the installed selection under one read-only
 /// Catalog snapshot. Equal keys cause one SQL lookup; unequal keys require two
@@ -1582,6 +2313,52 @@ pub fn verify_native_legacy_history_recovery_publications_v1(
         full_operation,
         anchor_operation,
         RollbackCheck::SelectedWithHistory(anchor_operation),
+        budget,
+    )
+}
+
+/// Reobserve the primary History chain while authenticating the exact
+/// protected sibling workspaces in the selected BOOT route object.
+pub fn verify_native_legacy_history_recovery_publications_with_routes_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    full_operation: OperationKey,
+    anchor_operation: OperationKey,
+    routes: &NativeProtectedSourceRoutesV1,
+    budget: &mut WorkBudget,
+) -> Result<NativeBootPublishedOperation, IndexError> {
+    verify_native_recovery_publications_with_routes_v1(
+        state_root,
+        io,
+        full_operation,
+        anchor_operation,
+        routes,
+        true,
+        budget,
+    )
+}
+
+/// Observe the primary Source/AST anchor under the exact protected sibling
+/// route set. History predecessors are captured only when requested.
+pub fn verify_native_recovery_publications_with_routes_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    full_operation: OperationKey,
+    anchor_operation: OperationKey,
+    routes: &NativeProtectedSourceRoutesV1,
+    capture_history: bool,
+    budget: &mut WorkBudget,
+) -> Result<NativeBootPublishedOperation, IndexError> {
+    verify_rollback_source_publications(
+        state_root,
+        io,
+        full_operation,
+        anchor_operation,
+        if capture_history {
+            RollbackCheck::SelectedWithHistoryRoutes(anchor_operation, routes)
+        } else {
+            RollbackCheck::SelectedWithRoutes(routes)
+        },
         budget,
     )
 }
@@ -1783,7 +2560,19 @@ fn inspect(
             selected.as_ref().ok_or(IndexError::SnapshotUnavailable)?,
             budget,
         )?,
-        RollbackCheck::SelectedWithHistory(anchor) => {
+        RollbackCheck::SelectedWithRoutes(routes) => check_rollback_with_publications(
+            connection,
+            selected.as_ref().ok_or(IndexError::SnapshotUnavailable)?,
+            Some(routes),
+            budget,
+            |_, _| Ok(()),
+        )?,
+        RollbackCheck::SelectedWithHistory(anchor)
+        | RollbackCheck::SelectedWithHistoryRoutes(anchor, _) => {
+            let routes = match rollback {
+                RollbackCheck::SelectedWithHistoryRoutes(_, routes) => Some(routes),
+                _ => None,
+            };
             let selected = selected.as_ref().ok_or(IndexError::SnapshotUnavailable)?;
             let (_, anchor) = read_published_operation(connection, anchor, budget)?;
             let head = selected.publication.identity;
@@ -1791,8 +2580,14 @@ fn inspect(
             if prior.workspace != head.workspace || prior.epoch != head.epoch {
                 return Err(IndexError::DigestConflict);
             }
-            let first = prior.sequence.checked_add(1).ok_or(IndexError::DigestConflict)?;
-            let count = head.sequence.checked_sub(first).ok_or(IndexError::DigestConflict)?;
+            let first = prior
+                .sequence
+                .checked_add(1)
+                .ok_or(IndexError::DigestConflict)?;
+            let count = head
+                .sequence
+                .checked_sub(first)
+                .ok_or(IndexError::DigestConflict)?;
             let bytes = count
                 .checked_mul(std::mem::size_of::<NativeBootManifest>() as u64)
                 .ok_or(IndexError::ResourceLimited)?;
@@ -1803,24 +2598,39 @@ fn inspect(
                     .try_reserve_exact(count)
                     .map_err(|_| IndexError::ResourceLimited)?;
             }
-            check_rollback_with_publications(connection, selected, budget, |operation, publication| {
-                let view = publication.identity;
-                if view.epoch != head.epoch || view.sequence < first {
-                    return Ok(());
-                }
-                if view.sequence == head.sequence {
-                    return if operation == selected.operation && publication == selected.publication {
-                        Ok(())
-                    } else {
-                        Err(IndexError::DigestConflict)
-                    };
-                }
-                if history_predecessors.len() == count {
-                    return Err(IndexError::DigestConflict);
-                }
-                history_predecessors.push(NativeBootManifest { operation, publication });
-                Ok(())
-            })?;
+            check_rollback_with_publications(
+                connection,
+                selected,
+                routes,
+                budget,
+                |operation, publication| {
+                    if operation.key.workspace != head.workspace {
+                        return Ok(());
+                    }
+                    let view = publication.identity;
+                    if view.epoch != head.epoch || view.sequence < first {
+                        return Ok(());
+                    }
+                    if view.sequence == head.sequence {
+                        return if operation == selected.operation
+                            && publication == selected.publication
+                        {
+                            Ok(())
+                        } else {
+                            Err(IndexError::DigestConflict)
+                        };
+                    }
+                    if history_predecessors.len() == count {
+                        return Err(IndexError::DigestConflict);
+                    }
+                    history_predecessors.push(NativeBootManifest {
+                        operation,
+                        publication,
+                        protected_source_routes: None,
+                    });
+                    Ok(())
+                },
+            )?;
             history_predecessors
                 .sort_unstable_by_key(|manifest| manifest.publication.identity.sequence);
             if history_predecessors.len() != count
@@ -1930,17 +2740,102 @@ pub(super) fn read_published_operation(
     Ok((row.immutable, publication))
 }
 
+// Only a selected protected route can carry historical terminal rows beyond
+// BOOT's 4 KiB operation scratch limit. Fund the actual row before decoding it
+// and keep the lease through the caller's publication callback.
+fn read_quiescent_operation_v1(
+    connection: &Connection,
+    key: OperationKey,
+    routes: Option<&NativeProtectedSourceRoutesV1>,
+    budget: &mut WorkBudget,
+) -> Result<(Option<MemoryLease>, super::OperationRow), IndexError> {
+    if routes.is_none() {
+        boot_manifest::charge_operation(connection, key, budget)?;
+        return Ok((
+            None,
+            read_operation(connection, key)?.ok_or(IndexError::SnapshotUnavailable)?,
+        ));
+    }
+    budget.charge(WorkUsage {
+        reads: 1,
+        ..WorkUsage::default()
+    })?;
+    let sizes: Option<(i64, i64, i64)> = connection
+        .query_row(
+            "SELECT CASE WHEN typeof(workspace)='blob' AND length(workspace) BETWEEN 1 AND 4096 THEN length(workspace) END,
+                    CASE WHEN typeof(payload)='blob' AND length(payload) BETWEEN 1 AND ?2 THEN length(payload) END,
+                    CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN 32 END
+             FROM native_operation_v1 WHERE operation=?1",
+            params![
+                operation_key(key)?,
+                i64::try_from(MAX_NATIVE_PROTECTED_SNAPSHOT_BYTES_V1)
+                    .map_err(|_| IndexError::ResourceLimited)?,
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|error| sql(&error))?;
+    let (workspace, payload, digest) = sizes.ok_or(IndexError::SnapshotUnavailable)?;
+    let payload = uint(payload)?;
+    if payload <= 4096 {
+        boot_manifest::charge_operation(connection, key, budget)?;
+        return Ok((
+            None,
+            read_operation(connection, key)?.ok_or(IndexError::SnapshotUnavailable)?,
+        ));
+    }
+    let digest = uint(digest)?;
+    let bytes = uint(workspace)?
+        .checked_add(payload)
+        .and_then(|value| value.checked_add(digest))
+        .ok_or(IndexError::ResourceLimited)?;
+    budget.charge(WorkUsage {
+        reads: 1,
+        bytes,
+        ..WorkUsage::default()
+    })?;
+    let backing = payload
+        .checked_mul(8)
+        .and_then(|value| value.checked_add(4096))
+        .ok_or(IndexError::ResourceLimited)?;
+    let loan = budget
+        .reserve_memory(backing, MemoryLifetime::Temporary)?
+        .ok_or(IndexError::ResourceLimited)?;
+    let row = read_operation(connection, key)?.ok_or(IndexError::SnapshotUnavailable)?;
+    Ok((Some(loan), row))
+}
+
+fn published_quiescent_row_v1(
+    row: super::OperationRow,
+) -> Result<(ImmutableOperation, CatalogView), IndexError> {
+    let OperationStatus::Published(view) = row.status else {
+        return Err(IndexError::Conflict);
+    };
+    if view.workspace != row.immutable.key.workspace
+        || view.epoch != row.immutable.key.epoch
+        || view.digest.0 == [0; 32]
+    {
+        return Err(IndexError::DigestConflict);
+    }
+    let publication = row.published_view.ok_or(IndexError::SnapshotUnavailable)?;
+    if publication.identity != view {
+        return Err(IndexError::DigestConflict);
+    }
+    Ok((row.immutable, publication))
+}
+
 pub(super) fn check_rollback(
     connection: &Connection,
     baseline: &NativeBootManifest,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    check_rollback_with_publications(connection, baseline, budget, |_, _| Ok(()))
+    check_rollback_with_publications(connection, baseline, None, budget, |_, _| Ok(()))
 }
 
 fn check_rollback_with_publications(
     connection: &Connection,
     baseline: &NativeBootManifest,
+    routes: Option<&NativeProtectedSourceRoutesV1>,
     budget: &mut WorkBudget,
     visit_published: impl FnMut(ImmutableOperation, CatalogView) -> Result<(), IndexError>,
 ) -> Result<(), IndexError> {
@@ -1949,12 +2844,29 @@ fn check_rollback_with_publications(
         bytes: 4096,
         ..WorkUsage::default()
     })?;
-    // This is intentionally scoped to the original one-workspace cutover.
-    // A second workspace needs its own persisted baseline, never an inferred one.
+    // A sibling workspace is admitted only through the exact selected route
+    // object, never inferred from its workspace key or current head.
     if boot_manifest::read_stored(connection)?.as_ref() != Some(baseline) {
         return Err(IndexError::Conflict);
     }
     boot_manifest::validate_custody(connection, baseline, budget)?;
+    if let Some(routes) = routes {
+        let route_ref = baseline
+            .protected_source_routes
+            .ok_or(IndexError::SnapshotUnavailable)?;
+        if usize::try_from(route_ref.count).ok() != Some(routes.heads.len()) {
+            return Err(IndexError::DigestConflict);
+        }
+        let _binding = boot_manifest::validate_protected_routes(
+            connection,
+            baseline.operation.key,
+            route_ref.object,
+            routes,
+            true,
+            None,
+            budget,
+        )?;
+    }
     let workspace = workspace_key(baseline.publication.identity.workspace)?;
     budget.charge(WorkUsage {
         reads: 4,
@@ -1977,10 +2889,12 @@ fn check_rollback_with_publications(
     {
         return Err(IndexError::Conflict);
     }
-    check_quiescent_rows_with_publications(
+    check_quiescent_rows_with_publications_impl(
         connection,
         baseline.publication.identity.workspace,
         baseline.publication.identity,
+        routes,
+        None,
         budget,
         visit_published,
     )
@@ -2027,10 +2941,49 @@ pub(super) fn check_quiescent_rows(
     check_quiescent_rows_with_publications(connection, workspace, maximum, budget, |_, _| Ok(()))
 }
 
+pub(super) fn check_quiescent_protected_routes(
+    connection: &Connection,
+    primary: ViewRef,
+    routes: &NativeProtectedSourceRoutesV1,
+    allowed_ingress: Option<IngressRef>,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    routes.validate().map_err(|_| IndexError::DigestConflict)?;
+    check_quiescent_rows_with_publications_impl(
+        connection,
+        primary.workspace,
+        primary,
+        Some(routes),
+        allowed_ingress,
+        budget,
+        |_, _| Ok(()),
+    )
+}
+
 fn check_quiescent_rows_with_publications(
     connection: &Connection,
     workspace: WorkspaceKey,
     maximum: ViewRef,
+    budget: &mut WorkBudget,
+    mut visit_published: impl FnMut(ImmutableOperation, CatalogView) -> Result<(), IndexError>,
+) -> Result<(), IndexError> {
+    check_quiescent_rows_with_publications_impl(
+        connection,
+        workspace,
+        maximum,
+        None,
+        None,
+        budget,
+        &mut visit_published,
+    )
+}
+
+fn check_quiescent_rows_with_publications_impl(
+    connection: &Connection,
+    workspace: WorkspaceKey,
+    maximum: ViewRef,
+    routes: Option<&NativeProtectedSourceRoutesV1>,
+    allowed_ingress: Option<IngressRef>,
     budget: &mut WorkBudget,
     mut visit_published: impl FnMut(ImmutableOperation, CatalogView) -> Result<(), IndexError>,
 ) -> Result<(), IndexError> {
@@ -2047,10 +3000,103 @@ fn check_quiescent_rows_with_publications(
             |row| row.get(0),
         )
         .map_err(|error| sql(&error))?;
-    if blocked {
+    if routes.is_none() && blocked {
         return Err(IndexError::Conflict);
     }
-    retention::verify_source_floors(connection, workspace, budget)?;
+    if let Some(routes) = routes {
+        let ingress_blocked: bool = if let Some(allowed) = allowed_ingress {
+            let expected = operation_key(allowed.operation)?;
+            connection.query_row(
+                "SELECT (SELECT count(*) FROM native_ingress_v1)<>1 OR EXISTS(SELECT 1 FROM native_ingress_v1 WHERE operation<>?1 LIMIT 1)",
+                params![&expected], |row| row.get(0),
+            ).map_err(|error| sql(&error))?
+        } else {
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM native_ingress_v1 LIMIT 1)",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|error| sql(&error))?
+        };
+        if ingress_blocked {
+            return Err(IndexError::Conflict);
+        }
+        let mut statement = connection
+            .prepare("SELECT workspace FROM native_workspace_v1 ORDER BY workspace")
+            .map_err(|error| sql(&error))?;
+        let mut rows = statement.query([]).map_err(|error| sql(&error))?;
+        let mut seen = 0usize;
+        while let Some(row) = rows.next().map_err(|error| sql(&error))? {
+            budget.charge(WorkUsage {
+                reads: 1,
+                bytes: 4096,
+                ..WorkUsage::default()
+            })?;
+            let ValueRef::Blob(bytes) = row.get_ref(0).map_err(|error| sql(&error))? else {
+                return Err(IndexError::DigestConflict);
+            };
+            if bytes.is_empty() || bytes.len() > 4096 {
+                return Err(IndexError::DigestConflict);
+            }
+            let key: WorkspaceKey = decode(bytes)?;
+            if key != workspace
+                && !routes
+                    .heads
+                    .iter()
+                    .any(|head| head.operation.key.workspace == key)
+                && !routes
+                    .repomap_heads
+                    .iter()
+                    .any(|head| head.operation.key.workspace == key)
+            {
+                return Err(IndexError::Conflict);
+            }
+            seen = seen.checked_add(1).ok_or(IndexError::ResourceLimited)?;
+        }
+        let primary_in_routes = routes
+            .heads
+            .iter()
+            .any(|head| head.operation.key.workspace == workspace);
+        let repomap_only = routes
+            .repomap_heads
+            .iter()
+            .filter(|head| {
+                !routes
+                    .heads
+                    .iter()
+                    .any(|source| source.operation.key.workspace == head.operation.key.workspace)
+            })
+            .count();
+        let primary_in_repomap = routes
+            .repomap_heads
+            .iter()
+            .any(|head| head.operation.key.workspace == workspace);
+        if seen
+            != routes.heads.len()
+                + repomap_only
+                + usize::from(!primary_in_routes && !primary_in_repomap)
+        {
+            return Err(IndexError::Conflict);
+        }
+        if !primary_in_routes && !primary_in_repomap {
+            retention::verify_source_floors(connection, workspace, budget)?;
+        }
+        for head in &routes.heads {
+            retention::verify_source_floors(connection, head.operation.key.workspace, budget)?;
+        }
+        for head in &routes.repomap_heads {
+            if !routes
+                .heads
+                .iter()
+                .any(|source| source.operation.key.workspace == head.operation.key.workspace)
+            {
+                retention::verify_source_floors(connection, head.operation.key.workspace, budget)?;
+            }
+        }
+    } else {
+        retention::verify_source_floors(connection, workspace, budget)?;
+    }
 
     // Validate canonical rows, not just denormalized status columns. Charge
     // each row and its bounded lookup before decoding any owned payload.
@@ -2081,14 +3127,35 @@ fn check_quiescent_rows_with_publications(
             ..WorkUsage::default()
         })?;
         let key: OperationKey = decode(key)?;
-        boot_manifest::charge_operation(connection, key, budget)?;
-        let operation = read_operation(connection, key)?.ok_or(IndexError::SnapshotUnavailable)?;
-        if operation.immutable.key.workspace != workspace {
+        let (_row_loan, operation) = read_quiescent_operation_v1(connection, key, routes, budget)?;
+        let ceiling = routes.map_or(
+            (operation.immutable.key.workspace == workspace).then_some(maximum),
+            |routes| {
+                routes
+                    .heads
+                    .iter()
+                    .find(|head| head.operation.key.workspace == operation.immutable.key.workspace)
+                    .map(|head| head.publication.identity)
+                    .or_else(|| {
+                        routes
+                            .repomap_heads
+                            .iter()
+                            .find(|head| {
+                                head.operation.key.workspace == operation.immutable.key.workspace
+                            })
+                            .map(|head| head.publication.identity)
+                    })
+                    .or_else(|| (operation.immutable.key.workspace == workspace).then_some(maximum))
+            },
+        );
+        let Some(ceiling) = ceiling else {
             return Err(IndexError::Conflict);
-        }
+        };
         match operation.status {
-            OperationStatus::Published(view) if settled_view_within_head(view, maximum) => {
-                let publication = operation.published_view.ok_or(IndexError::SnapshotUnavailable)?;
+            OperationStatus::Published(view) if settled_view_within_head(view, ceiling) => {
+                let publication = operation
+                    .published_view
+                    .ok_or(IndexError::SnapshotUnavailable)?;
                 visit_published(operation.immutable, publication)?;
             }
             OperationStatus::Refused(_) => {}
@@ -2135,12 +3202,30 @@ fn check_quiescent_rows_with_publications(
         })?;
         let work =
             read_work_by_key(connection, key, None)?.ok_or(IndexError::SnapshotUnavailable)?;
-        if work.intent.workspace != workspace {
+        let ceiling = routes.map_or(
+            (work.intent.workspace == workspace).then_some(maximum),
+            |routes| {
+                routes
+                    .heads
+                    .iter()
+                    .find(|head| head.operation.key.workspace == work.intent.workspace)
+                    .map(|head| head.publication.identity)
+                    .or_else(|| {
+                        routes
+                            .repomap_heads
+                            .iter()
+                            .find(|head| head.operation.key.workspace == work.intent.workspace)
+                            .map(|head| head.publication.identity)
+                    })
+                    .or_else(|| (work.intent.workspace == workspace).then_some(maximum))
+            },
+        );
+        let Some(ceiling) = ceiling else {
             return Err(IndexError::Conflict);
-        }
+        };
         match work.status {
             quanta_index_core::index::WorkStatus::Completed(view)
-                if settled_view_within_head(view, maximum) => {}
+                if settled_view_within_head(view, ceiling) => {}
             quanta_index_core::index::WorkStatus::Superseded => {}
             _ => return Err(IndexError::Conflict),
         }
@@ -2181,5 +3266,6 @@ fn read_candidate(
     Ok(NativeBootManifest {
         operation: row.immutable,
         publication,
+        protected_source_routes: None,
     })
 }

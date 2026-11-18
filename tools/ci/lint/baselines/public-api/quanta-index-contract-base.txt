@@ -491,6 +491,9 @@ pub fn quanta_index_contract_base::ids::RepoId::new(value: impl core::convert::I
 pub fn quanta_index_contract_base::ids::RepoId::try_clone_into_slots_with_native_birth_v1<E>(&self, backing: &mut alloc::string::String, output: &mut core::option::Option<Self>, data: &mut quanta_index_contract_base::ids::NativeIdentityCopyDataV1<E>, admission: impl core::ops::function::FnOnce(usize, &mut dyn core::ops::function::FnMut() -> bool) -> core::result::Result<bool, E>) -> core::result::Result<(), quanta_index_contract_base::ids::NativeIdentityCopyRefusalV1>
 pub fn quanta_index_contract_base::ids::RepoId::try_clone_into_with_native_birth_v1<E>(&self, backing: &mut alloc::string::String, output: &mut core::option::Option<Self>, admission: impl core::ops::function::FnOnce(usize, &mut dyn core::ops::function::FnMut() -> bool) -> core::result::Result<bool, E>) -> core::result::Result<(), quanta_index_contract_base::ids::NativeIdentityCopyErrorV1<E>>
 pub fn quanta_index_contract_base::ids::RepoId::try_clone_with_native_birth_v1<E>(&self, admission: impl core::ops::function::FnOnce(usize, &mut dyn core::ops::function::FnMut() -> bool) -> core::result::Result<bool, E>) -> core::result::Result<Self, quanta_index_contract_base::ids::NativeIdentityCopyErrorV1<E>>
+impl quanta_index_contract_base::ids::RepoId
+pub fn quanta_index_contract_base::ids::RepoId::backing_capacity(&self) -> usize
+pub fn quanta_index_contract_base::ids::RepoId::validate(value: &str) -> core::result::Result<(), quanta_index_contract_base::ids::IdentityValidationErrorV1>
 impl core::clone::Clone for quanta_index_contract_base::ids::RepoId
 pub fn quanta_index_contract_base::ids::RepoId::clone(&self) -> quanta_index_contract_base::ids::RepoId
 impl core::cmp::Eq for quanta_index_contract_base::ids::RepoId
@@ -4177,6 +4180,9 @@ pub fn quanta_index_contract_base::ids::RepoId::new(value: impl core::convert::I
 pub fn quanta_index_contract_base::ids::RepoId::try_clone_into_slots_with_native_birth_v1<E>(&self, backing: &mut alloc::string::String, output: &mut core::option::Option<Self>, data: &mut quanta_index_contract_base::ids::NativeIdentityCopyDataV1<E>, admission: impl core::ops::function::FnOnce(usize, &mut dyn core::ops::function::FnMut() -> bool) -> core::result::Result<bool, E>) -> core::result::Result<(), quanta_index_contract_base::ids::NativeIdentityCopyRefusalV1>
 pub fn quanta_index_contract_base::ids::RepoId::try_clone_into_with_native_birth_v1<E>(&self, backing: &mut alloc::string::String, output: &mut core::option::Option<Self>, admission: impl core::ops::function::FnOnce(usize, &mut dyn core::ops::function::FnMut() -> bool) -> core::result::Result<bool, E>) -> core::result::Result<(), quanta_index_contract_base::ids::NativeIdentityCopyErrorV1<E>>
 pub fn quanta_index_contract_base::ids::RepoId::try_clone_with_native_birth_v1<E>(&self, admission: impl core::ops::function::FnOnce(usize, &mut dyn core::ops::function::FnMut() -> bool) -> core::result::Result<bool, E>) -> core::result::Result<Self, quanta_index_contract_base::ids::NativeIdentityCopyErrorV1<E>>
+impl quanta_index_contract_base::ids::RepoId
+pub fn quanta_index_contract_base::ids::RepoId::backing_capacity(&self) -> usize
+pub fn quanta_index_contract_base::ids::RepoId::validate(value: &str) -> core::result::Result<(), quanta_index_contract_base::ids::IdentityValidationErrorV1>
 impl core::clone::Clone for quanta_index_contract_base::ids::RepoId
 pub fn quanta_index_contract_base::ids::RepoId::clone(&self) -> quanta_index_contract_base::ids::RepoId
 impl core::cmp::Eq for quanta_index_contract_base::ids::RepoId

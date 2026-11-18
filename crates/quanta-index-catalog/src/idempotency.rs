@@ -1330,6 +1330,44 @@ pub(crate) fn verify_admitted_quiescent_journal(
     expected_repo: &RepoId,
     budget: &mut quanta_index_core::index::WorkBudget,
 ) -> Result<(u64, i64, Option<u64>), AdmittedJournalError> {
+    verify_admitted_quiescent_journal_with_v1(
+        connection,
+        path,
+        Some(expected_repo),
+        budget,
+        &mut |_, _, _| Ok(()),
+    )
+}
+
+/// Lend each terminal original while its admitted row backing remains live.
+/// This form covers every repository in a held root; callers must independently
+/// join the relevant SearchCorpus heads before treating any receipt as a cut.
+pub(crate) fn visit_admitted_quiescent_journal_v1(
+    connection: &Connection,
+    path: &Path,
+    budget: &mut quanta_index_core::index::WorkBudget,
+    visit: &mut dyn FnMut(
+        &IdempotencyKeyV1,
+        &OperationInspectV1,
+        &mut quanta_index_core::index::WorkBudget,
+    ) -> Result<(), AdmittedJournalError>,
+) -> Result<(u64, i64), AdmittedJournalError> {
+    let (count, fence, _) =
+        verify_admitted_quiescent_journal_with_v1(connection, path, None, budget, visit)?;
+    Ok((count, fence))
+}
+
+fn verify_admitted_quiescent_journal_with_v1(
+    connection: &Connection,
+    path: &Path,
+    expected_repo: Option<&RepoId>,
+    budget: &mut quanta_index_core::index::WorkBudget,
+    visit: &mut dyn FnMut(
+        &IdempotencyKeyV1,
+        &OperationInspectV1,
+        &mut quanta_index_core::index::WorkBudget,
+    ) -> Result<(), AdmittedJournalError>,
+) -> Result<(u64, i64, Option<u64>), AdmittedJournalError> {
     use quanta_index_core::index::WorkUsage;
 
     budget.charge(WorkUsage {
@@ -1368,7 +1406,7 @@ pub(crate) fn verify_admitted_quiescent_journal(
         let raw = raw_journal_key(row)
             .map_err(|error| engine_error("decode journal key", path, &error))?;
         let key = stored_key_from_raw(raw)?;
-        if &key.repo_id != expected_repo {
+        if expected_repo.is_some_and(|expected| &key.repo_id != expected) {
             return Err(quanta_index_core::index::IndexError::Conflict.into());
         }
         let (state, inspected, allocation) =
@@ -1390,6 +1428,7 @@ pub(crate) fn verify_admitted_quiescent_journal(
                 latest_search_corpus.map_or(*durable_sequence, |head| head.max(*durable_sequence)),
             );
         }
+        visit(&key, &inspected, budget)?;
         // The decoded receipt must drop before its admitted backing.
         drop(inspected);
         drop(allocation);

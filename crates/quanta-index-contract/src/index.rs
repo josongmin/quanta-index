@@ -3,6 +3,28 @@
 pub use quanta_index_contract_base::index_refs::*;
 mod history;
 mod immutable_object_wire;
+mod legacy_repomap_import;
+mod protected_source_routes;
+mod protected_native_snapshot;
+pub use protected_native_snapshot::*;
+mod source_restore;
+pub use source_restore::{
+    LegacySourceManifestDigestV1, LegacySourceOriginV1, LexicalSourceHeadsCommitmentV1,
+    NativeImportedSourceHeadV1, MAX_SOURCE_SNAPSHOT_CHUNK_BYTES_V1,
+    SourceSnapshotExportFrameV1, imported_legacy_source_completed_digest_v1,
+    imported_legacy_source_manifest_digest_v1,
+};
+pub use legacy_repomap_import::{
+    LegacyRepoMapImportPageV1, LegacyRepoMapImportV1,
+    MAX_LEGACY_REPOMAP_IMPORT_PAGE_BYTES_V1, MAX_LEGACY_REPOMAP_IMPORT_PAGES_V1,
+    MAX_LEGACY_REPOMAP_IMPORT_PAYLOAD_BYTES_V1,
+};
+pub use protected_source_routes::{
+    MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1, MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1, MAX_NATIVE_PROTECTED_SOURCE_ROUTE_BYTES_V1,
+    MAX_NATIVE_PROTECTED_VIEW_MARKER_BYTES_V1, NativeProtectedRepoMapHeadV1, NativeProtectedSourceHeadV1,
+    NativeProtectedSourceRoutesV1, NativeProtectedNativeOriginV1, native_protected_view_marker_bytes_v1,
+    native_protected_view_marker_ref_v1,
+};
 pub use immutable_object_wire::{
     NATIVE_IMMUTABLE_OBJECT_HASH_DOMAIN_V1, NATIVE_IMMUTABLE_OBJECT_HEADER_BYTES_V1,
     NATIVE_IMMUTABLE_OBJECT_MAGIC_V1, native_immutable_object_header_v1,
@@ -10,6 +32,7 @@ pub use immutable_object_wire::{
 };
 pub use history::{
     AuxiliaryGenerationKeyV1, HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryGenerationInputV1, HistoryReplayFenceV1, HistoryReplayPublicationV1,
+    NativeHistoryRestoreInputV1,
     HistorySnapshotCheckpointV1, HistorySnapshotExportFrameV1, HistorySnapshotPageV1, HistorySnapshotRowV1,
     HistorySourceCutV1, HistorySourceInputV1, HistoryTransition, SourceHistoryTransitionV1,
     MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1, MAX_HISTORY_SNAPSHOT_ROWS_PER_PAGE_V1,
@@ -19,6 +42,8 @@ pub use history::{
 /// Source path byte limit, leaving five bytes for the canonical path map key
 /// namespace within the native 4096-byte map key format.
 pub const MAX_SOURCE_PATH_BYTES: usize = 4091;
+/// Complete immutable wire bound, including header and ordered child references.
+pub const MAX_NATIVE_IMMUTABLE_OBJECT_WIRE_BYTES_V1: u64 = 64 * 1024 * 1024;
 /// Maximum number of source items in one Native `StageSources` request.
 pub const MAX_NATIVE_STAGE_SOURCES_INPUTS: usize = 128;
 /// Maximum sum of path bytes, source bytes, repository ID bytes (if present),

@@ -79,6 +79,7 @@ pub mod native_effort;
 mod native_effort_ports;
 mod native_effort_transport;
 mod native_graph_transport;
+mod native_imported_repomap_transport;
 mod native_interaction;
 mod native_interaction_transport;
 mod native_lexical_scope;

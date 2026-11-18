@@ -270,6 +270,30 @@ pub fn verify_native_boot_captured_request_v1(
     budget.checkpoint()
 }
 
+/// Borrow a canonical History-only request from an authenticated publication.
+/// The caller must independently resolve its exact prior Catalog publication
+/// and prove that Source and projection roots were preserved.
+pub fn with_native_boot_history_request_v1<T>(
+    operation: &ImmutableOperation,
+    publication: &CatalogView,
+    request: &StoredObject,
+    budget: &mut WorkBudget,
+    visit: impl FnOnce(&quanta_index_core::index::UpdateRequest, &mut WorkBudget) -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    verify_immutable_publication(operation, publication, request)?;
+    let decoded = request_decode::decode(&request.payload, budget)?;
+    verify_immutable_request(operation, publication, request, &decoded)?;
+    let profile = match &decoded.kind {
+        UpdateKind::HistoryAdvance(transition) => transition.profile,
+        UpdateKind::HistoryAppend(append) => append.profile,
+        _ => return Err(IndexError::SnapshotUnavailable),
+    };
+    if profile != publication.profile {
+        return Err(IndexError::DigestConflict);
+    }
+    visit(&decoded, budget)
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};

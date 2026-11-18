@@ -13,7 +13,9 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use quanta_index_core::index::{Digest, IndexError, MemoryLifetime, WorkBudget, WorkUsage};
 use quanta_index_searchd::cli::NativeBootIdentityV1;
 use rusqlite::ffi::quanta_capacity_vfs::close_owned_file;
-use rustix::fs::{AtFlags, Mode, OFlags, RenameFlags, open, openat, renameat_with, statat, unlinkat};
+use rustix::fs::{
+    AtFlags, Mode, OFlags, RenameFlags, open, openat, renameat_with, statat, unlinkat,
+};
 use serde::Serialize;
 
 const MAX_RECEIPT_BYTES: u64 = 4096;
@@ -26,6 +28,8 @@ struct Receipt {
     manifest_operation: quanta_index_core::index::OperationKey,
     manifest_object_hex: String,
     source_cut_digest_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protected_source_routes_hex: Option<String>,
     install_catalog_digest_hex: String,
 }
 
@@ -270,6 +274,9 @@ impl ReceiptTarget {
             manifest_operation: boot.manifest_operation,
             manifest_object_hex: hex(&(boot.manifest_object.0).0),
             source_cut_digest_hex: hex(&boot.source_cut_digest.0),
+            protected_source_routes_hex: boot
+                .protected_source_routes
+                .map(|reference| hex(&(reference.0).0)),
             install_catalog_digest_hex: hex(&digest.0),
         };
         let bytes = serde_json::to_vec(&receipt)?;
@@ -419,6 +426,7 @@ mod tests {
             },
             manifest_object: ObjectRef(Digest([11; 32])),
             source_cut_digest: Digest([12; 32]),
+            protected_source_routes: None,
         }
     }
 
