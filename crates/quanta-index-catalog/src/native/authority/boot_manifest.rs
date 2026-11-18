@@ -4,13 +4,13 @@
 use quanta_index_contract::{
     RepoId, RevisionId,
     index::{
-        MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1, NativeProtectedRepoMapHeadV1,
-        NativeProtectedSourceRoutesV1,
+        MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1, MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1,
+        NativeProtectedRepoMapHeadV1, NativeProtectedSourceRoutesV1,
     },
 };
 use quanta_index_core::index::{
-    CatalogView, Digest, ImmutableOperation, IndexError, IngressRef, MemoryLifetime, ObjectRef,
-    OperationKey, OperationStatus, ViewRef, WorkBudget, WorkUsage,
+    CatalogView, Digest, ImmutableOperation, IndexError, IngressRef, MemoryLease, MemoryLifetime,
+    ObjectRef, OperationKey, OperationStatus, ViewRef, WorkBudget, WorkUsage,
 };
 use rusqlite::{Connection, OptionalExtension as _, params, types::ValueRef};
 use serde::{Deserialize, Serialize};
@@ -580,11 +580,34 @@ pub(super) fn validate_protected_routes(
     })
 }
 
+struct RouteMarkerRefs {
+    objects: Vec<ObjectRef>,
+    _memory: Option<MemoryLease>,
+}
+
 fn route_marker_refs(
     routes: &NativeProtectedSourceRoutesV1,
     route_object: ObjectRef,
-) -> Result<Vec<ObjectRef>, IndexError> {
-    let mut objects = Vec::with_capacity(routes.heads.len() + routes.repomap_heads.len() + 1);
+    budget: &WorkBudget,
+) -> Result<RouteMarkerRefs, IndexError> {
+    if routes.heads.len() > MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1
+        || routes.repomap_heads.len() > MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1
+    {
+        return Err(IndexError::DigestConflict);
+    }
+    let genesis_markers = routes
+        .repomap_heads
+        .iter()
+        .filter(|head| head.source_operation.is_none())
+        .count();
+    let capacity = 1 + routes.heads.len() + routes.repomap_heads.len() + genesis_markers;
+    let bytes = u64::try_from(capacity * std::mem::size_of::<ObjectRef>())
+        .map_err(|_| IndexError::ResourceLimited)?;
+    let memory = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
+    let mut objects = Vec::new();
+    objects
+        .try_reserve_exact(capacity)
+        .map_err(|_| IndexError::ResourceLimited)?;
     objects.push(route_object);
     for head in &routes.heads {
         objects.push(
@@ -615,7 +638,10 @@ fn route_marker_refs(
     if objects.len() < 2 {
         return Err(IndexError::DigestConflict);
     }
-    Ok(objects)
+    Ok(RouteMarkerRefs {
+        objects,
+        _memory: memory,
+    })
 }
 
 fn validate_route_ingress(
@@ -625,7 +651,7 @@ fn validate_route_ingress(
     route_object: ObjectRef,
     routes: &NativeProtectedSourceRoutesV1,
     budget: &mut WorkBudget,
-) -> Result<(), IndexError> {
+) -> Result<RouteMarkerRefs, IndexError> {
     if ingress.operation == primary
         || ingress.operation.workspace != primary.workspace
         || ingress.operation.epoch != primary.epoch
@@ -634,8 +660,8 @@ fn validate_route_ingress(
     {
         return Err(IndexError::Conflict);
     }
-    let _objects_memory = budget.reserve_memory(32_768, MemoryLifetime::Temporary)?;
-    let objects = route_marker_refs(routes, route_object)?;
+    let markers = route_marker_refs(routes, route_object, budget)?;
+    let objects = &markers.objects;
     let count: i64 = connection
         .query_row(
             "SELECT count(*) FROM native_ingress_object_v1 WHERE operation=?1",
@@ -653,26 +679,24 @@ fn validate_route_ingress(
             bytes: 64,
             ..WorkUsage::default()
         })?;
-        if !confirmed_ingress_membership(connection, ingress.operation, object)? {
+        if !confirmed_ingress_membership(connection, ingress.operation, *object)? {
             return Err(IndexError::Conflict);
         }
     }
-    Ok(())
+    Ok(markers)
 }
 
 fn transfer_and_retire_route_ingress(
     connection: &Connection,
     primary: OperationKey,
     ingress: IngressRef,
-    route_object: ObjectRef,
-    routes: &NativeProtectedSourceRoutesV1,
+    has_native_origin: bool,
+    objects: &[ObjectRef],
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
     let ingress_key = operation_key(ingress.operation)?;
     let primary_key = operation_key(primary)?;
-    let _objects_memory = budget.reserve_memory(32_768, MemoryLifetime::Temporary)?;
-    let objects = route_marker_refs(routes, route_object)?;
-    for object in &objects {
+    for object in objects {
         budget.checkpoint()?;
         let child = object_key(*object);
         budget.charge(WorkUsage {
@@ -700,7 +724,7 @@ fn transfer_and_retire_route_ingress(
         }
         reclaim::adopt_if_known(connection, *object)?;
     }
-    if routes.native_origin.is_some() {
+    if has_native_origin {
         // The route now holds the complete transferred closure through its
         // registered child edges. Retire the loan with the normal bounded GC
         // path: unrelated staged objects receive no permanent BOOT custody.
@@ -722,11 +746,8 @@ fn transfer_and_retire_route_ingress(
         let ValueRef::Blob(object) = row.get_ref(0).map_err(|error| sql(&error))? else {
             return Err(IndexError::DigestConflict);
         };
-        if object.len() != 32
-            || !objects
-                .iter()
-                .any(|expected| object_key(*expected) == object)
-        {
+        let digest = <[u8; 32]>::try_from(object).map_err(|_| IndexError::DigestConflict)?;
+        if objects.binary_search(&ObjectRef(Digest(digest))).is_err() {
             return Err(IndexError::DigestConflict);
         }
         intent_count = intent_count
@@ -836,12 +857,22 @@ impl SqliteCatalog {
         let OperationStatus::Published(identity) = row.status else {
             return Err(IndexError::Conflict);
         };
-        let route_ref = protected_routes
+        let protected = protected_routes
             .map(|(object, routes, ingress)| {
-                validate_route_ingress(&tx, key, ingress, object, routes, budget)?;
-                validate_protected_routes(&tx, key, object, routes, true, Some(ingress), budget)
+                let markers = validate_route_ingress(&tx, key, ingress, object, routes, budget)?;
+                let route = validate_protected_routes(
+                    &tx,
+                    key,
+                    object,
+                    routes,
+                    true,
+                    Some(ingress),
+                    budget,
+                )?;
+                Ok::<_, IndexError>((route, ingress, routes.native_origin.is_some(), markers))
             })
             .transpose()?;
+        let route_ref = protected.as_ref().map(|(route, ..)| *route);
         let selected = if let Some(previous) = previous.as_ref().filter(|value| {
             value.operation.key == key && value.protected_source_routes == route_ref
         }) {
@@ -874,8 +905,15 @@ impl SqliteCatalog {
                 )?;
             }
         }
-        if let Some((object, routes, ingress)) = protected_routes {
-            transfer_and_retire_route_ingress(&tx, key, ingress, object, routes, budget)?;
+        if let Some((_, ingress, has_native_origin, markers)) = protected {
+            transfer_and_retire_route_ingress(
+                &tx,
+                key,
+                ingress,
+                has_native_origin,
+                &markers.objects,
+                budget,
+            )?;
         }
         protect(&tx, &selected, budget)?;
         if previous.as_ref() != Some(&selected) {

@@ -209,6 +209,10 @@ RCA는 사전 `protoc -I /usr/include`에만 include를 주고, 실제 `prost-bu
 
 **후속 정적 대조 · 2026-11-18.** `retire_missing_integrated_capture_v1`는 퇴역 전 `verify_current_preacceptance_v1` 및 이전 root의 execution lease를 요구한다. 원 checkpoint SHA `8dda58fe…`, old spec SHA `0cffd991…`를 재확인했다. 두 물리 root 및 parent, old Q sibling도 `ENOENT`다. 기존 보관본에는 원 source tree 복원 증거가 없으며 새 pin·archive는 생성되지 않았다. 캡처 프로세스가 끝나면 현 lease가 해제되고 checkpoint 자체는 GC 보호 목록에 들어가지 않는다. F의 기존 큐에서 predecessor 해소와 지속 보존이 필요하다. H의 별도 후보 재시작/Source ACK/UDS 수리는 [NC-H](NC-H-history.md)의 현행 소스 및 실행 결과에서 인수한다. 고정 H 코호트의 `cargow fmt --all -- --check`는 포맷 차이 130경로로 exit1이었고, 이 채팅 소유 8경로를 `rustfmt +1.92.0 --check`로 통과시켜 `d16cc8a3e`에 반영했다. 현행 정적 감사에서 Legacy map·packed records·SourceHead writer의 공용 codec 연결과 BOOT의 current·retained·candidate resume 정책을 확인했다. NC-H 작업 중인 candidate resume fixture는 route 파일을 실제로 지우지만 임의 오류를 수용한다. 해당 fixture 오너가 예상 `CorruptObject` 원인을 고정해야 한다.
 
+**RR→SS 코드 수리 · 2026-11-18.** 보호 route가 있는 후보도 launcher의 `verify-native-candidate`를 거친다. 이전 분기는 route 없는 후보용 단일-workspace Catalog 검사에서 sibling을 거절했다. 보호 후보는 같은 selected manifest·receipt identity를 확인한 뒤 기존 current-route 검사에서 primary·Source·RepoMap head 및 quiescence를 검증한다. 설치 후 retained 검증과 receipt Catalog digest 검사는 유지한다. Catalog의 기존 two-workspace 회귀는 sibling 전진 후 current `Conflict`·retained 성공을 구분한다. 실제 성공 호출부는 기존 S signed E2E의 `build-native-candidate`와 foreign Q Latest·보호 receipt 단언으로 확인한다.
+
+seal 트랜잭션은 marker 목록을 한 번 생성해 ingress 검증과 custody 이전에 공유한다. Source·RepoMap·genesis marker 슬롯을 실제 개수로 예약하며 SQL intent membership은 정렬된 digest를 이진 탐색한다. RepoMap-only 기존 회귀는 예약 거절 시 `ResourceLimited`·미선택·환급과 동일 ingress 재시도를 단언한다. 두 변경은 정적 검사 범위에서 수리됐다. Catalog 회귀·최종 compiler·서명 설치 E2E는 코드 우선 요청에 따라 **NOT_RUN**이다.
+
 현재 실행 입력 준비 후 Q10698·resumer12011의 생존을 확인했지만 Q/Native/installed terminal은 아직 생성되지 않았다. 마지막 host 가용량은 약41.1GB로 원 입장 기준 약54.87GB보다 작다. 공식 Q target GC dry-run은 회수0B·오류0이며 활성 Cargo target/최근 orphan은 보호했다. 잠금·용량 한도 우회나 다른 오너 target 삭제로 실행을 강제하지 않는다.
 
 원 R16/Source23/Current 코호트를 합산하지 않으며 **`source_ready=false`**를 유지한다. 코드·정적 proof, 컴파일·owning body, signed Product 수용을 각각 판정한다.

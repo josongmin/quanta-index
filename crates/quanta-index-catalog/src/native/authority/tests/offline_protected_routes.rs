@@ -7,6 +7,7 @@ use quanta_index_contract::index::{
 #[derive(Clone, Default)]
 struct ProtectedTestMemoryV1 {
     live: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    deny_bytes: Option<u64>,
 }
 
 impl quanta_index_core::index::MemoryLeaseOwner for ProtectedTestMemoryV1 {
@@ -31,6 +32,9 @@ impl quanta_index_core::index::MemoryScopePort for ProtectedTestMemoryV1 {
         _lifetime: quanta_index_core::index::MemoryLifetime,
     ) -> Result<quanta_index_core::index::MemoryLease, IndexError> {
         const LIMIT: u64 = 64 * 1024 * 1024;
+        if self.deny_bytes == Some(bytes) {
+            return Err(IndexError::ResourceLimited);
+        }
         let _previous_live = self
             .live
             .fetch_update(
@@ -319,6 +323,18 @@ fn selected_two_workspace_route_survives_exact_retirement_and_reopen() -> TestRe
         Some(selected.clone())
     );
     let guard = catalog.lock()?;
+    check!(matches!(
+        boot_manifest::validate_protected_routes(
+            &guard,
+            first_operation.key,
+            route_ref,
+            &routes,
+            true,
+            None,
+            &mut admission_budget(),
+        ),
+        Err(IndexError::Conflict)
+    ));
     check_eq!(
         boot_manifest::validate_protected_routes(
             &guard,
@@ -416,6 +432,27 @@ fn selected_repomap_only_workspace_is_protected_without_source_route() -> TestRe
     false_genesis.repomap_heads[0].source_publication = old_source_view;
     check!(false_genesis.validate().is_err());
     let (ingress, route_ref) = stage_routes(&catalog, &routes, operation(20_007, 207).key)?;
+    let memory = ProtectedTestMemoryV1 {
+        // One route object, its RepoMap view marker and its genesis marker.
+        deny_bytes: Some(3 * 32),
+        ..Default::default()
+    };
+    let mut denied = admission_budget();
+    denied.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(
+        std::sync::Arc::new(memory.clone()),
+    )));
+    check!(matches!(
+        catalog.select_native_boot_manifest_with_protected_routes_if_current(
+            primary_operation.key,
+            route_ref,
+            &routes,
+            ingress,
+            &mut denied,
+        ),
+        Err(IndexError::ResourceLimited)
+    ));
+    check_eq!(memory.live.load(std::sync::atomic::Ordering::Acquire), 0);
+    check_eq!(catalog.native_boot_manifest(&mut admission_budget())?, None);
     let selected = catalog.select_native_boot_manifest_with_protected_routes_if_current(
         primary_operation.key,
         route_ref,

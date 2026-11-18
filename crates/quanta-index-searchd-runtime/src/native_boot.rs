@@ -1140,9 +1140,16 @@ pub(super) fn execute(
                     target.write(expected, digest, &mut budget)?;
                     return Ok(None);
                 }
+                let verify_current = command.mode == NativeCommandModeV1::VerifyCandidate;
+                // Protected candidates have their own current-head and
+                // quiescence checks over all selected workspaces.
+                let routeless_candidate = verify_current
+                    && command
+                        .identity
+                        .is_none_or(|identity| identity.protected_source_routes.is_none());
                 let catalog_snapshot;
                 let current_candidate;
-                let snapshot = if command.mode == NativeCommandModeV1::VerifyCandidate {
+                let snapshot = if routeless_candidate {
                     let operation = command
                         .identity
                         .ok_or(IndexError::SnapshotUnavailable)?
@@ -1177,7 +1184,7 @@ pub(super) fn execute(
                     registry,
                     maximum,
                     None,
-                    false,
+                    verify_current,
                     &mut budget,
                 )?;
                 if let Some(expected) = command.install_catalog_digest {
