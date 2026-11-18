@@ -2,7 +2,7 @@
 //! These bytes describe expected publications; they confer no producer authority.
 
 use super::{
-    CatalogView, ImmutableOperation, IndexInstanceId, ObjectRef, ViewRef,
+    CatalogView, ImmutableOperation, IndexInstanceId, ObjectRef, ViewRef, WorkspaceKey,
     native_immutable_object_ref_v1,
 };
 use crate::{RepoId, RevisionId, repomap::RepoMapExpectedActiveV2};
@@ -80,6 +80,19 @@ pub struct NativeProtectedSourceRoutesV1 {
     pub repomap_heads: Vec<NativeProtectedRepoMapHeadV1>,
 }
 
+fn order_unique_workspaces(order: &mut [u16], workspace: impl Fn(usize) -> WorkspaceKey) -> bool {
+    for (index, slot) in order.iter_mut().enumerate() {
+        let Ok(index) = u16::try_from(index) else {
+            return false;
+        };
+        *slot = index;
+    }
+    order.sort_unstable_by_key(|index| workspace(usize::from(*index)));
+    order
+        .windows(2)
+        .all(|pair| workspace(usize::from(pair[0])) != workspace(usize::from(pair[1])))
+}
+
 impl NativeProtectedSourceRoutesV1 {
     pub const WIRE_VERSION: u32 = 1;
 
@@ -100,12 +113,9 @@ impl NativeProtectedSourceRoutesV1 {
             return Err("protected Native origin is invalid");
         }
         let mut previous_pair = None;
-        for (index, head) in self.heads.iter().enumerate() {
+        for head in &self.heads {
             let pair = (head.repo_id.as_str(), head.revision_id.as_str());
             if previous_pair.is_some_and(|previous| previous >= pair)
-                || self.heads[..index]
-                    .iter()
-                    .any(|prior| prior.operation.key.workspace == head.operation.key.workspace)
                 || head.operation.key.workspace != head.publication.identity.workspace
                 || head.operation.key.epoch != head.publication.identity.epoch
                 || head.source_operation.key.workspace != head.operation.key.workspace
@@ -128,8 +138,16 @@ impl NativeProtectedSourceRoutesV1 {
             }
             previous_pair = Some(pair);
         }
+        // Sort only bounded indices. The canonical pair order and its wire
+        // bytes remain intact, and validation does not allocate a workspace map.
+        let mut source_order = [0; MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1];
+        let source_order = &mut source_order[..self.heads.len()];
+        let source_workspace = |index: usize| self.heads[index].operation.key.workspace;
+        if !order_unique_workspaces(source_order, source_workspace) {
+            return Err("protected Source route scope or order is invalid");
+        }
         let mut previous_repomap_pair = None;
-        for (index, head) in self.repomap_heads.iter().enumerate() {
+        for head in &self.repomap_heads {
             let pair = (head.repo_id.as_str(), head.revision_id.as_str());
             if previous_repomap_pair.is_some_and(|previous| previous >= pair)
                 || head.member_binding.0 == super::Digest([0; 32])
@@ -162,25 +180,35 @@ impl NativeProtectedSourceRoutesV1 {
                 || head.publication.identity_digest().ok() != Some(head.publication.identity.digest)
                 || head.source_publication.identity_digest().ok()
                     != Some(head.source_publication.identity.digest)
-                || self.repomap_heads[..index]
-                    .iter()
-                    .any(|prior| prior.operation.key.workspace == head.operation.key.workspace)
-                || self.heads.iter().any(|source| {
-                    let same_pair =
-                        source.repo_id == head.repo_id && source.revision_id == head.revision_id;
-                    let same_workspace =
-                        source.operation.key.workspace == head.operation.key.workspace;
-                    (same_pair
-                        && (!same_workspace
-                            || source.publication != head.publication
-                            || head.source_operation.as_ref() != Some(&source.source_operation)
-                            || head.source_publication != source.source_publication))
-                        || (same_workspace && !same_pair)
-                })
             {
                 return Err("protected RepoMap route order is invalid");
             }
+            let inconsistent_source = match self.heads.binary_search_by(|source| {
+                (source.repo_id.as_str(), source.revision_id.as_str()).cmp(&pair)
+            }) {
+                Ok(index) => {
+                    let source = &self.heads[index];
+                    source.operation.key.workspace != head.operation.key.workspace
+                        || source.publication != head.publication
+                        || head.source_operation.as_ref() != Some(&source.source_operation)
+                        || head.source_publication != source.source_publication
+                }
+                Err(_) => source_order
+                    .binary_search_by_key(&head.operation.key.workspace, |index| {
+                        source_workspace(usize::from(*index))
+                    })
+                    .is_ok(),
+            };
+            if inconsistent_source {
+                return Err("protected RepoMap route order is invalid");
+            }
             previous_repomap_pair = Some(pair);
+        }
+        let mut repomap_order = [0; MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1];
+        if !order_unique_workspaces(&mut repomap_order[..self.repomap_heads.len()], |index| {
+            self.repomap_heads[index].operation.key.workspace
+        }) {
+            return Err("protected RepoMap route order is invalid");
         }
         Ok(())
     }
@@ -358,8 +386,44 @@ mod tests {
         duplicate_pair.heads[1].revision_id = duplicate_pair.heads[0].revision_id.clone();
         assert!(duplicate_pair.validate().is_err());
         let mut duplicate_workspace = routes;
-        duplicate_workspace.heads[1].operation.key.workspace =
-            duplicate_workspace.heads[0].operation.key.workspace;
-        assert!(duplicate_workspace.validate().is_err());
+        duplicate_workspace.heads[1] = head("repo", "rev-b", 10);
+        assert_eq!(
+            duplicate_workspace.validate(),
+            Err("protected Source route scope or order is invalid")
+        );
+    }
+
+    #[test]
+    fn repomap_shares_a_source_workspace_only_for_the_exact_pair() {
+        let mut source = head("repo", "rev-a", 10);
+        let member_binding = ObjectRef(Digest([79; 32]));
+        source.publication.members = MapRoot(Some(member_binding));
+        source.publication.identity.digest = source.publication.identity_digest().expect("view");
+        let repomap = NativeProtectedRepoMapHeadV1 {
+            repo_id: source.repo_id.clone(),
+            revision_id: source.revision_id.clone(),
+            active: RepoMapExpectedActiveV2::new(
+                std::num::NonZeroU64::MIN,
+                crate::CandidateCommitmentV1::from_bytes([80; 32]),
+            ),
+            source_operation: Some(source.source_operation),
+            source_publication: source.source_publication.clone(),
+            operation: source.operation,
+            publication: source.publication.clone(),
+            instance: IndexInstanceId([81; 16]),
+            member_binding,
+        };
+        let mut routes = NativeProtectedSourceRoutesV1 {
+            native_origin: None,
+            wire_version: 1,
+            heads: vec![source],
+            repomap_heads: vec![repomap],
+        };
+        routes.validate().expect("exact shared route");
+        routes.repomap_heads[0].revision_id = RevisionId::new("rev-b").expect("revision");
+        assert_eq!(
+            routes.validate(),
+            Err("protected RepoMap route order is invalid")
+        );
     }
 }

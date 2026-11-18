@@ -2992,6 +2992,8 @@ fn check_quiescent_rows_with_publications_impl(
         .checked_add(32_768)
         .ok_or(IndexError::ResourceLimited)?;
     let _scratch = budget.reserve_memory(scratch_bytes, MemoryLifetime::Temporary)?;
+    let mut _ceilings_memory = None;
+    let mut ceilings = Vec::<&ViewRef>::new();
     let blocked: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM native_workspace_v1 WHERE workspace<>?1 LIMIT 1)
@@ -3022,6 +3024,37 @@ fn check_quiescent_rows_with_publications_impl(
         if ingress_blocked {
             return Err(IndexError::Conflict);
         }
+        let count = routes.heads.len() + routes.repomap_heads.len();
+        let bytes = u64::try_from(count * std::mem::size_of::<&ViewRef>())
+            .map_err(|_| IndexError::ResourceLimited)?;
+        _ceilings_memory = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
+        ceilings
+            .try_reserve_exact(count)
+            .map_err(|_| IndexError::ResourceLimited)?;
+        ceilings.extend(routes.heads.iter().map(|head| &head.publication.identity));
+        ceilings.extend(
+            routes
+                .repomap_heads
+                .iter()
+                .map(|head| &head.publication.identity),
+        );
+        ceilings.sort_unstable_by_key(|head| head.workspace);
+        if ceilings
+            .windows(2)
+            .any(|pair| pair[0].workspace == pair[1].workspace && pair[0] != pair[1])
+        {
+            return Err(IndexError::DigestConflict);
+        }
+        ceilings.dedup_by_key(|head| head.workspace);
+    }
+    let routed_ceiling = |key| {
+        ceilings
+            .binary_search_by_key(&key, |head| head.workspace)
+            .ok()
+            .map(|index| *ceilings[index])
+    };
+    let ceiling_for = |key| routed_ceiling(key).or_else(|| (key == workspace).then_some(maximum));
+    if routes.is_some() {
         let mut statement = connection
             .prepare("SELECT workspace FROM native_workspace_v1 ORDER BY workspace")
             .map_err(|error| sql(&error))?;
@@ -3040,59 +3073,20 @@ fn check_quiescent_rows_with_publications_impl(
                 return Err(IndexError::DigestConflict);
             }
             let key: WorkspaceKey = decode(bytes)?;
-            if key != workspace
-                && !routes
-                    .heads
-                    .iter()
-                    .any(|head| head.operation.key.workspace == key)
-                && !routes
-                    .repomap_heads
-                    .iter()
-                    .any(|head| head.operation.key.workspace == key)
-            {
+            if ceiling_for(key).is_none() {
                 return Err(IndexError::Conflict);
             }
             seen = seen.checked_add(1).ok_or(IndexError::ResourceLimited)?;
         }
-        let primary_in_routes = routes
-            .heads
-            .iter()
-            .any(|head| head.operation.key.workspace == workspace);
-        let repomap_only = routes
-            .repomap_heads
-            .iter()
-            .filter(|head| {
-                !routes
-                    .heads
-                    .iter()
-                    .any(|source| source.operation.key.workspace == head.operation.key.workspace)
-            })
-            .count();
-        let primary_in_repomap = routes
-            .repomap_heads
-            .iter()
-            .any(|head| head.operation.key.workspace == workspace);
-        if seen
-            != routes.heads.len()
-                + repomap_only
-                + usize::from(!primary_in_routes && !primary_in_repomap)
-        {
+        let primary_is_routed = routed_ceiling(workspace).is_some();
+        if seen != ceilings.len() + usize::from(!primary_is_routed) {
             return Err(IndexError::Conflict);
         }
-        if !primary_in_routes && !primary_in_repomap {
+        if !primary_is_routed {
             retention::verify_source_floors(connection, workspace, budget)?;
         }
-        for head in &routes.heads {
-            retention::verify_source_floors(connection, head.operation.key.workspace, budget)?;
-        }
-        for head in &routes.repomap_heads {
-            if !routes
-                .heads
-                .iter()
-                .any(|source| source.operation.key.workspace == head.operation.key.workspace)
-            {
-                retention::verify_source_floors(connection, head.operation.key.workspace, budget)?;
-            }
+        for head in &ceilings {
+            retention::verify_source_floors(connection, head.workspace, budget)?;
         }
     } else {
         retention::verify_source_floors(connection, workspace, budget)?;
@@ -3128,27 +3122,7 @@ fn check_quiescent_rows_with_publications_impl(
         })?;
         let key: OperationKey = decode(key)?;
         let (_row_loan, operation) = read_quiescent_operation_v1(connection, key, routes, budget)?;
-        let ceiling = routes.map_or(
-            (operation.immutable.key.workspace == workspace).then_some(maximum),
-            |routes| {
-                routes
-                    .heads
-                    .iter()
-                    .find(|head| head.operation.key.workspace == operation.immutable.key.workspace)
-                    .map(|head| head.publication.identity)
-                    .or_else(|| {
-                        routes
-                            .repomap_heads
-                            .iter()
-                            .find(|head| {
-                                head.operation.key.workspace == operation.immutable.key.workspace
-                            })
-                            .map(|head| head.publication.identity)
-                    })
-                    .or_else(|| (operation.immutable.key.workspace == workspace).then_some(maximum))
-            },
-        );
-        let Some(ceiling) = ceiling else {
+        let Some(ceiling) = ceiling_for(operation.immutable.key.workspace) else {
             return Err(IndexError::Conflict);
         };
         match operation.status {
@@ -3202,25 +3176,7 @@ fn check_quiescent_rows_with_publications_impl(
         })?;
         let work =
             read_work_by_key(connection, key, None)?.ok_or(IndexError::SnapshotUnavailable)?;
-        let ceiling = routes.map_or(
-            (work.intent.workspace == workspace).then_some(maximum),
-            |routes| {
-                routes
-                    .heads
-                    .iter()
-                    .find(|head| head.operation.key.workspace == work.intent.workspace)
-                    .map(|head| head.publication.identity)
-                    .or_else(|| {
-                        routes
-                            .repomap_heads
-                            .iter()
-                            .find(|head| head.operation.key.workspace == work.intent.workspace)
-                            .map(|head| head.publication.identity)
-                    })
-                    .or_else(|| (work.intent.workspace == workspace).then_some(maximum))
-            },
-        );
-        let Some(ceiling) = ceiling else {
+        let Some(ceiling) = ceiling_for(work.intent.workspace) else {
             return Err(IndexError::Conflict);
         };
         match work.status {

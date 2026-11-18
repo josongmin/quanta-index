@@ -298,7 +298,9 @@ fn publish_previous_native_v1(
     let rows = held
         .observe_signed_source_rows_v1(evidence, joined, budget)
         .map_err(before)?;
-    let mut native_history = Vec::new();
+    // Drop the entries and their strings before releasing the array grant.
+    let mut _history_capacity = None;
+    let mut native_history = Vec::<FundedNativeRestoreInputV1>::new();
     let witnessed_history_count = held
         .visit_history_members_v1(None, budget, |input, _reader, budget| {
             let bytes = input
@@ -308,16 +310,31 @@ fn publish_previous_native_v1(
                 .as_str()
                 .len()
                 .checked_add(input.cut.generation.revision_id.as_str().len())
-                .and_then(|bytes| {
-                    bytes.checked_add(std::mem::size_of::<FundedNativeRestoreInputV1>())
-                })
                 .and_then(|bytes| u64::try_from(bytes).ok())
                 .ok_or(IndexError::ResourceLimited)?;
             let memory =
                 budget.reserve_memory(bytes, quanta_index_core::index::MemoryLifetime::Retained)?;
-            native_history
-                .try_reserve(1)
-                .map_err(|_| IndexError::ResourceLimited)?;
+            if native_history.len() == native_history.capacity() {
+                let max = quanta_index_contract::native_protocol::MAX_NATIVE_READ_PROFILE_INSTANCES;
+                let capacity = native_history.capacity().saturating_mul(2).clamp(1, max);
+                if capacity <= native_history.len() {
+                    return Err(IndexError::ResourceLimited.into());
+                }
+                let array_bytes =
+                    u64::try_from(capacity * std::mem::size_of::<FundedNativeRestoreInputV1>())
+                        .map_err(|_| IndexError::ResourceLimited)?;
+                // Reallocation can temporarily own both buffers.
+                let next = budget
+                    .reserve_memory(
+                        array_bytes,
+                        quanta_index_core::index::MemoryLifetime::Retained,
+                    )?
+                    .ok_or(IndexError::ResourceLimited)?;
+                native_history
+                    .try_reserve_exact(capacity - native_history.len())
+                    .map_err(|_| IndexError::ResourceLimited)?;
+                _history_capacity = Some(next);
+            }
             native_history.push(FundedNativeRestoreInputV1 {
                 value: input.clone(),
                 _memory: memory,
