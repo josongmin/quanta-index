@@ -227,6 +227,10 @@ Native restore-forward의 History 목록은 성장 전에 새 배열 전체를 �
 
 기존 상한을 넘는 정규 RepoMap 1,536-head 입력을 고정한 회귀를 추가했다. 같은 64MiB scope에 원 payload를 포함하고 실제 decoded DATA와 최종 환급을 단언한다. vendored NFC 표 2,081행의 canonical 분해 폭 최대 4를 정적으로 대조했다. 분리된 main 코호트에서 직전 스트리밍 수리의 객체 해시 import 누락도 연결했다. 대형 입력 Catalog·BOOT·설치 경로의 실제 동시 headroom 및 소요 시간은 **NOT_RUN**이다. 현재 전수 custody 계약은 유지한다.
 
+**RR→SS 보호 route 검증 경로 · 2026-11-18.** S에서 이미 seal한 후보의 BOOT receipt 경로는 root lease 안에서 동일한 물리 closure와 전체 route를 두 번 검증했다. read-only presealed 분기는 최종 Catalog snapshot의 identity·current route·물리 closure를 한 번 검사한 뒤 기존 receipt digest를 만든다. Catalog writer를 여는 판정을 cache 예약과 실행부가 공유한다. read-only presealed receipt는 사용하지 않는 writer cache를 예약하지 않는다. Catalog에 새 selection을 쓰는 분기의 쓰기 전 검증과 쓰기 후 검증은 유지한다.
+
+seal과 보호 head 조회는 동일한 물리 marker 검증을 호출한다. Source와 RepoMap이 한 pair의 exact publication을 공유할 때만 marker를 한 번 읽고, RepoMap-only·genesis·기타 고유 marker는 모두 읽는다. 정규 marker를 한 번 인코딩해 객체 참조와 저장 bytes 대조에 쓰며 scratch를 예약한다. 설치 fixture의 작업량 한도는 요청당 512MiB이며 128MiB startup 한도는 별도 경로다. 최대 근처 route와 paged snapshot이 겹칠 때의 64MiB Native-origin seal peak는 별도 실제 입력 검증이 남는다. 컴파일·실제 검증은 **NOT_RUN**이다.
+
 원 R16/Source23/Current 코호트를 합산하지 않으며 **`source_ready=false`**를 유지한다. 코드·정적 proof, 컴파일·owning body, signed Product 수용을 각각 판정한다.
 
 | 기존 오너에서 인수할 입력 | 인수 기준 |

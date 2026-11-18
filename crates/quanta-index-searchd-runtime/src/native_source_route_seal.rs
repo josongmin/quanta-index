@@ -3,8 +3,7 @@
 
 use super::*;
 use quanta_index_core::index::{
-    IngressRef, native_protected_view_marker_bytes_v1, native_protected_view_marker_ref_v1,
-    ports::ImmutableObjectPort, with_native_protected_snapshot_v1,
+    IngressRef, ports::ImmutableObjectPort, with_native_protected_snapshot_v1,
     with_native_protected_source_routes_v1,
 };
 
@@ -52,33 +51,7 @@ impl NativeDispatcher {
                     },
                 )?;
             }
-            for view in decoded
-                .heads
-                .iter()
-                .map(|head| head.publication.identity)
-                .chain(
-                    decoded
-                        .repomap_heads
-                        .iter()
-                        .map(|head| head.publication.identity),
-                )
-                .chain(
-                    decoded
-                        .repomap_heads
-                        .iter()
-                        .filter(|head| head.source_operation.is_none())
-                        .map(|head| head.source_publication.identity),
-                )
-            {
-                let reference = native_protected_view_marker_ref_v1(view)
-                    .map_err(|message| IndexError::InvalidInput(message.into()))?;
-                let marker = self.objects.get(reference, budget)?;
-                let expected = native_protected_view_marker_bytes_v1(view)
-                    .map_err(|message| IndexError::InvalidInput(message.into()))?;
-                if marker.payload != expected || !marker.registration.children.is_empty() {
-                    return Err(IndexError::DigestConflict);
-                }
-            }
+            self.verify_protected_view_markers_v1(decoded, budget)?;
             let before = self.current_root_identity_for_view(budget)?;
             let selected = self
                 .catalog

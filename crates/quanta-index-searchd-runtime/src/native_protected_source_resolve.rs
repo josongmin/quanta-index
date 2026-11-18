@@ -3,13 +3,60 @@
 
 use super::*;
 use quanta_index_core::index::{
-    MapValue, MemoryLifetime, NativeProtectedSourceRoutesV1, WorkUsage, member_map_key,
-    native_protected_view_marker_bytes_v1, native_protected_view_marker_ref_v1,
+    MAX_NATIVE_PROTECTED_VIEW_MARKER_BYTES_V1, MapValue, MemoryLifetime,
+    NativeProtectedSourceRoutesV1, WorkUsage, member_map_key, native_immutable_object_ref_v1,
+    native_protected_view_marker_bytes_v1,
     ports::{ImmutableObjectPort, PersistentMapPort},
     with_native_protected_source_routes_v1,
 };
 
 impl NativeDispatcher {
+    pub(super) fn verify_protected_view_markers_v1(
+        &self,
+        routes: &NativeProtectedSourceRoutesV1,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        let marker_scratch = u64::try_from(4 * MAX_NATIVE_PROTECTED_VIEW_MARKER_BYTES_V1)
+            .map_err(|_| IndexError::ResourceLimited)?;
+        let _marker_memory = budget
+            .reserve_memory(marker_scratch, MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        // Route validation already binds each shared Source/RepoMap pair
+        // to one exact publication. Read that marker once.
+        let repomap_only = routes.repomap_heads.iter().filter(|head| {
+            let pair = (head.repo_id.as_str(), head.revision_id.as_str());
+            routes
+                .heads
+                .binary_search_by(|source| {
+                    (source.repo_id.as_str(), source.revision_id.as_str()).cmp(&pair)
+                })
+                .is_err()
+        });
+        let genesis = routes
+            .repomap_heads
+            .iter()
+            .filter(|head| head.source_operation.is_none())
+            .map(|head| head.source_publication.identity);
+        for view in routes
+            .heads
+            .iter()
+            .map(|head| head.publication.identity)
+            .chain(repomap_only.map(|head| head.publication.identity))
+            .chain(genesis)
+        {
+            let expected = native_protected_view_marker_bytes_v1(view)
+                .map_err(|message| IndexError::InvalidInput(message.into()))?;
+            let marker_ref = native_immutable_object_ref_v1(&expected, &[]).ok_or_else(|| {
+                IndexError::InvalidInput("protected view marker identity overflows".into())
+            })?;
+            let marker = self.objects.get(marker_ref, budget)?;
+            if marker.payload != expected || !marker.registration.children.is_empty() {
+                return Err(IndexError::DigestConflict);
+            }
+        }
+        Ok(())
+    }
+
     fn with_selected_protected_routes_v1<T>(
         &self,
         budget: &mut WorkBudget,
@@ -41,33 +88,7 @@ impl NativeDispatcher {
             &stored,
             budget,
             |routes, budget| {
-                for view in routes
-                    .heads
-                    .iter()
-                    .map(|head| head.publication.identity)
-                    .chain(
-                        routes
-                            .repomap_heads
-                            .iter()
-                            .map(|head| head.publication.identity),
-                    )
-                    .chain(
-                        routes
-                            .repomap_heads
-                            .iter()
-                            .filter(|head| head.source_operation.is_none())
-                            .map(|head| head.source_publication.identity),
-                    )
-                {
-                    let marker_ref = native_protected_view_marker_ref_v1(view)
-                        .map_err(|message| IndexError::InvalidInput(message.into()))?;
-                    let marker = self.objects.get(marker_ref, budget)?;
-                    let expected = native_protected_view_marker_bytes_v1(view)
-                        .map_err(|message| IndexError::InvalidInput(message.into()))?;
-                    if marker.payload != expected || !marker.registration.children.is_empty() {
-                        return Err(IndexError::DigestConflict);
-                    }
-                }
+                self.verify_protected_view_markers_v1(routes, budget)?;
                 visit(&selected, routes, budget)
             },
         )?;

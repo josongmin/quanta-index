@@ -806,6 +806,17 @@ fn require_retired(authority: &NativeBootAuthority) -> Result<()> {
     Ok(())
 }
 
+fn writes_native_selection(mode: NativeCommandModeV1) -> bool {
+    matches!(
+        mode,
+        NativeCommandModeV1::Select
+            | NativeCommandModeV1::SelectCandidate {
+                protected_source_routes: None,
+                ..
+            }
+    )
+}
+
 /// The original Control reservation and its one WorkBudget precede the
 /// deployment lock and Q root lease; this is the only runtime ledger for the
 /// complete offline transaction.
@@ -848,10 +859,7 @@ pub(super) fn with_control_budget<T>(
     with_admitted_control_budget(
         config,
         request,
-        matches!(
-            command.mode,
-            NativeCommandModeV1::Select | NativeCommandModeV1::SelectCandidate { .. }
-        ),
+        writes_native_selection(command.mode),
         callback,
     )
 }
@@ -1062,18 +1070,24 @@ pub(super) fn execute(
                             return Err(IndexError::Conflict.into());
                         }
                     }
-                    authenticate(
-                        &authority,
-                        candidate.snapshot(),
-                        manifest,
-                        registry,
-                        maximum,
-                        None,
-                        presealed.is_some(),
-                        &mut budget,
-                    )?;
+                    // A mutable selection needs physical authentication before
+                    // the Catalog write. A presealed route is authenticated
+                    // once from the receipt snapshot under the same root lease.
+                    let writes_selection = writes_native_selection(command.mode);
+                    if writes_selection {
+                        authenticate(
+                            &authority,
+                            candidate.snapshot(),
+                            manifest,
+                            registry,
+                            maximum,
+                            None,
+                            false,
+                            &mut budget,
+                        )?;
+                    }
                     drop(candidate);
-                    if presealed.is_none() {
+                    if writes_selection {
                         let _funding = authority.io.enter_maintenance_scope()?;
                         let mut catalog = SqliteCatalog::open_with_io_admission_and_writer_cache(
                             &root,
