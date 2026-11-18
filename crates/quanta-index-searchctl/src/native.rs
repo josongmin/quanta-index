@@ -230,7 +230,7 @@ fn parse(args: &[String]) -> CliResult<NativeOptions> {
             }
             "--after-json" if matches!(command, NativeCommand::QueryRepositoryPaths) => {
                 let raw = value(&mut rest, &flag)?;
-                let cursor = serde_json::from_str(&raw)
+                let cursor: NativeRepositoryPathCursor = serde_json::from_str(&raw)
                     .map_err(|error| CliError::usage(format!("invalid {flag}: {error}")))?;
                 set_once(&mut after, cursor, &flag)?;
             }
