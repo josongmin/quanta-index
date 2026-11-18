@@ -8,9 +8,10 @@ use quanta_index_contract::{LqExpr, LqFilter, LqLeaf, LqOptions, LqPatternType, 
 use quanta_index_core::{CoreError, RequestBudgetV1, ValidatedLexicalPlan};
 
 use crate::TantivySearcher;
+use crate::plan::RepoFileMatcher;
 use crate::planner::{LexicalPlanner, LexicalPlannerError};
 use crate::predicate_registry::{
-    ContentScalarArg, ContributorPattern, MetaPattern, PredicateKind, RepoFileMatcher,
+    ContentScalarArg, ContributorPattern, MetaPattern, PredicateKind,
     canonicalize_predicate_call, kind_of, parse_content_predicate_constraint,
     parse_content_scalar_arg, parse_file_contributor_arg, parse_repo_description_arg,
     parse_repo_file_matchers, parse_repo_meta_arg, parse_timeref_scalar_arg,
