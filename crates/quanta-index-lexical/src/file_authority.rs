@@ -15,9 +15,9 @@ pub(crate) use plan::{FileAuthorityPlanCache, plan_ops};
 pub(crate) use query::{PostingSurface, QueryWork};
 
 pub(crate) const DIR: &str = "file-authority";
-pub(crate) const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
 use crate::legacy::file_policy::MAX_QUERY_SOURCE_WALKS;
 pub(crate) use crate::legacy::file_policy::{FilePolicy, policy};
+pub(crate) use crate::legacy::source_head::MAX_FILE_BYTES;
 pub(crate) fn query_physical_read_limit(policy: FilePolicy) -> Result<u64, CoreError> {
     // One authenticated source-head read follows at most height + 1 map
     // pages for each row in a full source-map walk.

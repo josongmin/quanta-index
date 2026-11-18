@@ -64,9 +64,9 @@ const RETIREMENT_MAGIC: &[u8; 8] = b"QLRETIR1";
 const REQUEST_OBJECT_CACHE_BYTES: usize = 4 * 1024 * 1024;
 // Covers both ordered-tree nodes, their duplicated keys and allocator metadata.
 const OBJECT_CACHE_ENTRY_OVERHEAD: usize = 256;
-const BLOCK_BYTES: usize = 32 * 1024;
+pub(crate) use crate::legacy::blob_codec::BLOCK_BYTES;
 const BLOCK_BYTES_U64: u64 = 32 * 1024;
-const NODE_FANOUT: usize = 64;
+use crate::legacy::blob_codec::NODE_FANOUT;
 const MAX_ATTEMPT_BYTES: usize = 8 * 1024 * 1024;
 const JOURNAL_ENTRY_BYTES: u64 = 73;
 const MAX_ATTEMPTS: usize = 4096;
@@ -2030,11 +2030,7 @@ fn packed_body_kind(kind: ObjectKind) -> bool {
     matches!(kind, ObjectKind::NativeBody | ObjectKind::FileBody)
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum Page {
-    Leaf(Vec<(Vec<u8>, BlobRef)>),
-    Branch(Vec<PageRef>),
-}
+pub(crate) use crate::legacy::map_codec::Page;
 
 struct DecodedMapPage {
     descriptor: PageRef,
@@ -6893,53 +6889,7 @@ fn encode_blob_node(children: &[(ObjectRef, u64)]) -> Result<(Vec<u8>, Vec<Objec
     Ok((bytes, deps))
 }
 
-fn decode_blob_node(bytes: &[u8]) -> Result<Vec<(ObjectRef, u64)>, CoreError> {
-    let count_bytes = bytes
-        .get(..2)
-        .ok_or_else(|| corrupt("blob node count is truncated"))?;
-    let count = usize::from(u16::from_be_bytes(
-        count_bytes
-            .try_into()
-            .map_err(|_conversion_error| corrupt("blob child count width"))?,
-    ));
-    if count == 0
-        || count > NODE_FANOUT
-        || bytes.len()
-            != 2_usize
-                .checked_add(
-                    count
-                        .checked_mul(49)
-                        .ok_or_else(|| corrupt("blob node length overflow"))?,
-                )
-                .ok_or_else(|| corrupt("blob node length overflow"))?
-    {
-        return Err(corrupt("blob node count or length differs"));
-    }
-    let mut offset = 2;
-    let mut children = Vec::new();
-    children
-        .try_reserve_exact(count)
-        .map_err(|error| storage("reserve blob children", error))?;
-    for _ in 0..count {
-        let reference = decode_ref(bytes, &mut offset)?;
-        let end = offset
-            .checked_add(8)
-            .ok_or_else(|| corrupt("blob child offset overflow"))?;
-        let mut width = [0_u8; 8];
-        width.copy_from_slice(
-            bytes
-                .get(offset..end)
-                .ok_or_else(|| corrupt("truncated blob child length"))?,
-        );
-        offset = end;
-        let length = u64::from_be_bytes(width);
-        if length == 0 {
-            return Err(corrupt("zero-length blob child"));
-        }
-        children.push((reference, length));
-    }
-    Ok(children)
-}
+pub(crate) use crate::legacy::blob_codec::decode_blob_node;
 
 #[cfg(test)]
 mod journal_tests {
