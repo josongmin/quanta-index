@@ -301,6 +301,7 @@ fn publish_previous_native_v1(
     // Drop the entries and their strings before releasing the array grant.
     let mut _history_capacity = None;
     let mut native_history = Vec::<FundedNativeRestoreInputV1>::new();
+    let mut admitted_slots = 0usize;
     let witnessed_history_count = held
         .visit_history_members_v1(None, budget, |input, _reader, budget| {
             let bytes = input
@@ -310,19 +311,21 @@ fn publish_previous_native_v1(
                 .as_str()
                 .len()
                 .checked_add(input.cut.generation.revision_id.as_str().len())
-                .and_then(|bytes| u64::try_from(bytes).ok())
                 .ok_or(IndexError::ResourceLimited)?;
+            let bytes = u64::try_from(bytes).map_err(|_width| IndexError::ResourceLimited)?;
             let memory =
                 budget.reserve_memory(bytes, quanta_index_core::index::MemoryLifetime::Retained)?;
-            if native_history.len() == native_history.capacity() {
+            if native_history.len() == admitted_slots {
                 let max = quanta_index_contract::native_protocol::MAX_NATIVE_READ_PROFILE_INSTANCES;
-                let capacity = native_history.capacity().saturating_mul(2).clamp(1, max);
+                let capacity = admitted_slots.saturating_mul(2).clamp(1, max);
                 if capacity <= native_history.len() {
                     return Err(IndexError::ResourceLimited.into());
                 }
+                let array_bytes = capacity
+                    .checked_mul(std::mem::size_of::<FundedNativeRestoreInputV1>())
+                    .ok_or(IndexError::ResourceLimited)?;
                 let array_bytes =
-                    u64::try_from(capacity * std::mem::size_of::<FundedNativeRestoreInputV1>())
-                        .map_err(|_| IndexError::ResourceLimited)?;
+                    u64::try_from(array_bytes).map_err(|_width| IndexError::ResourceLimited)?;
                 // Reallocation can temporarily own both buffers.
                 let next = budget
                     .reserve_memory(
@@ -331,8 +334,9 @@ fn publish_previous_native_v1(
                     )?
                     .ok_or(IndexError::ResourceLimited)?;
                 native_history
-                    .try_reserve_exact(capacity - native_history.len())
-                    .map_err(|_| IndexError::ResourceLimited)?;
+                    .try_reserve_exact(capacity.saturating_sub(native_history.len()))
+                    .map_err(|_allocation| IndexError::ResourceLimited)?;
+                admitted_slots = capacity;
                 _history_capacity = Some(next);
             }
             native_history.push(FundedNativeRestoreInputV1 {
@@ -363,7 +367,7 @@ fn publish_previous_native_v1(
     });
     if native_history
         .windows(2)
-        .any(|pair| pair[0].value.cut.generation == pair[1].value.cut.generation)
+        .any(|pair| matches!(pair, [left, right] if left.value.cut.generation == right.value.cut.generation))
     {
         return Err(before(IndexError::DigestConflict.into()));
     }

@@ -363,7 +363,10 @@ fn assert_canonical_route_readback(
     let bytes = serde_json::to_vec(routes)?;
     let children = routes.children()?;
     let stored = |reference, payload: Vec<u8>, children: Vec<ObjectRef>| {
-        let wire_bytes = payload.len() + 16 + children.len() * 32;
+        let wire_bytes = payload
+            .len()
+            .saturating_add(16)
+            .saturating_add(children.len().saturating_mul(32));
         Ok::<_, std::num::TryFromIntError>(StoredObject::new(
             RegisteredObject::unscoped(reference, u64::try_from(wire_bytes)?, children),
             payload,
@@ -448,7 +451,7 @@ fn large_protected_route_decodes_inside_the_control_memory_envelope() -> TestRes
     let mut heads = Vec::new();
     for index in 0..HEADS {
         let workspace = WorkspaceKey {
-            slot: SlotId((u128::from(index) + 1).to_be_bytes()),
+            slot: SlotId(u128::from(index).saturating_add(1).to_be_bytes()),
             ..workspace()
         };
         let mut operation = operation(1, 55);
@@ -478,10 +481,15 @@ fn large_protected_route_decodes_inside_the_control_memory_envelope() -> TestRes
         repomap_heads: heads,
     };
     let payload = serde_json::to_vec(&routes)?;
-    check!(payload.len() * 32 + 65_536 > 64 * 1024 * 1024);
+    check!(payload.len().saturating_mul(32).saturating_add(65_536) > 64 * 1024 * 1024);
     let reference = routes.object_ref()?;
     let children = routes.children()?;
-    let wire_bytes = u64::try_from(payload.len() + 16 + children.len() * 32)?;
+    let wire_bytes = u64::try_from(
+        payload
+            .len()
+            .saturating_add(16)
+            .saturating_add(children.len().saturating_mul(32)),
+    )?;
     let memory = ProtectedTestMemoryV1::default();
     let mut budget = admission_budget();
     budget.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(

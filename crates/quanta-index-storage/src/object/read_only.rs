@@ -220,8 +220,8 @@ impl ClosureFrontier {
         let capacity = self.admitted.saturating_mul(2).max(needed).min(maximum);
         let bytes = capacity
             .checked_mul(std::mem::size_of::<ObjectRef>())
-            .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(IndexError::ResourceLimited)?;
+        let bytes = u64::try_from(bytes).map_err(|_width| IndexError::ResourceLimited)?;
         // Reallocation can temporarily own both buffers. Keep the old lease
         // until the new backing is in place.
         let memory = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;

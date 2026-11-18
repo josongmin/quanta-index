@@ -95,8 +95,14 @@ where
     BoundedVecV1::<T, MAXIMUM>::deserialize(deserializer).map(BoundedVecV1::into_inner)
 }
 
-fn order_unique_workspaces(order: &mut [u16], workspace: impl Fn(usize) -> WorkspaceKey) -> bool {
+fn order_unique_workspaces(
+    order: &mut [u16],
+    workspace: impl Fn(usize) -> Option<WorkspaceKey>,
+) -> bool {
     for (index, slot) in order.iter_mut().enumerate() {
+        if workspace(index).is_none() {
+            return false;
+        }
         let Ok(index) = u16::try_from(index) else {
             return false;
         };
@@ -104,8 +110,9 @@ fn order_unique_workspaces(order: &mut [u16], workspace: impl Fn(usize) -> Works
     }
     order.sort_unstable_by_key(|index| workspace(usize::from(*index)));
     order
-        .windows(2)
-        .all(|pair| workspace(usize::from(pair[0])) != workspace(usize::from(pair[1])))
+        .iter()
+        .zip(order.iter().skip(1))
+        .all(|(left, right)| workspace(usize::from(*left)) != workspace(usize::from(*right)))
 }
 
 impl NativeProtectedSourceRoutesV1 {
@@ -156,8 +163,14 @@ impl NativeProtectedSourceRoutesV1 {
         // Sort only bounded indices. The canonical pair order and its wire
         // bytes remain intact, and validation does not allocate a workspace map.
         let mut source_order = [0; MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1];
-        let source_order = &mut source_order[..self.heads.len()];
-        let source_workspace = |index: usize| self.heads[index].operation.key.workspace;
+        let source_order = source_order
+            .get_mut(..self.heads.len())
+            .ok_or("protected Source route scope or order is invalid")?;
+        let source_workspace = |index: usize| {
+            self.heads
+                .get(index)
+                .map(|head| head.operation.key.workspace)
+        };
         if !order_unique_workspaces(source_order, source_workspace) {
             return Err("protected Source route scope or order is invalid");
         }
@@ -202,14 +215,17 @@ impl NativeProtectedSourceRoutesV1 {
                 (source.repo_id.as_str(), source.revision_id.as_str()).cmp(&pair)
             }) {
                 Ok(index) => {
-                    let source = &self.heads[index];
+                    let source = self
+                        .heads
+                        .get(index)
+                        .ok_or("protected RepoMap route order is invalid")?;
                     source.operation.key.workspace != head.operation.key.workspace
                         || source.publication != head.publication
                         || head.source_operation.as_ref() != Some(&source.source_operation)
                         || head.source_publication != source.source_publication
                 }
-                Err(_) => source_order
-                    .binary_search_by_key(&head.operation.key.workspace, |index| {
+                Err(_insertion) => source_order
+                    .binary_search_by_key(&Some(head.operation.key.workspace), |index| {
                         source_workspace(usize::from(*index))
                     })
                     .is_ok(),
@@ -220,8 +236,13 @@ impl NativeProtectedSourceRoutesV1 {
             previous_repomap_pair = Some(pair);
         }
         let mut repomap_order = [0; MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1];
-        if !order_unique_workspaces(&mut repomap_order[..self.repomap_heads.len()], |index| {
-            self.repomap_heads[index].operation.key.workspace
+        let repomap_order = repomap_order
+            .get_mut(..self.repomap_heads.len())
+            .ok_or("protected RepoMap route order is invalid")?;
+        if !order_unique_workspaces(repomap_order, |index| {
+            self.repomap_heads
+                .get(index)
+                .map(|head| head.operation.key.workspace)
         }) {
             return Err("protected RepoMap route order is invalid");
         }
@@ -249,14 +270,19 @@ impl NativeProtectedSourceRoutesV1 {
         {
             return Err("protected Source route version or count is invalid");
         }
-        Ok(2 + self.heads.len() * 11 + self.repomap_heads.len() * 12)
+        self.heads
+            .len()
+            .checked_mul(11)
+            .and_then(|source| source.checked_add(self.repomap_heads.len().checked_mul(12)?))
+            .and_then(|slots| slots.checked_add(2))
+            .ok_or("protected Source route child backing overflows")
     }
 
     fn validated_children(&self) -> Result<Vec<ObjectRef>, &'static str> {
         let mut children = Vec::new();
         children
             .try_reserve_exact(self.child_slots()?)
-            .map_err(|_| "protected Source route child allocation refused")?;
+            .map_err(|_allocation| "protected Source route child allocation refused")?;
         if let Some(origin) = &self.native_origin {
             children.extend([origin.source_routes, origin.snapshot]);
         }
@@ -354,7 +380,8 @@ impl NativeProtectedSourceRoutesV1 {
                 .ok_or("protected Source route object identity overflows")?,
             remaining: size,
         };
-        serde_json::to_writer(&mut output, self).map_err(|_| "encode protected Source routes")?;
+        serde_json::to_writer(&mut output, self)
+            .map_err(|_encode| "encode protected Source routes")?;
         if output.remaining != 0 {
             return Err("protected Source route payload changed during encode");
         }
@@ -451,7 +478,10 @@ mod tests {
         duplicate_pair.heads[1].revision_id = duplicate_pair.heads[0].revision_id.clone();
         assert!(duplicate_pair.validate().is_err());
         let mut duplicate_workspace = routes;
-        duplicate_workspace.heads[1] = head("repo", "rev-b", 10);
+        *duplicate_workspace
+            .heads
+            .get_mut(1)
+            .expect("second Source head") = head("repo", "rev-b", 10);
         assert_eq!(
             duplicate_workspace.validate(),
             Err("protected Source route scope or order is invalid")
@@ -485,7 +515,11 @@ mod tests {
             repomap_heads: vec![repomap],
         };
         routes.validate().expect("exact shared route");
-        routes.repomap_heads[0].revision_id = RevisionId::new("rev-b").expect("revision");
+        routes
+            .repomap_heads
+            .first_mut()
+            .expect("RepoMap head")
+            .revision_id = RevisionId::new("rev-b").expect("revision");
         assert_eq!(
             routes.validate(),
             Err("protected RepoMap route order is invalid")

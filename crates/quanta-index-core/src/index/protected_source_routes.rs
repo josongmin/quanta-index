@@ -48,7 +48,7 @@ fn check_route_json_bounds(payload: &[u8], budget: &WorkBudget) -> Result<(), In
                 } else if byte == b'\\' {
                     escaped = true;
                 }
-                token += 1;
+                token = token.saturating_add(1);
             } else {
                 match byte {
                     b'"' => {
@@ -56,7 +56,7 @@ fn check_route_json_bounds(payload: &[u8], budget: &WorkBudget) -> Result<(), In
                         token = 0;
                     }
                     b'{' | b'[' => {
-                        depth += 1;
+                        depth = depth.saturating_add(1);
                         token = 0;
                     }
                     b'}' | b']' => {
@@ -64,7 +64,7 @@ fn check_route_json_bounds(payload: &[u8], budget: &WorkBudget) -> Result<(), In
                         token = 0;
                     }
                     b',' | b':' | b' ' | b'\t' | b'\n' | b'\r' => token = 0,
-                    _ => token += 1,
+                    _ => token = token.saturating_add(1),
                 }
             }
             if token > MAX_ROUTE_TOKEN_BYTES || depth > MAX_ROUTE_JSON_DEPTH {
@@ -101,9 +101,9 @@ impl<'de, const MAXIMUM: usize> Deserialize<'de> for HeadCount<MAXIMUM> {
             }
 
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                let mut count = 0;
+                let mut count = 0usize;
                 while seq.next_element::<IgnoredAny>()?.is_some() {
-                    count += 1;
+                    count = count.saturating_add(1);
                     if count > MAXIMUM {
                         return Err(serde::de::Error::invalid_length(count, &self));
                     }
@@ -123,9 +123,11 @@ fn heads_backing_bytes<T>(count: usize) -> Option<usize> {
     // minimum and doubles, so admit both the final capacity and the largest
     // possible preceding capacity during its last growth.
     let capacity = count.checked_next_power_of_two()?.max(8);
-    (capacity + capacity / 2)
+    let ids = count.checked_mul(RepoId::MAX_UTF8_BYTES_V1 + RevisionId::MAX_UTF8_BYTES_V1)?;
+    capacity
+        .checked_add(capacity.checked_div(2)?)?
         .checked_mul(std::mem::size_of::<T>())?
-        .checked_add(count * (RepoId::MAX_UTF8_BYTES_V1 + RevisionId::MAX_UTF8_BYTES_V1))
+        .checked_add(ids)
 }
 
 /// Authenticate the route object and drop its owner before the visitor
@@ -143,7 +145,8 @@ pub fn with_native_protected_source_routes_v1<T>(
     {
         return Err(IndexError::DigestConflict);
     }
-    let bytes = u64::try_from(stored.payload.len()).map_err(|_| IndexError::ResourceLimited)?;
+    let bytes =
+        u64::try_from(stored.payload.len()).map_err(|_width| IndexError::ResourceLimited)?;
     budget.charge(WorkUsage {
         bytes: bytes.checked_mul(5).ok_or(IndexError::ResourceLimited)?,
         ..Default::default()
@@ -160,8 +163,8 @@ pub fn with_native_protected_source_routes_v1<T>(
             heads_backing_bytes::<NativeProtectedRepoMapHeadV1>(counts.repomap_heads.0)
                 .and_then(|repomap| source.checked_add(repomap))
         })
-        .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(IndexError::ResourceLimited)?;
+    let backing = u64::try_from(backing).map_err(|_width| IndexError::ResourceLimited)?;
     let _heads_memory = if backing == 0 {
         None
     } else {
@@ -179,7 +182,7 @@ pub fn with_native_protected_source_routes_v1<T>(
             .children_backing_bytes()
             .map_err(|message| IndexError::InvalidInput(message.into()))?;
         let bytes = u64::try_from(children_backing)
-            .map_err(|_| IndexError::ResourceLimited)?
+            .map_err(|_width| IndexError::ResourceLimited)?
             .checked_add(4096)
             .ok_or(IndexError::ResourceLimited)?;
         let _children_memory = budget
@@ -189,7 +192,7 @@ pub fn with_native_protected_source_routes_v1<T>(
             .children()
             .map_err(|message| IndexError::InvalidInput(message.into()))?;
         if expected_source_count
-            .is_some_and(|expected| usize::try_from(expected).ok() != Some(routes.heads.len()))
+            .is_some_and(|expected| usize::try_from(expected) != Ok(routes.heads.len()))
             || children != stored.registration.children
             || !matches_json(&routes, &stored.payload, budget, "protected Source routes")?
             || native_immutable_object_ref_v1(&stored.payload, &children) != Some(reference)

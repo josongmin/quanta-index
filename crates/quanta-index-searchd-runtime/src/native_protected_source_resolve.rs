@@ -17,7 +17,7 @@ impl NativeDispatcher {
         budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
         let marker_scratch = u64::try_from(4 * MAX_NATIVE_PROTECTED_VIEW_MARKER_BYTES_V1)
-            .map_err(|_| IndexError::ResourceLimited)?;
+            .map_err(|_width| IndexError::ResourceLimited)?;
         let _marker_memory = budget
             .reserve_memory(marker_scratch, MemoryLifetime::Temporary)?
             .ok_or(IndexError::ResourceLimited)?;

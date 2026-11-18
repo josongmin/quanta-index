@@ -245,6 +245,8 @@ seal과 보호 head 조회는 동일한 물리 marker 검증을 호출한다. So
 
 **물리 closure payload.** BOOT와 restore-forward의 DFS는 호출자에게 반환할 request·profile만 본문으로 보유한다. 나머지는 최대 64KiB 임시 버퍼로 전체 payload를 해시하고 SHA·EOF·namespace 검사 후 인증된 child 등록만 사용한다. 기존 work/read 과금은 유지한다. 같은 Storage 회귀는 96KiB 한도에서 128KiB 미선택 객체의 인증·선택 본문 반환과 마지막 청크가 깨진 transitive child의 정확한 SHA 거절을 검사한다. 두 경로 모두 최종 환급을 단언한다. 컴파일·owning 본문·64MiB 통합 수용·서명 설치는 **NOT_RUN**이다.
 
+**보호 route·History 예약 경계.** child·marker·workspace·head backing의 크기 계산과 route 인덱스 조회를 검사된 연산으로 연결했다. restore-forward는 allocator가 추가로 돌려준 슬롯과 Original이 실제 허가한 슬롯을 별도로 관리한다. 성장 시 이전 배열 grant는 재할당 종료까지 유지하며 기존 최대 History 수와 정규 wire·digest 계약을 유지한다. workspace lint 정책과 대조한 정적 수리다. Clippy·컴파일·회귀 실행은 **NOT_RUN**이다.
+
 원 R16/Source23/Current 코호트를 합산하지 않으며 **`source_ready=false`**를 유지한다. 코드·정적 proof, 컴파일·owning body, signed Product 수용을 각각 판정한다.
 
 | 기존 오너에서 인수할 입력 | 인수 기준 |

@@ -3024,13 +3024,19 @@ fn check_quiescent_rows_with_publications_impl(
         if ingress_blocked {
             return Err(IndexError::Conflict);
         }
-        let count = routes.heads.len() + routes.repomap_heads.len();
-        let bytes = u64::try_from(count * std::mem::size_of::<&ViewRef>())
-            .map_err(|_| IndexError::ResourceLimited)?;
+        let count = routes
+            .heads
+            .len()
+            .checked_add(routes.repomap_heads.len())
+            .ok_or(IndexError::ResourceLimited)?;
+        let bytes = count
+            .checked_mul(std::mem::size_of::<&ViewRef>())
+            .ok_or(IndexError::ResourceLimited)?;
+        let bytes = u64::try_from(bytes).map_err(|_width| IndexError::ResourceLimited)?;
         _ceilings_memory = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
         ceilings
             .try_reserve_exact(count)
-            .map_err(|_| IndexError::ResourceLimited)?;
+            .map_err(|_allocation| IndexError::ResourceLimited)?;
         ceilings.extend(routes.heads.iter().map(|head| &head.publication.identity));
         ceilings.extend(
             routes
@@ -3041,7 +3047,7 @@ fn check_quiescent_rows_with_publications_impl(
         ceilings.sort_unstable_by_key(|head| head.workspace);
         if ceilings
             .windows(2)
-            .any(|pair| pair[0].workspace == pair[1].workspace && pair[0] != pair[1])
+            .any(|pair| matches!(pair, [left, right] if left.workspace == right.workspace && left != right))
         {
             return Err(IndexError::DigestConflict);
         }
@@ -3050,8 +3056,7 @@ fn check_quiescent_rows_with_publications_impl(
     let routed_ceiling = |key| {
         ceilings
             .binary_search_by_key(&key, |head| head.workspace)
-            .ok()
-            .map(|index| *ceilings[index])
+            .map_or(None, |index| ceilings.get(index).copied())
     };
     let ceiling_for = |key| routed_ceiling(key).or_else(|| (key == workspace).then_some(maximum));
     if routes.is_some() {
@@ -3079,7 +3084,11 @@ fn check_quiescent_rows_with_publications_impl(
             seen = seen.checked_add(1).ok_or(IndexError::ResourceLimited)?;
         }
         let primary_is_routed = routed_ceiling(workspace).is_some();
-        if seen != ceilings.len() + usize::from(!primary_is_routed) {
+        let expected = ceilings
+            .len()
+            .checked_add(usize::from(!primary_is_routed))
+            .ok_or(IndexError::ResourceLimited)?;
+        if seen != expected {
             return Err(IndexError::Conflict);
         }
         if !primary_is_routed {

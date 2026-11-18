@@ -33,10 +33,12 @@ pub(super) fn native_immutable_object_hasher_v1(
     payload_bytes: usize,
     children: &[ObjectRef],
 ) -> Option<Sha256> {
-    let header = native_immutable_object_header_v1(
-        u32::try_from(payload_bytes).ok()?,
-        u32::try_from(children.len()).ok()?,
-    );
+    let (Ok(payload_bytes), Ok(child_count)) =
+        (u32::try_from(payload_bytes), u32::try_from(children.len()))
+    else {
+        return None;
+    };
+    let header = native_immutable_object_header_v1(payload_bytes, child_count);
     let mut digest = Sha256::new();
     digest.update(NATIVE_IMMUTABLE_OBJECT_HASH_DOMAIN_V1);
     digest.update(header);

@@ -468,9 +468,9 @@ pub(super) fn validate_protected_routes(
     let children_backing = u64::try_from(
         routes
             .children_backing_bytes()
-            .map_err(|_| IndexError::DigestConflict)?,
+            .map_err(|_shape| IndexError::DigestConflict)?,
     )
-    .map_err(|_| IndexError::ResourceLimited)?;
+    .map_err(|_width| IndexError::ResourceLimited)?;
     let _route_memory = budget.reserve_memory(
         children_backing
             .checked_add(REGISTRATION_SCRATCH_BYTES)
@@ -604,14 +604,22 @@ fn route_marker_refs(
         .iter()
         .filter(|head| head.source_operation.is_none())
         .count();
-    let capacity = 1 + routes.heads.len() + routes.repomap_heads.len() + genesis_markers;
-    let bytes = u64::try_from(capacity * std::mem::size_of::<ObjectRef>())
-        .map_err(|_| IndexError::ResourceLimited)?;
+    let capacity = routes
+        .heads
+        .len()
+        .checked_add(routes.repomap_heads.len())
+        .and_then(|heads| heads.checked_add(genesis_markers))
+        .and_then(|markers| markers.checked_add(1))
+        .ok_or(IndexError::ResourceLimited)?;
+    let bytes = capacity
+        .checked_mul(std::mem::size_of::<ObjectRef>())
+        .ok_or(IndexError::ResourceLimited)?;
+    let bytes = u64::try_from(bytes).map_err(|_width| IndexError::ResourceLimited)?;
     let memory = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
     let mut objects = Vec::new();
     objects
         .try_reserve_exact(capacity)
-        .map_err(|_| IndexError::ResourceLimited)?;
+        .map_err(|_allocation| IndexError::ResourceLimited)?;
     objects.push(route_object);
     for head in &routes.heads {
         objects.push(
@@ -750,7 +758,7 @@ fn transfer_and_retire_route_ingress(
         let ValueRef::Blob(object) = row.get_ref(0).map_err(|error| sql(&error))? else {
             return Err(IndexError::DigestConflict);
         };
-        let digest = <[u8; 32]>::try_from(object).map_err(|_| IndexError::DigestConflict)?;
+        let digest = <[u8; 32]>::try_from(object).map_err(|_width| IndexError::DigestConflict)?;
         if objects.binary_search(&ObjectRef(Digest(digest))).is_err() {
             return Err(IndexError::DigestConflict);
         }

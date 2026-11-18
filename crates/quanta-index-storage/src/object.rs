@@ -2055,8 +2055,9 @@ fn charge_decoded_wire(
     child_bytes: usize,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    let decoded_bytes = (child_bytes / 32)
-        .checked_mul(std::mem::size_of::<ObjectRef>())
+    let decoded_bytes = child_bytes
+        .checked_div(32)
+        .and_then(|children| children.checked_mul(std::mem::size_of::<ObjectRef>()))
         .and_then(|children_bytes| children_bytes.checked_add(payload_len))
         .ok_or(IndexError::ResourceLimited)?;
     let decoded_bytes =
