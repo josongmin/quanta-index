@@ -3053,10 +3053,10 @@ fn check_quiescent_rows_with_publications_impl(
         }
         ceilings.dedup_by_key(|head| head.workspace);
     }
-    let routed_ceiling = |key| {
+    let routed_ceiling = |key| -> Option<ViewRef> {
         ceilings
             .binary_search_by_key(&key, |head| head.workspace)
-            .map_or(None, |index| ceilings.get(index).copied())
+            .map_or(None, |index| ceilings.get(index).map(|head| **head))
     };
     let ceiling_for = |key| routed_ceiling(key).or_else(|| (key == workspace).then_some(maximum));
     if routes.is_some() {
