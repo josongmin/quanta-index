@@ -31,7 +31,8 @@ impl quanta_index_core::index::MemoryScopePort for ProtectedTestMemoryV1 {
         _lifetime: quanta_index_core::index::MemoryLifetime,
     ) -> Result<quanta_index_core::index::MemoryLease, IndexError> {
         const LIMIT: u64 = 64 * 1024 * 1024;
-        self.live
+        let _previous_live = self
+            .live
             .fetch_update(
                 std::sync::atomic::Ordering::AcqRel,
                 std::sync::atomic::Ordering::Acquire,
@@ -713,7 +714,7 @@ fn protected_native_import_is_atomic_exact_and_retryable() -> TestResult {
         Err(IndexError::ResourceLimited)
     );
     let mut bad = snapshot.clone();
-    bad.operation_rows.pop();
+    check!(bad.operation_rows.pop().is_some());
     check!(
         new.restore_protected_native_heads_v1(
             new_primary.key,
