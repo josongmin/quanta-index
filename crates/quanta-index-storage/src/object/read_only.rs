@@ -1,5 +1,5 @@
 //! Existing-only immutable reader. No scratch, writer, registration or reclaim
-//! capability is constructed. It reuses the canonical wire reader and decoder.
+//! capability is constructed. It reuses the canonical immutable object reader.
 
 use std::{
     path::{Path, PathBuf},
@@ -77,14 +77,13 @@ impl FileObjectReader {
         reference: ObjectRef,
         budget: &mut WorkBudget,
     ) -> Result<StoredObject, IndexError> {
-        let wire = read_io::read_wire(
+        let stored = read_io::read_stored(
             &self.objects,
             Some(&self.namespace),
             Some(self.io.as_ref()),
             reference,
             budget,
         )?;
-        let stored = wire.decode(budget)?;
         let _binding = self.namespace_binding()?;
         budget.checkpoint()?;
         Ok(stored)

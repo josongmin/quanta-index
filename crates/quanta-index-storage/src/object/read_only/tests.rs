@@ -4,7 +4,7 @@
 use std::{
     fs::{self, File},
     io::Write as _,
-    os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _, symlink},
+    os::unix::fs::{FileExt as _, OpenOptionsExt as _, PermissionsExt as _, symlink},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -36,11 +36,15 @@ fn require(value: bool) -> Result<(), IndexError> {
 }
 
 fn budget(reads: u64) -> Result<WorkBudget, IndexError> {
+    budget_with_bytes(reads, 1_000_000)
+}
+
+fn budget_with_bytes(reads: u64, bytes: u64) -> Result<WorkBudget, IndexError> {
     Ok(WorkBudget::new(
         WorkLimits {
             reads,
             writes: 100,
-            bytes: 1_000_000,
+            bytes,
             mutations: 100,
         },
         Instant::now()
@@ -436,17 +440,16 @@ impl MemoryLeaseOwner for ReadMemory {
     }
 }
 
-struct MutateOnWireReserve {
+struct MutateOnBodyReserve {
     path: PathBuf,
     mutation: ReadMutation,
     calls: AtomicUsize,
     memory: Arc<ReadMemory>,
 }
 
-impl MemoryScopePort for MutateOnWireReserve {
+impl MemoryScopePort for MutateOnBodyReserve {
     fn reserve(&self, bytes: u64, _: MemoryLifetime) -> Result<MemoryLease, IndexError> {
-        // read_wire reserves path memory first, then the wire after fstat.
-        // Mutate the same opened inode at the second reservation, before read_exact.
+        // Mutate the opened inode at payload admission, after the header read.
         if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
             match self.mutation {
                 ReadMutation::Truncate => {
@@ -482,7 +485,7 @@ fn physical_get_refuses_short_read_and_appended_eof_after_opened_metadata() -> T
             let path = super::super::read_io::object_path(&root.path().join("objects"), reference);
             let original_len = fs::metadata(&path)?.len();
             let memory = Arc::new(ReadMemory::default());
-            let hook = Arc::new(MutateOnWireReserve {
+            let hook = Arc::new(MutateOnBodyReserve {
                 path: path.clone(),
                 mutation,
                 calls: AtomicUsize::new(0),
@@ -513,6 +516,93 @@ fn physical_get_refuses_short_read_and_appended_eof_after_opened_metadata() -> T
                 ReadMutation::Truncate => observed_len == super::super::HEADER_LEN as u64,
                 ReadMutation::Append => observed_len == original_len + 1,
             })?;
+        }
+    }
+    Ok(())
+}
+
+struct BoundedReadMemory {
+    live: Arc<ReadMemory>,
+    limit: u64,
+}
+
+impl MemoryScopePort for BoundedReadMemory {
+    fn reserve(&self, bytes: u64, _: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+        let _previous = self
+            .live
+            .0
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |live| {
+                live.checked_add(bytes).filter(|total| *total <= self.limit)
+            })
+            .map_err(|_live| IndexError::ResourceLimited)?;
+        Ok(MemoryLease::new(bytes, self.live.clone()))
+    }
+}
+
+#[test]
+fn physical_get_fits_one_payload_and_refunds_at_last_drop() -> TestResult {
+    const PAYLOAD_BYTES: usize = 128 * 1024;
+    const ONE_PAYLOAD_LIMIT: u64 = 192 * 1024;
+    let payload = vec![0xa5; PAYLOAD_BYTES];
+    for read_only in [false, true] {
+        let root = private_root()?;
+        let store = FileObjectStore::open(root.path())?;
+        let mut build = budget(100)?;
+        let child = store.put(b"child", &[], &mut build)?.reference;
+        let expected = store.put(&payload, &[child], &mut build)?;
+        let live = Arc::new(ReadMemory::default());
+        let mut work = budget(100)?;
+        work.bind_memory_scope(Some(MemoryScope::new(Arc::new(BoundedReadMemory {
+            live: Arc::clone(&live),
+            limit: ONE_PAYLOAD_LIMIT,
+        }))));
+        let stored = if read_only {
+            drop(store);
+            reader(root.path(), Arc::new(Reads::default()))?.get(expected.reference, &mut work)?
+        } else {
+            store.get(expected.reference, &mut work)?
+        };
+        require(stored.payload == payload && stored.registration == expected)?;
+        let retained = StoredObject::allocation_bytes(PAYLOAD_BYTES, 1)?;
+        let last = stored.clone();
+        drop(stored);
+        require(live.0.load(Ordering::SeqCst) == retained)?;
+        drop(last);
+        require(live.0.load(Ordering::SeqCst) == 0)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn physical_get_reports_digest_corruption_even_without_decode_budget() -> TestResult {
+    for read_only in [false, true] {
+        let root = private_root()?;
+        let store = FileObjectStore::open(root.path())?;
+        let mut build = budget(100)?;
+        let header_case = store.put(b"wrong header", &[], &mut build)?;
+        let payload_case = store.put(b"wrong payload", &[], &mut build)?;
+        for (expected, offset) in [
+            (header_case, 0),
+            (payload_case, u64::try_from(super::super::HEADER_LEN)?),
+        ] {
+            let path = super::super::read_io::object_path(
+                &root.path().join("objects"),
+                expected.reference,
+            );
+            fs::OpenOptions::new()
+                .write(true)
+                .open(path)?
+                .write_all_at(b"!", offset)?;
+            let mut work = budget_with_bytes(1, expected.bytes)?;
+            let result = if read_only {
+                reader(root.path(), Arc::new(Reads::default()))?.get(expected.reference, &mut work)
+            } else {
+                store.get(expected.reference, &mut work)
+            };
+            require(matches!(
+                result,
+                Err(IndexError::CorruptObject(message)) if message == "object digest or size mismatch"
+            ))?;
         }
     }
     Ok(())

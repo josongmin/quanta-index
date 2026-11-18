@@ -1921,8 +1921,13 @@ impl ImmutableObjectPort for FileObjectStore {
         reference: ObjectRef,
         budget: &mut WorkBudget,
     ) -> Result<StoredObject, IndexError> {
-        let wire = self.read_wire(reference, budget)?;
-        wire.decode(budget)
+        read_io::read_stored(
+            &self.objects,
+            self.authority.as_ref().map(|_authority| &self.namespace),
+            self.read_io.as_deref(),
+            reference,
+            budget,
+        )
     }
 
     fn read_retained(
@@ -1961,7 +1966,19 @@ pub(crate) fn decode_stored_wire(
     budget: &mut WorkBudget,
 ) -> Result<StoredObject, IndexError> {
     authenticate_scratch_wire(reference, wire)?;
-    decode_authenticated_stored_wire(reference, wire, budget)
+    let parts = parse_authenticated_wire(wire)?;
+    charge_decoded_wire(parts.payload.len(), parts.children.len(), budget)?;
+    let memory = budget.reserve_memory(
+        StoredObject::payload_allocation_bytes(parts.payload.len())?,
+        quanta_index_core::index::MemoryLifetime::Retained,
+    )?;
+    let registration = decode_wire_registration(reference, wire.len(), parts.children, budget)?;
+    let mut payload = Vec::new();
+    payload
+        .try_reserve_exact(parts.payload.len())
+        .map_err(|_allocation_error| IndexError::ResourceLimited)?;
+    payload.extend_from_slice(parts.payload);
+    Ok(StoredObject::new(registration, payload, memory))
 }
 
 pub(crate) fn decode_staged_registration(
@@ -1971,7 +1988,7 @@ pub(crate) fn decode_staged_registration(
 ) -> Result<RegisteredObject, IndexError> {
     authenticate_scratch_wire(reference, wire)?;
     let parts = parse_authenticated_wire(wire)?;
-    charge_decoded_wire(&parts, budget)?;
+    charge_decoded_wire(parts.payload.len(), parts.children.len(), budget)?;
     decode_wire_registration(reference, wire.len(), parts.children, budget)
 }
 
@@ -1994,69 +2011,53 @@ struct AuthenticatedWireParts<'a> {
     payload: &'a [u8],
 }
 
-/// Decode a wire whose length and reference hash were authenticated by its
-/// caller. The only callers are the completed file read and scratch verifier.
-fn decode_authenticated_stored_wire(
-    reference: ObjectRef,
-    wire: &[u8],
-    budget: &mut WorkBudget,
-) -> Result<StoredObject, IndexError> {
-    let parts = parse_authenticated_wire(wire)?;
-    charge_decoded_wire(&parts, budget)?;
-    let memory = budget.reserve_memory(
-        StoredObject::payload_allocation_bytes(parts.payload.len())?,
-        quanta_index_core::index::MemoryLifetime::Retained,
-    )?;
-    let registration = decode_wire_registration(reference, wire.len(), parts.children, budget)?;
-    let mut payload = Vec::new();
-    payload
-        .try_reserve_exact(parts.payload.len())
-        .map_err(|_allocation_error| IndexError::ResourceLimited)?;
-    payload.extend_from_slice(parts.payload);
-    Ok(StoredObject::new(registration, payload, memory))
+fn parse_authenticated_wire(wire: &[u8]) -> Result<AuthenticatedWireParts<'_>, IndexError> {
+    let (_payload_len, child_bytes) = parse_wire_header(wire, wire.len())?;
+    let body = wire
+        .get(HEADER_LEN..)
+        .ok_or_else(|| IndexError::CorruptObject("truncated object header".into()))?;
+    let (children, payload) = body
+        .split_at_checked(child_bytes)
+        .ok_or_else(|| IndexError::CorruptObject("truncated child references".into()))?;
+    Ok(AuthenticatedWireParts { children, payload })
 }
 
-fn parse_authenticated_wire(wire: &[u8]) -> Result<AuthenticatedWireParts<'_>, IndexError> {
-    if wire.get(..8) != Some(MAGIC.as_slice()) {
+fn parse_wire_header(header: &[u8], wire_len: usize) -> Result<(usize, usize), IndexError> {
+    if header.get(..8) != Some(MAGIC.as_slice()) {
         return Err(IndexError::CorruptObject("object magic mismatch".into()));
     }
-    let payload_len = usize::try_from(read_u32(wire, 8)?)
+    let payload_len = usize::try_from(read_u32(header, 8)?)
         .map_err(|_conversion_error| IndexError::ResourceLimited)?;
-    let children_len = usize::try_from(read_u32(wire, 12)?)
+    let children_len = usize::try_from(read_u32(header, 12)?)
         .map_err(|_conversion_error| IndexError::ResourceLimited)?;
     if payload_len > MAX_PAYLOAD || children_len > MAX_CHILDREN {
         return Err(IndexError::CorruptObject(
             "encoded lengths exceed physical limits".into(),
         ));
     }
-    let payload_at = HEADER_LEN
-        .checked_add(
-            children_len
-                .checked_mul(32)
-                .ok_or(IndexError::ResourceLimited)?,
-        )
+    let child_bytes = children_len
+        .checked_mul(32)
         .ok_or(IndexError::ResourceLimited)?;
-    if payload_at.checked_add(payload_len) != Some(wire.len()) {
+    if HEADER_LEN
+        .checked_add(child_bytes)
+        .and_then(|bytes| bytes.checked_add(payload_len))
+        != Some(wire_len)
+    {
         return Err(IndexError::CorruptObject(
             "encoded lengths do not match object size".into(),
         ));
     }
-    let children = wire
-        .get(HEADER_LEN..payload_at)
-        .ok_or_else(|| IndexError::CorruptObject("truncated child references".into()))?;
-    let payload = wire
-        .get(payload_at..)
-        .ok_or_else(|| IndexError::CorruptObject("truncated payload".into()))?;
-    Ok(AuthenticatedWireParts { children, payload })
+    Ok((payload_len, child_bytes))
 }
 
 fn charge_decoded_wire(
-    parts: &AuthenticatedWireParts<'_>,
+    payload_len: usize,
+    child_bytes: usize,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    let decoded_bytes = (parts.children.len() / 32)
+    let decoded_bytes = (child_bytes / 32)
         .checked_mul(std::mem::size_of::<ObjectRef>())
-        .and_then(|children_bytes| children_bytes.checked_add(parts.payload.len()))
+        .and_then(|children_bytes| children_bytes.checked_add(payload_len))
         .ok_or(IndexError::ResourceLimited)?;
     let decoded_bytes =
         u64::try_from(decoded_bytes).map_err(|_conversion_error| IndexError::ResourceLimited)?;
@@ -2100,10 +2101,21 @@ fn read_u32(wire: &[u8], at: usize) -> Result<u32, IndexError> {
 }
 
 fn digest_wire(wire: &[u8]) -> ObjectRef {
+    digest_wire_parts(&[wire])
+}
+
+fn digest_wire_parts(parts: &[&[u8]]) -> ObjectRef {
+    let mut hasher = wire_hasher();
+    for &part in parts {
+        hasher.update(part);
+    }
+    ObjectRef(Digest(hasher.finalize().into()))
+}
+
+fn wire_hasher() -> Sha256 {
     let mut hasher = Sha256::new();
     hasher.update(HASH_DOMAIN);
-    hasher.update(wire);
-    ObjectRef(Digest(hasher.finalize().into()))
+    hasher
 }
 
 pub(crate) fn storage_error(error: &std::io::Error) -> IndexError {

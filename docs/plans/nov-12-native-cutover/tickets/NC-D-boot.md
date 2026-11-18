@@ -235,6 +235,10 @@ seal과 보호 head 조회는 동일한 물리 marker 검증을 호출한다. So
 
 두 번째 16MiB snapshot 페이지를 읽고 복사할 때 첫 페이지 payload·둘째 wire·둘째 payload가 겹치는 I/O 피크는 별도다. 이번 변경으로 그 시점의 새 route 원본은 제거됐다. 새 route의 decoded head와 남은 모든 객체·SQL 메모리를 포함한 64MiB 동시 한계의 실제 seal·설치 수용은 **NOT_RUN**이다.
 
+**Session hardening · 물리 객체 읽기 · 2026-11-18.** BOOT의 기존 전용 reader와 seal의 store getter는 같은 Storage reader에서 payload를 예약된 반환 버퍼로 직접 읽는다. 임시 버퍼는 최대 128KiB인 children wire로 제한된다. 동일한 inode·namespace·파일 길이·SHA·EOF 검증을 거친 뒤 registration과 payload를 반환한다. 손상 헤더는 4KiB 버퍼로 인증해 물리 손상 원인을 보존한다. 바이트 일치 비교·동기화는 기존 raw wire 읽기를 사용한다.
+
+기존 Storage 테스트에 128KiB payload를 192KiB 한도에서 두 실제 getter로 읽는 회귀를 추가했다. 반환 bytes·registration과 마지막 clone 해제 시 환급을 확인한다. 별도 회귀는 decode 작업량이 남지 않은 상태에서도 손상된 헤더·payload를 SHA 오류로 반환하는지 검사한다. 둘째 16MiB 페이지의 전체 임시 wire가 제거됐다. 전체 64MiB 운영 예산에는 snapshot decode·route·SQL·FD 예약이 포함된다. 이 변경의 컴파일·회귀 실행·64MiB 및 서명 설치 수용은 **NOT_RUN**이다.
+
 원 R16/Source23/Current 코호트를 합산하지 않으며 **`source_ready=false`**를 유지한다. 코드·정적 proof, 컴파일·owning body, signed Product 수용을 각각 판정한다.
 
 | 기존 오너에서 인수할 입력 | 인수 기준 |
