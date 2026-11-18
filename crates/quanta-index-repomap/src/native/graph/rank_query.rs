@@ -36,12 +36,12 @@ const NODE_KEY_PREFIX: &[u8] = b"node\0";
 /// The result owns copied hits and their grants through wire conversion.
 /// All data fields precede their retained allocation custody.
 pub struct NativeRepoMapRankPage {
-    hits: Vec<NativeRepoMapHit>,
+    pub(crate) hits: Vec<NativeRepoMapHit>,
     pub dropped_entries_count: u32,
-    drop_reason_codes: Vec<String>,
-    degraded_reason_codes: Vec<String>,
-    _selection_memory: Option<MemoryLease>,
-    _hits_memory: Option<MemoryLease>,
+    pub(crate) drop_reason_codes: Vec<String>,
+    pub(crate) degraded_reason_codes: Vec<String>,
+    pub(crate) _selection_memory: Option<MemoryLease>,
+    pub(crate) _hits_memory: Option<MemoryLease>,
 }
 
 impl NativeRepoMapRankPage {
