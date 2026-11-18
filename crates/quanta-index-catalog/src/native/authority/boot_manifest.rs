@@ -465,10 +465,15 @@ pub(super) fn validate_protected_routes(
             .map_err(|_| IndexError::DigestConflict)?,
     )
     .map_err(|_| IndexError::ResourceLimited)?;
+    let children_backing = u64::try_from(
+        routes
+            .children_backing_bytes()
+            .map_err(|_| IndexError::DigestConflict)?,
+    )
+    .map_err(|_| IndexError::ResourceLimited)?;
     let _route_memory = budget.reserve_memory(
-        payload_bytes
-            .checked_mul(2)
-            .and_then(|bytes| bytes.checked_add(4_259_840))
+        children_backing
+            .checked_add(REGISTRATION_SCRATCH_BYTES)
             .ok_or(IndexError::ResourceLimited)?,
         MemoryLifetime::Temporary,
     )?;

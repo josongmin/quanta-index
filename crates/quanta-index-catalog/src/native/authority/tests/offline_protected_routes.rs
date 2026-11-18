@@ -419,6 +419,85 @@ fn assert_canonical_route_readback(
 }
 
 #[test]
+fn large_protected_route_decodes_inside_the_control_memory_envelope() -> TestResult {
+    use quanta_index_core::index::{
+        MemoryLifetime, StoredObject, with_native_protected_source_routes_v1,
+    };
+
+    const HEADS: u16 = 1536;
+    let member_binding = ObjectRef(digest_id(53));
+    let profile = ObjectRef(digest_id(54));
+    let revision = quanta_index_contract::RevisionId::new("r".repeat(512))?;
+    let mut heads = Vec::new();
+    for index in 0..HEADS {
+        let workspace = WorkspaceKey {
+            slot: SlotId((u128::from(index) + 1).to_be_bytes()),
+            ..workspace()
+        };
+        let mut operation = operation(1, 55);
+        operation.key.workspace = workspace;
+        let mut publication = view(1, profile, Some(member_binding));
+        publication.identity.workspace = workspace;
+        publication.identity.digest = publication.identity_digest()?;
+        heads.push(NativeProtectedRepoMapHeadV1 {
+            repo_id: quanta_index_contract::RepoId::new(format!("{index:04}-{}", "r".repeat(507)))?,
+            revision_id: revision.clone(),
+            active: quanta_index_contract::RepoMapExpectedActiveV2::new(
+                std::num::NonZeroU64::MIN,
+                quanta_index_contract::CandidateCommitmentV1::from_bytes([56; 32]),
+            ),
+            source_operation: Some(operation),
+            source_publication: publication.clone(),
+            operation,
+            publication,
+            instance: IndexInstanceId(id(40)),
+            member_binding,
+        });
+    }
+    let routes = NativeProtectedSourceRoutesV1 {
+        native_origin: None,
+        wire_version: NativeProtectedSourceRoutesV1::WIRE_VERSION,
+        heads: Vec::new(),
+        repomap_heads: heads,
+    };
+    let payload = serde_json::to_vec(&routes)?;
+    check!(payload.len() * 32 + 65_536 > 64 * 1024 * 1024);
+    let reference = routes.object_ref()?;
+    let children = routes.children()?;
+    let wire_bytes = u64::try_from(payload.len() + 16 + children.len() * 32)?;
+    let memory = ProtectedTestMemoryV1::default();
+    let mut budget = admission_budget();
+    budget.bind_memory_scope(Some(quanta_index_core::index::MemoryScope::new(
+        std::sync::Arc::new(memory.clone()),
+    )));
+    let storage_bytes = StoredObject::allocation_bytes(payload.len(), children.len())?;
+    let storage = budget.reserve_memory(storage_bytes, MemoryLifetime::Retained)?;
+    let stored = StoredObject::new(
+        RegisteredObject::unscoped(reference, wire_bytes, children),
+        payload,
+        storage,
+    );
+    with_native_protected_source_routes_v1(
+        reference,
+        Some(0),
+        &stored,
+        &mut budget,
+        |actual, _| {
+            assert_eq!(actual, &routes);
+            assert!(memory.live.load(std::sync::atomic::Ordering::Acquire) > storage_bytes);
+            Ok(())
+        },
+    )?;
+    check_eq!(
+        memory.live.load(std::sync::atomic::Ordering::Acquire),
+        storage_bytes
+    );
+    drop(stored);
+    check_eq!(memory.live.load(std::sync::atomic::Ordering::Acquire), 0);
+    Ok(())
+}
+
+#[test]
 fn selected_primary_can_be_outside_complete_preserved_legacy_heads() -> TestResult {
     let root = tempfile::tempdir()?;
     let (catalog, primary_operation, _primary, old_operation, old_view) =

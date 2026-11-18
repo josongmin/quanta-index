@@ -2073,6 +2073,7 @@ pub quanta_index_contract::index::NativeProtectedSourceRoutesV1::wire_version: u
 impl quanta_index_contract::index::NativeProtectedSourceRoutesV1
 pub const quanta_index_contract::index::NativeProtectedSourceRoutesV1::WIRE_VERSION: u32
 pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::children(&self) -> core::result::Result<alloc::vec::Vec<quanta_index_contract_base::index_refs::ObjectRef>, &'static str>
+pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::children_backing_bytes(&self) -> core::result::Result<usize, &'static str>
 pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::encoded_payload_len(&self) -> core::result::Result<usize, &'static str>
 pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::object_ref(&self) -> core::result::Result<quanta_index_contract_base::index_refs::ObjectRef, &'static str>
 pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::validate(&self) -> core::result::Result<(), &'static str>

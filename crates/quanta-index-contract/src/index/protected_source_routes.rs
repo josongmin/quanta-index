@@ -235,8 +235,28 @@ impl NativeProtectedSourceRoutesV1 {
         self.validated_children()
     }
 
+    /// Storage required for the canonical child list before duplicate removal.
+    /// The caller budgets marker serialization scratch separately.
+    pub fn children_backing_bytes(&self) -> Result<usize, &'static str> {
+        self.child_slots()?
+            .checked_mul(std::mem::size_of::<ObjectRef>())
+            .ok_or("protected Source route child backing overflows")
+    }
+
+    fn child_slots(&self) -> Result<usize, &'static str> {
+        if self.heads.len() > MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1
+            || self.repomap_heads.len() > MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1
+        {
+            return Err("protected Source route version or count is invalid");
+        }
+        Ok(2 + self.heads.len() * 11 + self.repomap_heads.len() * 12)
+    }
+
     fn validated_children(&self) -> Result<Vec<ObjectRef>, &'static str> {
         let mut children = Vec::new();
+        children
+            .try_reserve_exact(self.child_slots()?)
+            .map_err(|_| "protected Source route child allocation refused")?;
         if let Some(origin) = &self.native_origin {
             children.extend([origin.source_routes, origin.snapshot]);
         }
