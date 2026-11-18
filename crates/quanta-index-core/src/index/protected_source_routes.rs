@@ -14,9 +14,6 @@ use serde::{
 };
 
 use super::mutations::matches_json;
-#[path = "protected_snapshot_decode.rs"]
-mod snapshot_decode;
-
 use super::{
     IndexError, MAX_NATIVE_PROTECTED_SOURCE_ROUTE_BYTES_V1, MemoryLifetime,
     NativeProtectedSourceRoutesV1, ObjectRef, StoredObject, WorkBudget, WorkUsage,
