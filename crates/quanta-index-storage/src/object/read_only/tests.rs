@@ -587,15 +587,10 @@ fn physical_get_fits_one_payload_and_refunds_at_last_drop() -> TestResult {
 #[test]
 fn physical_get_reports_digest_corruption_even_without_decode_budget() -> TestResult {
     for read_only in [false, true] {
-        let root = private_root()?;
-        let store = FileObjectStore::open(root.path())?;
-        let mut build = budget(100)?;
-        let header_case = store.put(b"wrong header", &[], &mut build)?;
-        let payload_case = store.put(b"wrong payload", &[], &mut build)?;
-        for (expected, offset) in [
-            (header_case, 0),
-            (payload_case, u64::try_from(super::super::HEADER_LEN)?),
-        ] {
+        for offset in [0, u64::try_from(super::super::HEADER_LEN)?] {
+            let root = private_root()?;
+            let store = FileObjectStore::open(root.path())?;
+            let expected = store.put(b"immutable wire corruption", &[], &mut budget(100)?)?;
             let path = super::super::read_io::object_path(
                 &root.path().join("objects"),
                 expected.reference,
@@ -606,6 +601,7 @@ fn physical_get_reports_digest_corruption_even_without_decode_budget() -> TestRe
                 .write_all_at(b"!", offset)?;
             let mut work = budget_with_bytes(1, expected.bytes)?;
             let result = if read_only {
+                drop(store);
                 reader(root.path(), Arc::new(Reads::default()))?.get(expected.reference, &mut work)
             } else {
                 store.get(expected.reference, &mut work)
