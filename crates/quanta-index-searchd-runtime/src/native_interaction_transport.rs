@@ -78,17 +78,20 @@ pub(super) fn dispatch(
         | NativeIndexRequest::BindOverlaySave(_)
         | NativeIndexRequest::CompleteOverlaySave(_)
         | NativeIndexRequest::QueryGraph { .. }
+        | NativeIndexRequest::QueryImportedRepoMap { .. }
         | NativeIndexRequest::QueryRepoMap { .. }
         | NativeIndexRequest::LookupSourceOwners { .. }
         | NativeIndexRequest::ListProducerSourceOwners { .. }
         | NativeIndexRequest::DiffProjectionSourceOwners { .. }
         | NativeIndexRequest::CreateWorkspace { .. }
+        | NativeIndexRequest::SealCandidateWithSourceRoutes { .. }
         | NativeIndexRequest::BeginInput(_)
         | NativeIndexRequest::StageSource { .. }
         | NativeIndexRequest::StageSources { .. }
         | NativeIndexRequest::StageRepositorySources { .. }
         | NativeIndexRequest::StageProfile { .. }
         | NativeIndexRequest::StageProjectionOutput { .. }
+            | NativeIndexRequest::StageImmutableObject { .. }
         | NativeIndexRequest::StageProjectionOwner { .. }
         | NativeIndexRequest::StageProjectionCertificate { .. }
         | NativeIndexRequest::StageMutationPage { .. }
@@ -106,6 +109,9 @@ pub(super) fn dispatch(
         | NativeIndexRequest::Resume(_)
         | NativeIndexRequest::ReadView(_)
         | NativeIndexRequest::ObserveRootView(_)
+        | NativeIndexRequest::ResolveProtectedSourceHead { .. }
+            | NativeIndexRequest::ResolveProtectedRepoMapHead { .. }
+            | NativeIndexRequest::ReadImportedRepoMapMember { .. }
         | NativeIndexRequest::PublishedViewMetadata(_)
         | NativeIndexRequest::ReadProjection { .. }
         | NativeIndexRequest::LookupProjectionOwners { .. }
