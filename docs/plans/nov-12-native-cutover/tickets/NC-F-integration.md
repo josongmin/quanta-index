@@ -16,7 +16,7 @@ F owns the existing benchmark/shared integration and final acceptance scope. Com
 
 **실행 중 SDK 인수 · 2026-11-17.** 상위 resumer·Caller가 종료된 뒤 원 SDK 실행기 PID64513과 Docker PID79385는 계속 컴파일 중이었다. 정확한 명령과 동결 spec·native2 요청을 확인하고 `resume-sdk-r13-java-closeout.py --structural-stack-successor --adopt-stage-pid 64513`으로 인수했다. 새 resumer PID90905는 같은 Source lease와 R16 owner lock에서 원 실행을 관찰한다. Caller PID92235는 수정된 완료·재개 경로로 Native2 원 결과를 기다린다. SDK 인수·재시도·인계 제어 25건이 통과했다.
 
-**CP2 owning 외장 입력 · 2026-11-17.** 기존 cause3 재개 PID97003은 원 외장 Source의 post-execution custody 검증에서 `/Volumes/Extreme SSD 1` ENOENT로 종료됐다. canonical suite 결과와 완료 영수증은 발행되지 않았다. 디스크 도구의 external 목록도 비어 있다. 이 실행을 통과·컴파일 실패로 집계하지 않으며, 같은 외장 입력을 다시 검증할 수 있어야 owning 후속을 재접수한다. 내부 Source의 signed CP2 mixed와 mutant 원 결과는 별도 수용 범위로 남는다.
+**CP2 owning 외장 입력 · 2026-11-17.** 기존 cause3 재개 PID97003은 원 외장 Source의 post-execution custody 검증에서 `/Volumes/Extreme SSD 1` ENOENT로 종료됐다. canonical suite 결과와 완료 영수증은 발행되지 않았다. 당시 외장 장치도 감지되지 않았다. 이 실행은 본문 수용에 포함하지 않는다. 현행 외장 입력 및 Host owning 판정은 [NC-D CP2 고정 입력](NC-D-boot.md#cp2-host-original-custody-20261118)을 따른다. 내부 Source의 signed CP2 mixed와 mutant 원 결과는 별도 수용 범위로 남는다.
 
 | 범위 | 현재 판정 | 정확한 실행/후속 조건 |
 | --- | --- | --- |
