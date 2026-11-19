@@ -466,7 +466,7 @@ impl PathScratch {
         repository: Option<&[u8]>,
         owner: OwnerKey,
         leaving: bool,
-        budget: &WorkBudget,
+        budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
         let Some(repository) = repository else {
             return Self::mark_reserved(db, path, owner, leaving, budget);
@@ -486,7 +486,7 @@ impl PathScratch {
         &self,
         path: &str,
         after: Option<&[u8]>,
-        budget: &WorkBudget,
+        budget: &mut WorkBudget,
     ) -> Result<Option<RepositoryClaim>, IndexError> {
         if !self.repository_claims.get() {
             return Ok(None);
