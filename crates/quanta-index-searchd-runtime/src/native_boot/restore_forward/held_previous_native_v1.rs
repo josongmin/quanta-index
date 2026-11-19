@@ -272,6 +272,7 @@ impl HeldPreviousNativeV1 {
         mut visit: impl FnMut(
             &quanta_index_contract::index::NativeHistoryRestoreInputV1,
             &FileObjectReader,
+            ObjectRef,
             &mut WorkBudget,
         ) -> Result<()>,
     ) -> Result<u64> {
@@ -347,7 +348,7 @@ impl HeldPreviousNativeV1 {
                 |reference, budget| reader.get(reference, budget),
                 |root, after, limit, budget| reader.scan_map(root, after, limit, budget),
                 budget,
-                |cut, rows, _source_input, budget| {
+                |cut, rows, source_input, budget| {
                     if member.input.context
                         != cut
                             .input_context_v1()
@@ -381,7 +382,7 @@ impl HeldPreviousNativeV1 {
                         member: member.artifact,
                         cut: cut.clone(),
                     };
-                    visit(&input, &reader, budget).map_err(|cause| {
+                    visit(&input, &reader, source_input, budget).map_err(|cause| {
                         cause
                             .downcast::<IndexError>()
                             .unwrap_or_else(|cause| IndexError::Storage(cause.to_string()))

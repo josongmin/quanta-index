@@ -7,9 +7,12 @@ mod catalog_digest;
 mod receipt;
 #[path = "native_boot/restore_forward.rs"]
 mod restore_forward;
+#[path = "native_boot/settle_published_v1.rs"]
+mod settle_published_v1;
 
 pub(crate) use restore_forward::{RestoreForwardSourceRefusalV1, HeldPreviousNativeV1};
 pub(super) use restore_forward::publish_v1 as publish_restore_forward_under_locked_selection_v1;
+pub(crate) use settle_published_v1::with_verified_settlement_root_v1;
 
 use std::{fs, sync::Arc};
 
@@ -1532,11 +1535,47 @@ fn verify_legacy_publication_v1(
         &publication.receipt,
         budget,
     )?;
+    verify_legacy_active_search_corpus_v1(
+        authority,
+        expected,
+        publication.receipt.generation,
+        budget,
+    )?;
+    let after = quanta_index_search_plane::readiness::inspect_existing_activation_repository_v1(
+        &activation_root,
+        &lexical.repo_id,
+        &lexical.revision_id,
+        authority.objects(),
+        authority.metadata(),
+        budget,
+    )?;
+    if after.head_v1() != Some(expected) {
+        return Err(IndexError::DigestConflict.into());
+    }
+    drop((before, after, receipt));
+    authority.require_current_and_retired(budget)?;
+    budget.checkpoint()?;
+    Ok(VerifiedLegacyPublicationV1 {
+        repomap,
+        has_history_rows,
+    })
+}
+
+fn verify_legacy_active_search_corpus_v1(
+    authority: &legacy_read_factory::LegacyReadAuthorityV1,
+    active: &quanta_index_contract::SearchCorpusActiveHeadV1,
+    sealed_generation: quanta_index_contract::ManifestGeneration,
+    budget: &mut WorkBudget,
+) -> Result<()> {
+    let generation = &active.generation;
+    let lexical = &generation.lexical;
+    let semantic = &generation.semantic;
+    let root = authority.root();
     quanta_index_search_plane::readiness::inspect_existing_sealed_search_corpus_v1(
         root,
         &lexical.repo_id,
         &lexical.revision_id,
-        publication.receipt.generation,
+        sealed_generation,
         &lexical.manifest_digest,
         authority.objects(),
         budget,
@@ -1572,24 +1611,7 @@ fn verify_legacy_publication_v1(
             Ok(())
         },
     )?;
-    let after = quanta_index_search_plane::readiness::inspect_existing_activation_repository_v1(
-        &activation_root,
-        &lexical.repo_id,
-        &lexical.revision_id,
-        authority.objects(),
-        authority.metadata(),
-        budget,
-    )?;
-    if after.head_v1() != Some(expected) {
-        return Err(IndexError::DigestConflict.into());
-    }
-    drop((before, after, receipt));
-    authority.require_current_and_retired(budget)?;
-    budget.checkpoint()?;
-    Ok(VerifiedLegacyPublicationV1 {
-        repomap,
-        has_history_rows,
-    })
+    Ok(())
 }
 
 struct VerifiedLegacyRepoMapV1 {
@@ -1844,6 +1866,27 @@ fn publish_rollback_with_source_capture_v1(
             let verified =
                 verify_legacy_publication_v1(&legacy, source, &authority, config, locked, budget)?;
             legacy.retire_catalog(budget)?;
+            let publication = source
+                .legacy_publication
+                .ok_or(MissingLegacyPublicationInputV1)?;
+            let lexical = &publication.activation.active.generation.lexical;
+            locked.prepare_recovery_witness_v1(
+                None,
+                legacy.observe_current_root_inode_v1()?,
+                Some(
+                    crate::deployment_selection::LegacyPublishedRecoveryWitnessV1 {
+                        repo_id: &lexical.repo_id,
+                        revision_id: &lexical.revision_id,
+                        durable_sequence: publication.receipt.durable_sequence,
+                        activation:
+                            crate::deployment_selection::legacy_recovery_activation_digest_v1(
+                                &publication.activation.active,
+                                budget,
+                            )?,
+                    },
+                ),
+                budget,
+            )?;
             let published = publish_with_held_recovery_roots_v1(
                 &authority,
                 Some(&legacy),

@@ -31,6 +31,39 @@ pub(super) struct RetainedEvidenceV1 {
     _memory: MemoryLease,
 }
 
+const PUBLISHED_BEFORE_BYTES: u64 = 64 * 1024;
+
+pub(super) fn read_published_before_v1(
+    length: u64,
+    expected: Digest,
+    budget: &mut WorkBudget,
+) -> Result<(wire::NativeCutoverEvidenceBeforeSelectionV1, MemoryLease)> {
+    ensure!(
+        length > 0 && length <= PUBLISHED_BEFORE_BYTES + 512,
+        "published recovery intent exceeds its physical bound"
+    );
+    let memory = budget
+        .reserve_memory(
+            4 * (PUBLISHED_BEFORE_BYTES + 512),
+            MemoryLifetime::Temporary,
+        )?
+        .ok_or_else(|| anyhow!("published recovery intent requires admitted memory"))?;
+    charge(budget, 4, 0)?;
+    let file = try_duplicate_inherited_read_only_regular_file_v1(6)?;
+    let bytes = read_sealed_evidence_v1(&file, length, expected, budget)?;
+    wire::validate_native_cutover_evidence_cbor_v1(&bytes)?;
+    let before: wire::NativeCutoverEvidenceBeforeSelectionV1 =
+        ciborium::de::from_reader_with_recursion_limit(bytes.as_slice(), 8)?;
+    ensure!(
+        before.file_version.is_some()
+            && !before.document.0.is_empty()
+            && u64::try_from(before.document.0.len())? <= PUBLISHED_BEFORE_BYTES,
+        "published recovery intent has no exact before selection"
+    );
+    budget.checkpoint()?;
+    Ok((before, memory))
+}
+
 impl InheritedCustodyV1 {
     pub(super) fn import_v1(budget: &mut WorkBudget, history: Option<File>) -> Result<Self> {
         charge(budget, 10, 0)?;
@@ -55,19 +88,7 @@ impl InheritedCustodyV1 {
         let memory = budget
             .reserve_memory(EVIDENCE_MEMORY, MemoryLifetime::Temporary)?
             .ok_or_else(|| anyhow!("cutover evidence requires original admitted memory"))?;
-        charge(budget, 1, 0)?;
-        let metadata = self.evidence.metadata()?;
-        ensure!(
-            metadata.is_file() && metadata.len() == length,
-            "cutover evidence descriptor length/type differs from Begin"
-        );
-        require_immutable_evidence_v1(&self.evidence)?;
-        let mut bytes = vec![0; usize::try_from(length)?];
-        read_exact_at_v1(&self.evidence, &mut bytes, budget)?;
-        ensure!(
-            Digest(Sha256::digest(&bytes).into()) == expected,
-            "cutover evidence digest differs from Begin"
-        );
+        let bytes = read_sealed_evidence_v1(&self.evidence, length, expected, budget)?;
         let facts = wire::decode_native_cutover_evidence_v1(&bytes)?;
         drop(bytes);
         budget.checkpoint()?;
@@ -113,6 +134,28 @@ impl InheritedCustodyV1 {
         })?;
         require_original_history_writer_fence_v1(history, writer_root, budget)
     }
+}
+
+fn read_sealed_evidence_v1(
+    file: &File,
+    length: u64,
+    expected: Digest,
+    budget: &mut WorkBudget,
+) -> Result<Vec<u8>> {
+    charge(budget, 1, 0)?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file() && metadata.len() == length,
+        "cutover evidence descriptor length/type differs from Begin"
+    );
+    require_immutable_evidence_v1(file)?;
+    let mut bytes = vec![0; usize::try_from(length)?];
+    read_exact_at_v1(file, &mut bytes, budget)?;
+    ensure!(
+        Digest(Sha256::digest(&bytes).into()) == expected,
+        "cutover evidence digest differs from Begin"
+    );
+    Ok(bytes)
 }
 
 fn require_original_history_writer_fence_v1(

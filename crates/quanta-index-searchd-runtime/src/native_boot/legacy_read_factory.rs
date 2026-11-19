@@ -171,6 +171,12 @@ impl LegacyReadAuthorityV1 {
         self.physical.validate_current_state_root()?;
         Ok(())
     }
+    pub(super) fn observe_current_root_inode_v1(
+        &self,
+    ) -> Result<quanta_index_core::publication_capacity::InodeKey> {
+        self.require_current_root_v1()?;
+        Ok(self.lease.observe_current_root_inode_v1()?)
+    }
     pub(super) fn catalog(&self) -> &dyn quanta_index_catalog::CatalogReadOnlyIoAdmission {
         &self.catalog
     }

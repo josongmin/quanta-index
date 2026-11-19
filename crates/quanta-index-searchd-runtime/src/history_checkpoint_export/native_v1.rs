@@ -36,8 +36,10 @@ pub(super) fn export_v1(
             NativeHistoryExportScopeV1::Checkpoint(generation) => &generation.repo_id,
         };
         let mut exported = 0_u64;
-        let witnessed_history_count =
-            source.visit_history_members_v1(Some(repo), budget, |input, reader, budget| {
+        let witnessed_history_count = source.visit_history_members_v1(
+            Some(repo),
+            budget,
+            |input, reader, _source_input, budget| {
                 if let NativeHistoryExportScopeV1::Checkpoint(generation) = scope {
                     if &input.cut.generation != generation {
                         return Ok(());

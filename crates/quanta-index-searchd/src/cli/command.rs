@@ -762,6 +762,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("lost recovery command"))?;
         ensure!(recovery.selection_path == PathBuf::from("/tmp/selection.json"));
         ensure!(recovery.config_path == PathBuf::from("/tmp/native.json"));
+        ensure!(!recovery.settle_published_only);
         ensure!(parsed.native_command().is_none() && parsed.offline_operation().is_none());
         ensure!(parsed.into_config().is_err());
         for index in (1..args.len()).step_by(2) {
@@ -788,6 +789,59 @@ mod tests {
             ensure!(SearchdCommand::from_args(mixed).is_err());
         }
         ensure!(SearchdCommand::from_args(args.into_iter().skip(1)).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn recover_native_settlement_flag_requires_one_recovery_command() -> Result<()> {
+        let digest = "11".repeat(32);
+        let mut args: Vec<String> = [
+            "recover-native",
+            "--selection-path",
+            "/tmp/selection.json",
+            "--expected-current-sha256",
+            &digest,
+            "--candidate-path",
+            "/tmp/candidate.json",
+            "--expected-candidate-sha256",
+            &digest,
+            "--mode",
+            "restore-forward",
+            "--config",
+            "/tmp/native.json",
+            "--config-digest",
+            &digest,
+            "--parent-executable",
+            "/tmp/producer",
+            "--parent-executable-sha256",
+            &digest,
+            "--settle-published-only",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        let parsed = SearchdCommand::from_args(args.clone())?;
+        ensure!(
+            parsed
+                .recovery_command()
+                .is_some_and(|command| command.settle_published_only)
+        );
+
+        args.push("--settle-published-only".into());
+        ensure!(SearchdCommand::from_args(args.clone()).is_err());
+        args.pop();
+        args.push("true".into());
+        ensure!(SearchdCommand::from_args(args).is_err());
+        ensure!(
+            SearchdCommand::from_args(["serve", "--settle-published-only"].map(str::to_owned))
+                .is_err()
+        );
+        ensure!(
+            SearchdCommand::from_args(
+                ["export-native-source-snapshot", "--settle-published-only"].map(str::to_owned)
+            )
+            .is_err()
+        );
         Ok(())
     }
 

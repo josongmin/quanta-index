@@ -351,6 +351,15 @@ fn held_previous_native_reads_selected_boot_and_refuses_stale_identity_v1() -> T
                 && held.observed_v1().current_head == old_live.view,
             "previous Native nonce or actual Catalog head differs from live Q",
         )?;
+        let mut unexpected_history = false;
+        let count = held.visit_history_members_v1(None, budget, |_, _, _, _| {
+            unexpected_history = true;
+            Ok(())
+        })?;
+        require(
+            count == 0 && !unexpected_history,
+            "Source-only previous Native root exposed a History member",
+        )?;
         held.require_current_and_retired_v1(budget)?;
         let config_bytes = fs::read(&old.config_path)?;
         fs::write(&old.config_path, [config_bytes.as_slice(), b" "].concat())?;

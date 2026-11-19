@@ -17,6 +17,8 @@ pub struct NativeRecoveryCommandV1 {
     pub candidate_path: PathBuf,
     pub expected_candidate_sha256: Digest,
     pub mode: NativeCutoverRecoveryModeV1,
+    /// Only reconcile an already published selection under the installed recovery verifier.
+    pub settle_published_only: bool,
     pub config_path: PathBuf,
     pub config_digest: Digest,
     pub parent_executable: PathBuf,
@@ -92,6 +94,7 @@ pub(super) struct NativeRecoveryInput {
     candidate_path: Option<String>,
     expected_candidate_sha256: Option<String>,
     mode: Option<String>,
+    settle_published_only: bool,
     parent_executable: Option<String>,
     parent_executable_sha256: Option<String>,
 }
@@ -105,6 +108,7 @@ impl NativeRecoveryInput {
         if self.candidate_path.is_some()
             || self.expected_candidate_sha256.is_some()
             || self.mode.is_some()
+            || self.settle_published_only
             || self.parent_executable.is_some()
             || self.parent_executable_sha256.is_some()
         {
@@ -143,6 +147,7 @@ impl NativeRecoveryInput {
         if self.candidate_path.is_some()
             || self.expected_candidate_sha256.is_some()
             || self.mode.is_some()
+            || self.settle_published_only
             || self.parent_executable.is_some()
             || self.parent_executable_sha256.is_some()
         {
@@ -203,6 +208,7 @@ impl NativeRecoveryInput {
             || self.candidate_path.is_some()
             || self.expected_candidate_sha256.is_some()
             || self.mode.is_some()
+            || self.settle_published_only
             || self.parent_executable.is_some()
             || self.parent_executable_sha256.is_some()
     }
@@ -212,6 +218,12 @@ impl NativeRecoveryInput {
         flag: &str,
         args: &mut impl Iterator<Item = String>,
     ) -> Result<bool> {
+        if flag == "--settle-published-only" {
+            if std::mem::replace(&mut self.settle_published_only, true) {
+                bail!("{flag} may be specified only once");
+            }
+            return Ok(true);
+        }
         let target = match flag {
             "--selection-path" => &mut self.selection_path,
             "--expected-current-sha256" => &mut self.expected_current_sha256,
@@ -259,6 +271,7 @@ impl NativeRecoveryInput {
                 "--expected-candidate-sha256",
             )?,
             mode,
+            settle_published_only: self.settle_published_only,
             config_path: config_path
                 .ok_or_else(|| anyhow::anyhow!("recover-native requires --config"))?,
             config_digest: parse_digest(

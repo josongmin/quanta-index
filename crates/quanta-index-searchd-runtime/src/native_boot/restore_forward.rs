@@ -303,7 +303,7 @@ fn publish_previous_native_v1(
     let mut native_history = Vec::<FundedNativeRestoreInputV1>::new();
     let mut admitted_slots = 0usize;
     let witnessed_history_count = held
-        .visit_history_members_v1(None, budget, |input, _reader, budget| {
+        .visit_history_members_v1(None, budget, |input, _reader, _source_input, budget| {
             let bytes = input
                 .cut
                 .generation
@@ -477,6 +477,12 @@ fn publish_previous_native_v1(
             }
             held.require_current_and_retired_v1(budget)
         };
+        locked.prepare_recovery_witness_v1(
+            installed_history.as_ref().map(|selected| &selected.value),
+            authority.lease.observe_current_root_inode_v1()?,
+            None,
+            budget,
+        )?;
         let published = publish_with_held_recovery_roots_v1(
             &authority,
             None,
@@ -615,6 +621,12 @@ pub(in crate::native_product) fn publish_v1(
             return Err(IndexError::DigestConflict.into());
         }
         legacy.retire_catalog(budget)?;
+        locked.prepare_recovery_witness_v1(
+            installed_history.as_ref().map(|selected| &selected.value),
+            authority.lease.observe_current_root_inode_v1()?,
+            None,
+            budget,
+        )?;
         let published = publish_with_held_recovery_roots_v1(
             &authority,
             Some(&legacy),

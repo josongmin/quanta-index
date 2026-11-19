@@ -5,6 +5,7 @@
 //! issues no producer, Catalog, replay, or rollback authority.
 
 mod codec;
+mod completion_witness;
 #[cfg(test)]
 mod tests;
 
@@ -12,15 +13,20 @@ mod tests;
 use anyhow::Context as _;
 use anyhow::{Result, anyhow, ensure};
 use quanta_index_contract::{
+    RepoId, RevisionId, SearchCorpusActiveHeadV1,
     index::Digest,
     native_cutover_evidence_v1::{
-        NativeCutoverControlTerminalV1, NativeCutoverEvidenceBeforeSelectionV1,
+        NativeCutoverControlBeginV1, NativeCutoverControlTerminalV1,
+        NativeCutoverEvidenceBeforeSelectionV1, NativeCutoverInstalledHistoryV1,
+        NativeCutoverRecoveryModeV1,
     },
 };
 use quanta_index_core::index::{MemoryLease, MemoryLifetime, WorkBudget, WorkUsage};
+use quanta_index_core::publication_capacity::InodeKey;
 use rustix::fs::{AtFlags, FileType, Mode, OFlags};
 use sha2::{Digest as _, Sha256};
 use std::{
+    ffi::OsStr,
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
     os::unix::fs::MetadataExt,
@@ -121,6 +127,8 @@ pub(crate) struct LockedDeploymentSelectionV1 {
     observed: Option<DeploymentSelectionDocumentV1>,
     active_file_version: Digest,
     recovery_publication: Option<Digest>,
+    witness_binding: Option<RecoveryWitnessBindingV1>,
+    prepared_witness: Option<PreparedRecoveryWitnessV1>,
     candidate: DeploymentSelectionDocumentV1,
     path: PathBuf,
     candidate_path: PathBuf,
@@ -129,6 +137,79 @@ pub(crate) struct LockedDeploymentSelectionV1 {
     phase: PublicationPhase,
     _memory: MemoryLease,
 }
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct RecoveryWitnessBindingV1 {
+    mode: NativeCutoverRecoveryModeV1,
+    nonce: Digest,
+    config_sha256: Digest,
+    helper_sha256: Digest,
+    evidence_length: u64,
+    evidence_sha256: Digest,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct RecoveryWitnessWireV1<B, H, L> {
+    format_version: u8,
+    binding: B,
+    root_device: u64,
+    root_inode: u64,
+    history: Option<H>,
+    legacy: Option<L>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LegacyPublishedRecoveryWitnessV1<R = RepoId, V = RevisionId> {
+    pub(crate) repo_id: R,
+    pub(crate) revision_id: V,
+    pub(crate) durable_sequence: u64,
+    pub(crate) activation: Digest,
+}
+
+pub(crate) fn legacy_recovery_activation_digest_v1(
+    head: &SearchCorpusActiveHeadV1,
+    budget: &mut WorkBudget,
+) -> Result<Digest> {
+    let mut bytes = 4096_u64;
+    for track in [&head.generation.lexical, &head.generation.semantic] {
+        for identity in [track.repo_id.as_str(), track.revision_id.as_str()] {
+            bytes = bytes
+                .checked_add(u64::try_from(identity.len())?)
+                .ok_or_else(|| anyhow!("Legacy activation recovery witness exceeds its budget"))?;
+        }
+    }
+    charge(budget, 0, 0, bytes, 0)?;
+    let mut digest = Sha256::new();
+    digest.update(b"quanta.native-cutover.legacy-activation.v1\0");
+    ciborium::ser::into_writer(head, &mut digest)?;
+    Ok(Digest(digest.finalize().into()))
+}
+
+struct PreparedRecoveryWitnessV1 {
+    bytes: Vec<u8>,
+    _memory: MemoryLease,
+}
+
+type OwnedRecoveryWitnessV1 = RecoveryWitnessWireV1<
+    RecoveryWitnessBindingV1,
+    NativeCutoverInstalledHistoryV1,
+    LegacyPublishedRecoveryWitnessV1,
+>;
+
+pub(crate) struct SettledRecoveryWitnessV1 {
+    pub(crate) publication: DeploymentSelectionPublishedV1,
+    pub(crate) history: Option<NativeCutoverInstalledHistoryV1>,
+    pub(crate) memory: MemoryLease,
+}
+
+pub(crate) type SyncPublishedRecoveryV1<'a> = dyn FnMut(
+        &mut WorkBudget,
+        &mut dyn FnMut(&mut WorkBudget) -> Result<()>,
+    ) -> Result<DeploymentSelectionPublishedV1>
+    + 'a;
 
 /// Read one pinned active Legacy selection while holding the existing
 /// deployment lock. Export never creates the lock or publishes a selection.
@@ -217,6 +298,80 @@ pub(crate) fn with_locked_deployment_selection_reconciliation_v1(
     with_locked_selection_inner(request, Some(before), budget, coordinate)
 }
 
+/// Reopen an already-selected recovery under the standard deployment lock.
+/// The callback can only re-fsync the observed inode while holding verified
+/// root custody. There is no capability to create a selection or replace it.
+pub(crate) fn with_locked_published_recovery_v1(
+    request: &DeploymentSelectionRequestV1<'_>,
+    before: &DeploymentSelectionBeforeDocumentV1<'_>,
+    config_sha256: Digest,
+    budget: &mut WorkBudget,
+    verify: impl FnOnce(
+        &DeploymentSelectionDocumentV1,
+        Digest,
+        InodeKey,
+        Option<&NativeCutoverInstalledHistoryV1>,
+        Option<&LegacyPublishedRecoveryWitnessV1>,
+        &mut WorkBudget,
+        &mut SyncPublishedRecoveryV1<'_>,
+    ) -> Result<DeploymentSelectionPublishedV1>,
+) -> std::result::Result<SettledRecoveryWitnessV1, DeploymentSelectionErrorV1> {
+    let mut phase = PublicationPhase::ReconciliationPending;
+    let locked =
+        LockedDeploymentSelectionV1::acquire(request, Some(before), budget, &mut phase, true)
+            .map_err(DeploymentSelectionErrorV1::PersistenceUncertain)?;
+    let mode = match request.mode_v1 {
+        DeploymentRecoveryModeV1::RollbackLegacy => NativeCutoverRecoveryModeV1::RollbackLegacy,
+        DeploymentRecoveryModeV1::RestoreForward => NativeCutoverRecoveryModeV1::RestoreForward,
+    };
+    let helper_sha256 = match mode {
+        NativeCutoverRecoveryModeV1::RollbackLegacy => locked.current.binary_sha256_v1(),
+        NativeCutoverRecoveryModeV1::RestoreForward => locked.candidate.binary_sha256_v1(),
+    };
+    locked
+        .with_observed_witness_v1(budget, |wire, memory, budget| {
+            ensure!(
+                wire.binding.mode == mode
+                    && wire.binding.config_sha256 == config_sha256
+                    && wire.binding.helper_sha256 == helper_sha256,
+                "published recovery witness differs from the requested mode or installed image"
+            );
+            let mut synced = false;
+            let publication = verify(
+                &locked.candidate,
+                helper_sha256,
+                InodeKey {
+                    device: wire.root_device,
+                    inode: wire.root_inode,
+                },
+                wire.history.as_ref(),
+                wire.legacy.as_ref(),
+                budget,
+                &mut |budget, checkpoint| {
+                    ensure!(!synced, "published recovery was already synced");
+                    let result =
+                        locked.sync_observed_recovery_v1(budget, checkpoint, &mut |_| Ok(()))?;
+                    synced = true;
+                    Ok(result)
+                },
+            )?;
+            ensure!(
+                synced
+                    && publication.resolution_v1 == DeploymentSelectionResolutionV1::Reconciled
+                    && publication.before_sha256_v1 == request.expected_current_sha256_v1
+                    && publication.after_sha256_v1 == request.expected_candidate_sha256_v1,
+                "published recovery did not sync the exact selection"
+            );
+            Ok(SettledRecoveryWitnessV1 {
+                publication,
+                history: wire.history,
+                memory,
+            })
+        })
+        .and_then(|settled| settled.ok_or_else(|| anyhow!("selected recovery witness is absent")))
+        .map_err(DeploymentSelectionErrorV1::PersistenceUncertain)
+}
+
 fn with_locked_selection_inner(
     request: &DeploymentSelectionRequestV1<'_>,
     before: Option<&DeploymentSelectionBeforeDocumentV1<'_>>,
@@ -236,8 +391,9 @@ fn with_locked_selection_inner(
     } else {
         PublicationPhase::BeforeRename
     };
-    let mut locked = LockedDeploymentSelectionV1::acquire(request, before, budget, &mut phase)
-        .map_err(|error| phase.classify(error))?;
+    let mut locked =
+        LockedDeploymentSelectionV1::acquire(request, before, budget, &mut phase, false)
+            .map_err(|error| phase.classify(error))?;
     match coordinate(&mut locked, budget) {
         Ok(_)
             if matches!(
@@ -284,6 +440,176 @@ impl LockedDeploymentSelectionV1 {
     }
     pub(crate) fn candidate_v1(&self) -> &DeploymentSelectionDocumentV1 {
         &self.candidate
+    }
+
+    pub(crate) fn bind_recovery_witness_v1(
+        &mut self,
+        begin: &NativeCutoverControlBeginV1,
+        config_sha256: Digest,
+        helper_sha256: Digest,
+    ) -> Result<()> {
+        ensure!(
+            self.witness_binding.is_none(),
+            "recovery witness was already bound"
+        );
+        ensure!(
+            self.recovery_publication.is_some(),
+            "recovery witness requires an exact intent"
+        );
+        self.witness_binding = Some(RecoveryWitnessBindingV1 {
+            mode: begin.mode,
+            nonce: begin.nonce,
+            config_sha256,
+            helper_sha256,
+            evidence_length: begin.evidence_length,
+            evidence_sha256: begin.evidence_sha256,
+        });
+        Ok(())
+    }
+
+    /// The root verifier supplies the exact installed outcome while still
+    /// holding physical custody. It is provisional until the selection CAS.
+    pub(crate) fn prepare_recovery_witness_v1(
+        &mut self,
+        history: Option<&NativeCutoverInstalledHistoryV1>,
+        root: InodeKey,
+        legacy: Option<LegacyPublishedRecoveryWitnessV1<&RepoId, &RevisionId>>,
+        budget: &mut WorkBudget,
+    ) -> Result<()> {
+        let Some(binding) = self.witness_binding.as_ref() else {
+            return Ok(());
+        };
+        ensure!(
+            match binding.mode {
+                NativeCutoverRecoveryModeV1::RollbackLegacy =>
+                    legacy.is_some() && history.is_none(),
+                NativeCutoverRecoveryModeV1::RestoreForward => legacy.is_none(),
+            },
+            "recovery physical witness differs from its mode"
+        );
+        if self.phase == PublicationPhase::ReconciliationPending {
+            let _verified = self.with_observed_witness_v1(budget, |wire, _memory, _budget| {
+                let same_legacy = match (wire.legacy.as_ref(), legacy.as_ref()) {
+                    (Some(retained), Some(actual)) => {
+                        &retained.repo_id == actual.repo_id
+                            && &retained.revision_id == actual.revision_id
+                            && retained.durable_sequence == actual.durable_sequence
+                            && retained.activation == actual.activation
+                    }
+                    (None, None) => true,
+                    _ => false,
+                };
+                // The fresh Original may supply new FD6 bytes and a new nonce.
+                ensure!(
+                    wire.binding.mode == binding.mode
+                        && wire.binding.config_sha256 == binding.config_sha256
+                        && wire.binding.helper_sha256 == binding.helper_sha256
+                        && wire.root_device == root.device
+                        && wire.root_inode == root.inode
+                        && wire.history.as_ref() == history
+                        && same_legacy,
+                    "recovery witness differs from the verified outcome"
+                );
+                Ok(())
+            })?;
+            return Ok(());
+        }
+        ensure!(
+            self.phase == PublicationPhase::BeforeRename && self.prepared_witness.is_none(),
+            "recovery witness requires an unused selection transaction"
+        );
+        if let Some(history) = history {
+            history.validate_v1()?;
+        }
+        let maximum = completion_witness::MAX_WITNESS_BYTES;
+        let maximum_charged = u64::try_from(maximum)?;
+        let memory = budget
+            .reserve_memory(maximum_charged, MemoryLifetime::Temporary)?
+            .ok_or_else(|| anyhow!("recovery witness requires admitted Control memory"))?;
+        charge(budget, 0, 0, maximum_charged, 0)?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(maximum)?;
+        bytes.resize(maximum, 0);
+        let mut output = std::io::Cursor::new(bytes.as_mut_slice());
+        ciborium::ser::into_writer(
+            &RecoveryWitnessWireV1 {
+                format_version: 1,
+                binding,
+                root_device: root.device,
+                root_inode: root.inode,
+                history,
+                legacy,
+            },
+            &mut output,
+        )?;
+        let used = usize::try_from(output.position())?;
+        bytes.truncate(used);
+        self.prepared_witness = Some(PreparedRecoveryWitnessV1 {
+            bytes,
+            _memory: memory,
+        });
+        Ok(())
+    }
+
+    fn with_observed_witness_v1<T>(
+        &self,
+        budget: &mut WorkBudget,
+        read: impl FnOnce(OwnedRecoveryWitnessV1, MemoryLease, &mut WorkBudget) -> Result<T>,
+    ) -> Result<Option<T>> {
+        ensure!(
+            self.phase == PublicationPhase::ReconciliationPending,
+            "recovery witness requires an already selected publication"
+        );
+        self.recheck_custody(budget)?;
+        let (_, version, selected) = read_active_control(&self.directory, &self.path, budget)?;
+        ensure!(
+            version == self.active_file_version,
+            "recovery witness selection changed"
+        );
+        let publication = self
+            .recovery_publication
+            .ok_or_else(|| anyhow!("reconciliation has no publication binding"))?;
+        require_recovery_publication(&selected, publication, budget)?;
+        let name = self
+            .path
+            .file_name()
+            .ok_or_else(|| anyhow!("selection basename missing"))?;
+        completion_witness::with_read(&self.directory, name, &selected, budget, |bytes, budget| {
+            let memory = budget
+                .reserve_memory(64 * 1024, MemoryLifetime::Temporary)?
+                .ok_or_else(|| {
+                    anyhow!("recovery witness decode requires admitted Control memory")
+                })?;
+            charge(budget, 0, 0, u64::try_from(bytes.len())?, 0)?;
+            let mut remaining = bytes;
+            let wire: OwnedRecoveryWitnessV1 =
+                ciborium::de::from_reader_with_recursion_limit(&mut remaining, 32)?;
+            ensure!(
+                    remaining.is_empty()
+                        && wire.format_version == 1
+                        && wire.root_inode > 0
+                        && wire.binding.evidence_length > 0
+                        && wire.binding.evidence_length
+                            <= quanta_index_contract::native_cutover_evidence_v1::MAX_NATIVE_CUTOVER_EVIDENCE_BYTES_V1 as u64,
+                    "invalid published recovery witness"
+                );
+            if let Some(history) = wire.history.as_ref() {
+                history.validate_v1()?;
+            }
+            ensure!(
+                match wire.binding.mode {
+                    NativeCutoverRecoveryModeV1::RollbackLegacy =>
+                        wire.history.is_none()
+                            && wire
+                                .legacy
+                                .as_ref()
+                                .is_some_and(|legacy| legacy.durable_sequence > 0),
+                    NativeCutoverRecoveryModeV1::RestoreForward => wire.legacy.is_none(),
+                },
+                "published recovery witness has the wrong physical scope"
+            );
+            read(wire, memory, budget)
+        })
     }
 
     pub(crate) fn read_legacy_repomap_selection_v1(
@@ -336,6 +662,7 @@ impl LockedDeploymentSelectionV1 {
         before: Option<&DeploymentSelectionBeforeDocumentV1<'_>>,
         budget: &mut WorkBudget,
         phase: &mut PublicationPhase,
+        published_only: bool,
     ) -> Result<Self> {
         let memory = budget
             .reserve_memory(MEMORY_BYTES, MemoryLifetime::Temporary)?
@@ -360,11 +687,22 @@ impl LockedDeploymentSelectionV1 {
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         )?);
-        charge(budget, 1, 1, 0, 1)?;
+        let create = if published_only {
+            OFlags::empty()
+        } else {
+            OFlags::CREATE
+        };
+        charge(
+            budget,
+            1,
+            u64::from(!published_only),
+            0,
+            u64::from(!published_only),
+        )?;
         let lock = File::from(rustix::fs::openat(
             &directory,
             LOCK_NAME,
-            OFlags::CREATE | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            create | OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::RUSR | Mode::WUSR,
         )?);
         control_metadata(&lock.metadata()?)?;
@@ -403,6 +741,7 @@ impl LockedDeploymentSelectionV1 {
                 "journal before canonical fingerprint differs"
             );
             if active_payload == original_payload {
+                ensure!(!published_only, "original selection is still active");
                 if before.retained_terminal_v1.is_some_and(|terminal| {
                     matches!(
                         terminal,
@@ -442,6 +781,10 @@ impl LockedDeploymentSelectionV1 {
                 (current, Some(observed))
             }
         } else {
+            ensure!(
+                !published_only,
+                "published recovery requires an original intent"
+            );
             ensure!(
                 fingerprint(&active_payload) == request.expected_current_sha256_v1,
                 "current selection changed"
@@ -500,6 +843,8 @@ impl LockedDeploymentSelectionV1 {
             observed,
             active_file_version,
             recovery_publication,
+            witness_binding: None,
+            prepared_witness: None,
             candidate,
             path: request.selection_path_v1.to_owned(),
             candidate_path: request.candidate_path_v1.to_owned(),
@@ -651,6 +996,10 @@ impl LockedDeploymentSelectionV1 {
                 self.phase == PublicationPhase::BeforeRename,
                 "deployment transaction already attempted publication"
             );
+            ensure!(
+                self.witness_binding.is_none() || self.prepared_witness.is_some(),
+                "verified recovery outcome is missing its publication witness"
+            );
             drop(self.recheck_documents(budget)?);
             let name = self
                 .path
@@ -691,6 +1040,22 @@ impl LockedDeploymentSelectionV1 {
             if let Some(publication) = self.recovery_publication {
                 write_recovery_publication(file, publication, budget)?;
             }
+            if let Some(witness) = &self.prepared_witness {
+                let (_, version, active) =
+                    read_active_control(&self.directory, &self.path, budget)?;
+                ensure!(
+                    version == self.active_file_version,
+                    "current selection file version changed"
+                );
+                completion_witness::stage(
+                    &self.directory,
+                    OsStr::new(name),
+                    &active,
+                    file,
+                    &witness.bytes,
+                    budget,
+                )?;
+            }
             file.sync_all()?;
             hook(PublishStage::AfterFileFsync)?;
             let candidate_binary = self.recheck_documents(budget)?;
@@ -704,6 +1069,7 @@ impl LockedDeploymentSelectionV1 {
             if let Some(publication) = self.recovery_publication {
                 require_recovery_publication(file, publication, budget)?;
             }
+            self.require_prepared_witness_v1(OsStr::new(name), OsStr::new(temp.as_str()), file, budget)?;
             candidate_binary.require_current(self.candidate.binary_v1(), budget)?;
             charge(budget, 2, 0, 0, 0)?;
             require_named_control_file(&self.directory, Path::new(temp.as_str()), file)?;
@@ -719,6 +1085,7 @@ impl LockedDeploymentSelectionV1 {
             if let Some(publication) = self.recovery_publication {
                 require_recovery_publication(file, publication, budget)?;
             }
+            self.require_prepared_witness_v1(OsStr::new(name), OsStr::new(name), file, budget)?;
             // Decode the observed document again to authenticate its config.
             let _selected = codec::decode(&selected, budget)?;
             candidate_binary.require_current(self.candidate.binary_v1(), budget)?;
@@ -742,52 +1109,78 @@ impl LockedDeploymentSelectionV1 {
         result.map_err(|error| self.classify(error))
     }
 
+    fn require_prepared_witness_v1(
+        &self,
+        name: &OsStr,
+        file_name: &OsStr,
+        file: &File,
+        budget: &mut WorkBudget,
+    ) -> Result<()> {
+        if let Some(witness) = &self.prepared_witness {
+            completion_witness::require(&self.directory, name, file_name, file, &witness.bytes, budget)?;
+        }
+        Ok(())
+    }
+
     fn reconcile_inner(
         &mut self,
         budget: &mut WorkBudget,
         checkpoint: &mut dyn FnMut(&mut WorkBudget) -> Result<()>,
         hook: &mut impl FnMut(PublishStage) -> Result<()>,
     ) -> std::result::Result<DeploymentSelectionPublishedV1, DeploymentSelectionErrorV1> {
-        let result = (|| -> Result<DeploymentSelectionPublishedV1> {
-            drop(self.recheck_documents(budget)?);
-            let (bytes, version, mut file) =
-                read_active_control(&self.directory, &self.path, budget)?;
-            ensure!(
-                version == self.active_file_version,
-                "current selection file version changed"
-            );
-            let actual = codec::decode(&bytes, budget)?;
-            ensure!(
-                actual.payload_v1() == self.candidate.payload_v1(),
-                "reconciliation file is not the exact candidate"
-            );
-            let expected = self.recovery_publication
-                .ok_or_else(|| anyhow!("reconciliation has no publication binding"))?;
-            require_recovery_publication(&file, expected, budget)?;
-            charge(budget, 0, 2, 0, 0)?;
-            checkpoint(budget)?;
-            drop(require_control_bytes(&mut file, &bytes, budget)?);
-            file.sync_all()?;
-            hook(PublishStage::AfterFileFsync)?;
-            self.directory.sync_all()?;
-            hook(PublishStage::AfterDirectoryFsync)?;
-            checkpoint(budget)?;
-            let candidate_binary = self.recheck_documents(budget)?;
-            // The canonical digest can stay equal after a raw rewrite. The
-            // bytes we report as durable must still be the ones we synced.
-            drop(require_control_bytes(&mut file, &bytes, budget)?);
-            require_recovery_publication(&file, expected, budget)?;
-            self.recheck_selection_file(&file, budget)?;
-            candidate_binary.require_current(self.candidate.binary_v1(), budget)?;
-            budget.checkpoint()?;
+        let result = self.sync_observed_recovery_v1(budget, checkpoint, hook);
+        if result.is_ok() {
             self.phase = PublicationPhase::Durable;
-            Ok(DeploymentSelectionPublishedV1 {
-                resolution_v1: DeploymentSelectionResolutionV1::Reconciled,
-                before_sha256_v1: self.current.fingerprint_v1(),
-                after_sha256_v1: self.candidate.fingerprint_v1(),
-            })
-        })();
+        }
         result.map_err(|error| self.classify(error))
+    }
+
+    fn sync_observed_recovery_v1(
+        &self,
+        budget: &mut WorkBudget,
+        checkpoint: &mut dyn FnMut(&mut WorkBudget) -> Result<()>,
+        hook: &mut impl FnMut(PublishStage) -> Result<()>,
+    ) -> Result<DeploymentSelectionPublishedV1> {
+        ensure!(
+            self.phase == PublicationPhase::ReconciliationPending,
+            "recovery candidate is not selected"
+        );
+        drop(self.recheck_documents(budget)?);
+        let (bytes, version, mut file) = read_active_control(&self.directory, &self.path, budget)?;
+        ensure!(
+            version == self.active_file_version,
+            "current selection file version changed"
+        );
+        let actual = codec::decode(&bytes, budget)?;
+        ensure!(
+            actual.payload_v1() == self.candidate.payload_v1(),
+            "reconciliation file is not the exact candidate"
+        );
+        let expected = self
+            .recovery_publication
+            .ok_or_else(|| anyhow!("reconciliation has no publication binding"))?;
+        require_recovery_publication(&file, expected, budget)?;
+        charge(budget, 0, 2, 0, 0)?;
+        checkpoint(budget)?;
+        drop(require_control_bytes(&mut file, &bytes, budget)?);
+        file.sync_all()?;
+        hook(PublishStage::AfterFileFsync)?;
+        self.directory.sync_all()?;
+        hook(PublishStage::AfterDirectoryFsync)?;
+        checkpoint(budget)?;
+        let candidate_binary = self.recheck_documents(budget)?;
+        // The canonical digest can stay equal after a raw rewrite. The
+        // bytes we report as durable must still be the ones we synced.
+        drop(require_control_bytes(&mut file, &bytes, budget)?);
+        require_recovery_publication(&file, expected, budget)?;
+        self.recheck_selection_file(&file, budget)?;
+        candidate_binary.require_current(self.candidate.binary_v1(), budget)?;
+        budget.checkpoint()?;
+        Ok(DeploymentSelectionPublishedV1 {
+            resolution_v1: DeploymentSelectionResolutionV1::Reconciled,
+            before_sha256_v1: self.current.fingerprint_v1(),
+            after_sha256_v1: self.candidate.fingerprint_v1(),
+        })
     }
 }
 

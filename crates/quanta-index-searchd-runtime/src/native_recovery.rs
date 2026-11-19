@@ -24,7 +24,7 @@ use crate::{
         DeploymentRecoveryModeV1, DeploymentSelectionBeforeDocumentV1,
         DeploymentSelectionErrorV1 as Error, DeploymentSelectionPublishedV1,
         DeploymentSelectionRequestV1, DeploymentSelectionResolutionV1,
-        with_locked_deployment_selection_reconciliation_v1,
+        with_locked_deployment_selection_reconciliation_v1, with_locked_published_recovery_v1,
     },
     native_product::{RestoreForwardSourceRefusalV1, with_native_recovery_control_v1},
 };
@@ -36,7 +36,11 @@ use crate::native_product::{FundedInstalledHistoryV1, RestoreForwardHistoryV1};
 pub fn run(command: &NativeRecoveryCommandV1, request: RequestBudgetV1) -> Result<u8> {
     // Claim optional FD7 before FD3 duplication can occupy its vacant number.
     // Keep a malformed present mapping as a bound refusal after Begin arrives.
-    let history_fd7 = quanta_explicit_fd_process::try_duplicate_optional_inherited_regular_file_v1(7);
+    let history_fd7 = if command.settle_published_only {
+        Ok(None)
+    } else {
+        quanta_explicit_fd_process::try_duplicate_optional_inherited_regular_file_v1(7)
+    };
     command.validate()?;
     let _inherited_umask = quanta_index_searchd::app::harden_umask();
     let socket = quanta_explicit_fd_process::try_duplicate_inherited_unix_datagram_v1(3)?;
@@ -45,8 +49,18 @@ pub fn run(command: &NativeRecoveryCommandV1, request: RequestBudgetV1) -> Resul
         .and_then(|()| control::original_deadline_v1(begin.deadline_ns))
     {
         Ok(deadline) => request.capped_at(deadline),
-        Err(error) => return send_outcome(&socket, &begin, Err(Error::RefusedBeforeRename(error))),
+        Err(error) => {
+            let error = if command.settle_published_only {
+                Error::PersistenceUncertain(error)
+            } else {
+                Error::RefusedBeforeRename(error)
+            };
+            return send_outcome(&socket, &begin, Err(error));
+        }
     };
+    if command.settle_published_only {
+        return run_published_after_begin_v1(command, request, &socket, &begin, bootstrap);
+    }
     let history_fd7 = match history_fd7 {
         Ok(history) => history,
         Err(error) => {
@@ -102,20 +116,7 @@ fn run_after_begin(
                             )
                         };
                         checkpoint(budget).map_err(before)?;
-                        let selection = DeploymentSelectionRequestV1 {
-                            selection_path_v1: &command.selection_path,
-                            expected_current_sha256_v1: command.expected_current_sha256,
-                            candidate_path_v1: &command.candidate_path,
-                            expected_candidate_sha256_v1: command.expected_candidate_sha256,
-                            mode_v1: match command.mode {
-                                wire::NativeCutoverRecoveryModeV1::RollbackLegacy => {
-                                    DeploymentRecoveryModeV1::RollbackLegacy
-                                }
-                                wire::NativeCutoverRecoveryModeV1::RestoreForward => {
-                                    DeploymentRecoveryModeV1::RestoreForward
-                                }
-                            },
-                        };
+                        let selection = selection_request_v1(command);
                         let retained_terminal =
                             decode_retained_terminal_v1(evidence, begin, budget).map_err(before)?;
                         let original_before = DeploymentSelectionBeforeDocumentV1 {
@@ -136,11 +137,17 @@ fn run_after_begin(
                                     .map_err(before)?;
                                 match command.mode {
                                     wire::NativeCutoverRecoveryModeV1::RollbackLegacy => {
-                                        let _running_image = peer::retain_running_image_v1(
-                                            locked.current_v1().binary_sha256_v1(),
-                                            budget,
-                                        )
-                                        .map_err(before)?;
+                                        let helper = locked.current_v1().binary_sha256_v1();
+                                        let _running_image =
+                                            peer::retain_running_image_v1(helper, budget)
+                                                .map_err(before)?;
+                                        locked
+                                            .bind_recovery_witness_v1(
+                                                begin,
+                                                command.config_digest,
+                                                helper,
+                                            )
+                                            .map_err(before)?;
                                         let native = locked
                                             .current_v1()
                                             .native_command_v1()
@@ -161,11 +168,10 @@ fn run_after_begin(
                                     }
                                     wire::NativeCutoverRecoveryModeV1::RestoreForward => {
                                         let candidate = locked.candidate_v1();
-                                        let _running_image = peer::retain_running_image_v1(
-                                            candidate.binary_sha256_v1(),
-                                            budget,
-                                        )
-                                        .map_err(before)?;
+                                        let helper = candidate.binary_sha256_v1();
+                                        let _running_image =
+                                            peer::retain_running_image_v1(helper, budget)
+                                                .map_err(before)?;
                                         let native = candidate
                                             .native_command_v1()
                                             .cloned()
@@ -174,6 +180,13 @@ fn run_after_begin(
                                                     "restore-forward candidate is not Native"
                                                 ))
                                             })?;
+                                        locked
+                                            .bind_recovery_witness_v1(
+                                                begin,
+                                                command.config_digest,
+                                                helper,
+                                            )
+                                            .map_err(before)?;
                                         context.publish_restore_forward_v1(
                                             &native,
                                             evidence,
@@ -204,6 +217,108 @@ fn run_after_begin(
     match prepared {
         Ok(sent) => sent,
         Err(error) => send_outcome(socket, begin, Err(before(error))),
+    }
+}
+
+fn selection_request_v1(command: &NativeRecoveryCommandV1) -> DeploymentSelectionRequestV1<'_> {
+    DeploymentSelectionRequestV1 {
+        selection_path_v1: &command.selection_path,
+        expected_current_sha256_v1: command.expected_current_sha256,
+        candidate_path_v1: &command.candidate_path,
+        expected_candidate_sha256_v1: command.expected_candidate_sha256,
+        mode_v1: match command.mode {
+            wire::NativeCutoverRecoveryModeV1::RollbackLegacy => {
+                DeploymentRecoveryModeV1::RollbackLegacy
+            }
+            wire::NativeCutoverRecoveryModeV1::RestoreForward => {
+                DeploymentRecoveryModeV1::RestoreForward
+            }
+        },
+    }
+}
+
+fn run_published_after_begin_v1(
+    command: &NativeRecoveryCommandV1,
+    request: RequestBudgetV1,
+    socket: &UnixDatagram,
+    begin: &wire::NativeCutoverControlBeginV1,
+    bootstrap: WorkUsage,
+) -> Result<u8> {
+    let uncertain = Error::PersistenceUncertain;
+    let prepared = with_native_recovery_control_v1(
+        &command.config_path,
+        command.config_digest,
+        request,
+        |context, budget| {
+            let _control_memory = budget
+                .reserve_memory(128 * 1024, MemoryLifetime::Temporary)?
+                .ok_or_else(|| anyhow!("published recovery requires admitted Control memory"))?;
+            budget.charge(bootstrap)?;
+            let parent = peer::observe_parent_v1(socket, budget)?;
+            let mut installed_history = None;
+            let result =
+                control::with_cancel_monitor_v1(socket, begin, budget, |budget, signal| {
+                    trust::with_installed_parent_v1(&parent, command, budget, |budget| {
+                        let (before, _memory) = custody::read_published_before_v1(
+                            begin.evidence_length,
+                            begin.evidence_sha256,
+                            budget,
+                        )
+                        .map_err(uncertain)?;
+                        let original = DeploymentSelectionBeforeDocumentV1 {
+                            operation_id_v1: &begin.operation_id,
+                            bytes_v1: &before.document.0,
+                            raw_sha256_v1: before.raw_sha256,
+                            file_version_v1: before.file_version,
+                            retained_terminal_v1: None,
+                        };
+                        let settled = with_locked_published_recovery_v1(
+                            &selection_request_v1(command),
+                            &original,
+                            command.config_digest,
+                            budget,
+                            |selected, helper_sha256, root, history, legacy, budget, sync| {
+                                let _running_image =
+                                    peer::retain_running_image_v1(helper_sha256, budget)?;
+                                context.with_verified_settlement_root_v1(
+                                    selected,
+                                    history,
+                                    root,
+                                    legacy,
+                                    budget,
+                                    |budget| {
+                                        sync(budget, &mut |budget| {
+                                            if signal.load(std::sync::atomic::Ordering::Acquire) {
+                                                budget.request().cancel_handle().cancel();
+                                            }
+                                            Ok(budget.checkpoint()?)
+                                        })
+                                    },
+                                )
+                            },
+                        )?;
+                        installed_history = settled.history.map(|value| FundedInstalledHistoryV1 {
+                            value,
+                            _memory: Some(settled.memory),
+                        });
+                        Ok(settled.publication)
+                    })
+                })
+                .map_err(|error| match error {
+                    Error::RefusedBeforeRename(cause) => uncertain(cause),
+                    error => error,
+                });
+            Ok(send_outcome_with_history(
+                socket,
+                begin,
+                result,
+                installed_history,
+            ))
+        },
+    );
+    match prepared {
+        Ok(sent) => sent,
+        Err(error) => send_outcome(socket, begin, Err(uncertain(error))),
     }
 }
 
@@ -509,6 +624,7 @@ mod tests {
             config_digest: Digest(Sha256::digest(b"{}").into()),
             parent_executable: root.path().join("resident"),
             parent_executable_sha256: Digest([5; 32]),
+            settle_published_only: false,
         };
         validate_begin_v1(&command, &begin)?;
         ensure!(run_after_begin(&command, request, &helper, &begin, work, None)? == 2);

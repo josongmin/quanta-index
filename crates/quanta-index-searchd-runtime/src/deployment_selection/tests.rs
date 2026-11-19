@@ -285,6 +285,114 @@ fn recovery_settlement_refuses_queued_control_after_durable_publication() -> Tes
 }
 
 #[test]
+fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -> TestResult {
+    let mode = DeploymentRecoveryModeV1::RestoreForward;
+    let fixture = Fixture::new(mode)?;
+    let before = fixture.before_document("witness-rename-interruption")?;
+    let expected_config = Digest([7; 32]);
+    let installed_helper = fingerprint(b"#!/bin/sh\nexit 0\n");
+    let root = InodeKey {
+        device: 8,
+        inode: 9,
+    };
+    let begin = NativeCutoverControlBeginV1 {
+        format_version: 1,
+        operation_id: before.operation_id_v1.to_owned(),
+        mode: NativeCutoverRecoveryModeV1::RestoreForward,
+        current_selection_sha256: fingerprint(&fixture.before),
+        candidate_selection_sha256: fingerprint(&fixture.after),
+        deadline_ns: 1,
+        evidence_length: 1,
+        evidence_sha256: Digest([9; 32]),
+        nonce: Digest([10; 32]),
+    };
+    let request = fixture.request(mode);
+    let stage = |config, fail_after_rename| -> std::result::Result<_, DeploymentSelectionErrorV1> {
+        let (mut work, _execution) = budget()
+            .map_err(|error| DeploymentSelectionErrorV1::RefusedBeforeRename(anyhow!("{error}")))?;
+        with_locked_deployment_selection_reconciliation_v1(
+            &request,
+            &before,
+            &mut work,
+            |locked, work| {
+                locked
+                    .bind_recovery_witness_v1(&begin, config, installed_helper)
+                    .and_then(|()| locked.prepare_recovery_witness_v1(None, root, None, work))
+                    .map_err(DeploymentSelectionErrorV1::RefusedBeforeRename)?;
+                locked.publish_inner(work, &mut |stage| {
+                    ensure!(
+                        !matches!(stage, PublishStage::AfterRename) || fail_after_rename,
+                        "reconciliation must not rename the selected file"
+                    );
+                    if matches!(stage, PublishStage::AfterRename) {
+                        return Err(anyhow!("stopped after selection rename"));
+                    }
+                    Ok(())
+                })
+            },
+        )
+    };
+
+    let settle = |config| -> TestResult<DeploymentSelectionPublishedV1> {
+        let (mut work, _execution) = budget()?;
+        let settled = with_locked_published_recovery_v1(
+            &request,
+            &before,
+            config,
+            &mut work,
+            |_, helper, selected_root, history, legacy, work, sync| {
+                ensure!(helper == installed_helper && selected_root == root);
+                ensure!(history.is_none() && legacy.is_none());
+                sync(work, &mut |_| Ok(()))
+            },
+        )?;
+        Ok(settled.publication)
+    };
+    require(
+        settle(expected_config).is_err(),
+        "an unselected candidate cannot be settled",
+    )?;
+    require(
+        fs::read(&fixture.selection)? == fixture.before
+            && !fixture.selection.with_file_name(LOCK_NAME).exists(),
+        "published-only verification must not create the lock or select the candidate",
+    )?;
+    require(
+        matches!(stage(expected_config, true), Err(DeploymentSelectionErrorV1::PersistenceUncertain(cause))
+            if cause.to_string() == "stopped after selection rename"),
+        "injected interruption must be classified after the rename",
+    )?;
+    let selected_inode = fs::metadata(&fixture.selection)?.ino();
+    require(
+        fs::read(&fixture.selection)? == fixture.after,
+        "the candidate must be selected",
+    )?;
+    require(
+        matches!(stage(Digest([11; 32]), false), Err(DeploymentSelectionErrorV1::PersistenceUncertain(cause))
+            if cause.to_string() == "recovery witness differs from the verified outcome"),
+        "a different configuration must not consume the witness",
+    )?;
+    require(
+        settle(Digest([11; 32])).is_err(),
+        "published-only verification accepted a foreign configuration",
+    )?;
+    require(
+        settle(expected_config)?.resolution_v1() == DeploymentSelectionResolutionV1::Reconciled,
+        "published-only verification must reconcile the durable candidate",
+    )?;
+    require(
+        stage(expected_config, false)?.resolution_v1()
+            == DeploymentSelectionResolutionV1::Reconciled,
+        "the original witnessed candidate must reconcile",
+    )?;
+    require(
+        fs::metadata(&fixture.selection)?.ino() == selected_inode
+            && fs::read(&fixture.selection)? == fixture.after,
+        "witness reconciliation changed the selection",
+    )
+}
+
+#[test]
 fn canonical_payload_matches_python_ascii_u64_golden() -> TestResult {
     let value = codec::unique_json(
         "{\"z\":\"한글😀\\u007f\\n\",\"a\":{\"x\":18446744073709551615,\"b\":[0,255]}}".as_bytes(),

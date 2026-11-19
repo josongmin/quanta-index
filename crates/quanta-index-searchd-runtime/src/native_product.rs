@@ -2057,6 +2057,38 @@ pub(crate) fn with_native_recovery_control_v1<T>(
 }
 
 impl NativeRecoveryContextV1<'_> {
+    pub(crate) fn with_verified_settlement_root_v1<T>(
+        &self,
+        selected: &crate::deployment_selection::DeploymentSelectionDocumentV1,
+        history: Option<
+            &quanta_index_contract::native_cutover_evidence_v1::NativeCutoverInstalledHistoryV1,
+        >,
+        root: quanta_index_core::publication_capacity::InodeKey,
+        legacy: Option<&crate::deployment_selection::LegacyPublishedRecoveryWitnessV1>,
+        budget: &mut quanta_index_core::index::WorkBudget,
+        settle: impl FnOnce(&mut quanta_index_core::index::WorkBudget) -> Result<T>,
+    ) -> Result<T> {
+        if let Some(command) = selected.native_command_v1() {
+            command.validate()?;
+            anyhow::ensure!(
+                command.mode == NativeCommandModeV1::Verify
+                    && command.config_path == self.config_path
+                    && command.config_digest == Some(self.config_digest)
+                    && selected.state_root_v1() == self.config.state_root,
+                "published recovery differs from the exact selected Native configuration"
+            );
+        }
+        boot::with_verified_settlement_root_v1(
+            selected,
+            &self.config,
+            history,
+            root,
+            legacy,
+            budget,
+            settle,
+        )
+    }
+
     pub(crate) fn publish_restore_forward_v1(
         &self,
         command: &NativeStateCommandV1,

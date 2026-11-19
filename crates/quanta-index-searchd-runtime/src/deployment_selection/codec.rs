@@ -178,7 +178,11 @@ pub(super) fn decode_document(
                 "source_cut_digest_hex",
                 "install_catalog_digest_hex",
             ],
-            &["protected_source_routes_hex"],
+            if receipt.get("protected_source_routes_hex").is_some() {
+                &["protected_source_routes_hex"]
+            } else {
+                &[]
+            },
         )?;
         let nonce = hex(text(receipt, "root_nonce_hex")?)?;
         let source = hex(text(receipt, "source_cut_digest_hex")?)?;
