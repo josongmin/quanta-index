@@ -8,7 +8,7 @@ use std::{
 
 use quanta_index_core::index::{
     IndexError, MemoryLease, MemoryLifetime, ObjectNamespaceBinding, ObjectReadFile,
-    ObjectReadIoPort, ObjectRef, StoredObject, WorkBudget, WorkUsage,
+    ObjectReadIoPort, ObjectRef, RegisteredObject, StoredObject, WorkBudget, WorkUsage,
 };
 
 use super::{namespace::NamespaceLease, read_io};
@@ -89,6 +89,33 @@ impl FileObjectReader {
         Ok(stored)
     }
 
+    /// Authenticate one immutable object's payload and ordered child edges
+    /// using bounded scratch, without retaining its payload or visiting children.
+    pub fn verify_object(
+        &self,
+        reference: ObjectRef,
+        budget: &mut WorkBudget,
+    ) -> Result<(), IndexError> {
+        self.verified_registration(reference, budget).map(|_| ())
+    }
+
+    fn verified_registration(
+        &self,
+        reference: ObjectRef,
+        budget: &mut WorkBudget,
+    ) -> Result<RegisteredObject, IndexError> {
+        let registration = read_io::read_registration(
+            &self.objects,
+            &self.namespace,
+            self.io.as_ref(),
+            reference,
+            budget,
+        )?;
+        let _binding = self.namespace_binding()?;
+        budget.checkpoint()?;
+        Ok(registration)
+    }
+
     /// Authenticate every reachable immutable object, including leaf bytes.
     ///
     /// The caller bounds the pending DFS frontier independently of the original
@@ -158,16 +185,7 @@ impl FileObjectReader {
                 }
                 stored.registration.clone()
             } else {
-                let registration = read_io::read_registration(
-                    &self.objects,
-                    &self.namespace,
-                    self.io.as_ref(),
-                    reference,
-                    budget,
-                )?;
-                let _binding = self.namespace_binding()?;
-                budget.checkpoint()?;
-                registration
+                self.verified_registration(reference, budget)?
             };
             let needed = frontier
                 .pending

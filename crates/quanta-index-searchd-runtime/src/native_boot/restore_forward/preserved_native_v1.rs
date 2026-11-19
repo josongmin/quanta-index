@@ -2,9 +2,7 @@
 //! previous root. Candidate-owned objects cannot establish their own provenance.
 
 use super::*;
-use quanta_index_core::index::{
-    with_native_protected_snapshot_v1, with_native_protected_source_routes_v1,
-};
+use quanta_index_core::index::with_native_protected_source_routes_v1;
 
 pub(super) fn verify_preserved_native_v1(
     previous: &HeldPreviousNativeV1,
@@ -45,62 +43,56 @@ pub(super) fn verify_preserved_native_v1(
         return Err(IndexError::DigestConflict.into());
     }
     let route_object = reader.get(route.object, budget)?;
-    previous.with_protected_routes_v1(budget, |old_routes, _old_reader, budget| {
-        quanta_index_catalog::visit_native_protected_snapshot_rows_v1(
-            &previous.selected_config_v1().state_root,
-            previous.catalog_io_v1(),
-            old_manifest,
-            old_routes,
-            budget,
-            |old_snapshot, budget| {
-                with_native_protected_source_routes_v1(
-                    route.object,
-                    Some(route.count),
-                    route_object,
-                    budget,
-                    |routes, budget| {
-                        let origin = routes
-                            .native_origin
-                            .as_ref()
-                            .ok_or(IndexError::SnapshotUnavailable)?;
-                        if origin.source_root_nonce != old_snapshot.source_root_nonce
-                            || origin.source_routes != old_snapshot.source_routes
-                            || origin.snapshot
-                                != old_snapshot
-                                    .object_ref_v1()
-                                    .map_err(|_| IndexError::DigestConflict)?
-                            || routes.heads != old_routes.heads
-                            || routes.repomap_heads != old_routes.repomap_heads
-                        {
-                            return Err(IndexError::DigestConflict);
-                        }
-                        with_native_protected_snapshot_v1(
-                            origin.snapshot,
-                            |reference, budget| reader.get(reference, budget),
+    with_native_protected_source_routes_v1(
+        route.object,
+        Some(route.count),
+        route_object,
+        budget,
+        |routes, budget| {
+            let origin = routes
+                .native_origin
+                .as_ref()
+                .ok_or(IndexError::SnapshotUnavailable)?;
+            let witness = previous
+                .with_protected_routes_v1(budget, |old_routes, _old_reader, budget| {
+                    if routes.heads != old_routes.heads
+                        || routes.repomap_heads != old_routes.repomap_heads
+                    {
+                        return Err(IndexError::DigestConflict.into());
+                    }
+                    Ok(
+                        quanta_index_catalog::read_native_protected_snapshot_witness_v1(
+                            &previous.selected_config_v1().state_root,
+                            previous.catalog_io_v1(),
+                            old_manifest,
+                            old_routes,
                             budget,
-                            |snapshot, budget| {
-                                if snapshot != old_snapshot {
-                                    return Err(IndexError::DigestConflict);
-                                }
-                                // Compare the installed SQL rows as well as the staged
-                                // snapshot. A correct artifact cannot hide lost claims,
-                                // altered event fences, extra rows or a changed frontier.
-                                quanta_index_catalog::verify_native_protected_snapshot_install_v1(
-                                    root,
-                                    candidate.io.as_ref(),
-                                    manifest,
-                                    routes,
-                                    snapshot,
-                                    budget,
-                                )
-                            },
-                        )
-                    },
-                )
-            },
-        )?;
-        Ok(())
-    })?;
+                        )?,
+                    )
+                })
+                .map_err(|cause| {
+                    cause.downcast::<IndexError>().unwrap_or_else(|cause| {
+                        IndexError::Storage(format!("protected Native predecessor: {cause}"))
+                    })
+                })?;
+            if witness.origin_v1() != origin {
+                return Err(IndexError::DigestConflict);
+            }
+            // The predecessor digest fixes the object bodies and edges.
+            // Reauthenticate each file without materializing its payload.
+            for reference in witness.object_references_v1() {
+                reader.verify_object(reference, budget)?;
+            }
+            quanta_index_catalog::verify_native_protected_snapshot_install_v1(
+                root,
+                candidate.io.as_ref(),
+                manifest,
+                routes,
+                &witness,
+                budget,
+            )
+        },
+    )?;
     drop(reader);
     candidate.physical.sweep_retired()?;
     require_retired(candidate)?;

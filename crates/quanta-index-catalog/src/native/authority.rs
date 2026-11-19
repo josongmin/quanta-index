@@ -18,8 +18,9 @@ pub use read_only::{
     LegacyActiveCatalogCensusV1, LegacyCatalogQuiescenceV1, LegacyHistoryProducerScopeV1,
     LegacyHistorySnapshotObservationV1, LegacyHistorySourceProofV1, NativeBootCatalogCandidate,
     NativeBootCatalogSnapshot, NativeBootPublishedOperation, NativeBootQuiescentCatalogV1,
-    TerminalBatchReadError, VerifiedLegacyTerminalBatch, lookup_native_protected_source_head_v1,
-    visit_native_protected_snapshot_rows_v1, verify_native_protected_snapshot_install_v1,
+    NativeProtectedSnapshotWitnessV1, TerminalBatchReadError, VerifiedLegacyTerminalBatch, lookup_native_protected_source_head_v1,
+    read_native_protected_snapshot_witness_v1, visit_native_protected_snapshot_rows_v1,
+    verify_native_protected_snapshot_install_v1,
     observe_legacy_history_snapshot_v1, resolve_native_protected_source_head_if_current_v1,
     verify_legacy_active_repomap_receipts_with_siblings_v1, verify_legacy_catalog_quiescence_v1,
     verify_legacy_history_source_inventory_v1, verify_legacy_history_sources_v1,
@@ -63,10 +64,11 @@ use quanta_index_core::index::{
     AdmissionOutcome, AttemptId, AttemptRef, BootstrapRef, CatalogView, ImmutableOperation,
     IndexError, IngressRef, OWNED_WORK_PRODUCER, ObjectInstallScope, ObjectNamespaceBinding,
     ObjectRef, OperationKey, OperationStatus, OwnedWorkAssignment, OwnerMemberBinding,
-    PreparedPublication, ReclaimCandidate, ReclaimDrainPage, ReclaimPermit, ReclaimTarget,
-    ReclaimWorkPage, Refusal, RegisteredObject, RetiringRef, SourceEvent, SourceOperationMode,
-    TicketId, UpdateKind, UpdateRequest, ViewRef, WorkAction, WorkActionDigest, WorkBudget,
-    WorkClaim, WorkIntent, WorkScope, WorkStatus, WorkUsage, WorkspaceKey,
+    PreparedPublication, ProducerId, ReclaimCandidate, ReclaimDrainPage, ReclaimPermit,
+    ReclaimTarget, ReclaimWorkPage, Refusal, RegisteredObject, RetiringRef, SourceEvent,
+    SourceOperationMode, StreamId, TicketId, UpdateKind, UpdateRequest, ViewRef, WorkAction,
+    WorkActionDigest, WorkBudget, WorkClaim, WorkIntent, WorkScope, WorkStatus, WorkUsage,
+    WorkspaceKey,
 };
 use quanta_index_core::{CoreError, DiagnosticOwnedRenewalRefusalReasonV1};
 use renewal_diagnostic::fence_lost;
@@ -2201,15 +2203,21 @@ quanta_index_contract::native_serde_struct!(EventClaim {
     state: EventClaimState,
 });
 
-fn event_identity(key: OperationKey, event: SourceEvent) -> Result<Vec<u8>, IndexError> {
-    encode(&(
+type ClaimIdentity = (WorkspaceKey, u64, ProducerId, StreamId, u64, u64);
+
+fn claim_identity(key: OperationKey, event: SourceEvent) -> ClaimIdentity {
+    (
         key.workspace,
         key.epoch,
         event.producer,
         event.stream,
         event.stream_epoch,
         event.sequence,
-    ))
+    )
+}
+
+fn event_identity(key: OperationKey, event: SourceEvent) -> Result<Vec<u8>, IndexError> {
+    encode(&claim_identity(key, event))
 }
 
 fn read_event_claim(
@@ -2454,10 +2462,21 @@ fn read_operation(
     let Some((workspace, epoch, payload, row_digest)) = row else {
         return Ok(None);
     };
-    check_digest(b"qidx.native.operation.v1", &payload, &row_digest)?;
-    let operation: OperationRow = decode(&payload)?;
+    decode_stored_operation(connection, key, &workspace, epoch, &payload, &row_digest).map(Some)
+}
+
+fn decode_stored_operation(
+    connection: &Connection,
+    key: OperationKey,
+    workspace: &[u8],
+    epoch: i64,
+    payload: &[u8],
+    row_digest: &[u8],
+) -> Result<OperationRow, IndexError> {
+    check_digest(b"qidx.native.operation.v1", payload, row_digest)?;
+    let operation: OperationRow = decode(payload)?;
     if operation.immutable.key != key
-        || workspace != workspace_key(key.workspace)?
+        || workspace != workspace_key(key.workspace)?.as_slice()
         || epoch != int(key.epoch)?
     {
         return Err(IndexError::Storage("native operation key mismatch".into()));
@@ -2471,7 +2490,7 @@ fn read_operation(
             return Err(IndexError::Storage("native request custody missing".into()));
         }
     }
-    Ok(Some(operation))
+    Ok(operation)
 }
 
 fn write_operation(
@@ -2481,16 +2500,37 @@ fn write_operation(
 ) -> Result<(), IndexError> {
     publication_result::validate_operation_result(row)?;
     let payload = encode(row)?;
-    let row_digest = digest(b"qidx.native.operation.v1", &payload);
+    write_operation_payload(
+        connection,
+        row.immutable.key,
+        &payload,
+        insert,
+        matches!(
+            row.status,
+            OperationStatus::Published(_) | OperationStatus::Refused(_)
+        ),
+    )
+}
+
+// Used by the ordinary writer after encoding and by the protected importer
+// after verifying that its borrowed payload is the exact canonical row.
+fn write_operation_payload(
+    connection: &Connection,
+    key: OperationKey,
+    payload: &[u8],
+    insert: bool,
+    terminal: bool,
+) -> Result<(), IndexError> {
+    let row_digest = digest(b"qidx.native.operation.v1", payload);
     if insert {
         let inserted = connection
             .execute(
                 "INSERT INTO native_operation_v1(operation,workspace,epoch,payload,row_digest)
              VALUES (?1,?2,?3,?4,?5)",
                 params![
-                    operation_key(row.immutable.key)?,
-                    workspace_key(row.immutable.key.workspace)?,
-                    int(row.immutable.key.epoch)?,
+                    operation_key(key)?,
+                    workspace_key(key.workspace)?,
+                    int(key.epoch)?,
                     payload,
                     row_digest.to_vec()
                 ],
@@ -2501,24 +2541,16 @@ fn write_operation(
         let changed = connection
             .execute(
                 "UPDATE native_operation_v1 SET payload=?2,row_digest=?3 WHERE operation=?1",
-                params![
-                    operation_key(row.immutable.key)?,
-                    payload,
-                    row_digest.to_vec()
-                ],
+                params![operation_key(key)?, payload, row_digest.to_vec()],
             )
             .map_err(|error| sql(&error))?;
         if changed != 1 {
             return Err(IndexError::Storage("native operation disappeared".into()));
         }
     }
-    if matches!(
-        row.status,
-        OperationStatus::Published(_) | OperationStatus::Refused(_)
-    ) {
+    if terminal {
         // The ready set is part of the same terminal-receipt transaction. It
         // is removed only after bounded custody release, never by a scan/TTL.
-        let key = row.immutable.key;
         let operation = operation_key(key)?;
         let workspace = workspace_key(key.workspace)?;
         let epoch = int(key.epoch)?;

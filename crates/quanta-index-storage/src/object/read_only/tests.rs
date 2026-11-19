@@ -275,6 +275,42 @@ fn closure_reads_all_roots_shared_children_and_nonempty_leaf_bytes() -> TestResu
 }
 
 #[test]
+fn single_object_verification_streams_payload_and_authenticates_edges() -> TestResult {
+    let root = private_root()?;
+    let store = FileObjectStore::open(root.path())?;
+    let mut build = budget(100)?;
+    let child = store.put(b"child", &[], &mut build)?.reference;
+    let payload = vec![0xa5; 128 * 1024];
+    let object = store.put(&payload, &[child], &mut build)?.reference;
+    drop(store);
+
+    let reader = reader(root.path(), Arc::new(Reads::default()))?;
+    let live = Arc::new(ReadMemory::default());
+    let mut verify = budget(3)?;
+    verify.bind_memory_scope(Some(MemoryScope::new(Arc::new(BoundedReadMemory {
+        live: Arc::clone(&live),
+        limit: 96 * 1024,
+    }))));
+    reader.verify_object(object, &mut verify)?;
+    require(verify.usage().reads == 1 && verify.usage().writes == 0)?;
+    require(live.0.load(Ordering::SeqCst) == 0)?;
+
+    let path = super::super::read_io::object_path(&root.path().join("objects"), object);
+    let original = fs::read(&path)?;
+    for offset in [super::super::HEADER_LEN, original.len() - 1] {
+        let mut corrupted = original.clone();
+        corrupted[offset] ^= 1;
+        fs::write(&path, corrupted)?;
+        require(matches!(
+            reader.verify_object(object, &mut verify),
+            Err(IndexError::CorruptObject(message)) if message == "object digest or size mismatch"
+        ))?;
+        require(live.0.load(Ordering::SeqCst) == 0)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn closure_selected_roots_reuse_authenticated_bodies_without_extra_reads() -> TestResult {
     let root = private_root()?;
     let store = FileObjectStore::open(root.path())?;

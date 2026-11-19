@@ -2,48 +2,18 @@
 //! The old root may retain historical Exact views; the fresh destination may
 //! contain only declared routed heads and map-only genesis views.
 
+use super::protected_native_snapshot::NativeProtectedSnapshotWitnessV1;
 use super::*;
-use quanta_index_contract::index::NativeProtectedNativeSnapshotV1;
-use std::collections::BTreeMap;
 
 pub fn verify_native_protected_snapshot_install_v1(
     state_root: &Path,
     io: &dyn CatalogReadOnlyIoAdmission,
     manifest: &NativeBootManifest,
     routes: &NativeProtectedSourceRoutesV1,
-    original: &NativeProtectedNativeSnapshotV1,
+    original: &NativeProtectedSnapshotWitnessV1,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    original
-        .validate_shape_v1()
-        .map_err(|_| IndexError::DigestConflict)?;
-    let encoded = u64::try_from(
-        original
-            .encoded_payload_len_v1()
-            .map_err(|_| IndexError::DigestConflict)?,
-    )
-    .map_err(|_| IndexError::ResourceLimited)?;
-    let _original_memory = budget
-        .reserve_memory(
-            encoded.checked_mul(2).ok_or(IndexError::ResourceLimited)?,
-            MemoryLifetime::Temporary,
-        )?
-        .ok_or(IndexError::ResourceLimited)?;
-    budget.charge(WorkUsage {
-        bytes: encoded,
-        ..WorkUsage::default()
-    })?;
-    let origin = routes
-        .native_origin
-        .as_ref()
-        .ok_or(IndexError::DigestConflict)?;
-    if origin.source_root_nonce != original.source_root_nonce
-        || origin.source_routes != original.source_routes
-        || origin.snapshot
-            != original
-                .object_ref_v1()
-                .map_err(|_| IndexError::DigestConflict)?
-    {
+    if routes.native_origin.as_ref() != Some(original.origin_v1()) {
         return Err(IndexError::DigestConflict);
     }
     with_admitted_connection(
@@ -66,24 +36,10 @@ pub fn verify_native_protected_snapshot_install_v1(
             if observed.selected.as_ref() != Some(manifest) {
                 return Err(IndexError::DigestConflict);
             }
-            protected_native_snapshot::visit_native_protected_snapshot_connection_v1(
-                connection,
-                observed.root_nonce,
-                manifest,
-                routes,
-                budget,
-                |installed, budget| {
-                    if installed.operation_rows != original.operation_rows
-                        || installed.genesis_views != original.genesis_views
-                        || installed.frontiers != original.frontiers
-                        || installed.source_authorities != original.source_authorities
-                        || installed.event_claims != original.event_claims
-                    {
-                        return Err(IndexError::DigestConflict);
-                    }
-                    verify_imported_exact_views_v1(connection, routes, budget)
-                },
-            )
+            protected_native_snapshot::compare_native_protected_snapshot_witness_connection_v1(
+                connection, manifest, routes, original, budget,
+            )?;
+            verify_imported_exact_views_v1(connection, routes, budget)
         },
     )
 }
@@ -93,69 +49,66 @@ pub(in crate::native::authority) fn verify_imported_exact_views_v1(
     routes: &NativeProtectedSourceRoutesV1,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    let capacity = routes
-        .heads
-        .len()
-        .checked_add(
-            routes
-                .repomap_heads
-                .len()
-                .checked_mul(2)
-                .ok_or(IndexError::ResourceLimited)?,
-        )
+    // Each read loads one fixed-width view and its bounded root rows.
+    let _scratch = budget
+        .reserve_memory(16_384, MemoryLifetime::Temporary)?
         .ok_or(IndexError::ResourceLimited)?;
-    let bytes = u64::try_from(capacity)
-        .map_err(|_| IndexError::ResourceLimited)?
-        .checked_mul(1024)
-        .and_then(|value| value.checked_add(16_384))
-        .ok_or(IndexError::ResourceLimited)?;
-    let _memory = budget
-        .reserve_memory(bytes, MemoryLifetime::Temporary)?
-        .ok_or(IndexError::ResourceLimited)?;
-    let mut expected: BTreeMap<WorkspaceKey, BTreeMap<ViewRef, CatalogView>> = BTreeMap::new();
-    let mut insert = |view: &CatalogView| -> Result<(), IndexError> {
-        let views = expected.entry(view.identity.workspace).or_default();
-        if views
-            .insert(view.identity, view.clone())
-            .is_some_and(|prior| prior != *view)
-        {
-            return Err(IndexError::DigestConflict);
-        }
-        Ok(())
-    };
+    routes.validate().map_err(|_| IndexError::DigestConflict)?;
     for head in &routes.heads {
-        insert(&head.publication)?;
+        verify_workspace_exact_views(connection, &head.publication, None, budget)?;
     }
     for head in &routes.repomap_heads {
-        insert(&head.publication)?;
-        if head.source_operation.is_none() {
-            insert(&head.source_publication)?;
+        let pair = (head.repo_id.as_str(), head.revision_id.as_str());
+        // Route validation permits a shared workspace only when both heads
+        // declare the same pair and the same published view.
+        if routes
+            .heads
+            .binary_search_by(|source| {
+                (source.repo_id.as_str(), source.revision_id.as_str()).cmp(&pair)
+            })
+            .is_ok()
+        {
+            continue;
         }
+        let genesis = head
+            .source_operation
+            .is_none()
+            .then_some(&head.source_publication);
+        verify_workspace_exact_views(connection, &head.publication, genesis, budget)?;
     }
-    for (workspace, views) in expected {
-        budget.charge(WorkUsage {
-            reads: u64::try_from(views.len())
-                .map_err(|_| IndexError::ResourceLimited)?
-                .checked_mul(3)
-                .and_then(|value| value.checked_add(1))
-                .ok_or(IndexError::ResourceLimited)?,
-            bytes: 4096,
-            ..WorkUsage::default()
-        })?;
-        let count: i64 = connection
-            .query_row(
-                "SELECT count(*) FROM native_view_v1 WHERE workspace=?1",
-                params![workspace_key(workspace)?],
-                |row| row.get(0),
-            )
-            .map_err(|error| sql(&error))?;
-        if usize::try_from(count).ok() != Some(views.len()) {
+    Ok(())
+}
+
+fn verify_workspace_exact_views(
+    connection: &Connection,
+    publication: &CatalogView,
+    genesis: Option<&CatalogView>,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    if genesis.is_some_and(|genesis| genesis.identity == publication.identity) {
+        return Err(IndexError::DigestConflict);
+    }
+    let (expected_count, row_limit): (i64, i64) = if genesis.is_some() { (2, 3) } else { (1, 2) };
+    budget.charge(WorkUsage {
+        reads: 1,
+        bytes: 4096,
+        ..WorkUsage::default()
+    })?;
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM (
+                 SELECT 1 FROM native_view_v1 WHERE workspace=?1 LIMIT ?2
+             )",
+            params![workspace_key(publication.identity.workspace)?, row_limit],
+            |row| row.get(0),
+        )
+        .map_err(|error| sql(&error))?;
+    if count != expected_count {
+        return Err(IndexError::DigestConflict);
+    }
+    for view in std::iter::once(publication).chain(genesis) {
+        if &retention::charged_exact_view(connection, view.identity, budget)? != view {
             return Err(IndexError::DigestConflict);
-        }
-        for (identity, expected_view) in views {
-            if retention::charged_exact_view(connection, identity, budget)? != expected_view {
-                return Err(IndexError::DigestConflict);
-            }
         }
     }
     Ok(())

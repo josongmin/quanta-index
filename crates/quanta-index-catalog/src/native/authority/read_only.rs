@@ -49,9 +49,18 @@ pub use history_pages::visit_legacy_history_checkpoint_pages_v1;
 mod protected_native_snapshot;
 #[cfg(test)]
 pub(super) use protected_native_snapshot::visit_native_protected_snapshot_connection_v1;
-pub use protected_native_snapshot::visit_native_protected_snapshot_rows_v1;
+pub use protected_native_snapshot::{
+    NativeProtectedSnapshotWitnessV1, read_native_protected_snapshot_witness_v1,
+    visit_native_protected_snapshot_rows_v1,
+};
+#[cfg(test)]
+pub(super) use protected_native_snapshot::{
+    compare_native_protected_snapshot_connection_v1, visit_native_protected_snapshot_connection_v1,
+};
 #[path = "read_only/protected_native_install.rs"]
 mod protected_native_install;
+#[cfg(test)]
+pub(super) use protected_native_install::verify_imported_exact_views_v1;
 #[cfg(test)]
 pub(super) use protected_native_install::verify_imported_exact_views_v1;
 pub use protected_native_install::verify_native_protected_snapshot_install_v1;

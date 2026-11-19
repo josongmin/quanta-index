@@ -4,7 +4,8 @@
 use quanta_index_contract::{
     RepoId, RevisionId,
     index::{
-        MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1, MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1,
+        MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1, MAX_NATIVE_PROTECTED_SNAPSHOT_BYTES_V1,
+        MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1,
         NativeProtectedRepoMapHeadV1, NativeProtectedSourceRoutesV1,
     },
 };
@@ -17,8 +18,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use super::{
-    SqliteCatalog, begin, check_ingress, confirmed_ingress_membership, delete_ingress, exactly_one,
-    fields_digest, int, object_key, operation_key, read_operation, read_view_row, reclaim,
+    IngressRow, SqliteCatalog, begin, check_ingress, confirmed_ingress_membership, delete_ingress, exactly_one,
+    fields_digest, int, object_key, operation_key, read_ingress, read_operation, read_view_row, reclaim,
     require_object, retention, sql, uint, workspace_key, write_operation,
 };
 
@@ -304,6 +305,68 @@ pub(super) fn charge_operation(
         bytes,
         ..WorkUsage::default()
     })
+}
+
+/// Read a protected route operation under a loan for its measured stored row.
+/// The caller's transaction keeps the length preflight and row read on one
+/// SQLite snapshot. Unprotected BOOT operations retain the fixed 4 KiB bound.
+pub(super) fn with_protected_operation<T>(
+    connection: &Connection,
+    key: OperationKey,
+    budget: &mut WorkBudget,
+    visit: impl FnOnce(&super::OperationRow, &mut WorkBudget) -> Result<T, IndexError>,
+) -> Result<T, IndexError> {
+    budget.charge(WorkUsage {
+        reads: 1,
+        ..WorkUsage::default()
+    })?;
+    let sizes: Option<(Option<i64>, Option<i64>, Option<i64>)> = {
+        let _key_memory = budget
+            .reserve_memory(SCRATCH_BYTES, MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        connection
+            .query_row(
+                "SELECT CASE WHEN typeof(workspace)='blob' AND length(workspace) BETWEEN 1 AND 4096 THEN length(workspace) END,
+                        CASE WHEN typeof(payload)='blob' AND length(payload) BETWEEN 1 AND ?2 THEN length(payload) END,
+                        CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN 32 END
+                 FROM native_operation_v1 WHERE operation=?1",
+                params![
+                    operation_key(key)?,
+                    i64::try_from(MAX_NATIVE_PROTECTED_SNAPSHOT_BYTES_V1)
+                        .map_err(|_| IndexError::ResourceLimited)?,
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| sql(&error))?
+    };
+    let (workspace, payload, digest) = sizes.ok_or(IndexError::SnapshotUnavailable)?;
+    let workspace = uint(workspace.ok_or(IndexError::DigestConflict)?)?;
+    let payload = uint(payload.ok_or(IndexError::ResourceLimited)?)?;
+    let digest = uint(digest.ok_or(IndexError::DigestConflict)?)?;
+    let bytes = workspace
+        .checked_add(payload)
+        .and_then(|value| value.checked_add(digest))
+        .ok_or(IndexError::ResourceLimited)?;
+    budget.charge(WorkUsage {
+        reads: 1,
+        bytes,
+        ..WorkUsage::default()
+    })?;
+    // The operation has fixed fields plus Vec<SourceEvent>. The canonical
+    // event JSON is wider than its in-memory fields; four payload lengths
+    // cover SQL materialization and decoded vector growth. The callback must
+    // fund any additional allocations it makes.
+    let backing = payload
+        .checked_mul(4)
+        .and_then(|value| value.checked_add(workspace))
+        .and_then(|value| value.checked_add(4096))
+        .ok_or(IndexError::ResourceLimited)?;
+    let _row_memory = budget
+        .reserve_memory(backing, MemoryLifetime::Temporary)?
+        .ok_or(IndexError::ResourceLimited)?;
+    let row = read_operation(connection, key)?.ok_or(IndexError::SnapshotUnavailable)?;
+    visit(&row, budget)
 }
 
 pub(super) fn load_publication(
@@ -677,6 +740,91 @@ fn route_marker_refs(
         objects,
         _memory: memory,
     })
+}
+
+/// Measure the fixed route-seal ingress before loading and decoding its
+/// bytes. The caller holds one SQLite snapshot for both reads.
+pub(super) fn read_protected_route_ingress(
+    connection: &Connection,
+    key: OperationKey,
+    budget: &mut WorkBudget,
+) -> Result<Option<IngressRow>, IndexError> {
+    budget.charge(WorkUsage {
+        reads: 1,
+        bytes: 128,
+        ..WorkUsage::default()
+    })?;
+    let sizes: Option<(Option<i64>, Option<i64>, Option<i64>)> = connection
+        .query_row(
+            "SELECT CASE WHEN typeof(workspace)='blob' AND length(workspace) BETWEEN 1 AND 4096 THEN length(workspace) END,
+                    CASE WHEN typeof(payload)='blob' AND length(payload) BETWEEN 1 AND 4096 THEN length(payload) END,
+                    CASE WHEN typeof(row_digest)='blob' AND length(row_digest)=32 THEN 32 END
+             FROM native_ingress_v1 WHERE operation=?1",
+            params![operation_key(key)?],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|error| sql(&error))?;
+    let Some((workspace, payload, digest)) = sizes else {
+        return Ok(None);
+    };
+    let workspace = uint(workspace.ok_or(IndexError::DigestConflict)?)?;
+    let payload = uint(payload.ok_or(IndexError::DigestConflict)?)?;
+    let digest = uint(digest.ok_or(IndexError::DigestConflict)?)?;
+    let bytes = workspace
+        .checked_add(payload)
+        .and_then(|value| value.checked_add(digest))
+        .ok_or(IndexError::ResourceLimited)?;
+    budget.charge(WorkUsage {
+        reads: 1,
+        bytes,
+        ..WorkUsage::default()
+    })?;
+    let _row_memory = budget
+        .reserve_memory(
+            bytes
+                .checked_mul(8)
+                .and_then(|value| value.checked_add(4096))
+                .ok_or(IndexError::ResourceLimited)?,
+            MemoryLifetime::Temporary,
+        )?
+        .ok_or(IndexError::ResourceLimited)?;
+    let row = read_ingress(connection, key)?.ok_or(IndexError::DigestConflict)?;
+    Ok(Some(row))
+}
+
+pub(super) fn require_open_protected_route_ingress(
+    connection: &Connection,
+    ingress: IngressRef,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    let row = read_protected_route_ingress(connection, ingress.operation, budget)?
+        .ok_or(IndexError::FenceLost)?;
+    if row.stage != ingress {
+        return Err(IndexError::FenceLost);
+    }
+    if row.sealed.is_some() {
+        return Err(IndexError::Conflict);
+    }
+    Ok(())
+}
+
+pub(super) fn protected_route_operation_exists(
+    connection: &Connection,
+    key: OperationKey,
+    budget: &mut WorkBudget,
+) -> Result<bool, IndexError> {
+    budget.charge(WorkUsage {
+        reads: 1,
+        ..WorkUsage::default()
+    })?;
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM native_operation_v1 WHERE operation=?1)",
+            params![operation_key(key)?],
+            |row| row.get(0),
+        )
+        .map_err(|error| sql(&error))
 }
 
 fn validate_route_ingress(
