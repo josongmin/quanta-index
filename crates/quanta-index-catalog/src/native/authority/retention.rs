@@ -10,6 +10,8 @@ use quanta_index_core::index::{
 };
 use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params, types::ValueRef};
 
+use std::hash::{BuildHasher, RandomState};
+
 use super::{
     SqliteCatalog, begin, boot_manifest, current_view, decode, distinct_roots, exactly_one,
     fields_digest, int, object_install, object_key, read_view_row, require_registered_edges, sql,
@@ -368,7 +370,8 @@ fn charged_view_roots_and_read(
 
 struct SelectedRoute {
     registration: RegisteredObject,
-    unanchored_children: Option<[ObjectRef; 2]>,
+    legacy_children: Option<[ObjectRef; 2]>,
+    legacy_markers: Option<LegacyMarkerIndex>,
     _memory: Option<MemoryLease>,
 }
 
@@ -389,7 +392,7 @@ impl SelectedRoute {
         })?;
         let mut registration = read_route_registration(connection, route.object, budget)?;
         require_registered_edges(connection, route.object, &registration)?;
-        let unanchored_children = match route.marker_anchor {
+        let legacy_children = match route.marker_anchor {
             Some(anchor) => {
                 if registration.children.len() != 2 {
                     return Err(IndexError::DigestConflict);
@@ -413,7 +416,8 @@ impl SelectedRoute {
         }
         Ok(Self {
             registration,
-            unanchored_children,
+            legacy_children,
+            legacy_markers: None,
             _memory: memory,
         })
     }
@@ -422,7 +426,7 @@ impl SelectedRoute {
 fn blocked_by_pin_or_work(
     connection: &Connection,
     identity: ViewRef,
-    route: Option<&SelectedRoute>,
+    route: Option<&mut SelectedRoute>,
     budget: &mut WorkBudget,
 ) -> Result<bool, IndexError> {
     let workspace_blob = workspace_key(identity.workspace)?;
@@ -465,8 +469,24 @@ fn blocked_by_pin_or_work(
     if route.registration.children.binary_search(&marker).is_ok() {
         return Ok(true);
     }
-    match route.unanchored_children {
-        Some(children) => compact_route_contains_marker(connection, children, marker, budget),
+    let Some(children) = route.legacy_children else {
+        return Ok(false);
+    };
+    if route.legacy_markers.is_none() {
+        let selected = route.registration.reference;
+        route.legacy_markers = Some(LegacyMarkerIndex::read(
+            connection, selected, children, budget,
+        )?);
+    }
+    let index = route
+        .legacy_markers
+        .as_ref()
+        .ok_or(IndexError::DigestConflict)?;
+    match index.parent(marker, budget)? {
+        Some(parent) => {
+            require_route_edge(connection, parent, marker, budget)?;
+            Ok(true)
+        }
         None => Ok(false),
     }
 }
@@ -623,55 +643,241 @@ pub(super) fn compact_marker_anchor_at_seal(
     }
 }
 
-fn compact_route_contains_marker(
-    connection: &Connection,
-    children: [ObjectRef; 2],
-    marker: ObjectRef,
-    budget: &mut WorkBudget,
-) -> Result<bool, IndexError> {
-    // Compacted routes retain the unchanged head set via the previous route
-    // and snapshot. Every non-compacted route owns its markers directly.
-    // Follow two-edge carriers only. Work admission also bounds malformed
-    // graphs, including a cycle in an otherwise invalid edge ledger.
-    let mut stack_memory = None;
-    let mut pending = Vec::new();
-    let mut next = Some(children);
-    loop {
-        if let Some(children) = next.take() {
-            let needed = pending
-                .len()
-                .checked_add(children.len())
-                .ok_or(IndexError::ResourceLimited)?;
-            if needed > pending.capacity() {
-                let capacity = pending.capacity().saturating_mul(2).max(needed);
-                let bytes = capacity
-                    .checked_mul(std::mem::size_of::<ObjectRef>())
-                    .and_then(|bytes| u64::try_from(bytes).ok())
-                    .ok_or(IndexError::ResourceLimited)?;
-                let replacement = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
-                pending
-                    .try_reserve_exact(capacity - pending.len())
-                    .map_err(|_| IndexError::ResourceLimited)?;
-                if pending.capacity() > capacity {
-                    return Err(IndexError::ResourceLimited);
-                }
-                drop(std::mem::replace(&mut stack_memory, replacement));
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LegacyVisitState {
+    Unseen,
+    Visiting,
+    Done,
+}
+
+#[derive(Clone, Copy)]
+struct LegacyMarkerEntry {
+    reference: ObjectRef,
+    parent: ObjectRef,
+    state: LegacyVisitState,
+}
+
+/// A single funded index covers all candidates on this retirement page. The
+/// BOOT format has no old marker anchor, so its two-child ancestry is read
+/// once; duplicate route/snapshot paths do not multiply metadata reads.
+#[derive(Default)]
+struct LegacyMarkerIndex {
+    slots: Vec<Option<LegacyMarkerEntry>>,
+    count: usize,
+    hash: RandomState,
+    _memory: Option<MemoryLease>,
+}
+
+impl LegacyMarkerIndex {
+    fn probe(
+        slots: &[Option<LegacyMarkerEntry>],
+        reference: ObjectRef,
+        hash: &RandomState,
+        budget: &WorkBudget,
+    ) -> Result<usize, IndexError> {
+        let mask = slots
+            .len()
+            .checked_sub(1)
+            .ok_or(IndexError::DigestConflict)?;
+        let mask_bits = u64::try_from(mask).map_err(|_| IndexError::ResourceLimited)?;
+        let mut index = usize::try_from(hash.hash_one(reference) & mask_bits)
+            .map_err(|_| IndexError::ResourceLimited)?;
+        for _ in 0..slots.len() {
+            budget.checkpoint()?;
+            let slot = slots.get(index).ok_or(IndexError::DigestConflict)?;
+            if slot.is_none_or(|entry| entry.reference == reference) {
+                return Ok(index);
             }
-            pending.extend(children);
+            index = index.wrapping_add(1) & mask;
         }
-        let Some(parent) = pending.pop() else {
-            return Ok(false);
-        };
-        let registration = read_route_registration(connection, parent, budget)?;
-        if registration.children.contains(&marker) {
-            require_route_edge(connection, parent, marker, budget)?;
-            return Ok(true);
+        Err(IndexError::DigestConflict)
+    }
+
+    fn grow(&mut self, budget: &WorkBudget) -> Result<(), IndexError> {
+        let capacity = self
+            .slots
+            .len()
+            .max(1)
+            .checked_mul(2)
+            .ok_or(IndexError::ResourceLimited)?;
+        let bytes = capacity
+            .checked_mul(std::mem::size_of::<Option<LegacyMarkerEntry>>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(IndexError::ResourceLimited)?;
+        let memory = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(capacity)
+            .map_err(|_| IndexError::ResourceLimited)?;
+        if slots.capacity() > capacity {
+            return Err(IndexError::ResourceLimited);
         }
-        if let [first, second] = registration.children.as_slice() {
-            require_route_edge(connection, parent, *first, budget)?;
-            require_route_edge(connection, parent, *second, budget)?;
-            next = Some([*first, *second]);
+        slots.resize(capacity, None);
+        for entry in self.slots.iter().flatten().copied() {
+            let index = Self::probe(&slots, entry.reference, &self.hash, budget)?;
+            *slots.get_mut(index).ok_or(IndexError::DigestConflict)? = Some(entry);
         }
+        self.slots = slots;
+        self._memory = memory;
+        Ok(())
+    }
+
+    fn remember(
+        &mut self,
+        parent: ObjectRef,
+        reference: ObjectRef,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        if !self.slots.is_empty() {
+            let index = Self::probe(&self.slots, reference, &self.hash, budget)?;
+            if self.slots.get(index).is_some_and(Option::is_some) {
+                return Ok(());
+            }
+        }
+        if self.count == self.slots.len() >> 1 {
+            self.grow(budget)?;
+        }
+        let index = Self::probe(&self.slots, reference, &self.hash, budget)?;
+        *self
+            .slots
+            .get_mut(index)
+            .ok_or(IndexError::DigestConflict)? = Some(LegacyMarkerEntry {
+            reference,
+            parent,
+            state: LegacyVisitState::Unseen,
+        });
+        self.count = self
+            .count
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        Ok(())
+    }
+
+    fn begin(&mut self, reference: ObjectRef, budget: &WorkBudget) -> Result<bool, IndexError> {
+        let index = Self::probe(&self.slots, reference, &self.hash, budget)?;
+        let entry = self
+            .slots
+            .get_mut(index)
+            .and_then(Option::as_mut)
+            .ok_or(IndexError::DigestConflict)?;
+        match entry.state {
+            LegacyVisitState::Unseen => {
+                entry.state = LegacyVisitState::Visiting;
+                Ok(true)
+            }
+            LegacyVisitState::Visiting => Err(IndexError::DigestConflict),
+            LegacyVisitState::Done => Ok(false),
+        }
+    }
+
+    fn finish(&mut self, reference: ObjectRef, budget: &WorkBudget) -> Result<(), IndexError> {
+        let index = Self::probe(&self.slots, reference, &self.hash, budget)?;
+        let entry = self
+            .slots
+            .get_mut(index)
+            .and_then(Option::as_mut)
+            .filter(|entry| entry.state == LegacyVisitState::Visiting)
+            .ok_or(IndexError::DigestConflict)?;
+        entry.state = LegacyVisitState::Done;
+        Ok(())
+    }
+
+    fn parent(
+        &self,
+        reference: ObjectRef,
+        budget: &WorkBudget,
+    ) -> Result<Option<ObjectRef>, IndexError> {
+        if self.slots.is_empty() {
+            return Ok(None);
+        }
+        let index = Self::probe(&self.slots, reference, &self.hash, budget)?;
+        Ok(self
+            .slots
+            .get(index)
+            .and_then(|slot| slot.map(|entry| entry.parent)))
+    }
+
+    fn read(
+        connection: &Connection,
+        selected: ObjectRef,
+        children: [ObjectRef; 2],
+        budget: &mut WorkBudget,
+    ) -> Result<Self, IndexError> {
+        let mut index = Self::default();
+        let mut pending = LegacyRoutePending::default();
+        for child in children {
+            index.remember(selected, child, budget)?;
+            pending.push((child, false), budget)?;
+        }
+        while let Some((reference, expanded)) = pending.frames.pop() {
+            if expanded {
+                index.finish(reference, budget)?;
+                continue;
+            }
+            if !index.begin(reference, budget)? {
+                continue;
+            }
+            // The complete edge ledger scan is bounded by MAX_CHILDREN and
+            // uses the SelectedRoute registration scratch held by the caller.
+            budget.charge(WorkUsage {
+                reads: 12,
+                ..WorkUsage::default()
+            })?;
+            let registration = read_route_registration(connection, reference, budget)?;
+            require_registered_edges(connection, reference, &registration)?;
+            for child in &registration.children {
+                index.remember(reference, *child, budget)?;
+            }
+            if let [first, second] = registration.children.as_slice() {
+                pending.push((reference, true), budget)?;
+                pending.push((*first, false), budget)?;
+                pending.push((*second, false), budget)?;
+            } else {
+                index.finish(reference, budget)?;
+            }
+        }
+        Ok(index)
+    }
+}
+
+#[derive(Default)]
+struct LegacyRoutePending {
+    frames: Vec<(ObjectRef, bool)>,
+    _memory: Option<MemoryLease>,
+}
+
+impl LegacyRoutePending {
+    fn push(&mut self, frame: (ObjectRef, bool), budget: &WorkBudget) -> Result<(), IndexError> {
+        let needed = self
+            .frames
+            .len()
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        if needed > self.frames.capacity() {
+            let capacity = self
+                .frames
+                .capacity()
+                .checked_mul(2)
+                .ok_or(IndexError::ResourceLimited)?
+                .max(needed);
+            let bytes = capacity
+                .checked_mul(std::mem::size_of::<(ObjectRef, bool)>())
+                .and_then(|bytes| u64::try_from(bytes).ok())
+                .ok_or(IndexError::ResourceLimited)?;
+            let memory = budget.reserve_memory(bytes, MemoryLifetime::Temporary)?;
+            let mut frames = Vec::new();
+            frames
+                .try_reserve_exact(capacity)
+                .map_err(|_| IndexError::ResourceLimited)?;
+            if frames.capacity() > capacity {
+                return Err(IndexError::ResourceLimited);
+            }
+            frames.append(&mut self.frames);
+            self.frames = frames;
+            self._memory = memory;
+        }
+        self.frames.push(frame);
+        Ok(())
     }
 }
 
@@ -927,17 +1133,21 @@ impl CatalogExactHistoryPort for SqliteCatalog {
                 has_more: false,
             });
         }
-        let selected_route = boot_manifest::read_stored(&tx)?
-            .and_then(|selected| selected.protected_source_routes)
-            .map(|route| SelectedRoute::read(&tx, route, budget))
-            .transpose()?;
         let mut cursor = after;
         let mut examined = 0_u32;
         let mut retired = 0_u32;
         let mut blocked = 0_u32;
+        let mut next = next_retire_candidate(&tx, workspace, epoch, cursor, floor, budget)?;
+        let mut selected_route = if next.is_some() {
+            boot_manifest::read_stored(&tx)?
+                .and_then(|selected| selected.protected_source_routes)
+                .map(|route| SelectedRoute::read(&tx, route, budget))
+                .transpose()?
+        } else {
+            None
+        };
         while examined < limit {
-            let Some(view) = next_retire_candidate(&tx, workspace, epoch, cursor, floor, budget)?
-            else {
+            let Some(view) = next.take() else {
                 break;
             };
             let identity = view.identity;
@@ -946,7 +1156,7 @@ impl CatalogExactHistoryPort for SqliteCatalog {
                     "current view appears below retention floor".into(),
                 ));
             }
-            let protected = blocked_by_pin_or_work(&tx, identity, selected_route.as_ref(), budget)?;
+            let protected = blocked_by_pin_or_work(&tx, identity, selected_route.as_mut(), budget)?;
             if protected {
                 blocked = blocked.checked_add(1).ok_or(IndexError::ResourceLimited)?;
             } else {
@@ -955,11 +1165,11 @@ impl CatalogExactHistoryPort for SqliteCatalog {
             }
             examined = examined.checked_add(1).ok_or(IndexError::ResourceLimited)?;
             cursor = Some(identity.sequence);
+            next = next_retire_candidate(&tx, workspace, epoch, cursor, floor, budget)?;
         }
         // Validate page+1 before commit so corruption cannot strand a
         // partially retired page behind an apparently usable cursor.
-        let has_more =
-            next_retire_candidate(&tx, workspace, epoch, cursor, floor, budget)?.is_some();
+        let has_more = next.is_some();
         budget.checkpoint()?;
         tx.commit().map_err(|error| sql(&error))?;
         drop(guard);
@@ -980,8 +1190,136 @@ mod tests {
         CollectionId, SlotId, TenantId, WorktreeId, native_immutable_object_ref_v1,
         native_protected_view_marker_bytes_v1,
     };
-    use quanta_index_core::{RequestBudgetV1, index::WorkLimits};
-    use std::time::Duration;
+    use quanta_index_core::{
+        RequestBudgetV1,
+        index::{MemoryLeaseOwner, MemoryScope, MemoryScopePort, WorkLimits},
+    };
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
+        time::Duration,
+    };
+
+    #[derive(Clone, Default)]
+    struct TrackedMemory(Arc<AtomicU64>);
+
+    impl MemoryLeaseOwner for TrackedMemory {
+        fn release(&self, bytes: u64) {
+            assert!(self.0.fetch_sub(bytes, Ordering::Relaxed) >= bytes);
+        }
+    }
+
+    impl MemoryScopePort for TrackedMemory {
+        fn reserve(&self, bytes: u64, _: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+            self.0
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+                    live.checked_add(bytes)
+                })
+                .map_err(|_| IndexError::ResourceLimited)?;
+            Ok(MemoryLease::new(bytes, Arc::new(self.clone())))
+        }
+    }
+
+    #[test]
+    fn legacy_compact_ancestry_is_indexed_once_before_retirement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let connection = Connection::open_in_memory()?;
+        connection.execute_batch(super::super::SCHEMA)?;
+        let workspace = WorkspaceKey {
+            tenant: TenantId([11; 16]),
+            collection: CollectionId([12; 16]),
+            worktree: WorktreeId([13; 16]),
+            slot: SlotId([14; 16]),
+        };
+        let retained = ViewRef {
+            workspace,
+            epoch: 1,
+            sequence: 0,
+            digest: Digest([15; 32]),
+        };
+        let unrelated = ViewRef {
+            sequence: 1,
+            digest: Digest([16; 32]),
+            ..retained
+        };
+        let register = |payload: &[u8], children: &[ObjectRef]| {
+            let reference = native_immutable_object_ref_v1(payload, children)
+                .ok_or(IndexError::ResourceLimited)?;
+            super::super::register(
+                &connection,
+                &[RegisteredObject::unscoped(
+                    reference,
+                    u64::try_from(16 + payload.len() + 32 * children.len())?,
+                    children.to_vec(),
+                )],
+            )?;
+            Ok::<_, Box<dyn std::error::Error>>(reference)
+        };
+        let marker = register(&native_protected_view_marker_bytes_v1(retained)?, &[])?;
+        let profile = register(b"legacy route profile", &[])?;
+        let request = register(b"legacy route request", &[])?;
+        let mut direct_children = [marker, profile, request];
+        direct_children.sort_unstable();
+        let direct = register(b"legacy direct route", &direct_children)?;
+        let mut previous = direct;
+        for depth in 0..12_u8 {
+            let mut snapshot_children = [previous, profile];
+            snapshot_children.sort_unstable_by(|left, right| right.cmp(left));
+            let snapshot = register(&[b's', depth], &snapshot_children)?;
+            let mut route_children = [previous, snapshot];
+            route_children.sort_unstable();
+            previous = register(&[b'r', depth], &route_children)?;
+        }
+        let route = boot_manifest::NativeBootSourceRouteRefV1 {
+            object: previous,
+            count: 0,
+            marker_anchor: None,
+        };
+        let memory = TrackedMemory::default();
+        let budget_for = |reads| {
+            let mut budget = WorkBudget::with_request(
+                WorkLimits {
+                    reads,
+                    bytes: 10 * 1024 * 1024,
+                    writes: 0,
+                    mutations: 0,
+                },
+                RequestBudgetV1::for_duration(Duration::from_secs(30)),
+            );
+            budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(memory.clone()))));
+            budget
+        };
+        let mut budget = budget_for(500);
+        let mut loaded = SelectedRoute::read(&connection, route, &mut budget)?;
+        assert!(loaded.legacy_markers.is_none());
+        assert!(blocked_by_pin_or_work(
+            &connection,
+            retained,
+            Some(&mut loaded),
+            &mut budget
+        )?);
+        assert!(loaded.legacy_markers.is_some());
+        assert!(!blocked_by_pin_or_work(
+            &connection,
+            unrelated,
+            Some(&mut loaded),
+            &mut budget
+        )?);
+        assert!(budget.usage().reads < 500);
+        drop(loaded);
+        assert_eq!(memory.0.load(Ordering::Relaxed), 0);
+        let mut denied = budget_for(64);
+        let mut denied_route = SelectedRoute::read(&connection, route, &mut denied)?;
+        assert!(matches!(
+            blocked_by_pin_or_work(&connection, retained, Some(&mut denied_route), &mut denied),
+            Err(IndexError::ResourceLimited)
+        ));
+        drop(denied_route);
+        assert_eq!(memory.0.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
 
     #[test]
     fn compact_selected_route_protects_exact_marker_without_operation_custody()
@@ -1026,7 +1364,9 @@ mod tests {
         let mut direct_children = [marker, profile, request];
         direct_children.sort_unstable();
         let direct = register(b"old route", &direct_children)?;
-        let first_page = register(b"old snapshot page one", &[direct, profile, request])?;
+        let mut first_page_children = [direct, profile, request];
+        first_page_children.sort_unstable_by(|left, right| right.cmp(left));
+        let first_page = register(b"old snapshot page one", &first_page_children)?;
         let second_page = register(b"old snapshot page two", &[])?;
         let snapshot = register(b"old snapshot manifest", &[first_page, second_page])?;
         let mut first_children = [direct, snapshot];
@@ -1041,7 +1381,7 @@ mod tests {
 
         let mut budget = WorkBudget::with_request(
             WorkLimits {
-                reads: 128,
+                reads: 256,
                 bytes: 16 * 1024 * 1024,
                 writes: 0,
                 mutations: 0,
@@ -1058,19 +1398,19 @@ mod tests {
             serde_json::from_value::<boot_manifest::NativeBootSourceRouteRefV1>(legacy_record)?,
             unanchored
         );
-        let route = SelectedRoute::read(&connection, unanchored, &mut budget)?;
+        let mut route = SelectedRoute::read(&connection, unanchored, &mut budget)?;
         // The test has only registered objects and edges, as after terminal
         // operation custody is retired. The old route still holds the marker.
         assert!(blocked_by_pin_or_work(
             &connection,
             retained,
-            Some(&route),
+            Some(&mut route),
             &mut budget
         )?);
         assert!(!blocked_by_pin_or_work(
             &connection,
             unrelated,
-            Some(&route),
+            Some(&mut route),
             &mut budget
         )?);
         let marker_anchor = compact_marker_anchor_at_seal(
@@ -1090,7 +1430,7 @@ mod tests {
             ..unanchored
         };
         let anchored = serde_json::from_slice(&serde_json::to_vec(&anchored)?)?;
-        let loaded = SelectedRoute::read(&connection, anchored, &mut budget)?;
+        let mut loaded = SelectedRoute::read(&connection, anchored, &mut budget)?;
         let mut point_lookup = WorkBudget::with_request(
             WorkLimits {
                 reads: 4,
@@ -1103,13 +1443,13 @@ mod tests {
         assert!(blocked_by_pin_or_work(
             &connection,
             retained,
-            Some(&loaded),
+            Some(&mut loaded),
             &mut point_lookup
         )?);
         assert!(!blocked_by_pin_or_work(
             &connection,
             unrelated,
-            Some(&loaded),
+            Some(&mut loaded),
             &mut point_lookup
         )?);
         assert_eq!(point_lookup.usage().reads, 4);
@@ -1121,7 +1461,7 @@ mod tests {
             1
         );
         assert_eq!(
-            blocked_by_pin_or_work(&connection, retained, Some(&route), &mut budget),
+            blocked_by_pin_or_work(&connection, retained, Some(&mut route), &mut budget),
             Err(IndexError::DigestConflict)
         );
         assert!(SelectedRoute::read(&connection, anchored, &mut budget).is_err());
