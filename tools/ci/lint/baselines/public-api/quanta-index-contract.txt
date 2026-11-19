@@ -844,6 +844,28 @@ impl core::marker::Unpin for quanta_index_contract::index::InputDomain
 impl core::marker::UnsafeUnpin for quanta_index_contract::index::InputDomain
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::index::InputDomain
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::index::InputDomain
+pub enum quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>
+pub quanta_index_contract::index::NativeProtectedEncodingErrorV1::Format(&'static str)
+pub quanta_index_contract::index::NativeProtectedEncodingErrorV1::Work(E)
+impl<E> quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>
+pub fn quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>::into_error(self, format: impl core::ops::function::FnOnce(&'static str) -> E) -> E
+impl<E: core::cmp::Eq> core::cmp::Eq for quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>
+impl<E: core::cmp::PartialEq> core::cmp::PartialEq for quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>
+pub fn quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>::eq(&self, other: &quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>) -> bool
+impl<E: core::cmp::PartialEq> core::marker::StructuralPartialEq for quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>
+impl<E: core::error::Error + 'static> core::error::Error for quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>
+pub fn quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl<E: core::fmt::Debug> core::fmt::Debug for quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>
+pub fn quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E: core::fmt::Display> core::fmt::Display for quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>
+pub fn quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E> core::marker::Freeze for quanta_index_contract::index::NativeProtectedEncodingErrorV1<E> where E: core::marker::Freeze
+impl<E> core::marker::Send for quanta_index_contract::index::NativeProtectedEncodingErrorV1<E> where E: core::marker::Send
+impl<E> core::marker::Sync for quanta_index_contract::index::NativeProtectedEncodingErrorV1<E> where E: core::marker::Sync
+impl<E> core::marker::Unpin for quanta_index_contract::index::NativeProtectedEncodingErrorV1<E> where E: core::marker::Unpin
+impl<E> core::marker::UnsafeUnpin for quanta_index_contract::index::NativeProtectedEncodingErrorV1<E> where E: core::marker::UnsafeUnpin
+impl<E> core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::index::NativeProtectedEncodingErrorV1<E> where E: core::panic::unwind_safe::RefUnwindSafe
+impl<E> core::panic::unwind_safe::UnwindSafe for quanta_index_contract::index::NativeProtectedEncodingErrorV1<E> where E: core::panic::unwind_safe::UnwindSafe
 pub enum quanta_index_contract::index::OperationStatus
 pub quanta_index_contract::index::OperationStatus::Pending(quanta_index_contract_base::index_refs::AttemptRef)
 pub quanta_index_contract::index::OperationStatus::Published(quanta_index_contract_base::index_refs::ViewRef)
@@ -1919,9 +1941,9 @@ impl core::fmt::Debug for quanta_index_contract::index::NativeProtectedFrontierV
 pub fn quanta_index_contract::index::NativeProtectedFrontierV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::index::NativeProtectedFrontierV1
 impl serde_core::ser::Serialize for quanta_index_contract::index::NativeProtectedFrontierV1
-pub fn quanta_index_contract::index::NativeProtectedFrontierV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::index::NativeProtectedFrontierV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::index::NativeProtectedFrontierV1
-pub fn quanta_index_contract::index::NativeProtectedFrontierV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::index::NativeProtectedFrontierV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::index::NativeProtectedFrontierV1
 impl core::marker::Send for quanta_index_contract::index::NativeProtectedFrontierV1
 impl core::marker::Sync for quanta_index_contract::index::NativeProtectedFrontierV1
@@ -1942,9 +1964,9 @@ impl core::fmt::Debug for quanta_index_contract::index::NativeProtectedNativeOri
 pub fn quanta_index_contract::index::NativeProtectedNativeOriginV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::index::NativeProtectedNativeOriginV1
 impl serde_core::ser::Serialize for quanta_index_contract::index::NativeProtectedNativeOriginV1
-pub fn quanta_index_contract::index::NativeProtectedNativeOriginV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::index::NativeProtectedNativeOriginV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::index::NativeProtectedNativeOriginV1
-pub fn quanta_index_contract::index::NativeProtectedNativeOriginV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::index::NativeProtectedNativeOriginV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::index::NativeProtectedNativeOriginV1
 impl core::marker::Send for quanta_index_contract::index::NativeProtectedNativeOriginV1
 impl core::marker::Sync for quanta_index_contract::index::NativeProtectedNativeOriginV1
@@ -1965,7 +1987,10 @@ pub quanta_index_contract::index::NativeProtectedNativeSnapshotV1::wire_version:
 impl quanta_index_contract::index::NativeProtectedNativeSnapshotV1
 pub const quanta_index_contract::index::NativeProtectedNativeSnapshotV1::WIRE_VERSION: u32
 pub fn quanta_index_contract::index::NativeProtectedNativeSnapshotV1::encoded_payload_len_v1(&self) -> core::result::Result<usize, &'static str>
+pub fn quanta_index_contract::index::NativeProtectedNativeSnapshotV1::encoded_payload_len_with_work_v1<E>(&self, checkpoint: &mut impl core::ops::function::FnMut() -> core::result::Result<(), E>) -> core::result::Result<usize, quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>>
 pub fn quanta_index_contract::index::NativeProtectedNativeSnapshotV1::object_ref_v1(&self) -> core::result::Result<quanta_index_contract_base::index_refs::ObjectRef, &'static str>
+pub fn quanta_index_contract::index::NativeProtectedNativeSnapshotV1::physical_plan_v1(&self) -> core::result::Result<quanta_index_contract::index::NativeProtectedSnapshotPlanV1, &'static str>
+pub fn quanta_index_contract::index::NativeProtectedNativeSnapshotV1::physical_plan_with_work_v1<E>(&self, checkpoint: &mut impl core::ops::function::FnMut() -> core::result::Result<(), E>) -> core::result::Result<quanta_index_contract::index::NativeProtectedSnapshotPlanV1, quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>>
 pub fn quanta_index_contract::index::NativeProtectedNativeSnapshotV1::validate_shape_v1(&self) -> core::result::Result<(), &'static str>
 impl core::clone::Clone for quanta_index_contract::index::NativeProtectedNativeSnapshotV1
 pub fn quanta_index_contract::index::NativeProtectedNativeSnapshotV1::clone(&self) -> quanta_index_contract::index::NativeProtectedNativeSnapshotV1
@@ -1976,9 +2001,9 @@ impl core::fmt::Debug for quanta_index_contract::index::NativeProtectedNativeSna
 pub fn quanta_index_contract::index::NativeProtectedNativeSnapshotV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::index::NativeProtectedNativeSnapshotV1
 impl serde_core::ser::Serialize for quanta_index_contract::index::NativeProtectedNativeSnapshotV1
-pub fn quanta_index_contract::index::NativeProtectedNativeSnapshotV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::index::NativeProtectedNativeSnapshotV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::index::NativeProtectedNativeSnapshotV1
-pub fn quanta_index_contract::index::NativeProtectedNativeSnapshotV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::index::NativeProtectedNativeSnapshotV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::index::NativeProtectedNativeSnapshotV1
 impl core::marker::Send for quanta_index_contract::index::NativeProtectedNativeSnapshotV1
 impl core::marker::Sync for quanta_index_contract::index::NativeProtectedNativeSnapshotV1
@@ -2005,9 +2030,9 @@ impl core::fmt::Debug for quanta_index_contract::index::NativeProtectedRepoMapHe
 pub fn quanta_index_contract::index::NativeProtectedRepoMapHeadV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::index::NativeProtectedRepoMapHeadV1
 impl serde_core::ser::Serialize for quanta_index_contract::index::NativeProtectedRepoMapHeadV1
-pub fn quanta_index_contract::index::NativeProtectedRepoMapHeadV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::index::NativeProtectedRepoMapHeadV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::index::NativeProtectedRepoMapHeadV1
-pub fn quanta_index_contract::index::NativeProtectedRepoMapHeadV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::index::NativeProtectedRepoMapHeadV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::index::NativeProtectedRepoMapHeadV1
 impl core::marker::Send for quanta_index_contract::index::NativeProtectedRepoMapHeadV1
 impl core::marker::Sync for quanta_index_contract::index::NativeProtectedRepoMapHeadV1
@@ -2015,6 +2040,30 @@ impl core::marker::Unpin for quanta_index_contract::index::NativeProtectedRepoMa
 impl core::marker::UnsafeUnpin for quanta_index_contract::index::NativeProtectedRepoMapHeadV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::index::NativeProtectedRepoMapHeadV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::index::NativeProtectedRepoMapHeadV1
+pub struct quanta_index_contract::index::NativeProtectedSnapshotPhysicalV1<'a>
+impl<'a> quanta_index_contract::index::NativeProtectedSnapshotPhysicalV1<'a>
+pub fn quanta_index_contract::index::NativeProtectedSnapshotPhysicalV1<'a>::new_v1(payload: &'a [u8], roots: &'a [quanta_index_contract_base::index_refs::ObjectRef]) -> core::result::Result<Self, &'static str>
+pub fn quanta_index_contract::index::NativeProtectedSnapshotPhysicalV1<'a>::reference_v1(&self) -> quanta_index_contract_base::index_refs::ObjectRef
+pub fn quanta_index_contract::index::NativeProtectedSnapshotPhysicalV1<'a>::visit_v1<E>(&self, visit: impl core::ops::function::FnMut(quanta_index_contract_base::index_refs::ObjectRef, &[u8], &[quanta_index_contract_base::index_refs::ObjectRef]) -> core::result::Result<(), E>) -> core::result::Result<(), E>
+impl<'a> core::marker::Freeze for quanta_index_contract::index::NativeProtectedSnapshotPhysicalV1<'a>
+impl<'a> core::marker::Send for quanta_index_contract::index::NativeProtectedSnapshotPhysicalV1<'a>
+impl<'a> core::marker::Sync for quanta_index_contract::index::NativeProtectedSnapshotPhysicalV1<'a>
+impl<'a> core::marker::Unpin for quanta_index_contract::index::NativeProtectedSnapshotPhysicalV1<'a>
+impl<'a> core::marker::UnsafeUnpin for quanta_index_contract::index::NativeProtectedSnapshotPhysicalV1<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::index::NativeProtectedSnapshotPhysicalV1<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for quanta_index_contract::index::NativeProtectedSnapshotPhysicalV1<'a>
+pub struct quanta_index_contract::index::NativeProtectedSnapshotPlanV1
+impl quanta_index_contract::index::NativeProtectedSnapshotPlanV1
+pub fn quanta_index_contract::index::NativeProtectedSnapshotPlanV1::manifest_v1(&self) -> core::option::Option<(quanta_index_contract_base::index_refs::ObjectRef, &[u8], &[quanta_index_contract_base::index_refs::ObjectRef])>
+pub fn quanta_index_contract::index::NativeProtectedSnapshotPlanV1::pages_v1(&self) -> impl core::iter::traits::iterator::Iterator<Item = (quanta_index_contract_base::index_refs::ObjectRef, usize)> + '_
+pub fn quanta_index_contract::index::NativeProtectedSnapshotPlanV1::reference_v1(&self) -> quanta_index_contract_base::index_refs::ObjectRef
+impl core::marker::Freeze for quanta_index_contract::index::NativeProtectedSnapshotPlanV1
+impl core::marker::Send for quanta_index_contract::index::NativeProtectedSnapshotPlanV1
+impl core::marker::Sync for quanta_index_contract::index::NativeProtectedSnapshotPlanV1
+impl core::marker::Unpin for quanta_index_contract::index::NativeProtectedSnapshotPlanV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::index::NativeProtectedSnapshotPlanV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::index::NativeProtectedSnapshotPlanV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::index::NativeProtectedSnapshotPlanV1
 pub struct quanta_index_contract::index::NativeProtectedSourceAuthorityV1
 pub quanta_index_contract::index::NativeProtectedSourceAuthorityV1::producer: quanta_index_contract_base::index_refs::ProducerId
 pub quanta_index_contract::index::NativeProtectedSourceAuthorityV1::source_epoch: u64
@@ -2029,9 +2078,9 @@ impl core::fmt::Debug for quanta_index_contract::index::NativeProtectedSourceAut
 pub fn quanta_index_contract::index::NativeProtectedSourceAuthorityV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::index::NativeProtectedSourceAuthorityV1
 impl serde_core::ser::Serialize for quanta_index_contract::index::NativeProtectedSourceAuthorityV1
-pub fn quanta_index_contract::index::NativeProtectedSourceAuthorityV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::index::NativeProtectedSourceAuthorityV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::index::NativeProtectedSourceAuthorityV1
-pub fn quanta_index_contract::index::NativeProtectedSourceAuthorityV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::index::NativeProtectedSourceAuthorityV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::index::NativeProtectedSourceAuthorityV1
 impl core::marker::Send for quanta_index_contract::index::NativeProtectedSourceAuthorityV1
 impl core::marker::Sync for quanta_index_contract::index::NativeProtectedSourceAuthorityV1
@@ -2055,9 +2104,9 @@ impl core::fmt::Debug for quanta_index_contract::index::NativeProtectedSourceHea
 pub fn quanta_index_contract::index::NativeProtectedSourceHeadV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::index::NativeProtectedSourceHeadV1
 impl serde_core::ser::Serialize for quanta_index_contract::index::NativeProtectedSourceHeadV1
-pub fn quanta_index_contract::index::NativeProtectedSourceHeadV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::index::NativeProtectedSourceHeadV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::index::NativeProtectedSourceHeadV1
-pub fn quanta_index_contract::index::NativeProtectedSourceHeadV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::index::NativeProtectedSourceHeadV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::index::NativeProtectedSourceHeadV1
 impl core::marker::Send for quanta_index_contract::index::NativeProtectedSourceHeadV1
 impl core::marker::Sync for quanta_index_contract::index::NativeProtectedSourceHeadV1
@@ -2074,7 +2123,9 @@ impl quanta_index_contract::index::NativeProtectedSourceRoutesV1
 pub const quanta_index_contract::index::NativeProtectedSourceRoutesV1::WIRE_VERSION: u32
 pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::children(&self) -> core::result::Result<alloc::vec::Vec<quanta_index_contract_base::index_refs::ObjectRef>, &'static str>
 pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::children_backing_bytes(&self) -> core::result::Result<usize, &'static str>
+pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::children_with_work_v1<E>(&self, checkpoint: &mut impl core::ops::function::FnMut() -> core::result::Result<(), E>) -> core::result::Result<alloc::vec::Vec<quanta_index_contract_base::index_refs::ObjectRef>, quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>>
 pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::encoded_payload_len(&self) -> core::result::Result<usize, &'static str>
+pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::object_identity_with_work_v1<E>(&self, checkpoint: &mut impl core::ops::function::FnMut() -> core::result::Result<(), E>) -> core::result::Result<(quanta_index_contract_base::index_refs::ObjectRef, usize, alloc::vec::Vec<quanta_index_contract_base::index_refs::ObjectRef>), quanta_index_contract::index::NativeProtectedEncodingErrorV1<E>>
 pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::object_ref(&self) -> core::result::Result<quanta_index_contract_base::index_refs::ObjectRef, &'static str>
 pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::validate(&self) -> core::result::Result<(), &'static str>
 impl core::clone::Clone for quanta_index_contract::index::NativeProtectedSourceRoutesV1
@@ -2086,9 +2137,9 @@ impl core::fmt::Debug for quanta_index_contract::index::NativeProtectedSourceRou
 pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::index::NativeProtectedSourceRoutesV1
 impl serde_core::ser::Serialize for quanta_index_contract::index::NativeProtectedSourceRoutesV1
-pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::index::NativeProtectedSourceRoutesV1
-pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::index::NativeProtectedSourceRoutesV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::index::NativeProtectedSourceRoutesV1
 impl core::marker::Send for quanta_index_contract::index::NativeProtectedSourceRoutesV1
 impl core::marker::Sync for quanta_index_contract::index::NativeProtectedSourceRoutesV1
@@ -2616,12 +2667,16 @@ pub const quanta_index_contract::index::NATIVE_IMMUTABLE_OBJECT_MAGIC_V1: &[u8; 
 pub const quanta_index_contract::index::NATIVE_INDEX_STATE_MARKER_CONTENT: &[u8]
 pub const quanta_index_contract::index::NATIVE_INDEX_STATE_MARKER_NAME: &str
 pub const quanta_index_contract::index::NATIVE_INDEX_STATE_VERSION: u32
+pub const quanta_index_contract::index::NATIVE_PROTECTED_SNAPSHOT_PAGE_BYTES_V1: usize
 pub const quanta_index_contract::index::NATIVE_SOURCE_CAPTURE_HASH_DOMAIN: &[u8]
 pub const quanta_index_contract::index::NATIVE_SOURCE_CAPTURE_VERSION: u32
 pub fn quanta_index_contract::index::imported_legacy_source_completed_digest_v1(manifest_digest: quanta_index_contract_base::index_refs::Digest, operation: &quanta_index_contract::index::ImmutableOperation, publication: &quanta_index_contract::index::CatalogView) -> core::option::Option<quanta_index_contract_base::index_refs::Digest>
 pub fn quanta_index_contract::index::imported_legacy_source_manifest_digest_v1(origin: &quanta_index_contract::index::LegacySourceOriginV1, accepted_transcript_sha256: quanta_index_contract_base::index_refs::Digest, source_manifest_sha256: quanta_index_contract_base::index_refs::Digest, original_snapshot_id: u64, candidate_root_nonce: quanta_index_contract_base::index_refs::Digest, target: &quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceTargetV1, request: &quanta_index_contract::index::UpdateRequest) -> core::option::Option<quanta_index_contract_base::index_refs::Digest>
 pub fn quanta_index_contract::index::native_immutable_object_header_v1(payload_bytes: u32, child_count: u32) -> [u8; 16]
 pub fn quanta_index_contract::index::native_immutable_object_ref_v1(payload: &[u8], children: &[quanta_index_contract_base::index_refs::ObjectRef]) -> core::option::Option<quanta_index_contract_base::index_refs::ObjectRef>
+pub fn quanta_index_contract::index::native_immutable_object_ref_with_work_v1<E>(payload: &[u8], children: &[quanta_index_contract_base::index_refs::ObjectRef], checkpoint: &mut impl core::ops::function::FnMut() -> core::result::Result<(), E>) -> core::result::Result<core::option::Option<quanta_index_contract_base::index_refs::ObjectRef>, E>
+pub fn quanta_index_contract::index::native_protected_snapshot_paged_len_v1(bytes: &[u8]) -> core::result::Result<core::option::Option<usize>, &'static str>
+pub fn quanta_index_contract::index::native_protected_source_route_seal_key_v1(primary: quanta_index_contract_base::index_refs::OperationKey, root_nonce: quanta_index_contract_base::index_refs::Digest) -> core::result::Result<quanta_index_contract_base::index_refs::OperationKey, &'static str>
 pub fn quanta_index_contract::index::native_protected_view_marker_bytes_v1(view: quanta_index_contract_base::index_refs::ViewRef) -> core::result::Result<alloc::vec::Vec<u8>, &'static str>
 pub fn quanta_index_contract::index::native_protected_view_marker_ref_v1(view: quanta_index_contract_base::index_refs::ViewRef) -> core::result::Result<quanta_index_contract_base::index_refs::ObjectRef, &'static str>
 pub mod quanta_index_contract::ipc

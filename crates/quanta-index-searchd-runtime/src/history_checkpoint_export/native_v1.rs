@@ -2,9 +2,18 @@
 //! the final immutable frame and the deployment selection recheck.
 
 use super::*;
-use quanta_index_core::index::{MemoryLifetime, ObjectRef, StoredObject};
+use quanta_index_contract::index::{
+    NativeProtectedNativeSnapshotV1, NativeProtectedSnapshotPlanV1,
+};
+use quanta_index_core::index::{MemoryLease, MemoryLifetime, ObjectRef, StoredObject};
 
 const CHUNK_BYTES: usize = 64 * 1024;
+
+fn export_index_error(cause: anyhow::Error) -> IndexError {
+    cause
+        .downcast::<IndexError>()
+        .unwrap_or_else(|cause| IndexError::Storage(cause.to_string()))
+}
 
 pub(super) fn export_v1(
     selection: &deployment_selection::DeploymentSelectionDocumentV1,
@@ -132,18 +141,16 @@ fn export_protected_v1(
             routes,
             budget,
             |snapshot, budget| {
-                let length = snapshot
-                    .encoded_payload_len_v1()
-                    .map_err(|message| IndexError::InvalidInput(message.into()))?;
-                let memory = u64::try_from(length).map_err(|_| IndexError::ResourceLimited)?;
-                let _snapshot_memory = budget
-                    .reserve_memory(memory, MemoryLifetime::Temporary)?
-                    .ok_or(IndexError::ResourceLimited)?;
-                let payload = serde_json::to_vec(snapshot)
-                    .map_err(|cause| IndexError::Storage(cause.to_string()))?;
-                let reference = snapshot
-                    .object_ref_v1()
-                    .map_err(|message| IndexError::InvalidInput(message.into()))?;
+                let plan = snapshot
+                    .physical_plan_with_work_v1(&mut || budget.checkpoint())
+                    .map_err(|cause| {
+                        cause.into_error(|message| IndexError::InvalidInput(message.into()))
+                    })?;
+                let length = plan.pages_v1().map(|(_, bytes)| bytes).sum::<usize>();
+                budget.charge(WorkUsage {
+                    bytes: u64::try_from(length).map_err(|_| IndexError::ResourceLimited)?,
+                    ..WorkUsage::default()
+                })?;
                 let max_pending = u32::try_from(
                     source
                         .selected_config_v1()
@@ -161,50 +168,19 @@ fn export_protected_v1(
                         output,
                         budget,
                     )
-                    .map_err(|cause| {
-                        cause
-                            .downcast::<IndexError>()
-                            .unwrap_or_else(|cause| IndexError::Storage(cause.to_string()))
-                    })?;
+                    .map_err(export_index_error)?;
                 }
-                write_frame(
-                    output,
-                    &ExportFrame::NativeObjectBegin {
-                        reference,
-                        payload_bytes: memory,
-                        children: &snapshot.roots,
-                    },
-                    budget,
-                )
-                .map_err(|cause| IndexError::Storage(cause.to_string()))?;
-                for (index, bytes) in payload.chunks(CHUNK_BYTES).enumerate() {
-                    write_frame(
-                        output,
-                        &ExportFrame::NativeObjectChunk {
-                            offset: u64::try_from(
-                                index
-                                    .checked_mul(CHUNK_BYTES)
-                                    .ok_or(IndexError::ResourceLimited)?,
-                            )
-                            .map_err(|_| IndexError::ResourceLimited)?,
-                            bytes,
-                        },
-                        budget,
-                    )
-                    .map_err(|cause| IndexError::Storage(cause.to_string()))?;
-                }
-                write_frame(output, &ExportFrame::NativeObjectEnd { reference }, budget)
-                    .map_err(|cause| IndexError::Storage(cause.to_string()))?;
+                write_protected_snapshot_v1(snapshot, &plan, output, budget)?;
                 write_frame(
                     output,
                     &ExportFrame::NativeProtectedComplete {
                         source_root_nonce: snapshot.source_root_nonce,
                         source_routes: snapshot.source_routes,
-                        snapshot: Some(reference),
+                        snapshot: Some(plan.reference_v1()),
                     },
                     budget,
                 )
-                .map_err(|cause| IndexError::Storage(cause.to_string()))?;
+                .map_err(export_index_error)?;
                 Ok(())
             },
         )?;
@@ -212,6 +188,172 @@ fn export_protected_v1(
     })?;
 
     Ok(())
+}
+
+fn write_protected_snapshot_v1(
+    snapshot: &NativeProtectedNativeSnapshotV1,
+    plan: &NativeProtectedSnapshotPlanV1,
+    output: &mut impl io::Write,
+    budget: &mut WorkBudget,
+) -> std::result::Result<(), IndexError> {
+    let memory = budget
+        .reserve_memory(CHUNK_BYTES as u64, MemoryLifetime::Temporary)?
+        .ok_or(IndexError::ResourceLimited)?;
+    let mut chunk = Vec::new();
+    chunk
+        .try_reserve_exact(CHUNK_BYTES)
+        .map_err(|_| IndexError::ResourceLimited)?;
+    if chunk.capacity() > CHUNK_BYTES {
+        return Err(IndexError::ResourceLimited);
+    }
+    let mut writer = SnapshotPageWriter {
+        pages: plan.pages_v1(),
+        roots: &snapshot.roots,
+        page: None,
+        chunk,
+        output,
+        budget,
+        failure: None,
+    };
+    let encoded = serde_json::to_writer(&mut writer, snapshot);
+    if let Some(error) = writer.failure.take() {
+        return Err(error);
+    }
+    encoded.map_err(|error| IndexError::Storage(error.to_string()))?;
+    if writer.page.is_some() || writer.pages.next().is_some() {
+        return Err(IndexError::DigestConflict);
+    }
+    drop(writer);
+    drop(memory);
+    if let Some((reference, content, children)) = plan.manifest_v1() {
+        write_native_object_v1(reference, content, children, output, budget)
+            .map_err(export_index_error)?;
+    }
+    Ok(())
+}
+
+struct SnapshotPage {
+    reference: ObjectRef,
+    bytes: usize,
+    offset: usize,
+}
+
+struct SnapshotPageWriter<'a, W, P> {
+    pages: P,
+    roots: &'a [ObjectRef],
+    page: Option<SnapshotPage>,
+    chunk: Vec<u8>,
+    output: &'a mut W,
+    budget: &'a mut WorkBudget,
+    failure: Option<IndexError>,
+}
+
+impl<W: io::Write, P: Iterator<Item = (ObjectRef, usize)>> SnapshotPageWriter<'_, W, P> {
+    fn push(&mut self, mut input: &[u8]) -> std::result::Result<(), IndexError> {
+        while !input.is_empty() {
+            if self.page.is_none() {
+                let (reference, bytes) = self.pages.next().ok_or(IndexError::DigestConflict)?;
+                if bytes == 0 {
+                    return Err(IndexError::DigestConflict);
+                }
+                write_frame(
+                    self.output,
+                    &ExportFrame::NativeObjectBegin {
+                        reference,
+                        payload_bytes: u64::try_from(bytes)
+                            .map_err(|_| IndexError::ResourceLimited)?,
+                        children: std::mem::take(&mut self.roots),
+                    },
+                    self.budget,
+                )
+                .map_err(export_index_error)?;
+                self.page = Some(SnapshotPage {
+                    reference,
+                    bytes,
+                    offset: 0,
+                });
+            }
+            let page = self.page.as_mut().ok_or(IndexError::DigestConflict)?;
+            let width = (page.bytes - page.offset).min(CHUNK_BYTES);
+            let (prefix, remaining) = input.split_at((width - self.chunk.len()).min(input.len()));
+            self.chunk.extend_from_slice(prefix);
+            input = remaining;
+            if self.chunk.len() == width {
+                write_frame(
+                    self.output,
+                    &ExportFrame::NativeObjectChunk {
+                        offset: u64::try_from(page.offset)
+                            .map_err(|_| IndexError::ResourceLimited)?,
+                        bytes: &self.chunk,
+                    },
+                    self.budget,
+                )
+                .map_err(export_index_error)?;
+                self.chunk.clear();
+                page.offset += width;
+                if page.offset == page.bytes {
+                    write_frame(
+                        self.output,
+                        &ExportFrame::NativeObjectEnd {
+                            reference: page.reference,
+                        },
+                        self.budget,
+                    )
+                    .map_err(export_index_error)?;
+                    self.page = None;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<W: io::Write, P: Iterator<Item = (ObjectRef, usize)>> io::Write
+    for SnapshotPageWriter<'_, W, P>
+{
+    fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        if let Err(error) = self.push(input) {
+            self.failure = Some(error);
+            return Err(io::Error::other("protected Native snapshot export refused"));
+        }
+        Ok(input.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn write_native_object_v1(
+    reference: ObjectRef,
+    payload: &[u8],
+    children: &[ObjectRef],
+    output: &mut impl io::Write,
+    budget: &mut WorkBudget,
+) -> Result<()> {
+    write_frame(
+        output,
+        &ExportFrame::NativeObjectBegin {
+            reference,
+            payload_bytes: u64::try_from(payload.len())?,
+            children,
+        },
+        budget,
+    )?;
+    for (ordinal, chunk) in payload.chunks(CHUNK_BYTES).enumerate() {
+        let offset = ordinal
+            .checked_mul(CHUNK_BYTES)
+            .ok_or(IndexError::ResourceLimited)?;
+        write_frame(
+            output,
+            &ExportFrame::NativeObjectChunk {
+                offset: u64::try_from(offset)?,
+                bytes: chunk,
+            },
+            budget,
+        )?;
+    }
+    write_frame(output, &ExportFrame::NativeObjectEnd { reference }, budget)
 }
 
 /// Child-before-parent transfer preserves the canonical ordered child vector.
@@ -225,31 +367,21 @@ fn export_closure_v1(
     budget: &mut WorkBudget,
 ) -> Result<()> {
     let maximum = usize::try_from(max_pending)?;
-    ensure!(maximum > 0, "Native History export frontier is empty");
-    let bytes = u64::from(max_pending)
-        .checked_mul(u64::try_from(std::mem::size_of::<(ObjectRef, bool)>())?)
-        .ok_or(IndexError::ResourceLimited)?;
-    let _frontier_memory = budget
-        .reserve_memory(bytes, MemoryLifetime::Temporary)?
-        .ok_or(IndexError::ResourceLimited)?;
-    let mut pending = Vec::new();
-    pending
-        .try_reserve_exact(maximum)
-        .map_err(|_| IndexError::ResourceLimited)?;
-    pending.push((root, false));
-    while let Some((reference, expanded)) = pending.pop() {
+    let mut frontier = ExportFrontier::default();
+    frontier.reserve(1, maximum, budget)?;
+    frontier.pending.push((root, false));
+    while let Some((reference, expanded)) = frontier.pending.pop() {
         let stored = get(reference, budget)?;
         if !expanded {
-            let needed = pending
+            let additional = stored
+                .registration
+                .children
                 .len()
                 .checked_add(1)
-                .and_then(|n| n.checked_add(stored.registration.children.len()))
                 .ok_or(IndexError::ResourceLimited)?;
-            if needed > maximum {
-                return Err(IndexError::ResourceLimited.into());
-            }
-            pending.push((reference, true));
-            pending.extend(
+            frontier.reserve(additional, maximum, budget)?;
+            frontier.pending.push((reference, true));
+            frontier.pending.extend(
                 stored
                     .registration
                     .children
@@ -259,32 +391,62 @@ fn export_closure_v1(
             );
             continue;
         }
-        write_frame(
+        write_native_object_v1(
+            reference,
+            &stored.payload,
+            &stored.registration.children,
             output,
-            &ExportFrame::NativeObjectBegin {
-                reference,
-                payload_bytes: u64::try_from(stored.payload.len())?,
-                children: &stored.registration.children,
-            },
             budget,
         )?;
-        for (ordinal, chunk) in stored.payload.chunks(CHUNK_BYTES).enumerate() {
-            let offset = ordinal
-                .checked_mul(CHUNK_BYTES)
-                .ok_or(IndexError::ResourceLimited)?;
-            write_frame(
-                output,
-                &ExportFrame::NativeObjectChunk {
-                    offset: u64::try_from(offset)?,
-                    bytes: chunk,
-                },
-                budget,
-            )?;
-        }
-        write_frame(output, &ExportFrame::NativeObjectEnd { reference }, budget)?;
     }
     budget.checkpoint()?;
     Ok(())
+}
+
+#[derive(Default)]
+struct ExportFrontier {
+    pending: Vec<(ObjectRef, bool)>,
+    // Drop the pending backing before refunding its loan.
+    _memory: Option<MemoryLease>,
+}
+
+impl ExportFrontier {
+    fn reserve(
+        &mut self,
+        additional: usize,
+        maximum: usize,
+        budget: &WorkBudget,
+    ) -> Result<(), IndexError> {
+        let needed = self
+            .pending
+            .len()
+            .checked_add(additional)
+            .filter(|needed| *needed <= maximum)
+            .ok_or(IndexError::ResourceLimited)?;
+        let current = self.pending.capacity();
+        if needed <= current {
+            return Ok(());
+        }
+        let capacity = current.saturating_mul(2).max(needed).min(maximum);
+        let bytes = capacity
+            .checked_mul(std::mem::size_of::<(ObjectRef, bool)>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(IndexError::ResourceLimited)?;
+        let memory = budget
+            .reserve_memory(bytes, MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let mut pending = Vec::new();
+        pending
+            .try_reserve_exact(capacity)
+            .map_err(|_| IndexError::ResourceLimited)?;
+        if pending.capacity() > capacity {
+            return Err(IndexError::ResourceLimited);
+        }
+        pending.append(&mut self.pending);
+        self.pending = pending;
+        self._memory = Some(memory);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -294,11 +456,22 @@ mod tests {
     use quanta_index_core::index::{
         MemoryLease, MemoryLeaseOwner, MemoryScope, MemoryScopePort, RegisteredObject, WorkLimits,
     };
-    use std::{collections::BTreeMap, sync::Arc, time::Duration};
+    use std::{
+        collections::BTreeMap,
+        sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        },
+        time::Duration,
+    };
 
-    struct Memory;
+    #[derive(Clone, Default)]
+    struct Memory(Arc<AtomicU64>, Option<u64>);
     impl MemoryLeaseOwner for Memory {
-        fn release(&self, _: u64) {}
+        fn release(&self, bytes: u64) {
+            let previous = self.0.fetch_sub(bytes, Ordering::Relaxed);
+            assert!(previous >= bytes);
+        }
     }
     impl MemoryScopePort for Memory {
         fn reserve(
@@ -306,10 +479,17 @@ mod tests {
             bytes: u64,
             _: MemoryLifetime,
         ) -> std::result::Result<MemoryLease, IndexError> {
-            Ok(MemoryLease::new(bytes, Arc::new(Self)))
+            let _previous = self
+                .0
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+                    live.checked_add(bytes)
+                        .filter(|next| self.1.is_none_or(|limit| *next <= limit))
+                })
+                .map_err(|_| IndexError::ResourceLimited)?;
+            Ok(MemoryLease::new(bytes, Arc::new(self.clone())))
         }
     }
-    fn work() -> WorkBudget {
+    fn work(memory: Memory) -> WorkBudget {
         let mut work = WorkBudget::with_request(
             WorkLimits {
                 reads: 100,
@@ -319,7 +499,7 @@ mod tests {
             },
             RequestBudgetV1::for_duration(Duration::from_secs(30)),
         );
-        work.bind_memory_scope(Some(MemoryScope::new(Arc::new(Memory))));
+        work.bind_memory_scope(Some(MemoryScope::new(Arc::new(memory))));
         work
     }
     fn object(payload: Vec<u8>, children: Vec<ObjectRef>) -> Result<StoredObject> {
@@ -349,6 +529,104 @@ mod tests {
         }
         Ok(frames)
     }
+
+    #[test]
+    fn protected_snapshot_stream_matches_materialized_frames_under_one_chunk_budget() -> Result<()>
+    {
+        let route = ObjectRef(Digest([11; 32]));
+        let snapshot = NativeProtectedNativeSnapshotV1 {
+            wire_version: NativeProtectedNativeSnapshotV1::WIRE_VERSION,
+            source_root_nonce: Digest([10; 32]),
+            source_routes: route,
+            operation_rows: vec![vec![7; CHUNK_BYTES]],
+            genesis_views: Vec::new(),
+            frontiers: Vec::new(),
+            source_authorities: Vec::new(),
+            event_claims: Vec::new(),
+            roots: vec![route],
+        };
+        let canonical = serde_json::to_vec(&snapshot)?;
+        ensure!(canonical.len() > CHUNK_BYTES);
+        let reference = quanta_index_contract::index::native_immutable_object_ref_v1(
+            &canonical,
+            &snapshot.roots,
+        )
+        .ok_or_else(|| anyhow!("snapshot object identity refused"))?;
+        let mut expected = Vec::new();
+        write_native_object_v1(
+            reference,
+            &canonical,
+            &snapshot.roots,
+            &mut expected,
+            &mut work(Memory::default()),
+        )?;
+
+        let plan = snapshot.physical_plan_v1().map_err(anyhow::Error::msg)?;
+        ensure!(plan.reference_v1() == reference);
+        let memory = Memory(Arc::default(), Some(CHUNK_BYTES as u64));
+        let mut output = Vec::new();
+        write_protected_snapshot_v1(&snapshot, &plan, &mut output, &mut work(memory.clone()))?;
+        ensure!(output == expected);
+        ensure!(memory.0.load(Ordering::Relaxed) == 0);
+        output.clear();
+        let mut denied = work(memory.clone());
+        denied.charge(WorkUsage {
+            writes: 98,
+            ..WorkUsage::default()
+        })?;
+        let refused = write_protected_snapshot_v1(&snapshot, &plan, &mut output, &mut denied);
+        ensure!(refused == Err(IndexError::ResourceLimited));
+        ensure!(matches!(
+            frames(&output)?.as_slice(),
+            [Frame::NativeObjectBegin { reference: observed, .. }] if *observed == reference
+        ));
+        ensure!(memory.0.load(Ordering::Relaxed) == 0);
+        Ok(())
+    }
+
+    #[test]
+    fn protected_snapshot_writer_splits_fragments_at_chunk_and_page_boundaries() -> Result<()> {
+        let child = ObjectRef(Digest([20; 32]));
+        let payload = vec![13; CHUNK_BYTES + 17];
+        let (first, second) = payload.split_at(CHUNK_BYTES + 3);
+        let first_ref =
+            quanta_index_contract::index::native_immutable_object_ref_v1(first, &[child])
+                .ok_or_else(|| anyhow!("snapshot first page identity refused"))?;
+        let second_ref = quanta_index_contract::index::native_immutable_object_ref_v1(second, &[])
+            .ok_or_else(|| anyhow!("snapshot second page identity refused"))?;
+        let mut expected = Vec::new();
+        let mut expected_budget = work(Memory::default());
+        write_native_object_v1(
+            first_ref,
+            first,
+            &[child],
+            &mut expected,
+            &mut expected_budget,
+        )?;
+        write_native_object_v1(second_ref, second, &[], &mut expected, &mut expected_budget)?;
+
+        let mut output = Vec::new();
+        let mut budget = work(Memory::default());
+        let mut writer = SnapshotPageWriter {
+            pages: [(first_ref, first.len()), (second_ref, second.len())].into_iter(),
+            roots: &[child],
+            page: None,
+            chunk: Vec::with_capacity(CHUNK_BYTES),
+            output: &mut output,
+            budget: &mut budget,
+            failure: None,
+        };
+        io::Write::write_all(&mut writer, &payload[..7])?;
+        io::Write::write_all(&mut writer, &payload[7..])?;
+        ensure!(writer.page.is_none() && writer.pages.next().is_none());
+        ensure!(writer.chunk.is_empty() && writer.failure.is_none());
+        let extra = io::Write::write_all(&mut writer, &[1]);
+        ensure!(extra.is_err() && writer.failure == Some(IndexError::DigestConflict));
+        drop(writer);
+        ensure!(output == expected);
+        Ok(())
+    }
+
     #[test]
     fn native_export_is_postorder_and_preserves_repeated_edges_and_fragment_offsets() -> Result<()>
     {
@@ -366,9 +644,10 @@ mod tests {
             .map(|object| (object.registration.reference, object))
             .collect();
         let mut output = Vec::new();
+        let memory = Memory(Arc::default(), Some(64 * 1024));
         export_closure_v1(
             root_ref,
-            8,
+            500_000,
             |reference, _| {
                 objects
                     .get(&reference)
@@ -376,8 +655,9 @@ mod tests {
                     .ok_or(IndexError::SnapshotUnavailable)
             },
             &mut output,
-            &mut work(),
+            &mut work(memory.clone()),
         )?;
+        ensure!(memory.0.load(Ordering::Relaxed) == 0);
         let frames = frames(&output)?;
         let completed: Vec<_> = frames
             .iter()
@@ -423,7 +703,7 @@ mod tests {
                 }
             },
             &mut output,
-            &mut work(),
+            &mut work(Memory::default()),
         );
         ensure!(failure.is_err() && output.is_empty());
         let failure = export_closure_v1(
@@ -431,9 +711,109 @@ mod tests {
             1,
             |_, _| Ok(root.clone()),
             &mut output,
-            &mut work(),
+            &mut work(Memory::default()),
         );
         ensure!(failure.is_err() && output.is_empty());
+        let zero = export_closure_v1(
+            root.registration.reference,
+            0,
+            |_, _| Ok(root.clone()),
+            &mut output,
+            &mut work(Memory::default()),
+        );
+        ensure!(
+            matches!(
+                zero.map_err(export_index_error),
+                Err(IndexError::ResourceLimited)
+            ) && output.is_empty()
+        );
+        let slot_bytes = u64::try_from(std::mem::size_of::<(ObjectRef, bool)>())?;
+        let memory = Memory(Arc::default(), Some(2 * slot_bytes));
+        let growth = export_closure_v1(
+            root.registration.reference,
+            2,
+            |reference, _| {
+                if reference == root.registration.reference {
+                    Ok(root.clone())
+                } else {
+                    Err(IndexError::SnapshotUnavailable)
+                }
+            },
+            &mut output,
+            &mut work(memory.clone()),
+        );
+        ensure!(matches!(
+            growth.map_err(export_index_error),
+            Err(IndexError::ResourceLimited)
+        ));
+        ensure!(output.is_empty() && memory.0.load(Ordering::Relaxed) == 0);
+        Ok(())
+    }
+
+    #[test]
+    fn native_export_preserves_funded_refusal_after_provisional_frames() -> Result<()> {
+        let good = object(vec![3], vec![])?;
+        let missing = ObjectRef(Digest([99; 32]));
+        let root = object(vec![4], vec![good.registration.reference, missing])?;
+        let mut output = Vec::new();
+        let memory = Memory::default();
+        let mut budget = work(memory.clone());
+        let mut live_at_refusal = 0;
+        let result = export_closure_v1(
+            root.registration.reference,
+            4,
+            |reference, _| {
+                if reference == root.registration.reference {
+                    Ok(root.clone())
+                } else if reference == good.registration.reference {
+                    Ok(good.clone())
+                } else if reference == missing {
+                    live_at_refusal = memory.0.load(Ordering::Relaxed);
+                    Err(IndexError::SnapshotUnavailable)
+                } else {
+                    Err(IndexError::DigestConflict)
+                }
+            },
+            &mut output,
+            &mut budget,
+        );
+        ensure!(matches!(
+            result.map_err(export_index_error),
+            Err(IndexError::SnapshotUnavailable)
+        ));
+        ensure!(live_at_refusal > 0, "frontier loan was not held at refusal");
+        ensure!(
+            memory.0.load(Ordering::Relaxed) == 0,
+            "frontier loan survived the failed export"
+        );
+        let emitted = frames(&output)?;
+        ensure!(
+            emitted
+                .iter()
+                .any(|frame| matches!(frame, Frame::NativeObjectEnd { reference } if *reference == good.registration.reference))
+        );
+        ensure!(
+            !emitted
+                .iter()
+                .any(|frame| matches!(frame, Frame::NativeObjectEnd { reference } if *reference == root.registration.reference))
+        );
+
+        let mut exhausted = work(Memory::default());
+        exhausted.charge(WorkUsage {
+            bytes: 10_000_000,
+            ..WorkUsage::default()
+        })?;
+        let result = write_frame(
+            &mut Vec::new(),
+            &ExportFrame::NativeObjectEnd {
+                reference: good.registration.reference,
+            },
+            &mut exhausted,
+        );
+        ensure!(matches!(
+            result.map_err(export_index_error),
+            Err(IndexError::ResourceLimited)
+        ));
         Ok(())
     }
 }

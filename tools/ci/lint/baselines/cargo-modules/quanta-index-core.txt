@@ -513,6 +513,32 @@ crate quanta_index_core
 │   │   ├── trait WorkClaimPort: pub
 │   │   └── struct WorkRetirementCursor: pub
 │   ├── mod protected_source_routes: pub(self)
+│   │   ├── struct HeadCount: pub(self)
+│   │   ├── trait NativeProtectedSnapshotPageV1: pub
+│   │   ├── struct RouteHeadCounts: pub(self)
+│   │   ├── struct SequentialSnapshotPages: pub(self)
+│   │   ├── struct SnapshotPageLayout: pub(self)
+│   │   └── mod snapshot_decode: pub(self)
+│   │       ├── struct DecodeBudget: pub(self)
+│   │       ├── struct ExtraElement: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       ├── enum Field: pub(self)
+│   │       ├── struct FundedSnapshot: pub(super)
+│   │       ├── struct JsonCheckpointReader: pub(self)
+│   │       ├── struct ListSeed: pub(self)
+│   │       │   ├── type Value: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       ├── struct OwnedSnapshotPages: pub(self)
+│   │       ├── struct ParserTokens: pub(self)
+│   │       ├── struct RowsSeed: pub(self)
+│   │       │   ├── type Value: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       ├── struct SnapshotBacking: pub(self)
+│   │       ├── trait SnapshotDecodeWork: pub(super)
+│   │       ├── struct SnapshotSeed: pub(self)
+│   │       │   ├── type Value: pub(self)
+│   │       │   └── type Value: pub(self)
+│   │       └── struct TokenCheckedReader: pub(self)
 │   ├── mod query: pub(self)
 │   │   ├── trait IndexQueryPort: pub
 │   │   ├── enum NativeTextHitSource: pub

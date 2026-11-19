@@ -1682,6 +1682,23 @@ impl FileObjectStore {
             budget,
         )
     }
+
+    /// Hold one admitted physical page FD through payload decoding. The
+    /// caller must finish the stream before using any parsed snapshot data.
+    pub fn open_protected_snapshot_page_v1(
+        &self,
+        reference: ObjectRef,
+        budget: &mut WorkBudget,
+    ) -> Result<Box<dyn quanta_index_core::index::NativeProtectedSnapshotPageV1 + '_>, IndexError>
+    {
+        read_io::open_protected_snapshot_page(
+            &self.objects,
+            self.authority.as_ref().map(|_authority| &self.namespace),
+            self.read_io.as_deref(),
+            reference,
+            budget,
+        )
+    }
 }
 
 fn local_install_batch_memory_bound(
@@ -2947,6 +2964,70 @@ mod tests {
         check_eq!(sink.0.load(Ordering::Relaxed), 0);
         check_eq!(sink.1.load(Ordering::Relaxed), 0);
         check_eq!(object_file_count(&directory)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn protected_snapshot_page_stream_authenticates_exact_wire_at_finish()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Read as _;
+
+        let directory = TestDir::new();
+        let store = FileObjectStore::open(&directory.0)?;
+        let mut build = budget()?;
+        let child = store.put(b"child", &[], &mut build)?.reference;
+        let payload = vec![0xa5; 128 * 1024];
+        let object = store.put(&payload, &[child], &mut build)?.reference;
+        let mut verify = budget()?;
+        let mut page = store.open_protected_snapshot_page_v1(object, &mut verify)?;
+        check_eq!(page.payload_len(), payload.len());
+        check_eq!(page.registration().children.as_slice(), &[child][..]);
+        let mut scratch = [0; 4096];
+        let mut seen = 0usize;
+        loop {
+            let count = page.read(&mut scratch)?;
+            if count == 0 {
+                break;
+            }
+            check!(scratch[..count].iter().all(|byte| *byte == 0xa5));
+            seen += count;
+        }
+        check_eq!(seen, payload.len());
+        page.finish()?;
+        check_eq!(verify.usage().reads, 1);
+        check_eq!(verify.usage().writes, 0);
+
+        let path = store.path_for(object);
+        let original = fs::read(&path)?;
+        for offset in [HEADER_LEN, original.len() - 1] {
+            let mut wire = original.clone();
+            wire[offset] ^= 1;
+            fs::write(&path, wire)?;
+            let mut tamper_work = budget()?;
+            let mut page = store.open_protected_snapshot_page_v1(object, &mut tamper_work)?;
+            while page.read(&mut scratch)? != 0 {}
+            check!(matches!(
+                page.finish(),
+                Err(IndexError::CorruptObject(message)) if message == "object digest or size mismatch"
+            ));
+        }
+        fs::write(&path, &original)?;
+        let mut truncate_work = budget()?;
+        let mut page = store.open_protected_snapshot_page_v1(object, &mut truncate_work)?;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)?
+            .set_len(HEADER_LEN as u64)?;
+        let error = page
+            .read(&mut scratch)
+            .expect_err("truncated page was read");
+        check!(matches!(
+            error
+                .get_ref()
+                .and_then(|cause| cause.downcast_ref::<IndexError>()),
+            Some(IndexError::CorruptObject(message)) if message == "object truncated during read"
+        ));
+        fs::write(path, original)?;
         Ok(())
     }
 

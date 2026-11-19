@@ -74,10 +74,9 @@ pub(super) fn verify_preserved_native_v1(
                         {
                             return Err(IndexError::DigestConflict);
                         }
-                        let stored = reader.get(origin.snapshot, budget)?;
                         with_native_protected_snapshot_v1(
                             origin.snapshot,
-                            &stored,
+                            |reference, budget| reader.get(reference, budget),
                             budget,
                             |snapshot, budget| {
                                 if snapshot != old_snapshot {

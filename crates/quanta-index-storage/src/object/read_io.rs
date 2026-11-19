@@ -6,11 +6,13 @@ use std::{
     num::NonZeroUsize,
     os::unix::fs::{MetadataExt as _, OpenOptionsExt as _},
     path::{Path, PathBuf},
+    time::Instant,
 };
 
+use quanta_index_core::RequestBudgetV1;
 use quanta_index_core::index::{
-    Digest, IndexError, MemoryLease, MemoryLifetime, ObjectReadFile, ObjectReadIoPort, ObjectRef,
-    RegisteredObject, StoredObject, WorkBudget, WorkUsage,
+    Digest, IndexError, MemoryLease, MemoryLifetime, NativeProtectedSnapshotPageV1, ObjectReadFile,
+    ObjectReadIoPort, ObjectRef, RegisteredObject, StoredObject, WorkBudget, WorkUsage,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -188,6 +190,150 @@ pub(super) fn read_registration(
     Ok(registration)
 }
 
+struct ProtectedSnapshotPage<'a> {
+    owner: ObjectIoFile,
+    registration: RegisteredObject,
+    reference: ObjectRef,
+    payload_len: usize,
+    remaining: usize,
+    hasher: Sha256,
+    objects: &'a Path,
+    namespace: Option<&'a NamespaceLease>,
+    request: RequestBudgetV1,
+    checkpoint_allowance: usize,
+    // The page and its admitted FD retire before this backing loan.
+    _memory: Option<MemoryLease>,
+}
+
+impl ProtectedSnapshotPage<'_> {
+    fn checkpoint(&self) -> Result<(), IndexError> {
+        if self.request.is_cancelled() {
+            Err(IndexError::Cancelled)
+        } else if Instant::now() >= self.request.deadline() {
+            Err(IndexError::ResourceLimited)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl std::io::Read for ProtectedSnapshotPage<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() || self.remaining == 0 {
+            return Ok(0);
+        }
+        if self.checkpoint_allowance == 0 {
+            self.checkpoint().map_err(std::io::Error::other)?;
+            self.checkpoint_allowance = STREAM_BYTES;
+        }
+        let width = buffer
+            .len()
+            .min(self.remaining)
+            .min(self.checkpoint_allowance);
+        let mut file = self.owner.file().map_err(std::io::Error::other)?;
+        let count = loop {
+            match file.read(&mut buffer[..width]) {
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                    // An interrupted read consumes no bytes and cannot reach
+                    // the next size-based checkpoint by itself.
+                    self.checkpoint().map_err(std::io::Error::other)?;
+                }
+                Err(error) => return Err(std::io::Error::other(storage_error(&error))),
+                Ok(count) => break count,
+            }
+        };
+        if count == 0 {
+            return Err(std::io::Error::other(IndexError::CorruptObject(
+                "object truncated during read".into(),
+            )));
+        }
+        self.hasher.update(&buffer[..count]);
+        self.remaining -= count;
+        self.checkpoint_allowance -= count;
+        Ok(count)
+    }
+}
+
+impl NativeProtectedSnapshotPageV1 for ProtectedSnapshotPage<'_> {
+    fn registration(&self) -> &RegisteredObject {
+        &self.registration
+    }
+
+    fn payload_len(&self) -> usize {
+        self.payload_len
+    }
+
+    fn finish(self: Box<Self>) -> Result<(), IndexError> {
+        let page = *self;
+        page.checkpoint()?;
+        if page.remaining != 0 {
+            return Err(IndexError::CorruptObject(
+                "object payload not fully consumed".into(),
+            ));
+        }
+        let mut file = page.owner.file()?;
+        verify_wire_end(&mut file, page.reference, || finish_digest(page.hasher))?;
+        validate_stream_namespace(page.objects, page.namespace)
+    }
+}
+
+fn validate_stream_namespace(
+    objects: &Path,
+    namespace: Option<&NamespaceLease>,
+) -> Result<(), IndexError> {
+    if let Some(namespace) = namespace {
+        let _binding = namespace.validate_objects(objects)?;
+    } else {
+        let root = objects
+            .parent()
+            .ok_or_else(|| IndexError::Storage("object store has no root".into()))?;
+        validate_private_directory(root)?;
+        validate_private_directory(objects)?;
+    }
+    Ok(())
+}
+
+/// Read one physical snapshot page through the same admitted inode and digest
+/// as a regular object read. The caller must consume it and call `finish`
+/// before using any decoded data.
+pub(super) fn open_protected_snapshot_page<'a>(
+    objects: &'a Path,
+    namespace: Option<&'a NamespaceLease>,
+    io: Option<&dyn ObjectReadIoPort>,
+    reference: ObjectRef,
+    budget: &mut WorkBudget,
+) -> Result<Box<dyn NativeProtectedSnapshotPageV1 + 'a>, IndexError> {
+    let memory = budget.reserve_memory(
+        u64::try_from(std::mem::size_of::<ProtectedSnapshotPage<'a>>())
+            .map_err(|_error| IndexError::ResourceLimited)?,
+        MemoryLifetime::Temporary,
+    )?;
+    let prefix = open_wire_prefix(objects, namespace, io, reference, budget)?;
+    charge_decoded_wire(prefix.payload_len, prefix.child_bytes, budget)?;
+    let registration =
+        decode_wire_registration(reference, prefix.file_len, &prefix.children, budget)?;
+    let request = budget.request().clone();
+    let WirePrefix {
+        owner,
+        payload_len,
+        hasher,
+        ..
+    } = prefix;
+    Ok(Box::new(ProtectedSnapshotPage {
+        owner,
+        registration,
+        reference,
+        payload_len,
+        remaining: payload_len,
+        hasher,
+        objects,
+        namespace,
+        request,
+        checkpoint_allowance: 0,
+        _memory: memory,
+    }))
+}
+
 fn read_object<T>(
     objects: &Path,
     namespace: Option<&NamespaceLease>,
@@ -196,6 +342,37 @@ fn read_object<T>(
     budget: &mut WorkBudget,
     read_payload: impl FnOnce(&mut &File, usize, &mut Sha256, &WorkBudget) -> Result<T, IndexError>,
 ) -> Result<(RegisteredObject, T), IndexError> {
+    let mut prefix = open_wire_prefix(objects, namespace, io, reference, budget)?;
+    let mut file = prefix.owner.file()?;
+    let payload = read_payload(&mut file, prefix.payload_len, &mut prefix.hasher, budget)?;
+    verify_wire_end(&mut file, reference, || {
+        finish_digest(std::mem::take(&mut prefix.hasher))
+    })?;
+    charge_decoded_wire(prefix.payload_len, prefix.child_bytes, budget)?;
+    let registration =
+        decode_wire_registration(reference, prefix.file_len, &prefix.children, budget)?;
+    Ok((registration, payload))
+}
+
+// Own the child wire bytes and their loan until the caller either decodes
+// registration or refuses. Fields drop in order, so bytes retire before loan.
+struct WirePrefix {
+    owner: ObjectIoFile,
+    file_len: usize,
+    payload_len: usize,
+    child_bytes: usize,
+    children: Vec<u8>,
+    _child_wire_memory: Option<MemoryLease>,
+    hasher: Sha256,
+}
+
+fn open_wire_prefix(
+    objects: &Path,
+    namespace: Option<&NamespaceLease>,
+    io: Option<&dyn ObjectReadIoPort>,
+    reference: ObjectRef,
+    budget: &mut WorkBudget,
+) -> Result<WirePrefix, IndexError> {
     let (owner, file_len) = open_wire_reader(objects, namespace, io, reference, budget)?;
     let mut file = owner.file()?;
     let mut header = [0; HEADER_LEN];
@@ -220,7 +397,7 @@ fn read_object<T>(
         }
     };
 
-    let _child_wire_memory = if child_bytes == 0 {
+    let child_wire_memory = if child_bytes == 0 {
         None
     } else {
         budget.reserve_memory(
@@ -230,11 +407,15 @@ fn read_object<T>(
     };
     let children = read_buffer(&mut file, child_bytes)?;
     hasher.update(&children);
-    let payload = read_payload(&mut file, payload_len, &mut hasher, budget)?;
-    verify_wire_end(&mut file, reference, || finish_digest(hasher))?;
-    charge_decoded_wire(payload_len, child_bytes, budget)?;
-    let registration = decode_wire_registration(reference, file_len, &children, budget)?;
-    Ok((registration, payload))
+    Ok(WirePrefix {
+        owner,
+        file_len,
+        payload_len,
+        child_bytes,
+        children,
+        _child_wire_memory: child_wire_memory,
+        hasher,
+    })
 }
 
 fn hash_wire_tail(

@@ -3,7 +3,7 @@
 
 use super::*;
 use quanta_index_core::index::{
-    IngressRef, ports::ImmutableObjectPort, with_native_protected_snapshot_v1,
+    IngressRef, ports::ImmutableObjectPort, with_native_protected_snapshot_stream_v1,
     with_native_protected_source_routes_v1,
 };
 
@@ -17,12 +17,35 @@ impl NativeDispatcher {
     ) -> Result<NativeIndexResponse, IndexError> {
         let stored = self.objects.get(routes, budget)?;
         with_native_protected_source_routes_v1(routes, None, stored, budget, |decoded, budget| {
-            if let Some(origin) = &decoded.native_origin {
-                let snapshot_object = self.objects.get(origin.snapshot, budget)?;
+            let origin = decoded.native_origin.as_ref();
+            if let Some(origin) = origin {
                 let old_route_object = self.objects.get(origin.source_routes, budget)?;
-                with_native_protected_snapshot_v1(
+                with_native_protected_source_routes_v1(
+                    origin.source_routes,
+                    None,
+                    old_route_object,
+                    budget,
+                    |old, _| {
+                        if old.heads != decoded.heads || old.repomap_heads != decoded.repomap_heads
+                        {
+                            return Err(IndexError::DigestConflict);
+                        }
+                        Ok(())
+                    },
+                )?;
+            }
+            // These checks depend only on staged objects and the held root.
+            // Refuse before a Native carry-over can commit provisional rows.
+            self.verify_protected_view_markers_v1(decoded, budget)?;
+            let before = self.current_root_identity_for_view(budget)?;
+            if let Some(origin) = origin {
+                with_native_protected_snapshot_stream_v1(
                     origin.snapshot,
-                    &snapshot_object,
+                    |reference, budget| self.objects.get(reference, budget),
+                    |reference, budget| {
+                        self.objects
+                            .open_protected_snapshot_page_v1(reference, budget)
+                    },
                     budget,
                     |snapshot, budget| {
                         if snapshot.source_root_nonce != origin.source_root_nonce
@@ -30,29 +53,14 @@ impl NativeDispatcher {
                         {
                             return Err(IndexError::DigestConflict);
                         }
-                        with_native_protected_source_routes_v1(
-                            origin.source_routes,
-                            None,
-                            old_route_object,
-                            budget,
-                            |old, budget| {
-                                if old.heads != decoded.heads
-                                    || old.repomap_heads != decoded.repomap_heads
-                                {
-                                    return Err(IndexError::DigestConflict);
-                                }
-                                // This import is provisional. The held previous root is
-                                // independently compared before deployment selection CAS.
-                                self.catalog.restore_protected_native_heads_v1(
-                                    primary, ingress, snapshot, decoded, budget,
-                                )
-                            },
+                        // This import is provisional. The held previous root is
+                        // independently compared before deployment selection CAS.
+                        self.catalog.restore_protected_native_heads_v1(
+                            primary, ingress, snapshot, decoded, budget,
                         )
                     },
                 )?;
             }
-            self.verify_protected_view_markers_v1(decoded, budget)?;
-            let before = self.current_root_identity_for_view(budget)?;
             let selected = self
                 .catalog
                 .select_native_boot_manifest_with_protected_routes_if_current(

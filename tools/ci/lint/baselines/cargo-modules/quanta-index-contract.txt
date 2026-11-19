@@ -120,13 +120,19 @@ crate quanta_index_contract
 │   │       ├── struct HistoryReplayPublicationV1: pub
 │   │       └── struct HistorySourceInputV1: pub
 │   ├── mod immutable_object_wire: pub(self)
+│   │   ├── enum NativeProtectedEncodingErrorV1: pub
+│   │   └── struct ProtectedWorkWriterV1: pub(self)
 │   ├── mod legacy_repomap_import: pub(self)
 │   │   ├── struct LegacyRepoMapImportPageV1: pub
 │   │   └── struct LegacyRepoMapImportV1: pub
 │   ├── mod protected_native_snapshot: pub(self)
 │   │   ├── struct NativeProtectedFrontierV1: pub
 │   │   ├── struct NativeProtectedNativeSnapshotV1: pub
-│   │   └── struct NativeProtectedSourceAuthorityV1: pub
+│   │   ├── struct NativeProtectedSnapshotPhysicalV1: pub
+│   │   ├── struct NativeProtectedSnapshotPlanV1: pub
+│   │   ├── struct NativeProtectedSourceAuthorityV1: pub
+│   │   ├── struct SnapshotDigestWriterV1: pub(self)
+│   │   └── enum SnapshotPhysicalLayoutV1: pub(self)
 │   ├── mod protected_source_routes: pub(self)
 │   │   ├── struct NativeProtectedNativeOriginV1: pub
 │   │   ├── struct NativeProtectedRepoMapHeadV1: pub

@@ -23,12 +23,13 @@ pub use protected_source_routes::{
     MAX_NATIVE_PROTECTED_REPOMAP_HEADS_V1, MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1, MAX_NATIVE_PROTECTED_SOURCE_ROUTE_BYTES_V1,
     MAX_NATIVE_PROTECTED_VIEW_MARKER_BYTES_V1, NativeProtectedRepoMapHeadV1, NativeProtectedSourceHeadV1,
     NativeProtectedSourceRoutesV1, NativeProtectedNativeOriginV1, native_protected_view_marker_bytes_v1,
-    native_protected_view_marker_ref_v1,
+    native_protected_view_marker_ref_v1, native_protected_source_route_seal_key_v1,
 };
 pub use immutable_object_wire::{
     NATIVE_IMMUTABLE_OBJECT_HASH_DOMAIN_V1, NATIVE_IMMUTABLE_OBJECT_HEADER_BYTES_V1,
-    NATIVE_IMMUTABLE_OBJECT_MAGIC_V1, native_immutable_object_header_v1,
-    native_immutable_object_ref_v1,
+    NATIVE_IMMUTABLE_OBJECT_MAGIC_V1, NativeProtectedEncodingErrorV1,
+    native_immutable_object_header_v1, native_immutable_object_ref_v1,
+    native_immutable_object_ref_with_work_v1,
 };
 pub use history::{
     AuxiliaryGenerationKeyV1, HistoryAppendV1, HistoryGenerationAdvanceV1, HistoryGenerationInputV1, HistoryReplayFenceV1, HistoryReplayPublicationV1,
