@@ -286,6 +286,11 @@ fn recovery_settlement_refuses_queued_control_after_durable_publication() -> Tes
 
 #[test]
 fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -> TestResult {
+    use quanta_index_contract::{
+        ManifestGeneration, RepoMapMutationAck, RepoMapMutationPhaseV2, RepoMapTerminalReceiptV2,
+        native_cutover_evidence_v1::NativeCutoverDigest64V1,
+    };
+
     let mode = DeploymentRecoveryModeV1::RestoreForward;
     let fixture = Fixture::new(mode)?;
     let before = fixture.before_document("witness-rename-interruption")?;
@@ -295,6 +300,35 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
         device: 8,
         inode: 9,
     };
+    let publish = RepoMapTerminalReceiptV2 {
+        phase: RepoMapMutationPhaseV2::Publish,
+        mutation: RepoMapMutationAck {
+            repo_id: RepoId::new("witness-repo")?,
+            revision_id: RevisionId::new("witness-revision")?,
+            manifest_generation: ManifestGeneration::new(1),
+            prior_candidate_commitment: None,
+            new_candidate_commitment: "a".repeat(64),
+            activation_epoch: 0,
+            terminal_sequence: 2,
+            replayed: false,
+        },
+        manifest_digest: "b".repeat(64),
+        snapshot_id: "witness-snapshot".to_owned(),
+        projection_version: 1,
+        authority_digest: "c".repeat(64),
+        source_bundle_digest: "d".repeat(64),
+    };
+    let mut activate = publish.clone();
+    activate.phase = RepoMapMutationPhaseV2::Activate;
+    activate.mutation.activation_epoch = 1;
+    activate.mutation.terminal_sequence = 3;
+    let disposition = |activation| NativeCutoverEvidenceLegacyRepoMapV1::Required {
+        state_root: "/witness-repomap".to_owned(),
+        locator_digest: NativeCutoverDigest64V1([b'e'; 64]),
+        publish: publish.clone(),
+        activation,
+    };
+    let repomap = disposition(activate.clone());
     let begin = NativeCutoverControlBeginV1 {
         format_version: 1,
         operation_id: before.operation_id_v1.to_owned(),
@@ -307,7 +341,7 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
         nonce: Digest([10; 32]),
     };
     let request = fixture.request(mode);
-    let stage = |config, fail_after_rename| -> std::result::Result<_, DeploymentSelectionErrorV1> {
+    let stage = |config, disposition, fail_after_rename| -> std::result::Result<_, DeploymentSelectionErrorV1> {
         let (mut work, _execution) = budget()
             .map_err(|error| DeploymentSelectionErrorV1::RefusedBeforeRename(anyhow!("{error}")))?;
         with_locked_deployment_selection_reconciliation_v1(
@@ -317,7 +351,7 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
             |locked, work| {
                 locked
                     .bind_recovery_witness_v1(&begin, config, installed_helper)
-                    .and_then(|()| locked.prepare_recovery_witness_v1(None, root, None, work))
+                    .and_then(|()| locked.prepare_recovery_witness_v1(None, root, None, disposition, work))
                     .map_err(DeploymentSelectionErrorV1::RefusedBeforeRename)?;
                 locked.publish_inner(work, &mut |stage| {
                     ensure!(
@@ -333,16 +367,20 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
         )
     };
 
+    let verified_root = std::cell::Cell::new(false);
     let settle = |config| -> TestResult<DeploymentSelectionPublishedV1> {
+        verified_root.set(false);
         let (mut work, _execution) = budget()?;
         let settled = with_locked_published_recovery_v1(
             &request,
             &before,
             config,
             &mut work,
-            |_, helper, selected_root, history, legacy, work, sync| {
-                ensure!(helper == installed_helper && selected_root == root);
-                ensure!(history.is_none() && legacy.is_none());
+            |_, helper, witness, work, sync| {
+                verified_root.set(true);
+                ensure!(helper == installed_helper && witness.root == root);
+                ensure!(witness.history.is_none() && witness.legacy.is_none());
+                ensure!(witness.repomap == &repomap);
                 sync(work, &mut |_| Ok(()))
             },
         )?;
@@ -358,7 +396,7 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
         "published-only verification must not create the lock or select the candidate",
     )?;
     require(
-        matches!(stage(expected_config, true), Err(DeploymentSelectionErrorV1::PersistenceUncertain(cause))
+        matches!(stage(expected_config, &repomap, true), Err(DeploymentSelectionErrorV1::PersistenceUncertain(cause))
             if cause.to_string() == "stopped after selection rename"),
         "injected interruption must be classified after the rename",
     )?;
@@ -368,7 +406,7 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
         "the candidate must be selected",
     )?;
     require(
-        matches!(stage(Digest([11; 32]), false), Err(DeploymentSelectionErrorV1::PersistenceUncertain(cause))
+        matches!(stage(Digest([11; 32]), &repomap, false), Err(DeploymentSelectionErrorV1::PersistenceUncertain(cause))
             if cause.to_string() == "recovery witness differs from the verified outcome"),
         "a different configuration must not consume the witness",
     )?;
@@ -376,14 +414,64 @@ fn recovery_witness_is_bound_to_the_renamed_inode_and_verified_configuration() -
         settle(Digest([11; 32])).is_err(),
         "published-only verification accepted a foreign configuration",
     )?;
+    activate.mutation.terminal_sequence += 1;
+    let foreign_repomap = disposition(activate);
+    require(
+        matches!(stage(expected_config, &foreign_repomap, false), Err(DeploymentSelectionErrorV1::PersistenceUncertain(cause))
+            if cause.to_string() == "recovery witness differs from the verified outcome"),
+        "fresh evidence must not replace the published RepoMap disposition",
+    )?;
+
+    let directory = fixture
+        .selection
+        .parent()
+        .ok_or("missing deployment directory")?;
+    let mut sidecars = fs::read_dir(directory)?
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .as_encoded_bytes()
+                .starts_with(b".quanta-recovery-witness-")
+        });
+    let sidecar = sidecars
+        .next()
+        .ok_or("missing recovery witness sidecar")?
+        .path();
+    require(
+        sidecars.next().is_none(),
+        "first publication must stage one sidecar",
+    )?;
+    let saved = directory.join("saved-witness");
+    fs::rename(&sidecar, &saved)?;
+    require(
+        settle(expected_config).is_err() && !verified_root.get(),
+        "a missing sidecar must refuse settlement before root verification",
+    )?;
+    let mut corrupted = fs::read(&saved)?;
+    *corrupted.last_mut().ok_or("empty recovery witness sidecar")? ^= 1;
+    fs::write(&sidecar, corrupted)?;
+    fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o600))?;
+    require(
+        settle(expected_config).is_err() && !verified_root.get(),
+        "a changed sidecar must refuse settlement before root verification",
+    )?;
+    fs::rename(&saved, &sidecar)?;
+
+    let mut replayed_activation = match &repomap {
+        NativeCutoverEvidenceLegacyRepoMapV1::Required { activation, .. } => activation.clone(),
+        _ => return Err("fixture did not retain a Required RepoMap".into()),
+    };
+    replayed_activation.mutation.replayed = true;
+    require(
+        stage(expected_config, &disposition(replayed_activation), false)?.resolution_v1()
+            == DeploymentSelectionResolutionV1::Reconciled,
+        "a replay flag must not change the durable RepoMap disposition",
+    )?;
     require(
         settle(expected_config)?.resolution_v1() == DeploymentSelectionResolutionV1::Reconciled,
         "published-only verification must reconcile the durable candidate",
-    )?;
-    require(
-        stage(expected_config, false)?.resolution_v1()
-            == DeploymentSelectionResolutionV1::Reconciled,
-        "the original witnessed candidate must reconcile",
     )?;
     require(
         fs::metadata(&fixture.selection)?.ino() == selected_inode

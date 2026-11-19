@@ -1506,7 +1506,7 @@ fn verify_legacy_publication_v1(
         authority,
         &quiescence,
         &publication.repomap,
-        native,
+        Some(native.io.as_ref()),
         config,
         locked,
         budget,
@@ -1620,11 +1620,34 @@ struct VerifiedLegacyRepoMapV1 {
     locator: quanta_index_contract::native_cutover_evidence_v1::NativeCutoverDigest64V1,
 }
 
+impl VerifiedLegacyRepoMapV1 {
+    fn require_current_v1(
+        &self,
+        legacy: Option<&legacy_read_factory::LegacyReadAuthorityV1>,
+        config: &ValidatedConfig,
+        budget: &mut WorkBudget,
+    ) -> Result<()> {
+        let root = self.separate.as_ref().or(legacy)
+            .ok_or_else(|| anyhow::anyhow!("RepoMap proof lost its retained Legacy root"))?;
+        root.require_repomap_locator_v1(self.locator, budget)?;
+        self.files.require_current_v1(root.root(), root.objects(), budget)?;
+        if self.separate.is_some() {
+            let selection = config.legacy_repomap_selection.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("separate RepoMap selection binding disappeared"))?;
+            LockedDeploymentSelectionV1::require_legacy_repomap_selection_v1(
+                &selection.path, quanta_index_core::index::Digest(selection.sha256), budget,
+            )?;
+            root.require_current_and_retired(budget)?;
+        }
+        Ok(())
+    }
+}
+
 fn verify_legacy_repomap_v1(
     legacy: &legacy_read_factory::LegacyReadAuthorityV1,
     quiescence: &quanta_index_catalog::LegacyCatalogQuiescenceV1,
     expected: &quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceLegacyRepoMapV1,
-    native: &NativeBootAuthority,
+    native_io: Option<&crate::native_scratch_io::NativeScratchIo>,
     config: &ValidatedConfig,
     locked: &LockedDeploymentSelectionV1,
     budget: &mut WorkBudget,
@@ -1662,7 +1685,7 @@ fn verify_legacy_repomap_v1(
         quiescence.active_repomap_candidate_v1().is_none(),
         "Legacy SearchCorpus root has an unexpected active RepoMap"
     );
-    for other in [legacy.root(), native.lease.state_root_identity_v1()] {
+    for other in [legacy.root(), config.state_root.as_path()] {
         anyhow::ensure!(
             !root.starts_with(other) && !other.starts_with(root),
             "separate RepoMap root overlaps a recovery root"
@@ -1679,9 +1702,10 @@ fn verify_legacy_repomap_v1(
         budget,
     )?;
     let (lease, memory) = acquire_recovery_root_v1(root, budget)?;
+    let native_io = native_io.ok_or(IndexError::SnapshotUnavailable)?;
     let authority = legacy_read_factory::LegacyReadAuthorityV1::acquire(
         &saved,
-        native.io.as_ref(),
+        native_io,
         lease,
         memory,
         budget,
@@ -1792,27 +1816,7 @@ fn publish_with_held_recovery_roots_v1(
             .require_state_root_v1(native.lease.state_root_identity_v1())?;
         custody_checkpoint(budget)?;
         if let Some(repomap) = repomap {
-            let root = repomap
-                .separate
-                .as_ref()
-                .or(legacy_for_repomap)
-                .ok_or_else(|| anyhow!("RepoMap proof lost its retained Legacy root"))?;
-            root.require_repomap_locator_v1(repomap.locator, budget)?;
-            repomap
-                .files
-                .require_current_v1(root.root(), root.objects(), budget)?;
-            if let Some(separate) = &repomap.separate {
-                let selection = config
-                    .legacy_repomap_selection
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("separate RepoMap selection binding disappeared"))?;
-                LockedDeploymentSelectionV1::require_legacy_repomap_selection_v1(
-                    &selection.path,
-                    quanta_index_core::index::Digest(selection.sha256),
-                    budget,
-                )?;
-                separate.require_current_and_retired(budget)?;
-            }
+            repomap.require_current_v1(legacy_for_repomap, config, budget)?;
         }
         previous_current(budget)?;
         budget.checkpoint()?;
@@ -1869,22 +1873,15 @@ fn publish_rollback_with_source_capture_v1(
             let publication = source
                 .legacy_publication
                 .ok_or(MissingLegacyPublicationInputV1)?;
-            let lexical = &publication.activation.active.generation.lexical;
             locked.prepare_recovery_witness_v1(
                 None,
                 legacy.observe_current_root_inode_v1()?,
                 Some(
-                    crate::deployment_selection::LegacyPublishedRecoveryWitnessV1 {
-                        repo_id: &lexical.repo_id,
-                        revision_id: &lexical.revision_id,
-                        durable_sequence: publication.receipt.durable_sequence,
-                        activation:
-                            crate::deployment_selection::legacy_recovery_activation_digest_v1(
-                                &publication.activation.active,
-                                budget,
-                            )?,
-                    },
+                    crate::deployment_selection::LegacyPublishedRecoveryWitnessV1::from_publication_v1(
+                        publication, budget,
+                    )?,
                 ),
+                &publication.repomap,
                 budget,
             )?;
             let published = publish_with_held_recovery_roots_v1(

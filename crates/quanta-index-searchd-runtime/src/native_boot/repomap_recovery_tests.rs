@@ -173,7 +173,7 @@ fn legacy_active_repomap_recovery_holds_a_separate_real_root() -> TestResult {
                                     &legacy,
                                     &quiescence,
                                     expected,
-                                    &authority,
+                                    Some(authority.io.as_ref()),
                                     &config,
                                     locked,
                                     budget,

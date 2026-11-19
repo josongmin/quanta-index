@@ -277,14 +277,12 @@ fn run_published_after_begin_v1(
                             &original,
                             command.config_digest,
                             budget,
-                            |selected, helper_sha256, root, history, legacy, budget, sync| {
+                            |locked, helper_sha256, witness, budget, sync| {
                                 let _running_image =
                                     peer::retain_running_image_v1(helper_sha256, budget)?;
                                 context.with_verified_settlement_root_v1(
-                                    selected,
-                                    history,
-                                    root,
-                                    legacy,
+                                    locked,
+                                    witness,
                                     budget,
                                     |budget| {
                                         sync(budget, &mut |budget| {

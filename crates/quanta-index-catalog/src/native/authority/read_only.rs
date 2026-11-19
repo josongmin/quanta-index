@@ -272,8 +272,19 @@ pub fn verify_legacy_active_repomap_receipts_with_siblings_v1(
     activate: &RepoMapTerminalReceiptV2,
     budget: &mut WorkBudget,
 ) -> Result<(), IndexError> {
-    let repo = &publish.mutation.repo_id;
-    let revision = &publish.mutation.revision_id;
+    with_legacy_active_repomap_receipts_with_siblings_v1(
+        state_root, io, publish, activate, budget, |_, _| Ok(()),
+    )
+}
+
+/// Reject an active RepoMap for this scope without rejecting sibling heads.
+pub fn require_legacy_repomap_inapplicable_v1(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    repo: &RepoId,
+    revision: &RevisionId,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
     with_admitted_connection(
         state_root,
         io,
@@ -281,25 +292,74 @@ pub fn verify_legacy_active_repomap_receipts_with_siblings_v1(
         0,
         |error| error,
         |connection, path, budget, _| {
-            configure_read_connection(connection, budget)?;
-            idempotency::verify_installed_schema(connection, path).map_err(core)?;
-            crate::sequence::verify_installed_schema(connection, path).map_err(core)?;
-            crate::auxiliary::verify_installed_schema(connection, path).map_err(core)?;
-            crate::candidate::verify_installed_schema(connection, path).map_err(core)?;
-            let _journal = idempotency::visit_admitted_quiescent_journal_v1(
-                connection,
-                path,
-                budget,
-                &mut |_, _, _| Ok(()),
-            )
-            .map_err(journal_read_error)?;
-            crate::sequence::verify_allocator_exact(connection, path).map_err(core)?;
-            crate::integrity::verify_integrity_admitted(connection, path, budget).map_err(
-                |error| match error {
-                    crate::integrity::IntegrityCheckError::Admission(error) => error,
-                    crate::integrity::IntegrityCheckError::Integrity(error) => core(error),
-                },
-            )?;
+            verify_legacy_repomap_readback_catalog_v1(connection, path, budget)?;
+            budget.charge(WorkUsage {
+                reads: 2,
+                bytes: 4096,
+                ..WorkUsage::default()
+            })?;
+            if crate::candidate::has_unresolved_candidate_v1(connection, path).map_err(core)? {
+                return Err(IndexError::Conflict);
+            }
+            let active: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM repomap_activation_v1
+                                   WHERE repo_id=?1 AND revision_id=?2 AND active=1)",
+                    params![repo.as_str(), revision.as_str()],
+                    |row| row.get(0),
+                )
+                .map_err(|error| sql(&error))?;
+            if active {
+                return Err(IndexError::DigestConflict);
+            }
+            connection.execute_batch("COMMIT").map_err(|error| sql(&error))
+        },
+    )
+}
+
+fn verify_legacy_repomap_readback_catalog_v1(
+    connection: &Connection,
+    path: &Path,
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
+    configure_read_connection(connection, budget)?;
+    idempotency::verify_installed_schema(connection, path).map_err(core)?;
+    crate::sequence::verify_installed_schema(connection, path).map_err(core)?;
+    crate::auxiliary::verify_installed_schema(connection, path).map_err(core)?;
+    crate::candidate::verify_installed_schema(connection, path).map_err(core)?;
+    let _journal = idempotency::visit_admitted_quiescent_journal_v1(
+        connection,
+        path,
+        budget,
+        &mut |_, _, _| Ok(()),
+    )
+    .map_err(journal_read_error)?;
+    crate::sequence::verify_allocator_exact(connection, path).map_err(core)?;
+    crate::integrity::verify_integrity_admitted(connection, path, budget).map_err(|error| match error {
+        crate::integrity::IntegrityCheckError::Admission(error) => error,
+        crate::integrity::IntegrityCheckError::Integrity(error) => core(error),
+    })
+}
+
+/// Lend the exact receipt-bound candidate while the readback grant is held.
+pub fn with_legacy_active_repomap_receipts_with_siblings_v1<T, E: From<IndexError>>(
+    state_root: &Path,
+    io: &dyn CatalogReadOnlyIoAdmission,
+    publish: &RepoMapTerminalReceiptV2,
+    activate: &RepoMapTerminalReceiptV2,
+    budget: &mut WorkBudget,
+    read: impl FnOnce(&crate::RepoMapCandidateRowV1, &mut WorkBudget) -> Result<T, E>,
+) -> Result<T, E> {
+    let repo = &publish.mutation.repo_id;
+    let revision = &publish.mutation.revision_id;
+    with_admitted_connection(
+        state_root,
+        io,
+        budget,
+        0,
+        E::from,
+        |connection, path, budget, _| {
+            verify_legacy_repomap_readback_catalog_v1(connection, path, budget)?;
             let row_bytes: i64 = connection
                 .query_row(
                     "SELECT 2 * (length(CAST(a.repo_id AS BLOB)) + length(CAST(a.revision_id AS BLOB)))
@@ -341,11 +401,11 @@ pub fn verify_legacy_active_repomap_receipts_with_siblings_v1(
                 crate::candidate::read_active_recovery_candidate_v1(connection, repo, revision)
                     .map_err(core)?
                     .ok_or(IndexError::DigestConflict)?;
-            let _candidate = require_active_repomap_ack_row_v1(&active, publish, activate, budget)?;
+            let candidate = require_active_repomap_ack_row_v1(&active, publish, activate, budget)?;
             connection
                 .execute_batch("COMMIT")
                 .map_err(|error| sql(&error))?;
-            Ok(())
+            read(candidate, budget)
         },
     )
 }

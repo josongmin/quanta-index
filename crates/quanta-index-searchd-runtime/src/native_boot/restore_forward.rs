@@ -443,7 +443,7 @@ fn publish_previous_native_v1(
             (RepoMap::Required { state_root: old, .. },
              RepoMap::Required { state_root: new, .. }) if old == new);
         let new_verified = if same_repomap_root {
-            if old_repomap != new_repomap {
+            if !crate::deployment_selection::same_durable_repomap_v1(old_repomap, new_repomap) {
                 return Err(IndexError::DigestConflict.into());
             }
             let RepoMap::Required { state_root, .. } = new_repomap else {
@@ -481,6 +481,7 @@ fn publish_previous_native_v1(
             installed_history.as_ref().map(|selected| &selected.value),
             authority.lease.observe_current_root_inode_v1()?,
             None,
+            new_repomap,
             budget,
         )?;
         let published = publish_with_held_recovery_roots_v1(
@@ -621,10 +622,16 @@ pub(in crate::native_product) fn publish_v1(
             return Err(IndexError::DigestConflict.into());
         }
         legacy.retire_catalog(budget)?;
+        let publication = source
+            .legacy_publication
+            .ok_or(MissingLegacyPublicationInputV1)?;
         locked.prepare_recovery_witness_v1(
             installed_history.as_ref().map(|selected| &selected.value),
             authority.lease.observe_current_root_inode_v1()?,
-            None,
+            Some(crate::deployment_selection::LegacyPublishedRecoveryWitnessV1::from_publication_v1(
+                publication, budget,
+            )?),
+            &publication.repomap,
             budget,
         )?;
         let published = publish_with_held_recovery_roots_v1(

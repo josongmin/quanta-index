@@ -5,10 +5,16 @@
 //! inode. A reader must still verify the recovery domain before settling it.
 
 use super::*;
+use quanta_index_contract::native_cutover_evidence_v1::{
+    MAX_NATIVE_CUTOVER_CONTROL_BYTES_V1, MAX_NATIVE_CUTOVER_EVIDENCE_TEXT_BYTES_V1,
+};
 use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
 
-pub(super) const MAX_WITNESS_BYTES: usize =
-    quanta_index_contract::native_cutover_evidence_v1::MAX_NATIVE_CUTOVER_CONTROL_BYTES_V1 + 512;
+// The Legacy identity and RepoMap path plus two receipts contribute up to
+// nineteen bounded text fields. Account for the History terminal and framing.
+pub(super) const MAX_WITNESS_BYTES: usize = MAX_NATIVE_CUTOVER_CONTROL_BYTES_V1
+    + 19 * MAX_NATIVE_CUTOVER_EVIDENCE_TEXT_BYTES_V1
+    + 1024;
 const ATTRIBUTE_BYTES: usize = 33;
 const WITNESS_DOMAIN: &[u8] = b"quanta.native-cutover.selection-witness.v1\0";
 
@@ -108,13 +114,7 @@ fn with_checked_sidecar<T>(
     read: impl FnOnce(&[u8], &mut WorkBudget) -> Result<T>,
 ) -> Result<T> {
     let name = sidecar_name(selection_name, attribute.slot)?;
-    let _memory = budget
-        .reserve_memory(
-            u64::try_from(MAX_WITNESS_BYTES + 1)?,
-            MemoryLifetime::Temporary,
-        )?
-        .ok_or_else(|| anyhow!("recovery witness requires admitted memory"))?;
-    charge(budget, 5, 0, u64::try_from(MAX_WITNESS_BYTES + 1)?, 0)?;
+    charge(budget, 5, 0, 0, 0)?;
     let mut file = File::from(rustix::fs::openat(
         directory,
         name.as_str(),
@@ -123,13 +123,20 @@ fn with_checked_sidecar<T>(
     )?);
     let before = file.metadata()?;
     control_metadata(&before)?;
-    let mut bytes = Vec::new();
-    bytes.try_reserve_exact(MAX_WITNESS_BYTES + 1)?;
-    let _read = (&mut file)
-        .take(u64::try_from(MAX_WITNESS_BYTES + 1)?)
-        .read_to_end(&mut bytes)?;
     ensure!(
-        !bytes.is_empty() && bytes.len() <= MAX_WITNESS_BYTES,
+        (1..=MAX_WITNESS_BYTES as u64).contains(&before.len()),
+        "invalid recovery witness length"
+    );
+    let read_limit = before.len() + 1;
+    let _memory = budget
+        .reserve_memory(read_limit, MemoryLifetime::Temporary)?
+        .ok_or_else(|| anyhow!("recovery witness requires admitted memory"))?;
+    charge(budget, 0, 0, read_limit, 0)?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(usize::try_from(read_limit)?)?;
+    let _read = (&mut file).take(read_limit).read_to_end(&mut bytes)?;
+    ensure!(
+        u64::try_from(bytes.len())? == before.len(),
         "invalid recovery witness length"
     );
     require_named_control_file(directory, Path::new(&name), &file)?;
@@ -139,14 +146,14 @@ fn with_checked_sidecar<T>(
         "recovery witness differs from selected inode"
     );
     let outcome = read(&bytes, budget)?;
-    charge(budget, 6, 0, u64::try_from(bytes.len() + 1)?, 0)?;
-    let mut check = [0_u8; MAX_WITNESS_BYTES + 1];
+    let mut check = [0_u8; 4096];
+    charge(budget, 5 + u64::try_from(bytes.len().div_ceil(check.len()))?, 0, read_limit, 0)?;
     let _start = file.seek(SeekFrom::Start(0))?;
-    file.read_exact(&mut check[..bytes.len()])?;
-    ensure!(
-        check[..bytes.len()] == bytes[..],
-        "recovery witness changed while read"
-    );
+    for chunk in bytes.chunks(check.len()) {
+        let buffer = &mut check[..chunk.len()];
+        file.read_exact(buffer)?;
+        ensure!(&*buffer == chunk, "recovery witness changed while read");
+    }
     ensure!(
         file.read(&mut check[..1])? == 0,
         "recovery witness grew while read"

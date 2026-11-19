@@ -13,12 +13,13 @@ mod tests;
 use anyhow::Context as _;
 use anyhow::{Result, anyhow, ensure};
 use quanta_index_contract::{
-    RepoId, RevisionId, SearchCorpusActiveHeadV1,
+    RepoId, RepoMapMutationAck, RepoMapTerminalReceiptV2, RevisionId, SearchCorpusActiveHeadV1,
     index::Digest,
     native_cutover_evidence_v1::{
         NativeCutoverControlBeginV1, NativeCutoverControlTerminalV1,
-        NativeCutoverEvidenceBeforeSelectionV1, NativeCutoverInstalledHistoryV1,
-        NativeCutoverRecoveryModeV1,
+        NativeCutoverEvidenceBeforeSelectionV1, NativeCutoverEvidenceLegacyRepoMapV1,
+        NativeCutoverEvidenceLegacyPublicationV1,
+        NativeCutoverInstalledHistoryV1, NativeCutoverRecoveryModeV1,
     },
 };
 use quanta_index_core::index::{MemoryLease, MemoryLifetime, WorkBudget, WorkUsage};
@@ -151,13 +152,14 @@ struct RecoveryWitnessBindingV1 {
 
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
-struct RecoveryWitnessWireV1<B, H, L> {
+struct RecoveryWitnessWireV1<B, H, L, R> {
     format_version: u8,
     binding: B,
     root_device: u64,
     root_inode: u64,
     history: Option<H>,
     legacy: Option<L>,
+    repomap: Option<R>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -167,6 +169,21 @@ pub(crate) struct LegacyPublishedRecoveryWitnessV1<R = RepoId, V = RevisionId> {
     pub(crate) revision_id: V,
     pub(crate) durable_sequence: u64,
     pub(crate) activation: Digest,
+}
+
+impl<'a> LegacyPublishedRecoveryWitnessV1<&'a RepoId, &'a RevisionId> {
+    pub(crate) fn from_publication_v1(
+        publication: &'a NativeCutoverEvidenceLegacyPublicationV1,
+        budget: &mut WorkBudget,
+    ) -> Result<Self> {
+        let lexical = &publication.activation.active.generation.lexical;
+        Ok(Self {
+            repo_id: &lexical.repo_id,
+            revision_id: &lexical.revision_id,
+            durable_sequence: publication.receipt.durable_sequence,
+            activation: legacy_recovery_activation_digest_v1(&publication.activation.active, budget)?,
+        })
+    }
 }
 
 pub(crate) fn legacy_recovery_activation_digest_v1(
@@ -188,6 +205,74 @@ pub(crate) fn legacy_recovery_activation_digest_v1(
     Ok(Digest(digest.finalize().into()))
 }
 
+/// A replay reports the same durable RepoMap receipt with a different reply flag.
+pub(crate) fn same_durable_repomap_v1(
+    left: &NativeCutoverEvidenceLegacyRepoMapV1,
+    right: &NativeCutoverEvidenceLegacyRepoMapV1,
+) -> bool {
+    use NativeCutoverEvidenceLegacyRepoMapV1::Required;
+    match (left, right) {
+        (
+            Required {
+                state_root,
+                locator_digest,
+                publish,
+                activation,
+            },
+            Required {
+                state_root: other_root,
+                locator_digest: other_locator,
+                publish: other_publish,
+                activation: other_activation,
+            },
+        ) => {
+            state_root == other_root
+                && locator_digest == other_locator
+                && same_durable_repomap_receipt_v1(publish, other_publish)
+                && same_durable_repomap_receipt_v1(activation, other_activation)
+        }
+        _ => left == right,
+    }
+}
+
+fn same_durable_repomap_receipt_v1(
+    left: &RepoMapTerminalReceiptV2,
+    right: &RepoMapTerminalReceiptV2,
+) -> bool {
+    let RepoMapTerminalReceiptV2 {
+        phase,
+        mutation,
+        manifest_digest,
+        snapshot_id,
+        projection_version,
+        authority_digest,
+        source_bundle_digest,
+    } = left;
+    let RepoMapMutationAck {
+        repo_id,
+        revision_id,
+        manifest_generation,
+        prior_candidate_commitment,
+        new_candidate_commitment,
+        activation_epoch,
+        terminal_sequence,
+        replayed: _,
+    } = mutation;
+    *phase == right.phase
+        && repo_id == &right.mutation.repo_id
+        && revision_id == &right.mutation.revision_id
+        && *manifest_generation == right.mutation.manifest_generation
+        && prior_candidate_commitment == &right.mutation.prior_candidate_commitment
+        && new_candidate_commitment == &right.mutation.new_candidate_commitment
+        && *activation_epoch == right.mutation.activation_epoch
+        && *terminal_sequence == right.mutation.terminal_sequence
+        && manifest_digest == &right.manifest_digest
+        && snapshot_id == &right.snapshot_id
+        && *projection_version == right.projection_version
+        && authority_digest == &right.authority_digest
+        && source_bundle_digest == &right.source_bundle_digest
+}
+
 struct PreparedRecoveryWitnessV1 {
     bytes: Vec<u8>,
     _memory: MemoryLease,
@@ -197,7 +282,15 @@ type OwnedRecoveryWitnessV1 = RecoveryWitnessWireV1<
     RecoveryWitnessBindingV1,
     NativeCutoverInstalledHistoryV1,
     LegacyPublishedRecoveryWitnessV1,
+    NativeCutoverEvidenceLegacyRepoMapV1,
 >;
+
+pub(crate) struct PublishedRecoveryRootWitnessV1<'a> {
+    pub(crate) root: InodeKey,
+    pub(crate) history: Option<&'a NativeCutoverInstalledHistoryV1>,
+    pub(crate) legacy: Option<&'a LegacyPublishedRecoveryWitnessV1>,
+    pub(crate) repomap: &'a NativeCutoverEvidenceLegacyRepoMapV1,
+}
 
 pub(crate) struct SettledRecoveryWitnessV1 {
     pub(crate) publication: DeploymentSelectionPublishedV1,
@@ -307,11 +400,9 @@ pub(crate) fn with_locked_published_recovery_v1(
     config_sha256: Digest,
     budget: &mut WorkBudget,
     verify: impl FnOnce(
-        &DeploymentSelectionDocumentV1,
+        &LockedDeploymentSelectionV1,
         Digest,
-        InodeKey,
-        Option<&NativeCutoverInstalledHistoryV1>,
-        Option<&LegacyPublishedRecoveryWitnessV1>,
+        PublishedRecoveryRootWitnessV1<'_>,
         &mut WorkBudget,
         &mut SyncPublishedRecoveryV1<'_>,
     ) -> Result<DeploymentSelectionPublishedV1>,
@@ -336,16 +427,23 @@ pub(crate) fn with_locked_published_recovery_v1(
                     && wire.binding.helper_sha256 == helper_sha256,
                 "published recovery witness differs from the requested mode or installed image"
             );
+            let repomap = wire
+                .repomap
+                .as_ref()
+                .ok_or_else(|| anyhow!("published recovery has no retained RepoMap disposition"))?;
             let mut synced = false;
             let publication = verify(
-                &locked.candidate,
+                &locked,
                 helper_sha256,
-                InodeKey {
-                    device: wire.root_device,
-                    inode: wire.root_inode,
+                PublishedRecoveryRootWitnessV1 {
+                    root: InodeKey {
+                        device: wire.root_device,
+                        inode: wire.root_inode,
+                    },
+                    history: wire.history.as_ref(),
+                    legacy: wire.legacy.as_ref(),
+                    repomap,
                 },
-                wire.history.as_ref(),
-                wire.legacy.as_ref(),
                 budget,
                 &mut |budget, checkpoint| {
                     ensure!(!synced, "published recovery was already synced");
@@ -474,6 +572,7 @@ impl LockedDeploymentSelectionV1 {
         history: Option<&NativeCutoverInstalledHistoryV1>,
         root: InodeKey,
         legacy: Option<LegacyPublishedRecoveryWitnessV1<&RepoId, &RevisionId>>,
+        repomap: &NativeCutoverEvidenceLegacyRepoMapV1,
         budget: &mut WorkBudget,
     ) -> Result<()> {
         let Some(binding) = self.witness_binding.as_ref() else {
@@ -483,7 +582,8 @@ impl LockedDeploymentSelectionV1 {
             match binding.mode {
                 NativeCutoverRecoveryModeV1::RollbackLegacy =>
                     legacy.is_some() && history.is_none(),
-                NativeCutoverRecoveryModeV1::RestoreForward => legacy.is_none(),
+                NativeCutoverRecoveryModeV1::RestoreForward =>
+                    legacy.is_some() == self.current.native_command_v1().is_none(),
             },
             "recovery physical witness differs from its mode"
         );
@@ -497,6 +597,7 @@ impl LockedDeploymentSelectionV1 {
                             && retained.activation == actual.activation
                     }
                     (None, None) => true,
+                    (None, Some(_)) => wire.repomap.is_none() && binding.mode == NativeCutoverRecoveryModeV1::RestoreForward,
                     _ => false,
                 };
                 // The fresh Original may supply new FD6 bytes and a new nonce.
@@ -507,6 +608,9 @@ impl LockedDeploymentSelectionV1 {
                         && wire.root_device == root.device
                         && wire.root_inode == root.inode
                         && wire.history.as_ref() == history
+                        && wire.repomap.as_ref().is_none_or(|retained| {
+                            same_durable_repomap_v1(retained, repomap)
+                        })
                         && same_legacy,
                     "recovery witness differs from the verified outcome"
                 );
@@ -539,6 +643,7 @@ impl LockedDeploymentSelectionV1 {
                 root_inode: root.inode,
                 history,
                 legacy,
+                repomap: Some(repomap),
             },
             &mut output,
         )?;
@@ -575,12 +680,13 @@ impl LockedDeploymentSelectionV1 {
             .file_name()
             .ok_or_else(|| anyhow!("selection basename missing"))?;
         completion_witness::with_read(&self.directory, name, &selected, budget, |bytes, budget| {
+            let bytes_len = u64::try_from(bytes.len())?;
             let memory = budget
-                .reserve_memory(64 * 1024, MemoryLifetime::Temporary)?
+                .reserve_memory(64 * 1024 + 4 * bytes_len, MemoryLifetime::Temporary)?
                 .ok_or_else(|| {
                     anyhow!("recovery witness decode requires admitted Control memory")
                 })?;
-            charge(budget, 0, 0, u64::try_from(bytes.len())?, 0)?;
+            charge(budget, 0, 0, bytes_len, 0)?;
             let mut remaining = bytes;
             let wire: OwnedRecoveryWitnessV1 =
                 ciborium::de::from_reader_with_recursion_limit(&mut remaining, 32)?;
@@ -604,7 +710,8 @@ impl LockedDeploymentSelectionV1 {
                                 .legacy
                                 .as_ref()
                                 .is_some_and(|legacy| legacy.durable_sequence > 0),
-                    NativeCutoverRecoveryModeV1::RestoreForward => wire.legacy.is_none(),
+                    NativeCutoverRecoveryModeV1::RestoreForward => wire.legacy.as_ref()
+                        .is_none_or(|legacy| legacy.durable_sequence > 0),
                 },
                 "published recovery witness has the wrong physical scope"
             );

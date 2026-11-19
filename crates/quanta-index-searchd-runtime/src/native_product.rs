@@ -2059,15 +2059,12 @@ pub(crate) fn with_native_recovery_control_v1<T>(
 impl NativeRecoveryContextV1<'_> {
     pub(crate) fn with_verified_settlement_root_v1<T>(
         &self,
-        selected: &crate::deployment_selection::DeploymentSelectionDocumentV1,
-        history: Option<
-            &quanta_index_contract::native_cutover_evidence_v1::NativeCutoverInstalledHistoryV1,
-        >,
-        root: quanta_index_core::publication_capacity::InodeKey,
-        legacy: Option<&crate::deployment_selection::LegacyPublishedRecoveryWitnessV1>,
+        locked: &LockedDeploymentSelectionV1,
+        witness: crate::deployment_selection::PublishedRecoveryRootWitnessV1<'_>,
         budget: &mut quanta_index_core::index::WorkBudget,
         settle: impl FnOnce(&mut quanta_index_core::index::WorkBudget) -> Result<T>,
     ) -> Result<T> {
+        let selected = locked.candidate_v1();
         if let Some(command) = selected.native_command_v1() {
             command.validate()?;
             anyhow::ensure!(
@@ -2079,11 +2076,9 @@ impl NativeRecoveryContextV1<'_> {
             );
         }
         boot::with_verified_settlement_root_v1(
-            selected,
+            locked,
             &self.config,
-            history,
-            root,
-            legacy,
+            witness,
             budget,
             settle,
         )

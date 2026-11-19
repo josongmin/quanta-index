@@ -2,6 +2,8 @@
 //! The staged witness supplies history; these reads cannot issue Source or publish.
 
 use super::*;
+use crate::deployment_selection::PublishedRecoveryRootWitnessV1;
+use quanta_index_contract::native_cutover_evidence_v1::NativeCutoverEvidenceLegacyRepoMapV1 as RepoMap;
 use quanta_index_core::{
     index::{IndexError, WorkUsage},
     publication_capacity::InodeKey,
@@ -75,40 +77,170 @@ fn require_history_v1(
 /// Hold the selected root and recheck its immutable Q facts through settlement.
 /// A missing or changed physical identity fails closed before the callback.
 pub(crate) fn with_verified_settlement_root_v1<T>(
-    selected: &crate::deployment_selection::DeploymentSelectionDocumentV1,
+    locked: &LockedDeploymentSelectionV1,
     config: &ValidatedConfig,
-    expected_history: Option<&NativeCutoverInstalledHistoryV1>,
-    expected_root: InodeKey,
-    legacy: Option<&crate::deployment_selection::LegacyPublishedRecoveryWitnessV1>,
+    witness: PublishedRecoveryRootWitnessV1<'_>,
     budget: &mut WorkBudget,
     settle: impl FnOnce(&mut WorkBudget) -> Result<T>,
 ) -> Result<T> {
+    let selected = locked.candidate_v1();
+    let expected_root = witness.root;
     if expected_root.inode == 0 {
         return Err(IndexError::DigestConflict.into());
     }
     if selected.native_command_v1().is_some() {
-        if legacy.is_some() || selected.state_root_v1() != config.state_root.as_path() {
+        if selected.state_root_v1() != config.state_root.as_path() {
             return Err(IndexError::DigestConflict.into());
         }
         let held = HeldPreviousNativeV1::acquire_v1(selected, budget)?;
         require_root_inode_v1(selected.state_root_v1(), expected_root, budget)?;
-        if let Some(history) = expected_history {
+        if let Some(history) = witness.history {
             require_history_v1(&held, history, budget)?;
+        }
+        let (repomap, legacy) = verify_native_repomap_v1(&held, locked, config, &witness, budget)?;
+        if let Some(proof) = &repomap {
+            proof.require_current_v1(legacy.as_ref(), config, budget)?;
         }
         let result = settle(budget)?;
         require_root_inode_v1(selected.state_root_v1(), expected_root, budget)?;
+        if let Some(proof) = &repomap {
+            proof.require_current_v1(legacy.as_ref(), config, budget)?;
+        }
+        if let Some(legacy) = &legacy {
+            legacy.require_current_and_retired(budget)?;
+        }
         held.require_current_and_retired_v1(budget)?;
         return Ok(result);
     }
-    if expected_history.is_some() || selected.state_root_v1() == config.state_root.as_path() {
+    if witness.history.is_some() || selected.state_root_v1() == config.state_root.as_path() {
         return Err(IndexError::DigestConflict.into());
     }
-    let legacy = legacy.ok_or(IndexError::SnapshotUnavailable)?;
-    let (lease, memory) = super::acquire_recovery_root_v1(selected.state_root_v1(), budget)?;
-    let authority =
-        super::legacy_read_factory::LegacyReadAuthorityV1::acquire_for_checkpoint_export_v1(
-            selected, lease, memory, budget,
+    if matches!(witness.repomap, RepoMap::Required { state_root, .. }
+        if std::path::Path::new(state_root) != selected.state_root_v1())
+    {
+        return with_recovery_boot_authority(config, budget, |native, budget| {
+            settle_legacy_v1(
+                locked,
+                config,
+                Some(native.io.as_ref()),
+                witness,
+                budget,
+                settle,
+            )
+        });
+    }
+    settle_legacy_v1(locked, config, None, witness, budget, settle)
+}
+
+fn verify_native_repomap_v1(
+    held: &HeldPreviousNativeV1,
+    locked: &LockedDeploymentSelectionV1,
+    config: &ValidatedConfig,
+    witness: &PublishedRecoveryRootWitnessV1<'_>,
+    budget: &mut WorkBudget,
+) -> Result<(
+    Option<VerifiedLegacyRepoMapV1>,
+    Option<legacy_read_factory::LegacyReadAuthorityV1>,
+)> {
+    let previous = locked.current_v1();
+    if witness.legacy.is_some() != previous.native_command_v1().is_none() {
+        return Err(IndexError::DigestConflict.into());
+    }
+    let repomap = witness.repomap;
+    let inspect_previous_legacy = match repomap {
+        RepoMap::NotApplicable { .. } => true,
+        RepoMap::Required { state_root, .. } => {
+            std::path::Path::new(state_root) == previous.state_root_v1()
+        }
+    };
+    if let Some(scope) = witness.legacy.filter(|_| inspect_previous_legacy) {
+        if config.legacy_repomap_selection.is_some() {
+            return Err(IndexError::DigestConflict.into());
+        }
+        let (lease, memory) = acquire_recovery_root_v1(previous.state_root_v1(), budget)?;
+        let legacy = legacy_read_factory::LegacyReadAuthorityV1::acquire(
+            previous,
+            held.native_io_v1(),
+            lease,
+            memory,
+            budget,
         )?;
+        let proof = match repomap {
+            RepoMap::NotApplicable { .. } => {
+                quanta_index_catalog::require_legacy_repomap_inapplicable_v1(
+                    legacy.root(),
+                    legacy.catalog(),
+                    &scope.repo_id,
+                    &scope.revision_id,
+                    budget,
+                )?;
+                None
+            }
+            RepoMap::Required {
+                locator_digest,
+                publish,
+                activation,
+                ..
+            } => {
+                legacy.require_repomap_locator_v1(*locator_digest, budget)?;
+                let files =
+                    quanta_index_catalog::with_legacy_active_repomap_receipts_with_siblings_v1(
+                        legacy.root(),
+                        legacy.catalog(),
+                        publish,
+                        activation,
+                        budget,
+                        |candidate, budget| {
+                            legacy.visit_active_repomap_compiled_v1(
+                                candidate,
+                                Some((publish, activation)),
+                                budget,
+                                &mut |_, _| Ok(()),
+                            )
+                        },
+                    )?;
+                Some(VerifiedLegacyRepoMapV1 {
+                    files,
+                    separate: None,
+                    locator: *locator_digest,
+                })
+            }
+        };
+        legacy.retire_catalog(budget)?;
+        return Ok((proof, Some(legacy)));
+    }
+    let proof = restore_forward::verify_native_separate_repomap_v1(
+        repomap,
+        config,
+        previous.state_root_v1(),
+        locked.candidate_v1().state_root_v1(),
+        held.native_io_v1(),
+        locked,
+        budget,
+    )?;
+    Ok((proof, None))
+}
+
+fn settle_legacy_v1<T>(
+    locked: &LockedDeploymentSelectionV1,
+    config: &ValidatedConfig,
+    native_io: Option<&crate::native_scratch_io::NativeScratchIo>,
+    witness: PublishedRecoveryRootWitnessV1<'_>,
+    budget: &mut WorkBudget,
+    settle: impl FnOnce(&mut WorkBudget) -> Result<T>,
+) -> Result<T> {
+    let selected = locked.candidate_v1();
+    let legacy = witness.legacy.ok_or(IndexError::SnapshotUnavailable)?;
+    let expected_root = witness.root;
+    let (lease, memory) = super::acquire_recovery_root_v1(selected.state_root_v1(), budget)?;
+    let authority = match native_io {
+        Some(io) => legacy_read_factory::LegacyReadAuthorityV1::acquire(
+            selected, io, lease, memory, budget,
+        )?,
+        None => legacy_read_factory::LegacyReadAuthorityV1::acquire_for_checkpoint_export_v1(
+            selected, lease, memory, budget,
+        )?,
+    };
     require_root_inode_v1(authority.root(), expected_root, budget)?;
     let observed = quanta_index_catalog::verify_legacy_catalog_quiescence_v1(
         authority.root(),
@@ -120,6 +252,15 @@ pub(crate) fn with_verified_settlement_root_v1<T>(
     if observed.latest_retained_search_corpus_sequence != Some(legacy.durable_sequence) {
         return Err(IndexError::DigestConflict.into());
     }
+    let repomap = verify_legacy_repomap_v1(
+        &authority,
+        &observed,
+        witness.repomap,
+        native_io,
+        config,
+        locked,
+        budget,
+    )?;
     drop(observed);
     let activation =
         quanta_index_search_plane::readiness::inspect_existing_activation_repository_v1(
@@ -146,8 +287,14 @@ pub(crate) fn with_verified_settlement_root_v1<T>(
     )?;
     drop(activation);
     authority.retire_catalog(budget)?;
+    if let Some(proof) = &repomap {
+        proof.require_current_v1(Some(&authority), config, budget)?;
+    }
     let result = settle(budget)?;
     require_root_inode_v1(authority.root(), expected_root, budget)?;
+    if let Some(proof) = &repomap {
+        proof.require_current_v1(Some(&authority), config, budget)?;
+    }
     authority.require_current_and_retired(budget)?;
     Ok(result)
 }

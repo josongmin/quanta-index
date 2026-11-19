@@ -1828,7 +1828,9 @@ fn legacy_quiescence_funds_quarantine_payloads_before_ledger_decode() -> TestRes
 
 #[test]
 fn legacy_active_repomap_verifies_real_objects_without_reconciliation_writes() -> TestResult {
-    use quanta_index_catalog::verify_legacy_catalog_quiescence_v1;
+    use quanta_index_catalog::{
+        verify_legacy_active_repomap_receipts_with_siblings_v1, verify_legacy_catalog_quiescence_v1,
+    };
     use quanta_index_contract::{
         CandidateCommitmentV1, CandidateObjectDigestV1, FileId, ManifestGeneration, RepoId,
         RepoMapActivateGenerationRequestV2, RepoMapExactnessSummary, RepoMapExpectedActiveV2,
@@ -1912,11 +1914,34 @@ fn legacy_active_repomap_verifies_real_objects_without_reconciliation_writes() -
     let io = crate::native_object_read_io::NativeObjectReadIo::new(Arc::clone(&fixture.common));
     let mut work = legacy_original_budget()?;
     let before = observe(&fixture.root)?;
+    let require_inapplicable = |revision: &RevisionId| -> TestResult {
+        quanta_index_catalog::require_legacy_repomap_inapplicable_v1(
+            &fixture.root,
+            fixture.vfs.as_ref(),
+            &repo,
+            revision,
+            &mut legacy_original_budget()?,
+        )?;
+        Ok(())
+    };
+    require(
+        matches!(require_inapplicable(&revision), Err(error)
+            if error.downcast_ref::<IndexError>() == Some(&IndexError::DigestConflict)),
+        "NotApplicable accepted a RepoMap for the exact Legacy scope",
+    )?;
+    require_inapplicable(&RevisionId::new("sibling-revision")?)?;
     let quiescence = verify_legacy_catalog_quiescence_v1(
         &fixture.root,
         fixture.vfs.as_ref(),
         &repo,
         &revision,
+        &mut work,
+    )?;
+    verify_legacy_active_repomap_receipts_with_siblings_v1(
+        &fixture.root,
+        fixture.vfs.as_ref(),
+        &published,
+        &activated,
         &mut work,
     )?;
     let active = quiescence
@@ -1975,6 +2000,19 @@ fn legacy_active_repomap_verifies_real_objects_without_reconciliation_writes() -
     )?;
     let mut wrong_seal = published.clone();
     wrong_seal.mutation.terminal_sequence += 1;
+    require(
+        matches!(
+            verify_legacy_active_repomap_receipts_with_siblings_v1(
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                &wrong_seal,
+                &activated,
+                &mut legacy_original_budget()?,
+            ),
+            Err(IndexError::DigestConflict)
+        ),
+        "foreign RepoMap publish receipt matched the sibling-capable Catalog read",
+    )?;
     let mut wrong_epoch = activated.clone();
     wrong_epoch.mutation.activation_epoch += 1;
     let mut wrong_prior = activated.clone();
@@ -2081,6 +2119,78 @@ fn legacy_active_repomap_verifies_real_objects_without_reconciliation_writes() -
         fixture.common.is_quiescent()?,
         "RepoMap verifier retained a live file",
     )?;
+    Ok(())
+}
+
+#[test]
+fn legacy_multiscope_census_refuses_sealed_repomap_candidate() -> TestResult {
+    use quanta_index_catalog::visit_legacy_active_catalog_heads_v1;
+    use quanta_index_contract::{
+        FileId, ManifestGeneration, RepoId, RepoMapExactnessSummary, RepoMapFileNode,
+        RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
+        RepoMapPublishBundleRequestV2, RepoMapRedactionState, RepoMapSourceBundle,
+        RepoRelativePath, RevisionId,
+    };
+    use quanta_index_repomap::RepoMapGenerationStore;
+
+    let fixture = fixture_with_boot_input(|root| {
+        let catalog = Arc::new(SqliteCatalog::open(root, Duration::ZERO)?);
+        let store = RepoMapGenerationStore::open(root.join("repo-map"), catalog)?.store;
+        let bundle = RepoMapSourceBundle::new(
+            RepoId::new("pending-repo")?,
+            RevisionId::new("pending-revision")?,
+            ManifestGeneration::new(1),
+            "a".repeat(64),
+            "pending-snapshot",
+            1,
+            "b".repeat(64),
+            RepoMapGraphCoverage {
+                item_index_availability: RepoMapItemIndexAvailability::Available,
+                graph_coverage_class: RepoMapGraphCoverageClass::Complete,
+            },
+            RepoMapExactnessSummary::Exact,
+            RepoMapRedactionState::Unredacted,
+        )
+        .with_node(RepoMapNode::File(RepoMapFileNode {
+            file_id: FileId::new("file://src/pending.rs"),
+            repo_relative_path: RepoRelativePath::new("src/pending.rs"),
+            line_count: 1,
+        }));
+        let _sealed = store.ingest_bundle_v2(&RepoMapPublishBundleRequestV2::new(bundle)?)?;
+        drop(store);
+        privatize(root)?;
+        Ok(16 * 1024 * 1024)
+    })?;
+    let before = observe(&fixture.root)?;
+    let mut work = legacy_original_budget()?;
+    require(
+        matches!(
+            visit_legacy_active_catalog_heads_v1(
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                &mut work,
+                &mut |_, _, _, _| Ok(()),
+                &mut |_, _, _| Ok(()),
+            ),
+            Err(IndexError::Conflict)
+        ),
+        "multi-head recovery accepted a RepoMap candidate awaiting activation",
+    )?;
+    require(
+        matches!(
+            quanta_index_catalog::require_legacy_repomap_inapplicable_v1(
+                &fixture.root,
+                fixture.vfs.as_ref(),
+                &RepoId::new("absent-repo")?,
+                &RevisionId::new("absent-revision")?,
+                &mut legacy_original_budget()?,
+            ),
+            Err(IndexError::Conflict)
+        ),
+        "NotApplicable returned absence from a Catalog with unresolved work",
+    )?;
+    require(observe(&fixture.root)? == before, "Catalog changed")?;
+    fixture.vfs.drain_retirements()?;
     Ok(())
 }
 

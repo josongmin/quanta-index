@@ -81,17 +81,23 @@ pub(super) fn verify_preserved_sources_v1(
     let publication = source
         .legacy_publication
         .ok_or(MissingLegacyPublicationInputV1)?;
+    let scope = &publication.activation.active.generation.lexical;
     let primary = census
         .heads
         .iter()
-        .find(|head| {
-            head.repo_id == publication.activation.active.generation.lexical.repo_id
-                && head.revision_id == publication.activation.active.generation.lexical.revision_id
-        })
+        .find(|head| head.repo_id == scope.repo_id && head.revision_id == scope.revision_id)
         .ok_or(IndexError::SnapshotUnavailable)?;
     if primary.active != publication.activation.active
         || primary.applied_ack.as_ref() != Some(&publication.receipt)
         || (publication.history.is_some() && !census.catalog.has_history_rows)
+    {
+        return Err(IndexError::DigestConflict.into());
+    }
+    if matches!(&publication.repomap, RepoMap::NotApplicable { .. })
+        && census.repomap_heads.iter().any(|head| {
+            head.activation.repo_id == scope.repo_id.as_str()
+                && head.activation.revision_id == scope.revision_id.as_str()
+        })
     {
         return Err(IndexError::DigestConflict.into());
     }

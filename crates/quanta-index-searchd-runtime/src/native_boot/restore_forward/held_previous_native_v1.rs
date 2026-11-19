@@ -198,6 +198,10 @@ impl HeldPreviousNativeV1 {
         self.authority.io.as_ref()
     }
 
+    pub(in crate::native_product::boot) fn native_io_v1(&self) -> &crate::native_scratch_io::NativeScratchIo {
+        self.authority.io.as_ref()
+    }
+
     fn with_routes_from_reader_v1<T>(
         &self,
         reader: &FileObjectReader,
