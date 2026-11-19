@@ -139,6 +139,7 @@ fn native_text_dense_window_without_backend_credit_keeps_separate_batches_and_re
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         })
         .collect();
     let references = engine.stage_sources(

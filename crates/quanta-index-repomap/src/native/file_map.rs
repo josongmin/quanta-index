@@ -2222,6 +2222,7 @@ mod tests {
             byte_len: 1,
             text: quanta_index_core::index::SourceTextAdmission::Excluded,
             source_repo_id: None,
+            language: None,
         };
         let record_ref = objects.base.add(encode(&record)?, vec![bytes])?;
         maps.add(
@@ -2322,6 +2323,7 @@ mod tests {
                 byte_len: 1,
                 text: quanta_index_core::index::SourceTextAdmission::Excluded,
                 source_repo_id: None,
+                language: None,
             };
             let source = objects.add(encode(&record)?, vec![bytes])?;
             maps.add(
@@ -2820,6 +2822,7 @@ mod tests {
             byte_len: 7,
             text: quanta_index_core::index::SourceTextAdmission::Excluded,
             source_repo_id: None,
+            language: None,
         };
         let next_record = objects.base.add(encode(&record)?, vec![bytes])?;
         let mut next = ticket.view.source;

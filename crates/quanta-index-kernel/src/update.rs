@@ -214,6 +214,7 @@ fn source_record_payload(
     byte_len: usize,
     text: SourceTextAdmission,
     repository: Option<&RepoId>,
+    language: Option<quanta_index_contract::lex::LanguageCode>,
     budget: &WorkBudget,
 ) -> Result<crate::staging_payload::StagedPayload, IndexError> {
     let record = SourceRecord {
@@ -222,6 +223,7 @@ fn source_record_payload(
         byte_len: u64::try_from(byte_len).map_err(|_error| IndexError::ResourceLimited)?,
         text,
         source_repo_id: repository.cloned(),
+        language,
     };
     crate::staging_payload::encode(&record, MAX_SOURCE_BATCH_OBJECT_BYTES, budget)
 }
@@ -1032,7 +1034,7 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                 .try_reserve_exact(path.len())
                 .map_err(|_error| IndexError::ResourceLimited)?;
             owned_path.push_str(path);
-            source_record_payload(owned_path, predicted.reference, bytes.len(), text, None, budget)?
+            source_record_payload(owned_path, predicted.reference, bytes.len(), text, None, None, budget)?
         };
         let content = self.stage_object(ingress, bytes, &[], budget)?;
         if content != predicted.reference {
@@ -1088,6 +1090,9 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
                 .checked_add(input.path.len())
                 .and_then(|bytes| bytes.checked_add(input.bytes.len()))
                 .and_then(|bytes| bytes.checked_add(repo_bytes))
+                .and_then(|bytes| {
+                    bytes.checked_add(input.language.as_ref().map_or(0, |code| code.as_str().len()))
+                })
                 .and_then(|bytes| bytes.checked_add(256))
                 .ok_or(IndexError::ResourceLimited)?;
             if preflight_bytes > MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES {
@@ -1127,14 +1132,22 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
         let input_bytes = inputs.iter().try_fold(input_slots, |sum, input| {
             sum.checked_add(input.path.capacity())
                 .and_then(|bytes| bytes.checked_add(input.bytes.capacity()))
+                .and_then(|bytes| {
+                    bytes.checked_add(input.language.as_ref().map_or(0, |code| code.as_str().len()))
+                })
                 .ok_or(IndexError::ResourceLimited)
         })?;
         // The moved payloads keep the caller's capacities, not just their
         // logical lengths. Hold the grant until the install packet is dropped.
-        let _input_memory = budget.reserve_memory(
-            u64::try_from(input_bytes).map_err(|_error| IndexError::ResourceLimited)?,
-            quanta_index_core::index::MemoryLifetime::Temporary,
-        )?;
+        // Tuple fields drop in order: the input Vec and all remaining backing
+        // must die before the grant refunds on a later fallible preparation.
+        let mut input_custody = (
+            inputs,
+            budget.reserve_memory(
+                u64::try_from(input_bytes).map_err(|_error| IndexError::ResourceLimited)?,
+                quanta_index_core::index::MemoryLifetime::Temporary,
+            )?,
+        );
         // Hold the decoded repository allocation and one record-encoding copy.
         let _repository_memory = repository
             .map(|repo| {
@@ -1162,11 +1175,13 @@ impl<C: ControlCatalog + 'static> Kernel<C> {
             .try_reserve_exact(count)
             .map_err(|_error| IndexError::ResourceLimited)?;
         let mut wire_bytes = 0_u64;
-        for SourceInput { path, bytes, text } in inputs {
+        for SourceInput { path, bytes, text, language } in input_custody.0.drain(..) {
             budget.checkpoint()?;
             let body = self.services.objects.identify(&bytes, &[], budget)?;
             let record_payload =
-                source_record_payload(path, body.reference, bytes.len(), text, repository, budget)?;
+                source_record_payload(
+                    path, body.reference, bytes.len(), text, repository, language, budget,
+                )?;
             let record =
                 self.services
                     .objects

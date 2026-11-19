@@ -133,12 +133,14 @@ pub struct BorrowedSourceInput<'a> {
     pub path: &'a str,
     pub bytes: &'a [u8],
     pub text: SourceTextAdmission,
+    pub language: Option<&'a quanta_index_contract::lex::LanguageCode>,
 }
 
 trait SourceInputView {
     fn path(&self) -> &str;
     fn bytes(&self) -> &[u8];
     fn text(&self) -> SourceTextAdmission;
+    fn language(&self) -> Option<&quanta_index_contract::lex::LanguageCode>;
 }
 
 impl SourceInputView for SourceInput {
@@ -151,6 +153,9 @@ impl SourceInputView for SourceInput {
     fn text(&self) -> SourceTextAdmission {
         self.text
     }
+    fn language(&self) -> Option<&quanta_index_contract::lex::LanguageCode> {
+        self.language.as_ref()
+    }
 }
 
 impl SourceInputView for BorrowedSourceInput<'_> {
@@ -162,6 +167,9 @@ impl SourceInputView for BorrowedSourceInput<'_> {
     }
     fn text(&self) -> SourceTextAdmission {
         self.text
+    }
+    fn language(&self) -> Option<&quanta_index_contract::lex::LanguageCode> {
+        self.language
     }
 }
 
@@ -242,10 +250,16 @@ struct SourceInputWire<'a, T>(&'a T);
 
 impl<T: SourceInputView> Serialize for SourceInputWire<'_, T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut input = serializer.serialize_struct("SourceInput", 3)?;
+        let mut input = serializer.serialize_struct(
+            "SourceInput",
+            if self.0.language().is_some() { 4 } else { 3 },
+        )?;
         input.serialize_field("path", self.0.path())?;
         input.serialize_field("bytes", self.0.bytes())?;
         input.serialize_field("text", &self.0.text())?;
+        if let Some(language) = self.0.language() {
+            input.serialize_field("language", language)?;
+        }
         input.end()
     }
 }
@@ -2825,6 +2839,9 @@ fn validate_stage_sources_inputs<T: SourceInputView>(
             .checked_add(input.path().len())
             .and_then(|total| total.checked_add(input.bytes().len()))
             .and_then(|total| total.checked_add(repository_bytes))
+            .and_then(|total| {
+                total.checked_add(input.language().map_or(0, |code| code.as_str().len()))
+            })
             .and_then(|total| total.checked_add(256))
             .ok_or_else(|| NativeUdsError::Protocol("source batch size overflow".into()))?;
         if bytes > MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES {
@@ -5742,7 +5759,12 @@ mod tests {
         assert!(matches!(
             scripted_reply(NativeIndexResponse::StagedSources(Vec::new()), |client, budget| client.stage_sources(
                 ingress,
-                vec![SourceInput { path: "a.rs".into(), bytes: b"source".to_vec(), text: SourceTextAdmission::Excluded }],
+                vec![SourceInput {
+                    path: "a.rs".into(),
+                    bytes: b"source".to_vec(),
+                    text: SourceTextAdmission::Excluded,
+                    language: None,
+                }],
                 budget,
             )),
             Err(NativeUdsError::Unknown(operation)) if operation == original
@@ -5779,11 +5801,16 @@ mod tests {
                 text: SourceTextAdmission::Utf8 {
                     policy: Digest([7; 32]),
                 },
+                language: Some(
+                    quanta_index_contract::lex::LanguageCode::new("rust")
+                        .expect("canonical source language"),
+                ),
             },
             SourceInput {
                 path: "src/b.rs".into(),
                 bytes: vec![1, 24, 128],
                 text: SourceTextAdmission::Excluded,
+                language: None,
             },
         ];
         assert_eq!(MAX_NATIVE_STAGE_SOURCES_INPUTS, 128);
@@ -5792,6 +5819,7 @@ mod tests {
                 path: format!("src/{index}.rs"),
                 bytes: vec![u8::try_from(index).expect("source ordinal fits u8")],
                 text: SourceTextAdmission::Excluded,
+                language: None,
             }),
         );
         let borrowed = owned
@@ -5800,6 +5828,7 @@ mod tests {
                 path: input.path.as_str(),
                 bytes: input.bytes.as_slice(),
                 text: input.text,
+                language: input.language.as_ref(),
             })
             .collect::<Vec<_>>();
         let expected = NativeIndexRequestEnvelope {
@@ -5887,6 +5916,7 @@ mod tests {
                 path: "a.rs",
                 bytes: b"x",
                 text: SourceTextAdmission::Excluded,
+                language: None,
             })
             .collect::<Vec<_>>();
         assert!(matches!(
@@ -5898,6 +5928,7 @@ mod tests {
             path: oversized_path.as_str(),
             bytes: b"source",
             text: SourceTextAdmission::Excluded,
+            language: None,
         }];
         assert!(matches!(
             client.stage_sources_borrowed(ingress, &invalid, &budget),
@@ -5908,6 +5939,7 @@ mod tests {
             path: "a.rs",
             bytes: &oversized_bytes,
             text: SourceTextAdmission::Excluded,
+            language: None,
         }];
         assert!(matches!(
             client.stage_sources_borrowed(ingress, &invalid_size, &budget),
@@ -5919,6 +5951,7 @@ mod tests {
             path: "a.rs",
             bytes: b"source",
             text: SourceTextAdmission::Excluded,
+            language: None,
         }];
         assert!(matches!(
             client.stage_sources_borrowed(ingress, &valid, &cancelled),

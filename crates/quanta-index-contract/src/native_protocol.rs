@@ -1994,6 +1994,7 @@ mod tests {
                 path: "a.rs".into(),
                 bytes: b"source".to_vec(),
                 text,
+                language: None,
             };
             let record = SourceRecord {
                 path: "a.rs".into(),
@@ -2001,6 +2002,7 @@ mod tests {
                 byte_len: 6,
                 text,
                 source_repo_id: None,
+                language: None,
             };
             let mut input_json = serde_json::to_value(&input)?;
             check!(
@@ -2041,6 +2043,67 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<SourceTextAdmission>(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn source_input_language_keeps_legacy_wire_and_rejects_untrusted_values()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let legacy = SourceInput {
+            path: "a.rs".into(),
+            bytes: Vec::new(),
+            text: SourceTextAdmission::Excluded,
+            language: None,
+        };
+        let legacy_map = serde_json::to_value(&legacy)?;
+        check!(legacy_map.get("language").is_none());
+        check_eq!(
+            serde_json::to_string(&legacy)?,
+            r#"{"path":"a.rs","bytes":[],"text":"Excluded"}"#
+        );
+        check_eq!(serde_json::from_value::<SourceInput>(legacy_map)?, legacy);
+        check_eq!(
+            serde_json::from_str::<SourceInput>(r#"{"path":"a.rs","bytes":[],"text":"Excluded"}"#)?,
+            legacy
+        );
+        let legacy_sequence = serde_json::json!(["a.rs", [], "Excluded"]);
+        check_eq!(
+            serde_json::from_value::<SourceInput>(legacy_sequence)?,
+            legacy
+        );
+        let explicit_null =
+            serde_json::json!({"path":"a.rs","bytes":[],"text":"Excluded","language":null});
+        check_eq!(
+            serde_json::from_value::<SourceInput>(explicit_null)?,
+            legacy
+        );
+
+        let with_language = SourceInput {
+            language: Some(crate::lex::LanguageCode::new("rust").expect("canonical language")),
+            ..legacy
+        };
+        let wire = serde_json::to_value(&with_language)?;
+        check_eq!(
+            wire.get("language").and_then(serde_json::Value::as_str),
+            Some("rust")
+        );
+        check_eq!(serde_json::from_value::<SourceInput>(wire)?, with_language);
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(&with_language, &mut cbor)?;
+        check_eq!(
+            ciborium::de::from_reader::<SourceInput, _>(cbor.as_slice())?,
+            with_language
+        );
+
+        for invalid in [
+            r#"{"path":"a.rs","bytes":[],"text":"Excluded","language":"Rust"}"#,
+            r#"{"path":"a.rs","bytes":[],"text":"Excluded","language":null,"language":"rust"}"#,
+            r#"{"path":"a.rs","bytes":[],"text":"Excluded","language":"rust","language":"python"}"#,
+            r#"{"path":"a.rs","bytes":[],"text":"Excluded","unknown":1}"#,
+            r#"["a.rs",[],"Excluded","rust",1]"#,
+        ] {
+            check!(serde_json::from_str::<SourceInput>(invalid).is_err());
+        }
+        Ok(())
     }
 
     #[test]
@@ -2324,6 +2387,7 @@ mod tests {
                     byte_len: 9,
                     text: SourceTextAdmission::Excluded,
                     source_repo_id: None,
+                    language: None,
                 },
             }],
             after: Some(vec![3; 32]),

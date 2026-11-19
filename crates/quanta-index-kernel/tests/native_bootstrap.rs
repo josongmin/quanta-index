@@ -450,6 +450,7 @@ fn existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens() -
             .as_bytes()
             .to_vec(),
             text: admitted,
+            language: None,
         })
         .collect::<Vec<_>>();
     // 4096 distinct byte trigrams with no ASCII hit. The excluded source
@@ -465,11 +466,13 @@ fn existing_corpus_installs_all_adapters_atomically_across_pages_and_reopens() -
             path: "src/empty.rs".into(),
             bytes: Vec::new(),
             text: admitted,
+            language: None,
         },
         SourceInput {
             path: "src/excluded.bin".into(),
             bytes: binary,
             text: SourceTextAdmission::Excluded,
+            language: None,
         },
     ]);
     let mut references = Vec::new();
@@ -755,6 +758,7 @@ fn cold_text_inventory_directory_uses_one_bounded_persisted_map() -> TestResult 
             path: "src/large.rs".into(),
             bytes: body.into_bytes(),
             text: SourceTextAdmission::Utf8 { policy: ADMISSION },
+            language: None,
         }],
         &mut work()?,
     )?;

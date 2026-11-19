@@ -3946,6 +3946,7 @@ mod tests {
                 byte_len: 6,
                 text: quanta_index_contract::index::SourceTextAdmission::Excluded,
                 source_repo_id: None,
+                language: None,
             };
             check_eq!(
                 crate::run_blocking(
@@ -4067,6 +4068,7 @@ mod tests {
             byte_len: 6,
             text: quanta_index_contract::index::SourceTextAdmission::Excluded,
             source_repo_id: None,
+            language: None,
         };
         let vectors = crate::run_blocking(
             &runtime,
@@ -4540,6 +4542,7 @@ mod tests {
             byte_len: 6,
             text: quanta_index_contract::index::SourceTextAdmission::Excluded,
             source_repo_id: None,
+            language: None,
         };
         Ok((
             store.insert(serde_json::to_vec(&record)?, vec![bytes])?,
@@ -4576,6 +4579,7 @@ mod tests {
             byte_len: 6,
             text: quanta_index_contract::index::SourceTextAdmission::Excluded,
             source_repo_id: None,
+            language: None,
         };
         let wire = serde_json::to_vec(&record)?;
         let expected = u64::try_from(wire.len())?
@@ -4711,6 +4715,7 @@ mod tests {
             byte_len: 7,
             text: quanta_index_contract::index::SourceTextAdmission::Excluded,
             source_repo_id: None,
+            language: None,
         };
         let new_source = store.insert(serde_json::to_vec(&new_record)?, vec![new_payload])?;
         let old_input = OwnerInputBinding {
@@ -6244,6 +6249,7 @@ mod tests {
                 policy: Digest([9; 32]),
             },
             source_repo_id: None,
+            language: None,
         };
         Ok((
             store.insert(serde_json::to_vec(&record)?, vec![payload])?,

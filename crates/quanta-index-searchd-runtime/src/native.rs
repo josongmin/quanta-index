@@ -2813,6 +2813,7 @@ mod native_closeout_tests {
                     byte_len: 9,
                     text: SourceTextAdmission::Excluded,
                     source_repo_id: None,
+                    language: None,
                 },
                 path_memory,
             )];

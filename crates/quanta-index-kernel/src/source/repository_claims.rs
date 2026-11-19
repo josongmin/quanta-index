@@ -1,6 +1,8 @@
 use super::{optional_path_blob, owner_bytes, owner_from_bytes, scratch_error};
 use quanta_index_contract::RepoId;
-use quanta_index_core::index::{IndexError, OwnerKey, WorkBudget};
+use quanta_index_core::index::{
+    IndexError, OwnerKey, WorkBudget, validate_source_path_repository_key,
+};
 use rusqlite::{Connection, params, types::ValueRef};
 
 const REPOSITORY_KEY_PREFIX: &[u8; 5] = b"repo\0";
@@ -39,10 +41,10 @@ impl RepositoryClaims {
         key: &[u8],
         owner: OwnerKey,
         leaving: bool,
-        budget: &WorkBudget,
+        budget: &mut WorkBudget,
     ) -> Result<(), IndexError> {
         budget.checkpoint()?;
-        validate_key(key)?;
+        validate_key(key, budget)?;
         let query = if leaving {
             "INSERT INTO source_repository_claims(path,repo_key,leaving) VALUES(?1,?2,?3) \
              ON CONFLICT(path,repo_key) DO UPDATE SET leaving=excluded.leaving \
@@ -71,7 +73,7 @@ impl RepositoryClaims {
         db: &Connection,
         path: &str,
         after: Option<&[u8]>,
-        budget: &WorkBudget,
+        budget: &mut WorkBudget,
     ) -> Result<Option<RepositoryClaim>, IndexError> {
         budget.checkpoint()?;
         let query = if after.is_some() {
@@ -101,7 +103,7 @@ impl RepositoryClaims {
                 "source repository scratch key type".into(),
             ));
         };
-        validate_key(bytes)?;
+        validate_key(bytes, budget)?;
         let mut key = [0; REPOSITORY_KEY_CAPACITY];
         key.get_mut(..bytes.len())
             .ok_or_else(|| {
@@ -123,15 +125,27 @@ impl RepositoryClaims {
     }
 }
 
-fn validate_key(key: &[u8]) -> Result<(), IndexError> {
+fn validate_key(key: &[u8], budget: &mut WorkBudget) -> Result<(), IndexError> {
+    if key.len() > REPOSITORY_KEY_CAPACITY {
+        return Err(IndexError::CorruptObject(
+            "source repository scratch key length".into(),
+        ));
+    }
     let name = key
         .strip_prefix(REPOSITORY_KEY_PREFIX)
         .ok_or_else(|| IndexError::CorruptObject("source repository scratch key prefix".into()))?;
     let name = std::str::from_utf8(name).map_err(|_error| {
         IndexError::CorruptObject("source repository scratch key UTF-8".into())
     })?;
-    RepoId::validate(name).map_err(|_error| {
-        IndexError::CorruptObject("source repository scratch repository ID".into())
-    })?;
-    Ok(())
+    if name.is_empty() {
+        return Err(IndexError::CorruptObject(
+            "source repository scratch repository ID".into(),
+        ));
+    }
+    validate_source_path_repository_key(key, budget).map_err(|error| match error {
+        IndexError::CorruptObject(_) => {
+            IndexError::CorruptObject("source repository scratch repository ID".into())
+        }
+        other => other,
+    })
 }

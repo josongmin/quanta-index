@@ -25,6 +25,7 @@ fn advance_source_with_capture(
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         }],
         &request(),
     )?;

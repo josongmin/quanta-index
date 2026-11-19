@@ -1118,6 +1118,7 @@ fn native_boot_selection_verification_and_selected_serve_preserve_real_publicati
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         }],
         &budget(),
     )?;
@@ -1445,6 +1446,7 @@ fn rebuild_fixed_native_source(base: &Path, name: &str) -> TestResult<RebuiltNat
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         }],
         &budget(),
     )?;

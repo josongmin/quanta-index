@@ -55,6 +55,7 @@ pub(super) fn semantic_repository_source(
             policy: Digest([9; 32]),
         },
         source_repo_id: Some(quanta_index_contract::RepoId::new(repo)?),
+        language: None,
     };
     Ok((
         store.insert(serde_json::to_vec(&record)?, vec![payload])?,

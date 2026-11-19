@@ -150,6 +150,7 @@ fn prepare_text_owner_in_ingress<P: AsRef<std::path::Path>>(
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         }],
         &budget(),
     )?;

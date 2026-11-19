@@ -483,6 +483,7 @@ fn bound_corpus(input: &NativeCorpusInput<'_>) -> Result<(Vec<SourceInput>, u64,
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         });
     }
     anyhow::ensure!(
@@ -981,6 +982,7 @@ fn measure_native_corpus_inner(
                 path: &file.path,
                 bytes: &file.bytes,
                 text: file.text,
+                language: None,
             })
             .collect::<Vec<_>>();
         let staged = client.stage_sources_borrowed(
@@ -1340,6 +1342,7 @@ mod tests {
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         };
         let reference = ObjectRef(Digest([11; 32]));
         let body = ObjectRef(Digest([

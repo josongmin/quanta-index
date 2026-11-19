@@ -232,22 +232,26 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
             path: "a.rs".into(),
             bytes: b"shared source".to_vec(),
             text: quanta_index_core::index::SourceTextAdmission::Excluded,
+            language: None,
         },
         SourceInput {
             path: "b.rs".into(),
             bytes: b"shared source".to_vec(),
             text: quanta_index_core::index::SourceTextAdmission::Excluded,
+            language: None,
         },
         SourceInput {
             path: "a.rs".into(),
             bytes: b"shared source".to_vec(),
             text: quanta_index_core::index::SourceTextAdmission::Excluded,
+            language: None,
         },
     ];
     let denied = SourceInput {
         path: "memory-denied.rs".into(),
         bytes: b"never-installed-without-source-preparation-admission".to_vec(),
         text: SourceTextAdmission::Excluded,
+        language: None,
     };
     let denied_ref = objects
         .identify(&denied.bytes, &[], &mut budget(16 * 1024 * 1024)?)?
@@ -304,6 +308,7 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
         path: denied.path.clone(),
         bytes: wide_bytes,
         text: denied.text,
+        language: None,
     };
     check!(matches!(
         kernel.stage_sources(ingress, vec![wide], &mut capped_budget),
@@ -322,6 +327,7 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
         text: SourceTextAdmission::Utf8 {
             policy: Digest([30; 32]),
         },
+        language: None,
     };
     let empty_memory = Arc::new(LiveMemory::default());
     let mut empty_budget = budget(16 * 1024 * 1024)?;
@@ -377,6 +383,55 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
     check_eq!(second.path, "b.rs")?;
     check_eq!(first.bytes, second.bytes)?;
     check_eq!(first.text, SourceTextAdmission::Excluded)?;
+    check!(first.language.is_none())?;
+    let empty_language =
+        quanta_index_contract::lex::LanguageCode::new("rust").expect("canonical fixture language");
+    let repository = quanta_index_contract::RepoId::new("corp-a")?;
+    let language_refs = kernel.stage_repository_sources(
+        ingress,
+        &repository,
+        vec![SourceInput {
+            path: "empty-language.rs".into(),
+            bytes: Vec::new(),
+            text: SourceTextAdmission::Excluded,
+            language: Some(empty_language.clone()),
+        }],
+        &mut budget(16 * 1024 * 1024)?,
+    )?;
+    let language_ref = *language_refs.first().ok_or("missing language source")?;
+    let language_record = read_record(&objects, language_ref)?;
+    check_eq!(language_record.language, Some(empty_language))?;
+    check_eq!(language_record.source_repo_id, Some(repository.clone()))?;
+    check_eq!(language_record.byte_len, 0)?;
+    // Staging the same empty body with a new language must create a distinct
+    // source-record identity without rewriting the earlier stored record.
+    let delta_language = quanta_index_contract::lex::LanguageCode::new("python")
+        .expect("canonical fixture language");
+    let delta_refs = kernel.stage_repository_sources(
+        ingress,
+        &repository,
+        vec![SourceInput {
+            path: "empty-language.rs".into(),
+            bytes: Vec::new(),
+            text: SourceTextAdmission::Excluded,
+            language: Some(delta_language.clone()),
+        }],
+        &mut budget(16 * 1024 * 1024)?,
+    )?;
+    let delta_ref = *delta_refs.first().ok_or("missing Delta language source")?;
+    check_ne!(language_ref, delta_ref)?;
+    check_eq!(
+        read_record(&objects, delta_ref)?.language,
+        Some(delta_language)
+    )?;
+    let unchanged_language_record = read_record(&objects, language_ref)?;
+    check_eq!(
+        unchanged_language_record
+            .language
+            .as_ref()
+            .map(|code| code.as_str()),
+        Some("rust")
+    )?;
     let body = objects.get(first.bytes, &mut budget(16 * 1024 * 1024)?)?;
     check_eq!(body.payload.as_slice(), b"shared source")?;
     for (input, reference) in inputs.iter().zip(references.iter()) {
@@ -400,11 +455,13 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
             path: "valid.rs".into(),
             bytes: absent.to_vec(),
             text: quanta_index_core::index::SourceTextAdmission::Excluded,
+            language: None,
         },
         SourceInput {
             path: "../escape.rs".into(),
             bytes: b"bad".to_vec(),
             text: quanta_index_core::index::SourceTextAdmission::Excluded,
+            language: None,
         },
     ];
     check!(matches!(
@@ -423,6 +480,7 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
         text: SourceTextAdmission::Utf8 {
             policy: admitted_policy,
         },
+        language: None,
     };
     let admitted_refs = kernel.stage_sources(
         ingress,
@@ -442,6 +500,7 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
             path: "first.rs".into(),
             bytes: unique_body.to_vec(),
             text: SourceTextAdmission::Excluded,
+            language: None,
         },
         SourceInput {
             path: "invalid.rs".into(),
@@ -449,6 +508,7 @@ fn batch_preserves_single_identity_order_and_deduplicates_content() -> TestResul
             text: SourceTextAdmission::Utf8 {
                 policy: admitted_policy,
             },
+            language: None,
         },
     ];
     check!(matches!(

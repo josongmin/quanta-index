@@ -165,6 +165,7 @@ pub(super) fn stage_quality_delta(
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         }],
         &budget().capped_at(deadline),
     )?;

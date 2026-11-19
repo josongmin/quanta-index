@@ -366,6 +366,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_sdk::native_uds::
 impl !core::panic::unwind_safe::UnwindSafe for quanta_index_sdk::native_uds::AdmittedNativeStubReply
 pub struct quanta_index_sdk::native_uds::BorrowedSourceInput<'a>
 pub quanta_index_sdk::native_uds::BorrowedSourceInput::bytes: &'a [u8]
+pub quanta_index_sdk::native_uds::BorrowedSourceInput::language: core::option::Option<&'a quanta_index_contract_base::query::constraints::LanguageCode>
 pub quanta_index_sdk::native_uds::BorrowedSourceInput::path: &'a str
 pub quanta_index_sdk::native_uds::BorrowedSourceInput::text: quanta_index_contract::index::SourceTextAdmission
 impl<'a> core::marker::Freeze for quanta_index_sdk::native_uds::BorrowedSourceInput<'a>

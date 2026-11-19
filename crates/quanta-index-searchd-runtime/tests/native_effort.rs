@@ -693,6 +693,7 @@ fn advance(
             path: "a.rs".into(),
             bytes: body.to_vec(),
             text: SourceTextAdmission::Utf8 { policy: ADMISSION },
+            language: None,
         }],
         &budget(),
     )?;

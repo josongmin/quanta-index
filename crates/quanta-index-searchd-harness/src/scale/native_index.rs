@@ -1162,6 +1162,7 @@ fn measure_native_inner(
                         text: SourceTextAdmission::Utf8 {
                             policy: Digest([31; 32]),
                         },
+                        language: None,
                     })
                     .collect::<Vec<_>>();
                 let staged = client.stage_sources_borrowed(ingress, &inputs, &budget())?;

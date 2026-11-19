@@ -1,9 +1,12 @@
-use quanta_index_contract::RepoId;
 use quanta_index_contract::index::{
     AttemptRef, CatalogView, IndexInstanceId, IngressRef, InputBinding, InstanceSpec, MapRoot,
     MemberBinding, ObjectRef, OperationStatus, OwnerKey, OwnerMutationSet, ProducerId, SourceCut,
-    SourceEvent, SourceRecord, StableOwnerId, ViewRef, WorkClaim,
+    SourceEvent, SourceRecord, SourceTextAdmission, StableOwnerId, ViewRef, WorkClaim,
 };
+use quanta_index_contract::{
+    NativeIdentityConstructionErrorV1, NativeNormalizationErrorV1, RepoId,
+};
+use quanta_index_contract::lex::LanguageCode;
 use std::{ops::Deref, sync::Arc};
 
 /// An admitted temporary key in the canonical source-path namespace.
@@ -264,6 +267,19 @@ pub struct SourceRecordOwner {
     _memory: Option<super::MemoryLease>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceRecordWire {
+    path: String,
+    bytes: ObjectRef,
+    byte_len: u64,
+    text: SourceTextAdmission,
+    #[serde(default)]
+    source_repo_id: Option<String>,
+    #[serde(default)]
+    language: Option<Box<str>>,
+}
+
 impl SourceRecordOwner {
     /// Check whether the decode grant can also fund a shared wrapper after
     /// parsing. Standalone records have no live memory authority.
@@ -275,6 +291,7 @@ impl SourceRecordOwner {
             byte_len: _,
             text: _,
             source_repo_id,
+            language,
         } = &self.record;
         self._memory.as_ref().is_none_or(|memory| {
             path.capacity()
@@ -283,6 +300,9 @@ impl SourceRecordOwner {
                         .as_ref()
                         .map_or(0, |repo| repo.backing_capacity()),
                 )
+                .and_then(|bytes| {
+                    bytes.checked_add(language.as_ref().map_or(0, |code| code.as_str().len()))
+                })
                 .and_then(|bytes| bytes.checked_add(wrapper_bytes))
                 .and_then(|bytes| u64::try_from(bytes).ok())
                 .is_some_and(|bytes| bytes <= memory.bytes())
@@ -292,10 +312,11 @@ impl SourceRecordOwner {
     /// Admit conservative JSON backing before decode.
     ///
     /// Retain the allocation through use.
-    /// The 8x allowance is logical accounting, not a physical allocator/RSS cap.
+    /// The 8x allowance covers parser backing, not a physical allocator/RSS cap.
+    /// Repository NFC scratch receives separate temporary grants during decode.
     pub fn decode_json(
         payload: &[u8],
-        budget: &super::WorkBudget,
+        budget: &mut super::WorkBudget,
         lifetime: super::MemoryLifetime,
     ) -> Result<Self, super::IndexError> {
         budget.checkpoint()?;
@@ -309,8 +330,57 @@ impl SourceRecordOwner {
         } else {
             budget.reserve_memory(bytes, lifetime)?
         };
-        let record = serde_json::from_slice(payload)
-            .map_err(|error| super::IndexError::CorruptObject(format!("source record: {error}")));
+        let record = (|| -> Result<SourceRecord, super::IndexError> {
+            let wire: SourceRecordWire = serde_json::from_slice(payload).map_err(|error| {
+                super::IndexError::CorruptObject(format!("source record: {error}"))
+            })?;
+            let source_repo_id = wire
+                .source_repo_id
+                .map(|value| {
+                    let mut admission = super::source_paths::RepositoryKeyAdmission::new(budget);
+                    RepoId::try_from_owned_with_native_admission_v1(value, &mut admission).map_err(
+                        |error| match error {
+                            NativeIdentityConstructionErrorV1::Validation(cause) => {
+                                super::IndexError::CorruptObject(format!("source record: {cause}"))
+                            }
+                            NativeIdentityConstructionErrorV1::Normalization(
+                                NativeNormalizationErrorV1::Admission(cause),
+                            ) => cause,
+                            NativeIdentityConstructionErrorV1::Normalization(
+                                NativeNormalizationErrorV1::NativeAllocationFailed
+                                | NativeNormalizationErrorV1::ArithmeticOverflow
+                                | NativeNormalizationErrorV1::UnsupportedNativeSortBacking,
+                            ) => super::IndexError::ResourceLimited,
+                            NativeIdentityConstructionErrorV1::Normalization(cause) => {
+                                super::IndexError::BackendViolation(format!(
+                                    "source record repository validation: {cause}"
+                                ))
+                            }
+                            NativeIdentityConstructionErrorV1::Copy(_) => {
+                                super::IndexError::BackendViolation(
+                                    "owned source repository validation attempted a copy".into(),
+                                )
+                            }
+                        },
+                    )
+                })
+                .transpose()?;
+            let language = wire
+                .language
+                .map(|code| {
+                    LanguageCode::try_from_boxed_v1(code)
+                        .map_err(|error| super::IndexError::CorruptObject(format!("source record: {error}")))
+                })
+                .transpose()?;
+            Ok(SourceRecord {
+                path: wire.path,
+                bytes: wire.bytes,
+                byte_len: wire.byte_len,
+                text: wire.text,
+                source_repo_id,
+                language,
+            })
+        })();
         budget.checkpoint()?;
         Ok(Self {
             record: record?,
@@ -320,7 +390,8 @@ impl SourceRecordOwner {
 
     /// Transfer the existing decoded path to retained output custody.
     ///
-    /// Admit the path capacity while the original decode grant is still live.
+    /// Admit the path, repository and language backing while the original decode
+    /// grant is still live.
     /// The returned lease must remain paired with the returned record. Failure
     /// drops the record before refunding its original grant; no path is cloned.
     pub fn into_retained_parts(
@@ -335,6 +406,7 @@ impl SourceRecordOwner {
             byte_len: _,
             text: _,
             source_repo_id,
+            language,
         } = &self.record;
         let bytes = path
             .capacity()
@@ -343,6 +415,9 @@ impl SourceRecordOwner {
                     .as_ref()
                     .map_or(0, |repo| repo.backing_capacity()),
             )
+            .and_then(|bytes| {
+                bytes.checked_add(language.as_ref().map_or(0, |code| code.as_str().len()))
+            })
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(super::IndexError::ResourceLimited)?;
         let memory = if bytes == 0 {
@@ -381,11 +456,13 @@ impl SourceRecordOwner {
         let SourceRecord {
             path,
             source_repo_id,
+            language,
             bytes: _,
             byte_len: _,
             text: _,
         } = record;
         drop(source_repo_id);
+        drop(language);
         drop(original_memory);
         Ok((path, memory))
     }
@@ -440,6 +517,7 @@ mod source_record_owner_tests {
         releases: AtomicU64,
         retained_bytes: AtomicU64,
         deny_retained: AtomicBool,
+        max_live: AtomicU64,
     }
     impl MemoryLeaseOwner for State {
         fn release(&self, bytes: u64) {
@@ -460,7 +538,9 @@ mod source_record_owner_tests {
                 .0
                 .live
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |live| {
-                    live.checked_add(bytes)
+                    let next = live.checked_add(bytes)?;
+                    let limit = self.0.max_live.load(Ordering::SeqCst);
+                    (limit == 0 || next <= limit).then_some(next)
                 })
                 .map_err(|_prior| IndexError::ResourceLimited)?;
             let live = prior
@@ -471,12 +551,16 @@ mod source_record_owner_tests {
         }
     }
     fn work() -> Result<(WorkBudget, Arc<State>), IndexError> {
+        work_with_bytes(1_000_000)
+    }
+
+    fn work_with_bytes(bytes: u64) -> Result<(WorkBudget, Arc<State>), IndexError> {
         let state = Arc::new(State::default());
         let mut budget = WorkBudget::new(
             WorkLimits {
                 reads: 100,
                 writes: 100,
-                bytes: 1_000_000,
+                bytes,
                 mutations: 100,
             },
             Instant::now()
@@ -485,6 +569,20 @@ mod source_record_owner_tests {
         );
         budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(Scope(state.clone())))));
         Ok((budget, state))
+    }
+
+    fn wire_with_repository(repository: &str) -> Result<Vec<u8>, IndexError> {
+        let mut wire = WIRE
+            .strip_suffix(b"}")
+            .ok_or_else(|| IndexError::BackendViolation("source fixture terminator".into()))?
+            .to_vec();
+        wire.extend_from_slice(b",\"source_repo_id\":");
+        wire.extend_from_slice(
+            &serde_json::to_vec(repository)
+                .map_err(|error| IndexError::BackendViolation(error.to_string()))?,
+        );
+        wire.push(b'}');
+        Ok(wire)
     }
 
     #[test]
@@ -563,8 +661,8 @@ mod source_record_owner_tests {
     #[test]
     fn retained_transfer_keeps_fixed_record_and_overlapping_charge_without_clone()
     -> Result<(), IndexError> {
-        let (budget, state) = work()?;
-        let decoded = SourceRecordOwner::decode_json(WIRE, &budget, MemoryLifetime::Temporary)?;
+        let (mut budget, state) = work()?;
+        let decoded = SourceRecordOwner::decode_json(WIRE, &mut budget, MemoryLifetime::Temporary)?;
         let address = decoded.path.as_ptr();
         let capacity =
             u64::try_from(decoded.path.capacity()).map_err(|_error| IndexError::ResourceLimited)?;
@@ -608,16 +706,21 @@ mod source_record_owner_tests {
 
     #[test]
     fn path_only_transfer_refunds_repository_backing() -> Result<(), IndexError> {
-        let (budget, state) = work()?;
+        let (mut budget, state) = work()?;
         let mut record: SourceRecord = serde_json::from_slice(WIRE)
             .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
         record.source_repo_id = Some(
             RepoId::new("authored-repository")
                 .map_err(|error| IndexError::BackendViolation(error.to_string()))?,
         );
+        record.language = Some(
+            LanguageCode::new("rust")
+                .map_err(|error| IndexError::BackendViolation(error.into()))?,
+        );
         let wire = serde_json::to_vec(&record)
             .map_err(|error| IndexError::BackendViolation(error.to_string()))?;
-        let decoded = SourceRecordOwner::decode_json(&wire, &budget, MemoryLifetime::Temporary)?;
+        let decoded =
+            SourceRecordOwner::decode_json(&wire, &mut budget, MemoryLifetime::Temporary)?;
         let pointer = decoded.path.as_ptr();
         let path_bytes =
             u64::try_from(decoded.path.capacity()).map_err(|_error| IndexError::ResourceLimited)?;
@@ -645,8 +748,9 @@ mod source_record_owner_tests {
     fn retained_transfer_denial_and_original_cancel_refund_decode_owner() -> Result<(), IndexError>
     {
         for cancelled in [false, true] {
-            let (budget, state) = work()?;
-            let decoded = SourceRecordOwner::decode_json(WIRE, &budget, MemoryLifetime::Temporary)?;
+            let (mut budget, state) = work()?;
+            let decoded =
+                SourceRecordOwner::decode_json(WIRE, &mut budget, MemoryLifetime::Temporary)?;
             state.deny_retained.store(true, Ordering::SeqCst);
             if cancelled {
                 budget.request().cancel_handle().cancel();
@@ -673,9 +777,9 @@ mod source_record_owner_tests {
     #[test]
     fn malformed_decode_and_cancel_preserve_original_control_and_refund() -> Result<(), IndexError>
     {
-        let (budget, state) = work()?;
+        let (mut budget, state) = work()?;
         if !matches!(
-            SourceRecordOwner::decode_json(b"not-json", &budget, MemoryLifetime::Temporary),
+            SourceRecordOwner::decode_json(b"not-json", &mut budget, MemoryLifetime::Temporary),
             Err(IndexError::CorruptObject(_))
         ) || state.live.load(Ordering::SeqCst) != 0
             || state.releases.load(Ordering::SeqCst) != 1
@@ -686,12 +790,199 @@ mod source_record_owner_tests {
         }
         budget.request().cancel_handle().cancel();
         if !matches!(
-            SourceRecordOwner::decode_json(b"not-json", &budget, MemoryLifetime::Temporary),
+            SourceRecordOwner::decode_json(b"not-json", &mut budget, MemoryLifetime::Temporary),
             Err(IndexError::Cancelled)
         ) || state.releases.load(Ordering::SeqCst) != 1
         {
             return Err(IndexError::BackendViolation(
                 "source decoder replaced cancelled control".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn repository_decode_admits_nfc_scratch_and_refunds_it() -> Result<(), IndexError> {
+        let repository = format!("q{}", "\u{0301}".repeat(20));
+        let wire = wire_with_repository(&repository)?;
+        let decode_bytes = u64::try_from(wire.len())
+            .map_err(|_error| IndexError::ResourceLimited)?
+            .checked_mul(8)
+            .ok_or(IndexError::ResourceLimited)?;
+        let (mut budget, state) = work()?;
+        let decoded = SourceRecordOwner::decode_json(&wire, &mut budget, MemoryLifetime::Retained)?;
+        if decoded.source_repo_id.as_ref().map(RepoId::as_str) != Some(repository.as_str())
+            || state.live.load(Ordering::SeqCst) != decode_bytes
+            || state.peak.load(Ordering::SeqCst) <= decode_bytes
+            || budget.usage().bytes == 0
+        {
+            return Err(IndexError::BackendViolation(
+                "source repository NFC scratch was not admitted or refunded".into(),
+            ));
+        }
+        drop(decoded);
+        if state.live.load(Ordering::SeqCst) != 0 {
+            return Err(IndexError::BackendViolation(
+                "source repository decode grant was not refunded".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn repository_decode_refusals_keep_original_work_and_memory_cause() -> Result<(), IndexError> {
+        let repository = format!("q{}", "\u{0301}".repeat(20));
+        let wire = wire_with_repository(&repository)?;
+        let decode_bytes = u64::try_from(wire.len())
+            .map_err(|_error| IndexError::ResourceLimited)?
+            .checked_mul(8)
+            .ok_or(IndexError::ResourceLimited)?;
+        let (mut memory_budget, memory_state) = work()?;
+        memory_state.max_live.store(
+            decode_bytes
+                .checked_add(1)
+                .ok_or(IndexError::ResourceLimited)?,
+            Ordering::SeqCst,
+        );
+        if !matches!(
+            SourceRecordOwner::decode_json(&wire, &mut memory_budget, MemoryLifetime::Retained),
+            Err(IndexError::ResourceLimited)
+        ) || memory_state.live.load(Ordering::SeqCst) != 0
+            || memory_state.peak.load(Ordering::SeqCst) != decode_bytes
+        {
+            return Err(IndexError::BackendViolation(
+                "source repository NFC memory refusal lost its decode grant".into(),
+            ));
+        }
+        let (mut successful_budget, successful_state) = work()?;
+        let successful = SourceRecordOwner::decode_json(
+            &wire,
+            &mut successful_budget,
+            MemoryLifetime::Retained,
+        )?;
+        drop(successful);
+        if successful_state.live.load(Ordering::SeqCst) != 0 {
+            return Err(IndexError::BackendViolation(
+                "source repository reference decode grant was not refunded".into(),
+            ));
+        }
+        let near_complete_work = successful_budget
+            .usage()
+            .bytes
+            .checked_sub(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        let (mut work_budget, work_state) = work_with_bytes(near_complete_work)?;
+        if !matches!(
+            SourceRecordOwner::decode_json(&wire, &mut work_budget, MemoryLifetime::Retained),
+            Err(IndexError::ResourceLimited)
+        ) || work_state.live.load(Ordering::SeqCst) != 0
+            || work_state.peak.load(Ordering::SeqCst) <= decode_bytes
+        {
+            return Err(IndexError::BackendViolation(
+                "source repository NFC work refusal lost its decode grant".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn repository_decode_rejects_noncanonical_and_preserves_strict_wire() -> Result<(), IndexError>
+    {
+        let malformed = format!("q{}", "\u{0344}".repeat(255));
+        let malformed_wire = wire_with_repository(&malformed)?;
+        let (mut budget, state) = work()?;
+        if !matches!(
+            SourceRecordOwner::decode_json(&malformed_wire, &mut budget, MemoryLifetime::Temporary),
+            Err(IndexError::CorruptObject(_))
+        ) || state.live.load(Ordering::SeqCst) != 0
+            || budget.usage().bytes == 0
+        {
+            return Err(IndexError::BackendViolation(
+                "noncanonical repository escaped source decode admission".into(),
+            ));
+        }
+        let strict_prefix = WIRE
+            .strip_suffix(b"}")
+            .ok_or_else(|| IndexError::BackendViolation("source fixture terminator".into()))?;
+        let mut null_wire = strict_prefix.to_vec();
+        null_wire.extend_from_slice(b",\"source_repo_id\":null}");
+        let decoded =
+            SourceRecordOwner::decode_json(&null_wire, &mut budget, MemoryLifetime::Temporary)?;
+        if decoded.source_repo_id.is_some() {
+            return Err(IndexError::BackendViolation(
+                "null source repository changed legacy semantics".into(),
+            ));
+        }
+        drop(decoded);
+        let mut unknown_wire = strict_prefix.to_vec();
+        unknown_wire.extend_from_slice(b",\"unknown\":1}");
+        let mut duplicate_wire = strict_prefix.to_vec();
+        duplicate_wire.extend_from_slice(b",\"source_repo_id\":\"a\",\"source_repo_id\":\"b\"}");
+        let mut invalid_language = strict_prefix.to_vec();
+        invalid_language.extend_from_slice(b",\"language\":\"Rust\"}");
+        let mut duplicate_language = strict_prefix.to_vec();
+        duplicate_language.extend_from_slice(b",\"language\":null,\"language\":\"rust\"}");
+        for wire in [b"{}".to_vec(), unknown_wire, duplicate_wire, invalid_language, duplicate_language] {
+            if !matches!(
+                SourceRecordOwner::decode_json(&wire, &mut budget, MemoryLifetime::Temporary),
+                Err(IndexError::CorruptObject(_))
+            ) || state.live.load(Ordering::SeqCst) != 0
+            {
+                return Err(IndexError::BackendViolation(
+                    "source record strict wire was weakened".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn retained_language_uses_canonical_backing_and_legacy_record_remains_absent()
+    -> Result<(), IndexError> {
+        let (mut budget, state) = work()?;
+        let old = SourceRecordOwner::decode_json(WIRE, &mut budget, MemoryLifetime::Temporary)?;
+        if old.language.is_some() {
+            return Err(IndexError::BackendViolation(
+                "old source gained language".into(),
+            ));
+        }
+        drop(old);
+        let prefix = WIRE
+            .strip_suffix(b"}")
+            .ok_or_else(|| IndexError::BackendViolation("source fixture terminator".into()))?;
+        let mut wire = prefix.to_vec();
+        wire.extend_from_slice(b",\"language\":\"rust\"}");
+        let decoded =
+            SourceRecordOwner::decode_json(&wire, &mut budget, MemoryLifetime::Temporary)?;
+        let expected = decoded
+            .path
+            .capacity()
+            .checked_add(
+                decoded
+                    .language
+                    .as_ref()
+                    .map_or(0, |code| code.as_str().len()),
+            )
+            .ok_or(IndexError::ResourceLimited)?;
+        if !decoded.covers_shared_backing(0) || decoded.covers_shared_backing(wire.len() * 8 + 1) {
+            return Err(IndexError::BackendViolation(
+                "language shared backing bound changed".into(),
+            ));
+        }
+        let (record, lease) = decoded.into_retained_parts(&budget)?;
+        if record.language.as_ref().map(LanguageCode::as_str) != Some("rust")
+            || state.retained_bytes.load(Ordering::SeqCst)
+                != u64::try_from(expected).map_err(|_| IndexError::ResourceLimited)?
+        {
+            return Err(IndexError::BackendViolation(
+                "language retained backing was not funded".into(),
+            ));
+        }
+        drop(record);
+        drop(lease);
+        if state.live.load(Ordering::SeqCst) != 0 {
+            return Err(IndexError::BackendViolation(
+                "language backing refund was lost".into(),
             ));
         }
         Ok(())

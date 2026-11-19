@@ -554,6 +554,7 @@ fn dense_request(
             path: format!("dense-{id}.rs"),
             bytes: b"alpha beta gamma".to_vec(),
             text: SourceTextAdmission::Utf8 { policy: POLICY },
+            language: None,
         })
         .collect();
     source_request(fixture, configured, next, inputs)
@@ -578,6 +579,7 @@ fn repeated_dense_request(
                 path: format!("dense-repeat-{id}.rs"),
                 bytes: body.clone(),
                 text: SourceTextAdmission::Utf8 { policy: POLICY },
+                language: None,
             })
             .collect(),
     )
@@ -695,6 +697,7 @@ fn small_inputs() -> Vec<SourceInput> {
         path: format!("small-{}.rs", slot + 1),
         bytes: text.as_bytes().to_vec(),
         text: SourceTextAdmission::Utf8 { policy: POLICY },
+        language: None,
     })
     .collect()
 }
@@ -710,6 +713,7 @@ fn small_page_boundary_inputs(term_count: u32) -> Vec<SourceInput> {
             path: format!("small-page-boundary-{id}.rs"),
             bytes: body.clone(),
             text: SourceTextAdmission::Utf8 { policy: POLICY },
+            language: None,
         })
         .collect()
 }
@@ -1188,6 +1192,7 @@ fn directory_text_real_original_shared_sources_preserve_positions_and_reopen() -
                 path: path.into(),
                 bytes: text.as_bytes().to_vec(),
                 text: SourceTextAdmission::Utf8 { policy: POLICY },
+                language: None,
             })
             .collect();
         let request = source_request(&fixture, configured, operation(2), inputs)?;

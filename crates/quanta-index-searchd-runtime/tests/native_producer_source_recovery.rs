@@ -441,6 +441,7 @@ fn producer_page_rebuilds_resync_baseline_over_real_uds() -> TestResult {
                 path: format!("target/{id:03}.rs"),
                 bytes: format!("source {id:03}").into_bytes(),
                 text: SourceTextAdmission::Excluded,
+                language: None,
             })
             .collect();
         original_refs.extend(client.stage_sources(target_ingress, inputs, &budget())?);

@@ -1101,6 +1101,7 @@ mod tests {
                 policy: recipe.admission_policy,
             },
             source_repo_id: None,
+            language: None,
         };
         objects.add(source_ref, encode(&record)?, vec![body_ref])?;
         let occurrence = Occurrence {
@@ -1370,6 +1371,7 @@ mod tests {
                 policy: fixture.recipe.admission_policy,
             },
             source_repo_id: None,
+            language: None,
         };
         fixture
             .objects
@@ -2205,6 +2207,7 @@ mod tests {
             byte_len: 3,
             text: prior.text,
             source_repo_id: None,
+            language: None,
         };
         let result = drive_change(
             &fixture,
@@ -2279,6 +2282,7 @@ mod tests {
                         byte_len: 1,
                         text: prior.text,
                         source_repo_id: None,
+                        language: None,
                     }),
                 )),
             },

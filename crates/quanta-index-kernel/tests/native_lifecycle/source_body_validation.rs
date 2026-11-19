@@ -130,11 +130,13 @@ fn cold_native_text_bodies_are_authenticated_once_during_execute() -> TestResult
                 path: "alpha.rs".into(),
                 bytes: b"alpha shared".to_vec(),
                 text: admitted,
+                language: None,
             },
             SourceInput {
                 path: "beta.rs".into(),
                 bytes: b"beta shared".to_vec(),
                 text: admitted,
+                language: None,
             },
         ],
         &mut budget(),
@@ -208,6 +210,7 @@ fn no_text_member_still_validates_deferred_utf8_claim_before_publication() -> Te
                 policy: Digest([31; 32]),
             },
             source_repo_id: None,
+            language: None,
         };
         let record_ref = objects
             .put(&serde_json::to_vec(&record)?, &[body_ref], &mut budget())?
@@ -297,6 +300,7 @@ fn cancelled_deferred_body_validation_recovers_the_original_operation() -> TestR
                 policy: Digest([31; 32]),
             },
             source_repo_id: None,
+            language: None,
         };
         let record_ref = objects
             .put(&serde_json::to_vec(&record)?, &[body_ref], &mut budget())?

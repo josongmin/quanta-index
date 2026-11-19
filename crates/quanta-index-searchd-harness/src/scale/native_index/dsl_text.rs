@@ -157,6 +157,7 @@ fn measure_pass(
                 text: SourceTextAdmission::Utf8 {
                     policy: Digest([31; 32]),
                 },
+                language: None,
             })
             .collect::<Vec<_>>();
         let refs = client.stage_sources_borrowed(ingress, &inputs, &budget())?;

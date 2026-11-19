@@ -16,6 +16,7 @@ fn inline_mutation_pages_seal_original_digest_and_reopen_without_expected_edges(
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         }],
         &mut budget(),
     )?;

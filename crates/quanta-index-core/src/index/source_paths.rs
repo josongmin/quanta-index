@@ -1,16 +1,97 @@
 //! Read repository members of one path in the selected SourceCut.
 
-use quanta_index_contract::RepoId;
+use quanta_index_contract::{
+    NativeIdentityConstructionErrorV1, NativeNormalizationAdmissionV1, NativeNormalizationErrorV1,
+    NativeNormalizationScratchDemandV1, NativeNormalizationScratchOwnerV1, RepoId,
+};
 
 use super::{
-    IndexError, MapPageEntry, MapRoot, MapValue, MemoryLifetime, ObjectRef, OwnerKey,
+    IndexError, MapPageEntry, MapRoot, MapValue, MemoryLease, MemoryLifetime, ObjectRef, OwnerKey,
     SourcePathOwners, SourcePathRepositoryKey, SourceRecordOwner, WorkBudget, WorkUsage,
     owner_map_key,
     ports::{ImmutableObjectPort, PersistentMapPort},
 };
 
+pub(super) struct RepositoryKeyAdmission<'a> {
+    budget: &'a mut WorkBudget,
+    leases: [Option<MemoryLease>; 3],
+    sizes: [usize; 3],
+}
+
+impl<'a> RepositoryKeyAdmission<'a> {
+    pub(super) fn new(budget: &'a mut WorkBudget) -> Self {
+        Self {
+            budget,
+            leases: [None, None, None],
+            sizes: [0; 3],
+        }
+    }
+
+    const fn slot(owner: NativeNormalizationScratchOwnerV1) -> usize {
+        match owner {
+            NativeNormalizationScratchOwnerV1::Decomposition => 0,
+            NativeNormalizationScratchOwnerV1::Recomposition => 1,
+            NativeNormalizationScratchOwnerV1::Sort => 2,
+        }
+    }
+}
+
+impl NativeNormalizationAdmissionV1 for RepositoryKeyAdmission<'_> {
+    type Error = IndexError;
+
+    fn checkpoint_work_v1(&mut self, units: u64) -> Result<(), IndexError> {
+        self.budget.charge(WorkUsage {
+            bytes: units,
+            ..WorkUsage::default()
+        })
+    }
+
+    fn native_birth_v1(
+        &mut self,
+        demand: NativeNormalizationScratchDemandV1,
+        birth: &mut dyn FnMut() -> bool,
+    ) -> Result<bool, IndexError> {
+        let slot = Self::slot(demand.owner_v1);
+        if self.sizes[slot] != demand.current_bytes_v1
+            || self.leases[slot].as_ref().is_some_and(|lease| {
+                usize::try_from(lease.bytes()).ok() != Some(demand.current_bytes_v1)
+            })
+            || demand.new_bytes_v1 <= demand.current_bytes_v1
+        {
+            return Err(IndexError::BackendViolation(
+                "repository key NFC scratch growth differs from its live grant".into(),
+            ));
+        }
+        self.budget.charge(WorkUsage {
+            bytes: u64::try_from(demand.new_bytes_v1)
+                .map_err(|_error| IndexError::ResourceLimited)?,
+            ..WorkUsage::default()
+        })?;
+        let replacement = self.budget.reserve_memory(
+            u64::try_from(demand.new_bytes_v1).map_err(|_error| IndexError::ResourceLimited)?,
+            MemoryLifetime::Temporary,
+        )?;
+        let born = birth();
+        if born {
+            // The old grant remains live until the replacement birth completes.
+            self.leases[slot] = replacement;
+            self.sizes[slot] = demand.new_bytes_v1;
+        }
+        Ok(born)
+    }
+
+    fn release_scratch_v1(&mut self, owner: NativeNormalizationScratchOwnerV1) {
+        let slot = Self::slot(owner);
+        self.leases[slot] = None;
+        self.sizes[slot] = 0;
+    }
+}
+
 /// Validate a repository bucket key, including the original unscoped slot.
-pub fn validate_source_path_repository_key(key: &[u8]) -> Result<(), IndexError> {
+pub fn validate_source_path_repository_key(
+    key: &[u8],
+    budget: &mut WorkBudget,
+) -> Result<(), IndexError> {
     let suffix = key
         .strip_prefix(b"repo\0")
         .ok_or_else(|| IndexError::CorruptObject("repository path map has a foreign key".into()))?;
@@ -19,8 +100,27 @@ pub fn validate_source_path_repository_key(key: &[u8]) -> Result<(), IndexError>
     }
     let name = std::str::from_utf8(suffix)
         .map_err(|_error| IndexError::CorruptObject("repository path key is not UTF-8".into()))?;
-    RepoId::validate(name)
-        .map_err(|error| IndexError::CorruptObject(format!("repository path key: {error}")))
+    let mut admission = RepositoryKeyAdmission::new(budget);
+    RepoId::validate_str_with_native_admission_v1(name, &mut admission).map_err(|error| match error
+    {
+        NativeIdentityConstructionErrorV1::Validation(cause) => {
+            IndexError::CorruptObject(format!("repository path key: {cause}"))
+        }
+        NativeIdentityConstructionErrorV1::Normalization(
+            NativeNormalizationErrorV1::Admission(cause),
+        ) => cause,
+        NativeIdentityConstructionErrorV1::Normalization(
+            NativeNormalizationErrorV1::NativeAllocationFailed
+            | NativeNormalizationErrorV1::ArithmeticOverflow
+            | NativeNormalizationErrorV1::UnsupportedNativeSortBacking,
+        ) => IndexError::ResourceLimited,
+        NativeIdentityConstructionErrorV1::Normalization(cause) => {
+            IndexError::BackendViolation(format!("repository key validation: {cause}"))
+        }
+        NativeIdentityConstructionErrorV1::Copy(_) => IndexError::BackendViolation(
+            "borrowed repository key validation attempted a copy".into(),
+        ),
+    })
 }
 
 /// Visit every member of one nonempty repository bucket in key order. A caller
@@ -58,7 +158,7 @@ pub fn visit_repository_path_owners(
                     "repository path scan repeated or reversed a key".into(),
                 ));
             }
-            validate_source_path_repository_key(key)?;
+            validate_source_path_repository_key(key, budget)?;
             visit(key, *value, budget)?;
             previous = Some(key);
         }
@@ -128,7 +228,10 @@ pub fn visit_repository_path_sources(
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
         time::{Duration, Instant},
     };
 
@@ -137,8 +240,9 @@ mod tests {
     };
 
     use super::super::{
-        MapBatchRequest, MapBatchWrite, MapEdit, MapPage, MapWrite, ObjectBatchInput,
-        RegisteredObject, StagedMapRoots, StoredObject, WorkLimits,
+        MapBatchRequest, MapBatchWrite, MapEdit, MapPage, MapWrite, MemoryLeaseOwner, MemoryScope,
+        MemoryScopePort, ObjectBatchInput, RegisteredObject, StagedMapRoots, StoredObject,
+        WorkLimits,
         ports::{MapEditCursor, ObjectWriteSink},
     };
     use super::*;
@@ -170,6 +274,87 @@ mod tests {
     }
     fn row(key: &[u8], value: SourcePathOwners) -> Result<(Vec<u8>, MapValue), IndexError> {
         Ok((key.to_vec(), value.encode()?))
+    }
+
+    #[derive(Default)]
+    struct ScratchLedger {
+        live: Mutex<u64>,
+        births: AtomicUsize,
+    }
+
+    impl MemoryLeaseOwner for ScratchLedger {
+        fn release(&self, bytes: u64) {
+            let mut live = self.live.lock().expect("scratch ledger lock");
+            *live = live.checked_sub(bytes).expect("scratch grant was live");
+        }
+    }
+
+    struct ScratchScope {
+        ledger: Arc<ScratchLedger>,
+        ceiling: u64,
+    }
+
+    impl MemoryScopePort for ScratchScope {
+        fn reserve(&self, bytes: u64, lifetime: MemoryLifetime) -> Result<MemoryLease, IndexError> {
+            if lifetime != MemoryLifetime::Temporary {
+                return Err(IndexError::BackendViolation(
+                    "repository key used retained scratch".into(),
+                ));
+            }
+            let mut live = self.ledger.live.lock().expect("scratch ledger lock");
+            *live = live
+                .checked_add(bytes)
+                .filter(|next| *next <= self.ceiling)
+                .ok_or(IndexError::ResourceLimited)?;
+            drop(live);
+            let _previous_births = self.ledger.births.fetch_add(1, Ordering::Relaxed);
+            Ok(MemoryLease::new(bytes, self.ledger.clone()))
+        }
+    }
+
+    #[test]
+    fn canonical_repository_key_scratch_is_bounded_and_refunded() -> Result<(), IndexError> {
+        // This canonical combining run exceeds both NFC iterators' inline four slots.
+        let key = format!("repo\0q{}", "\u{301}".repeat(20));
+        // Standalone budgets retain the existing no-memory-scope exception.
+        validate_source_path_repository_key(key.as_bytes(), &mut budget()?)?;
+        let ledger = Arc::new(ScratchLedger::default());
+        let mut work = budget()?;
+        work.bind_memory_scope(Some(MemoryScope::new(Arc::new(ScratchScope {
+            ledger: ledger.clone(),
+            ceiling: 64,
+        }))));
+        if validate_source_path_repository_key(key.as_bytes(), &mut work)
+            != Err(IndexError::ResourceLimited)
+        {
+            return Err(IndexError::BackendViolation(
+                "NFC scratch escaped the small memory grant".into(),
+            ));
+        }
+        if ledger.births.load(Ordering::Relaxed) == 0
+            || *ledger.live.lock().expect("scratch ledger lock") != 0
+        {
+            return Err(IndexError::BackendViolation(
+                "refused NFC growth did not release its prior scratch".into(),
+            ));
+        }
+
+        let ledger = Arc::new(ScratchLedger::default());
+        let mut work = budget()?;
+        work.bind_memory_scope(Some(MemoryScope::new(Arc::new(ScratchScope {
+            ledger: ledger.clone(),
+            ceiling: 4_096,
+        }))));
+        validate_source_path_repository_key(key.as_bytes(), &mut work)?;
+        if ledger.births.load(Ordering::Relaxed) < 2
+            || *ledger.live.lock().expect("scratch ledger lock") != 0
+            || work.usage().bytes == 0
+        {
+            return Err(IndexError::BackendViolation(
+                "admitted NFC scratch was not charged and refunded".into(),
+            ));
+        }
+        Ok(())
     }
 
     struct Maps {
@@ -293,6 +478,7 @@ mod tests {
                 .map(RepoId::try_from)
                 .transpose()
                 .map_err(|error| IndexError::InvalidInput(error.to_string()))?,
+                language: None,
         };
         let payload = serde_json::to_vec(&record)
             .map_err(|error| IndexError::InvalidInput(error.to_string()))?;

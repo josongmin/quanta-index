@@ -512,6 +512,7 @@ fn source_record(
             policy: recipe.admission_policy,
         },
         source_repo_id: None,
+        language: None,
     };
     objects.seed(encode(&record)?, vec![bytes])
 }

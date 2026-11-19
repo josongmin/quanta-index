@@ -1075,6 +1075,7 @@ fn product_daemon_owns_openai_semantic_materialization_query_scope_and_reopen() 
                 text: SourceTextAdmission::Utf8 {
                     policy: Digest([31; 32]),
                 },
+                language: None,
             },
             SourceInput {
                 path: "semantic-second.rs".into(),
@@ -1082,6 +1083,7 @@ fn product_daemon_owns_openai_semantic_materialization_query_scope_and_reopen() 
                 text: SourceTextAdmission::Utf8 {
                     policy: Digest([31; 32]),
                 },
+                language: None,
             },
         ],
         &budget(),
@@ -1757,6 +1759,7 @@ fn check_product_daemon_publish_query_and_reopen(retention: bool) -> TestResult 
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         }],
         &budget(),
     )?;

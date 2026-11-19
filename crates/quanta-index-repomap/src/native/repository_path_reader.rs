@@ -448,7 +448,7 @@ fn visit_path(
                             "repository path scan reversed its key".into(),
                         ));
                     }
-                    validate_source_path_repository_key(repo)?;
+                    validate_source_path_repository_key(repo, context.budget)?;
                     if !output.append(entry.get()?.1, Some(repo), path, source, context, limit)? {
                         return Ok(());
                     }

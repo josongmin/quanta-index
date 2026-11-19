@@ -19,6 +19,7 @@ fn stage_repository(
                 path: "src/shared.rs".into(),
                 bytes: bytes.to_vec(),
                 text: SourceTextAdmission::Excluded,
+                language: None,
             }],
         },
         &budget(),

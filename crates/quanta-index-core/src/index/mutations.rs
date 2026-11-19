@@ -1027,6 +1027,7 @@ mod tests {
                 byte_len: 0,
                 text: quanta_index_contract::index::SourceTextAdmission::Excluded,
                 source_repo_id: None,
+                language: None,
             };
             let payload = serde_json::to_vec(&record)
                 .map_err(|error| IndexError::InvalidInput(error.to_string()))?;
@@ -1095,6 +1096,7 @@ mod tests {
                     byte_len: 0,
                     text: quanta_index_contract::index::SourceTextAdmission::Excluded,
                     source_repo_id: None,
+                    language: None,
                 };
                 let payload = serde_json::to_vec(&record)
                     .map_err(|error| IndexError::InvalidInput(error.to_string()))?;

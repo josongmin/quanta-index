@@ -463,6 +463,7 @@ mod tests {
             byte_len: 5,
             text: SourceTextAdmission::Excluded,
             source_repo_id: None,
+            language: None,
         };
         let mut future = bridge.embed(EmbeddingInput {
             owner: OwnerKey {

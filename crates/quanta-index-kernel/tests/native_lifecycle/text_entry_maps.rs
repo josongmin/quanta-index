@@ -80,6 +80,7 @@ fn advance(
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         }],
         &mut budget(),
     )?;
@@ -720,6 +721,7 @@ fn posting_tree_witness_shrinks_to_small_and_reexpands_with_pinned_views() -> Te
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         })
         .collect();
     let source_refs = engine.stage_sources(engine.begin_input(add)?, inputs, &mut budget())?;
@@ -898,6 +900,7 @@ fn posting_tree_witness_shrinks_to_small_and_reexpands_with_pinned_views() -> Te
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         }],
         &mut budget(),
     )?[0];

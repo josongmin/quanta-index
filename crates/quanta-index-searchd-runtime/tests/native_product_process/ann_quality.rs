@@ -187,6 +187,7 @@ fn stage_quality_sources(
         text: SourceTextAdmission::Utf8 {
             policy: Digest([31; 32]),
         },
+        language: None,
     });
     let mut records = Vec::new();
     loop {

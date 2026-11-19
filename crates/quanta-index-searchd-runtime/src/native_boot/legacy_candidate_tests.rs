@@ -235,6 +235,7 @@ fn prepare_native_fixture() -> TestResult<PreparedNativeFixture> {
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         }],
         &request(),
     )?;

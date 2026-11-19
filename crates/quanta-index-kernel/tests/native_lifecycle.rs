@@ -454,6 +454,7 @@ fn stage(objects: &FileObjectStore, path: &str, bytes: &[u8]) -> TestResult<Obje
         byte_len: u64::try_from(bytes.len())?,
         text: quanta_index_core::index::SourceTextAdmission::Excluded,
         source_repo_id: None,
+        language: None,
     };
     Ok(objects
         .put(&serde_json::to_vec(&record)?, &[blob], &mut budget())?
@@ -548,6 +549,7 @@ fn direct_staged_record_cannot_publish_false_utf8_admission() -> TestResult {
             policy: Digest([21; 32]),
         },
         source_repo_id: None,
+        language: None,
     };
     let record_ref = objects
         .put(&serde_json::to_vec(&record)?, &[body], &mut budget())?
@@ -596,6 +598,7 @@ fn source_path_bucket_preserves_repository_owners_and_rejects_scope_changes() ->
             source_repo_id: repository
                 .map(quanta_index_contract::RepoId::new)
                 .transpose()?,
+            language: None,
         };
         Ok(objects
             .put(&serde_json::to_vec(&record)?, &[body], &mut budget())?
@@ -1025,6 +1028,7 @@ fn source_only_manifest_exceeds_legacy_direct_child_limit() -> TestResult {
                 path: format!("source-{id:05}.rs"),
                 bytes: b"initial contents".to_vec(),
                 text: quanta_index_core::index::SourceTextAdmission::Excluded,
+                language: None,
             })
             .collect::<Vec<_>>();
         let capture_count = captures.len();
@@ -7679,11 +7683,13 @@ fn native_text_byte_bounded_batch_confirmed_prefix_mixed_update_and_reopen() -> 
             path: "left.rs".into(),
             bytes: left,
             text: admitted,
+            language: None,
         },
         SourceInput {
             path: "right.rs".into(),
             bytes: right.clone(),
             text: admitted,
+            language: None,
         },
     ];
     let initial_key = key(21);
@@ -7747,6 +7753,7 @@ fn native_text_byte_bounded_batch_confirmed_prefix_mixed_update_and_reopen() -> 
             path: format!("f{id}.rs"),
             bytes: format!("fresh item{id} alpha beta gamma").into_bytes(),
             text: admitted,
+            language: None,
         })
         .collect();
     let failed_key = key(22);
@@ -7825,11 +7832,13 @@ fn native_text_byte_bounded_batch_confirmed_prefix_mixed_update_and_reopen() -> 
             path: "left.rs".into(),
             bytes: b"changed mixed".to_vec(),
             text: admitted,
+            language: None,
         },
         SourceInput {
             path: "renamed/right.rs".into(),
             bytes: right,
             text: admitted,
+            language: None,
         },
     ];
     mixed.extend(additions);
@@ -7838,16 +7847,19 @@ fn native_text_byte_bounded_batch_confirmed_prefix_mixed_update_and_reopen() -> 
             path: "excluded.rs".into(),
             bytes: b"excluded only".to_vec(),
             text: SourceTextAdmission::Excluded,
+            language: None,
         },
         SourceInput {
             path: "empty.rs".into(),
             bytes: b" \n\t".to_vec(),
             text: admitted,
+            language: None,
         },
         SourceInput {
             path: "alias.rs".into(),
             bytes: b"fresh item3 alpha beta gamma".to_vec(),
             text: admitted,
+            language: None,
         },
     ]);
     let success_key = key(23);
@@ -8040,6 +8052,7 @@ fn one_owner_native_text_cost_case(
             path,
             bytes: body.to_vec(),
             text: admitted,
+            language: None,
         });
     }
     // Corpus generation is outside the capture clock; actual ingress/staging
@@ -8478,6 +8491,7 @@ fn one_owner_native_text_cost_case(
                         b"plain stable".to_vec()
                     },
                     text: admitted,
+                    language: None,
                 })
                 .collect();
             let references = engine.stage_sources(

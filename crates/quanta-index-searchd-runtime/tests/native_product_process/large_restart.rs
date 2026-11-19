@@ -467,6 +467,7 @@ fn native_large_scoped_corpus_two_process_restarts_preserve_sources_and_repo_ran
                 text: SourceTextAdmission::Utf8 {
                     policy: Digest([31; 32]),
                 },
+                language: None,
             })
             .collect::<Vec<_>>();
         let references = client.stage_sources_borrowed(ingress, &inputs, &large_budget())?;

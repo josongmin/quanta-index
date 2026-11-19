@@ -50,6 +50,7 @@ fn add_source(
             SourceTextAdmission::Excluded
         },
         source_repo_id: None,
+        language: None,
     };
     fixture
         .objects

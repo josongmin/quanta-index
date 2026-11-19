@@ -269,6 +269,7 @@ fn check_literal_seal(fault: usize) -> TestResult {
             path: "src/one.rs".into(),
             bytes: b"Needle cafe Needle".to_vec(),
             text: SourceTextAdmission::Utf8 { policy: ADMISSION },
+            language: None,
         }],
         &mut budget()?,
     )?;

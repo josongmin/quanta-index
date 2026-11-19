@@ -126,6 +126,7 @@ fn native_text_dsl_fixture_returns_exact_published_files() -> TestResult {
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         })
         .collect();
     let staged = client.stage_sources(ingress, sources, &budget())?;
@@ -265,6 +266,7 @@ fn block_queries_preserve_fixed_gold_across_delta_delete_noop_and_reopen() -> Te
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         })
         .collect::<Vec<_>>();
     let staged = client.stage_sources(ingress, sources, &budget())?;
@@ -356,6 +358,7 @@ fn cold_multiblock_owner_queries_first_middle_last_after_reopen() -> TestResult 
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         }],
         &budget(),
     )?;

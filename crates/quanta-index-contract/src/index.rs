@@ -47,8 +47,8 @@ pub const MAX_SOURCE_PATH_BYTES: usize = 4091;
 pub const MAX_NATIVE_IMMUTABLE_OBJECT_WIRE_BYTES_V1: u64 = 64 * 1024 * 1024;
 /// Maximum number of source items in one Native `StageSources` request.
 pub const MAX_NATIVE_STAGE_SOURCES_INPUTS: usize = 128;
-/// Maximum sum of path bytes, source bytes, repository ID bytes (if present),
-/// and 256 bytes per staged item.
+/// Maximum sum of path, source, repository ID and language bytes (when present),
+/// plus 256 bytes per staged item.
 /// The IPC frame and encoded object batch apply independent byte limits.
 pub const MAX_NATIVE_STAGE_SOURCES_WEIGHTED_BYTES: usize = 8 * 1024 * 1024;
 
@@ -137,6 +137,9 @@ pub struct SourceRecord {
     /// Absent on records from the original path-only publication protocol.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_repo_id: Option<crate::RepoId>,
+    /// Absent on records staged before authenticated language publication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<crate::lex::LanguageCode>,
 }
 
 /// One bounded native source intake item. A batch preserves this order in its
@@ -146,6 +149,7 @@ pub struct SourceInput {
     pub path: String,
     pub bytes: Vec<u8>,
     pub text: SourceTextAdmission,
+    pub language: Option<crate::lex::LanguageCode>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1140,11 +1144,105 @@ quanta_index_contract_base::native_serde_struct!(SourceCut {
     paths: MapRoot,
     frontiers: MapRoot
 });
-quanta_index_contract_base::native_serde_struct!(SourceInput {
-    path: String,
-    bytes: Vec<u8>,
-    text: SourceTextAdmission
-});
+impl serde::Serialize for SourceInput {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer
+            .serialize_struct("SourceInput", if self.language.is_some() { 4 } else { 3 })?;
+        serde::ser::SerializeStruct::serialize_field(&mut state, "path", &self.path)?;
+        serde::ser::SerializeStruct::serialize_field(&mut state, "bytes", &self.bytes)?;
+        serde::ser::SerializeStruct::serialize_field(&mut state, "text", &self.text)?;
+        if let Some(language) = &self.language {
+            serde::ser::SerializeStruct::serialize_field(&mut state, "language", language)?;
+        }
+        serde::ser::SerializeStruct::end(state)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SourceInput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &["path", "bytes", "text", "language"];
+        struct SourceInputVisitor;
+        impl<'de> serde::de::Visitor<'de> for SourceInputVisitor {
+            type Value = SourceInput;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a closed source input with optional language")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let (mut path, mut bytes, mut text, mut language) = (None, None, None, None);
+                while let Some(key) =
+                    map.next_key_seed(quanta_index_contract_base::ClosedFieldKeySeedV1(FIELDS))?
+                {
+                    match key {
+                        "path" => {
+                            if path.is_some() {
+                                return Err(serde::de::Error::duplicate_field("path"));
+                            }
+                            path = Some(map.next_value::<String>()?);
+                        }
+                        "bytes" => {
+                            if bytes.is_some() {
+                                return Err(serde::de::Error::duplicate_field("bytes"));
+                            }
+                            bytes = Some(map.next_value::<Vec<u8>>()?);
+                        }
+                        "text" => {
+                            if text.is_some() {
+                                return Err(serde::de::Error::duplicate_field("text"));
+                            }
+                            text = Some(map.next_value::<SourceTextAdmission>()?);
+                        }
+                        "language" => {
+                            if language.is_some() {
+                                return Err(serde::de::Error::duplicate_field("language"));
+                            }
+                            language = Some(map.next_value::<Option<crate::lex::LanguageCode>>()?);
+                        }
+                        _ => unreachable!("closed field seed only returns schema keys"),
+                    }
+                }
+                Ok(SourceInput {
+                    path: path.ok_or_else(|| serde::de::Error::missing_field("path"))?,
+                    bytes: bytes.ok_or_else(|| serde::de::Error::missing_field("bytes"))?,
+                    text: text.ok_or_else(|| serde::de::Error::missing_field("text"))?,
+                    language: language.flatten(),
+                })
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let path = seq
+                    .next_element::<String>()?
+                    .ok_or_else(|| serde::de::Error::missing_field("path"))?;
+                let bytes = seq
+                    .next_element::<Vec<u8>>()?
+                    .ok_or_else(|| serde::de::Error::missing_field("bytes"))?;
+                let text = seq
+                    .next_element::<SourceTextAdmission>()?
+                    .ok_or_else(|| serde::de::Error::missing_field("text"))?;
+                let language = seq
+                    .next_element::<Option<crate::lex::LanguageCode>>()?
+                    .flatten();
+                if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    return Err(serde::de::Error::invalid_length(5, &self));
+                }
+                Ok(SourceInput {
+                    path,
+                    bytes,
+                    text,
+                    language,
+                })
+            }
+        }
+        deserializer.deserialize_struct("SourceInput", FIELDS, SourceInputVisitor)
+    }
+}
 quanta_index_contract_base::native_serde_enum!(SourceTextAdmission {
     units { Excluded = 0 }
     newtypes { }

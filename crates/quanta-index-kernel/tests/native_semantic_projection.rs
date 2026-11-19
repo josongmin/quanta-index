@@ -208,6 +208,7 @@ fn stage_source(objects: &FileObjectStore) -> TestResult<ObjectRef> {
         byte_len: 8,
         text: quanta_index_core::index::SourceTextAdmission::Excluded,
         source_repo_id: None,
+        language: None,
     };
     Ok(objects
         .put(&serde_json::to_vec(&record)?, &[bytes], &mut budget())?
@@ -336,6 +337,7 @@ fn stage_updated_source(objects: &FileObjectStore) -> TestResult<ObjectRef> {
         byte_len: 9,
         text: quanta_index_core::index::SourceTextAdmission::Excluded,
         source_repo_id: None,
+        language: None,
     };
     Ok(objects
         .put(&serde_json::to_vec(&record)?, &[bytes], &mut budget())?

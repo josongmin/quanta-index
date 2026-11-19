@@ -1071,6 +1071,7 @@ fn native_uds_same_kind_real_members_bind_policy_and_preserve_old_view() -> Test
             path: "shared.rs".into(),
             bytes: b"needle shared body".to_vec(),
             text: SourceTextAdmission::Excluded,
+            language: None,
         }],
         &budget(),
     )?;
@@ -2007,6 +2008,7 @@ fn native_uds_stage_sources_accepts_full_object_batch_and_refuses_overflow() -> 
         path: format!("batch/{index}.rs"),
         bytes: vec![index],
         text: SourceTextAdmission::Excluded,
+        language: None,
     };
     assert!(matches!(
         client.request(
@@ -2022,7 +2024,9 @@ fn native_uds_stage_sources_accepts_full_object_batch_and_refuses_overflow() -> 
     let staged = client.stage_sources(ingress, (0..128).map(source).collect(), &budget())?;
     assert_eq!(staged.len(), 128);
     for index in [0u8, 127] {
-        let SourceInput { path, bytes, text } = source(index);
+        let SourceInput {
+            path, bytes, text, ..
+        } = source(index);
         let direct = client.request(
             NativeIndexRequest::StageSource {
                 ingress,
@@ -2256,11 +2260,13 @@ fn native_uds_source_lifecycle_status_old_view_and_reopen() -> TestResult {
                 text: SourceTextAdmission::Utf8 {
                     policy: Digest([42; 32]),
                 },
+                language: None,
             },
             SourceInput {
                 path: "b.rs".into(),
                 bytes: b"second native needle".to_vec(),
                 text: SourceTextAdmission::Excluded,
+                language: None,
             },
             SourceInput {
                 path: "a.rs".into(),
@@ -2268,6 +2274,7 @@ fn native_uds_source_lifecycle_status_old_view_and_reopen() -> TestResult {
                 text: SourceTextAdmission::Utf8 {
                     policy: Digest([42; 32]),
                 },
+                language: None,
             },
         ],
         &budget(),
@@ -2804,6 +2811,7 @@ fn native_uds_text_query_binds_pinned_view_and_fixed_bm25_gold() -> TestResult {
                 text: SourceTextAdmission::Utf8 {
                     policy: Digest([31; 32]),
                 },
+                language: None,
             },
             SourceInput {
                 path: "b.rs".into(),
@@ -2811,6 +2819,7 @@ fn native_uds_text_query_binds_pinned_view_and_fixed_bm25_gold() -> TestResult {
                 text: SourceTextAdmission::Utf8 {
                     policy: Digest([31; 32]),
                 },
+                language: None,
             },
             SourceInput {
                 path: "empty.rs".into(),
@@ -2818,11 +2827,13 @@ fn native_uds_text_query_binds_pinned_view_and_fixed_bm25_gold() -> TestResult {
                 text: SourceTextAdmission::Utf8 {
                     policy: Digest([31; 32]),
                 },
+                language: None,
             },
             SourceInput {
                 path: "binary.rs".into(),
                 bytes: vec![0xff],
                 text: SourceTextAdmission::Excluded,
+                language: None,
             },
         ],
         &budget(),
@@ -4298,6 +4309,7 @@ fn native_physical_staging_pressure(byte_cap: bool, raise_cap: bool) -> TestResu
             path: "pressure-seed.rs".into(),
             bytes: b"physical admission seed".to_vec(),
             text: SourceTextAdmission::Excluded,
+            language: None,
         }],
         &budget(),
     )?;
@@ -4325,6 +4337,7 @@ fn native_physical_staging_pressure(byte_cap: bool, raise_cap: bool) -> TestResu
                 path: format!("pressure-{index}.rs"),
                 bytes: vec![index; 128 * 1024],
                 text: SourceTextAdmission::Excluded,
+                language: None,
             }],
             &budget(),
         );
@@ -4412,6 +4425,7 @@ fn native_physical_staging_pressure(byte_cap: bool, raise_cap: bool) -> TestResu
                     path: "after-pressure.rs".into(),
                     bytes: b"ordinary admission after bounded GC".to_vec(),
                     text: SourceTextAdmission::Excluded,
+                    language: None,
                 }],
                 &budget(),
             )
@@ -4442,6 +4456,7 @@ fn native_physical_staging_pressure(byte_cap: bool, raise_cap: bool) -> TestResu
                 path: "pressure-seed.rs".into(),
                 bytes: b"physical admission seed".to_vec(),
                 text: SourceTextAdmission::Excluded,
+                language: None,
             }],
             &budget(),
         )?,
@@ -5438,6 +5453,7 @@ fn native_uds_semantic_query_fixed_cosine_coverage_reopen_and_composed_pump() ->
                 text: SourceTextAdmission::Utf8 {
                     policy: Digest([31; 32]),
                 },
+                language: None,
             },
             SourceInput {
                 path: "beta.rs".into(),
@@ -5445,6 +5461,7 @@ fn native_uds_semantic_query_fixed_cosine_coverage_reopen_and_composed_pump() ->
                 text: SourceTextAdmission::Utf8 {
                     policy: Digest([31; 32]),
                 },
+                language: None,
             },
         ],
         &budget(),
@@ -5687,6 +5704,7 @@ fn native_uds_semantic_chunk_bindings_survive_materialization_and_reopen() -> Te
             text: SourceTextAdmission::Utf8 {
                 policy: Digest([31; 32]),
             },
+            language: None,
         }],
         &budget(),
     )?;

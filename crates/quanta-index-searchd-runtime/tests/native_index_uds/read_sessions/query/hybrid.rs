@@ -267,11 +267,13 @@ fn publish_initial(
                 text: SourceTextAdmission::Utf8 {
                     policy: Digest([31; 32]),
                 },
+                language: None,
             },
             SourceInput {
                 path: "beta.rs".into(),
                 bytes: b"beta".to_vec(),
                 text: SourceTextAdmission::Excluded,
+                language: None,
             },
         ],
         &budget(),

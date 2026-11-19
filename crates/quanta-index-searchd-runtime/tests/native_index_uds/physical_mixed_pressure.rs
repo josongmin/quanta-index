@@ -422,6 +422,7 @@ fn pressure_cycle(
                 path: format!("pressure-{cycle}-{index}.rs"),
                 bytes: body,
                 text: SourceTextAdmission::Excluded,
+                language: None,
             }],
             &budget(),
         );
@@ -509,6 +510,7 @@ fn pressure_cycle(
                     path: format!("recovered-{cycle}.rs"),
                     bytes: probe_body.clone(),
                     text: SourceTextAdmission::Excluded,
+                    language: None,
                 }],
                 &budget(),
             )

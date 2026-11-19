@@ -336,6 +336,7 @@ fn product_daemon_seals_managed_ann_region_and_reopens_selected_view() -> TestRe
         text: SourceTextAdmission::Utf8 {
             policy: Digest([31; 32]),
         },
+        language: None,
     });
     let mut records = Vec::new();
     loop {

@@ -2499,6 +2499,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::index::S
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::index::SourceHistoryTransitionV1
 pub struct quanta_index_contract::index::SourceInput
 pub quanta_index_contract::index::SourceInput::bytes: alloc::vec::Vec<u8>
+pub quanta_index_contract::index::SourceInput::language: core::option::Option<quanta_index_contract_base::query::constraints::LanguageCode>
 pub quanta_index_contract::index::SourceInput::path: alloc::string::String
 pub quanta_index_contract::index::SourceInput::text: quanta_index_contract::index::SourceTextAdmission
 impl core::clone::Clone for quanta_index_contract::index::SourceInput
@@ -2523,6 +2524,7 @@ impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::index::Sour
 pub struct quanta_index_contract::index::SourceRecord
 pub quanta_index_contract::index::SourceRecord::byte_len: u64
 pub quanta_index_contract::index::SourceRecord::bytes: quanta_index_contract_base::index_refs::ObjectRef
+pub quanta_index_contract::index::SourceRecord::language: core::option::Option<quanta_index_contract_base::query::constraints::LanguageCode>
 pub quanta_index_contract::index::SourceRecord::path: alloc::string::String
 pub quanta_index_contract::index::SourceRecord::source_repo_id: core::option::Option<quanta_index_contract_base::ids::RepoId>
 pub quanta_index_contract::index::SourceRecord::text: quanta_index_contract::index::SourceTextAdmission

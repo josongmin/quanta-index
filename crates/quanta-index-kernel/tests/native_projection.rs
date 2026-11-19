@@ -242,6 +242,7 @@ fn stage_source(objects: &FileObjectStore, path: &str, bytes: &[u8]) -> TestResu
         byte_len: u64::try_from(bytes.len())?,
         text: quanta_index_core::index::SourceTextAdmission::Excluded,
         source_repo_id: None,
+        language: None,
     };
     Ok(objects
         .put(&serde_json::to_vec(&record)?, &[blob], &mut budget())?
