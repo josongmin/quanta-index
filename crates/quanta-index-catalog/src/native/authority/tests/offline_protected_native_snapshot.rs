@@ -124,17 +124,8 @@ fn public_snapshot_visitor_runs_after_catalog_scope_and_keeps_rows_funded() -> T
             assert_eq!(snapshot.source_routes, route_ref);
             let payload = serde_json::to_vec(snapshot)
                 .map_err(|error| IndexError::Storage(error.to_string()))?;
-            Ok(
-                quanta_index_contract::index::NativeProtectedNativeOriginV1 {
-                    source_root_nonce: snapshot.source_root_nonce,
-                    source_routes: snapshot.source_routes,
-                    snapshot: quanta_index_contract::index::native_immutable_object_ref_v1(
-                        &payload,
-                        &snapshot.roots,
-                    )
-                    .ok_or(IndexError::DigestConflict)?,
-                },
-            )
+            quanta_index_contract::index::native_immutable_object_ref_v1(&payload, &snapshot.roots)
+                .ok_or(IndexError::DigestConflict)
         },
     )?;
     check_eq!(io.active.load(Ordering::Acquire), 0);
@@ -144,13 +135,12 @@ fn public_snapshot_visitor_runs_after_catalog_scope_and_keeps_rows_funded() -> T
         &io,
         &selected,
         &routes,
-        &expected_snapshot,
         &mut budget,
     )?;
-    check_eq!(witness.origin_v1(), &expected_snapshot);
+    check_eq!(witness.origin_v1().snapshot, expected_snapshot);
     check_eq!(
         witness.object_references_v1().collect::<Vec<_>>(),
-        [expected_snapshot.snapshot]
+        [expected_snapshot]
     );
     check_eq!(io.entered.load(Ordering::Acquire), 2);
     check_eq!(io.active.load(Ordering::Acquire), 0);

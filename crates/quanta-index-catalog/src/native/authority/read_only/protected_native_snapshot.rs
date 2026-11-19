@@ -275,25 +275,10 @@ impl NativeProtectedSnapshotWitnessV1 {
         std::iter::once(self.origin.snapshot).chain(self.pages.into_iter().flatten())
     }
 
-    #[cfg(test)]
     fn from_snapshot(
         snapshot: &NativeProtectedNativeSnapshotV1,
         budget: &mut WorkBudget,
     ) -> Result<Self, IndexError> {
-        Self::from_snapshot_for_origin(snapshot, None, budget)
-    }
-
-    fn from_snapshot_for_origin(
-        snapshot: &NativeProtectedNativeSnapshotV1,
-        expected: Option<&NativeProtectedNativeOriginV1>,
-        budget: &mut WorkBudget,
-    ) -> Result<Self, IndexError> {
-        if expected.is_some_and(|expected| {
-            expected.source_root_nonce != snapshot.source_root_nonce
-                || expected.source_routes != snapshot.source_routes
-        }) {
-            return Err(IndexError::DigestConflict);
-        }
         let plan = snapshot
             .physical_plan_with_work_v1(&mut || budget.checkpoint())
             .map_err(|cause| cause.into_error(|_| IndexError::DigestConflict))?;
@@ -302,7 +287,7 @@ impl NativeProtectedSnapshotWitnessV1 {
             bytes: u64::try_from(bytes).map_err(|_| IndexError::ResourceLimited)?,
             ..WorkUsage::default()
         })?;
-        let mut pages = if let Some((_, _, children)) = plan.manifest_v1() {
+        let pages = if let Some((_, _, children)) = plan.manifest_v1() {
             let [first, second] = children else {
                 return Err(IndexError::DigestConflict);
             };
@@ -310,36 +295,6 @@ impl NativeProtectedSnapshotWitnessV1 {
         } else {
             [None, None]
         };
-        let mut origin = NativeProtectedNativeOriginV1 {
-            source_root_nonce: snapshot.source_root_nonce,
-            source_routes: snapshot.source_routes,
-            snapshot: plan.reference_v1(),
-        };
-        if let Some(expected) = expected {
-            if expected.snapshot != origin.snapshot {
-                // The original V1 exporter wrote up to 32 MiB as one object.
-                // Select that physical identity only when its exact canonical
-                // body and ordered roots reproduce the candidate's reference.
-                if plan.manifest_v1().is_none() {
-                    return Err(IndexError::DigestConflict);
-                }
-                // A second count/hash serialization is real bounded work,
-                // even though it retains no additional payload backing.
-                budget.charge(WorkUsage {
-                    bytes: u64::try_from(bytes).map_err(|_| IndexError::ResourceLimited)?,
-                    ..WorkUsage::default()
-                })?;
-                if snapshot
-                    .legacy_inline_object_ref_with_work_v1(&mut || budget.checkpoint())
-                    .map_err(|cause| cause.into_error(|_| IndexError::DigestConflict))?
-                    != expected.snapshot
-                {
-                    return Err(IndexError::DigestConflict);
-                }
-                pages = [None, None];
-                origin = expected.clone();
-            }
-        }
         let mut digests = SnapshotRowDigests::new();
         for row in snapshot
             .operation_rows
@@ -371,7 +326,11 @@ impl NativeProtectedSnapshotWitnessV1 {
             digests.record(row)?;
         }
         Ok(Self {
-            origin,
+            origin: NativeProtectedNativeOriginV1 {
+                source_root_nonce: snapshot.source_root_nonce,
+                source_routes: snapshot.source_routes,
+                snapshot: plan.reference_v1(),
+            },
             pages,
             counts: [
                 snapshot.operation_rows.len(),
@@ -392,7 +351,6 @@ pub fn read_native_protected_snapshot_witness_v1(
     io: &dyn CatalogReadOnlyIoAdmission,
     manifest: &NativeBootManifest,
     routes: &NativeProtectedSourceRoutesV1,
-    expected_origin: &NativeProtectedNativeOriginV1,
     budget: &mut WorkBudget,
 ) -> Result<NativeProtectedSnapshotWitnessV1, IndexError> {
     visit_native_protected_snapshot_rows_v1(
@@ -401,13 +359,7 @@ pub fn read_native_protected_snapshot_witness_v1(
         manifest,
         routes,
         budget,
-        |snapshot, budget| {
-            NativeProtectedSnapshotWitnessV1::from_snapshot_for_origin(
-                snapshot,
-                Some(expected_origin),
-                budget,
-            )
-        },
+        NativeProtectedSnapshotWitnessV1::from_snapshot,
     )
 }
 
@@ -985,70 +937,4 @@ fn measure_snapshot_rows(
         raw_bytes,
         keys,
     })
-}
-
-#[cfg(test)]
-mod legacy_inline_witness_tests {
-    use super::*;
-    use quanta_index_contract::index::Digest;
-    use quanta_index_core::index::WorkLimits;
-    use std::time::{Duration, Instant};
-
-    #[test]
-    fn predecessor_witness_binds_old_inline_identity_without_changing_new_export()
-    -> Result<(), IndexError> {
-        let route = ObjectRef(Digest([41; 32]));
-        let snapshot = NativeProtectedNativeSnapshotV1 {
-            wire_version: NativeProtectedNativeSnapshotV1::WIRE_VERSION,
-            source_root_nonce: Digest([42; 32]),
-            source_routes: route,
-            operation_rows: vec![vec![255; 4_300_000]],
-            genesis_views: Vec::new(),
-            frontiers: Vec::new(),
-            source_authorities: Vec::new(),
-            event_claims: Vec::new(),
-            roots: vec![route],
-        };
-        let mut budget = WorkBudget::new(
-            WorkLimits {
-                reads: 0,
-                writes: 0,
-                bytes: 100_000_000,
-                mutations: 0,
-            },
-            Instant::now() + Duration::from_secs(30),
-        );
-        let old = snapshot
-            .legacy_inline_object_ref_with_work_v1(&mut || budget.checkpoint())
-            .map_err(|cause| cause.into_error(|_| IndexError::DigestConflict))?;
-        let new = snapshot
-            .object_ref_v1()
-            .map_err(|_| IndexError::DigestConflict)?;
-        assert_ne!(old, new);
-        let origin = NativeProtectedNativeOriginV1 {
-            source_root_nonce: snapshot.source_root_nonce,
-            source_routes: route,
-            snapshot: old,
-        };
-        let witness = NativeProtectedSnapshotWitnessV1::from_snapshot_for_origin(
-            &snapshot,
-            Some(&origin),
-            &mut budget,
-        )?;
-        assert_eq!(witness.origin_v1(), &origin);
-        assert_eq!(witness.object_references_v1().collect::<Vec<_>>(), [old]);
-        let wrong = NativeProtectedNativeOriginV1 {
-            snapshot: ObjectRef(Digest([43; 32])),
-            ..origin
-        };
-        assert!(matches!(
-            NativeProtectedSnapshotWitnessV1::from_snapshot_for_origin(
-                &snapshot,
-                Some(&wrong),
-                &mut budget,
-            ),
-            Err(IndexError::DigestConflict)
-        ));
-        Ok(())
-    }
 }

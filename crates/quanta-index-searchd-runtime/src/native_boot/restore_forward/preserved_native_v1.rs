@@ -66,7 +66,6 @@ pub(super) fn verify_preserved_native_v1(
                             previous.catalog_io_v1(),
                             old_manifest,
                             old_routes,
-                            origin,
                             budget,
                         )?,
                     )
