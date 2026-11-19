@@ -34,7 +34,7 @@ use rusqlite::{
 };
 
 use super::{
-    NativeBootManifest, boot_manifest, capture_format, decode, encode, operation_key, owned_work,
+    NativeBootManifest, boot_manifest, capture_format, decode, operation_key, owned_work,
     read_operation, read_work_by_key, reclaim, retention, sql, uint, workspace_key,
 };
 use crate::{

@@ -13,7 +13,7 @@ use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params, 
 use std::hash::{BuildHasher, RandomState};
 
 use super::{
-    SqliteCatalog, begin, boot_manifest, current_view, decode, distinct_roots, exactly_one,
+    SqliteCatalog, begin, boot_manifest, current_view, distinct_roots, exactly_one,
     fields_digest, int, object_install, object_key, read_view_row, require_registered_edges, sql,
     uint, workspace_key,
 };
