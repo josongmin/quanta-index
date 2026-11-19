@@ -300,6 +300,8 @@ pub fn with_native_protected_snapshot_v1<T>(
     ) -> Result<T, IndexError>,
 ) -> Result<T, IndexError> {
     let stored = get(reference, budget)?;
+    let legacy_inline = stored.payload.len() > NATIVE_PROTECTED_SNAPSHOT_PAGE_BYTES_V1
+        && stored.payload.first() == Some(&b'{');
     let (first, second) = if let Some(layout) = snapshot_layout_v1(reference, &stored, budget)? {
         let first = get(layout.first, budget)?;
         let second = get(layout.second, budget)?;
@@ -330,7 +332,13 @@ pub fn with_native_protected_snapshot_v1<T>(
     // Retain only the ordered edges while the decoder consumes the pages.
     let registration = first.registration.clone();
     let funded = snapshot_decode::decode_owned(first, second, budget)?;
-    verify_decoded_snapshot_v1(reference, &funded.data, &registration.children, budget)?;
+    verify_decoded_snapshot_v1(
+        reference,
+        &funded.data,
+        &registration.children,
+        legacy_inline,
+        budget,
+    )?;
     drop(registration);
     budget.checkpoint()?;
     visit(&funded.data, budget)
@@ -361,6 +369,8 @@ pub fn with_native_protected_snapshot_stream_v1<'a, T>(
     ) -> Result<T, IndexError>,
 ) -> Result<T, IndexError> {
     let stored = get(reference, budget)?;
+    let legacy_inline = stored.payload.len() > NATIVE_PROTECTED_SNAPSHOT_PAGE_BYTES_V1
+        && stored.payload.first() == Some(&b'{');
     let (funded, registration) =
         if let Some(layout) = snapshot_layout_v1(reference, &stored, budget)? {
             drop(stored);
@@ -411,7 +421,13 @@ pub fn with_native_protected_snapshot_stream_v1<'a, T>(
                 registration,
             )
         };
-    verify_decoded_snapshot_v1(reference, &funded.data, &registration.children, budget)?;
+    verify_decoded_snapshot_v1(
+        reference,
+        &funded.data,
+        &registration.children,
+        legacy_inline,
+        budget,
+    )?;
     drop(registration);
     budget.checkpoint()?;
     visit(&funded.data, budget)
@@ -528,7 +544,7 @@ fn snapshot_layout_v1(
         .map_err(|_| IndexError::DigestConflict)?;
     let total_len = match paged_len {
         Some(total) => total,
-        None if stored.payload.len() <= NATIVE_PROTECTED_SNAPSHOT_PAGE_BYTES_V1 => {
+        None if stored.payload.len() <= super::MAX_NATIVE_PROTECTED_SNAPSHOT_BYTES_V1 => {
             stored.payload.len()
         }
         None => return Err(IndexError::DigestConflict),
@@ -583,7 +599,13 @@ pub fn validate_inline_native_protected_snapshot_v1(
         return Err(IndexError::DigestConflict);
     }
     let funded = snapshot_decode::decode(payload, &[], budget)?;
-    verify_decoded_snapshot_v1(origin.snapshot, &funded.data, roots, budget)?;
+    verify_decoded_snapshot_v1(
+        origin.snapshot,
+        &funded.data,
+        roots,
+        payload.len() > NATIVE_PROTECTED_SNAPSHOT_PAGE_BYTES_V1,
+        budget,
+    )?;
     if funded.data.source_root_nonce != origin.source_root_nonce
         || funded.data.source_routes != origin.source_routes
     {
@@ -592,10 +614,19 @@ pub fn validate_inline_native_protected_snapshot_v1(
     budget.checkpoint()
 }
 
-fn charge_snapshot_decode_v1(bytes: usize, budget: &mut WorkBudget) -> Result<(), IndexError> {
+/// Work required to authenticate and decode one bounded V1 physical snapshot.
+/// Shared with callers that allocate a separate Original for legacy inline.
+pub fn native_protected_snapshot_decode_work_bytes_v1(bytes: usize) -> Result<u64, IndexError> {
+    if bytes == 0 || bytes > super::MAX_NATIVE_PROTECTED_SNAPSHOT_BYTES_V1 {
+        return Err(IndexError::ResourceLimited);
+    }
     let bytes = u64::try_from(bytes).map_err(|_| IndexError::ResourceLimited)?;
+    bytes.checked_mul(5).ok_or(IndexError::ResourceLimited)
+}
+
+fn charge_snapshot_decode_v1(bytes: usize, budget: &mut WorkBudget) -> Result<(), IndexError> {
     budget.charge(WorkUsage {
-        bytes: bytes.checked_mul(5).ok_or(IndexError::ResourceLimited)?,
+        bytes: native_protected_snapshot_decode_work_bytes_v1(bytes)?,
         ..Default::default()
     })
 }
@@ -604,18 +635,24 @@ fn verify_decoded_snapshot_v1(
     reference: ObjectRef,
     snapshot: &super::NativeProtectedNativeSnapshotV1,
     roots: &[ObjectRef],
+    legacy_inline: bool,
     budget: &WorkBudget,
 ) -> Result<(), IndexError> {
     snapshot
         .validate_shape_v1()
         .map_err(|message| IndexError::InvalidInput(message.into()))?;
-    if snapshot.roots.as_slice() != roots
-        || snapshot
+    if snapshot.roots.as_slice() != roots {
+        return Err(IndexError::DigestConflict);
+    }
+    let actual = if legacy_inline {
+        snapshot.legacy_inline_object_ref_with_work_v1(&mut || budget.checkpoint())
+    } else {
+        snapshot
             .physical_plan_with_work_v1(&mut || budget.checkpoint())
-            .map_err(|cause| cause.into_error(|_| IndexError::DigestConflict))?
-            .reference_v1()
-            != reference
-    {
+            .map(|plan| plan.reference_v1())
+    }
+    .map_err(|cause| cause.into_error(|_| IndexError::DigestConflict))?;
+    if actual != reference {
         return Err(IndexError::DigestConflict);
     }
     Ok(())
@@ -953,6 +990,79 @@ mod tests {
         assert_eq!(memory.0.load(Ordering::Relaxed), occupied_bytes);
         drop(occupied);
         assert_eq!(memory.0.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_inline_snapshot_above_new_page_width_restores_exact_v1_identity()
+    -> Result<(), IndexError> {
+        let root = ObjectRef(Digest([70; 32]));
+        let other_root = ObjectRef(Digest([72; 32]));
+        let snapshot = NativeProtectedNativeSnapshotV1 {
+            wire_version: NativeProtectedNativeSnapshotV1::WIRE_VERSION,
+            source_root_nonce: Digest([71; 32]),
+            source_routes: root,
+            operation_rows: vec![vec![255; 4_300_000]],
+            genesis_views: Vec::new(),
+            frontiers: Vec::new(),
+            source_authorities: Vec::new(),
+            event_claims: Vec::new(),
+            roots: vec![root, other_root],
+        };
+        let payload = serde_json::to_vec(&snapshot)
+            .map_err(|error| IndexError::Storage(error.to_string()))?;
+        assert!(payload.len() > NATIVE_PROTECTED_SNAPSHOT_PAGE_BYTES_V1);
+        assert!(payload.len() <= crate::index::MAX_NATIVE_PROTECTED_SNAPSHOT_BYTES_V1);
+        let old_reference = native_immutable_object_ref_v1(&payload, &snapshot.roots)
+            .ok_or(IndexError::ResourceLimited)?;
+        assert_ne!(
+            old_reference,
+            snapshot
+                .object_ref_v1()
+                .map_err(|_| IndexError::DigestConflict)?
+        );
+        let old = StoredObject::new(
+            RegisteredObject::unscoped(old_reference, payload.len() as u64, snapshot.roots.clone()),
+            payload,
+            None,
+        );
+        let mut budget = WorkBudget::new(
+            WorkLimits {
+                reads: 8,
+                writes: 0,
+                bytes: 400_000_000,
+                mutations: 0,
+            },
+            Instant::now() + Duration::from_secs(30),
+        );
+        with_native_protected_snapshot_stream_v1(
+            old_reference,
+            |reference, _| {
+                assert_eq!(reference, old_reference);
+                Ok(old.clone())
+            },
+            |_reference, _| panic!("legacy inline snapshot has no physical page objects"),
+            &mut budget,
+            |actual, _| {
+                assert_eq!(actual, &snapshot);
+                Ok(())
+            },
+        )?;
+        let mut reordered_children = old.registration.children.clone();
+        reordered_children.swap(0, 1);
+        let reordered = StoredObject::new(
+            RegisteredObject::unscoped(old_reference, old.registration.bytes, reordered_children),
+            old.payload.clone(),
+            None,
+        );
+        let rejected: Result<(), IndexError> = with_native_protected_snapshot_stream_v1(
+            old_reference,
+            |_reference, _| Ok(reordered.clone()),
+            |_reference, _| panic!("legacy inline snapshot has no physical page objects"),
+            &mut budget,
+            |_actual, _| panic!("reordered legacy roots reached Catalog callback"),
+        );
+        assert_eq!(rejected, Err(IndexError::DigestConflict));
         Ok(())
     }
 }

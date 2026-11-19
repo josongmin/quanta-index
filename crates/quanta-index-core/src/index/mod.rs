@@ -58,9 +58,9 @@ pub use owned_work::{
 pub use owner_coverage::{pending_owner_coverage_value, read_owner_coverage};
 pub use protected_source_routes::{
     NativeProtectedSnapshotPageV1,
-    decode_native_protected_source_routes_v1, validate_inline_native_protected_snapshot_v1,
-    with_native_protected_snapshot_stream_v1, with_native_protected_snapshot_v1,
-    with_native_protected_source_routes_v1,
+    decode_native_protected_source_routes_v1, native_protected_snapshot_decode_work_bytes_v1,
+    validate_inline_native_protected_snapshot_v1, with_native_protected_snapshot_stream_v1,
+    with_native_protected_snapshot_v1, with_native_protected_source_routes_v1,
 };
 pub use ports::{
     AttemptContext, ObjectReadFile, ObjectReadIoPort, ObjectWriteIoPort,

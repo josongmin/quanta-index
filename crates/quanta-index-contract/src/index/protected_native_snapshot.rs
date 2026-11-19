@@ -42,15 +42,15 @@ fn paged_snapshot_identity_v1(
     Ok((manifest, reference))
 }
 
-/// Recognize the fixed physical manifest without accepting a malformed page
-/// prefix as an inline JSON snapshot. Page identities are checked after both
-/// child objects have been read and their exact bytes are available.
+/// Recognize the fixed physical manifest and the original V1 inline layout.
+/// Older writers could place up to 32 MiB in one inline object; new writers
+/// use pages above 16 MiB. The caller checks the exact physical identity.
 pub fn native_protected_snapshot_paged_len_v1(bytes: &[u8]) -> Result<Option<usize>, &'static str> {
     if bytes.first() == Some(&b'{') {
-        return if bytes.len() <= NATIVE_PROTECTED_SNAPSHOT_PAGE_BYTES_V1 {
+        return if bytes.len() <= MAX_NATIVE_PROTECTED_SNAPSHOT_BYTES_V1 {
             Ok(None)
         } else {
-            Err("inline protected Native snapshot exceeds physical page")
+            Err("inline protected Native snapshot exceeds V1 bound")
         };
     }
     let length = bytes
@@ -571,6 +571,39 @@ impl NativeProtectedNativeSnapshotV1 {
         self.physical_plan_v1().map(|plan| plan.reference_v1())
     }
 
+    /// Exact object identity emitted by the original V1 inline writer. This
+    /// only authenticates an already staged older object; new exports remain
+    /// paged above the physical page width.
+    pub fn legacy_inline_object_ref_with_work_v1<E>(
+        &self,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<ObjectRef, NativeProtectedEncodingErrorV1<E>> {
+        let expected = self.encoded_payload_len_with_work_v1(checkpoint)?;
+        let first = native_immutable_object_hasher_v1(expected, &self.roots).ok_or(
+            NativeProtectedEncodingErrorV1::Format(
+                "protected Native snapshot inline object overflows",
+            ),
+        )?;
+        let mut writer = SnapshotDigestWriterV1 {
+            first,
+            second: None,
+            first_remaining: expected,
+            remaining: expected,
+        };
+        serialize_protected_with_work_v1(
+            self,
+            &mut writer,
+            checkpoint,
+            "encode legacy inline protected Native snapshot",
+        )?;
+        if writer.remaining != 0 {
+            return Err(NativeProtectedEncodingErrorV1::Format(
+                "protected Native snapshot changed",
+            ));
+        }
+        Ok(ObjectRef(Digest(writer.first.finalize().into())))
+    }
+
     pub fn physical_plan_v1(&self) -> Result<NativeProtectedSnapshotPlanV1, &'static str> {
         self.physical_plan_with_work_v1(&mut || Ok::<(), Infallible>(()))
             .map_err(NativeProtectedEncodingErrorV1::into_format_error)
@@ -787,6 +820,17 @@ mod physical_tests {
             assert_eq!(pages.len(), expected_pages);
             assert_eq!(plan.reference_v1(), materialized.reference_v1());
             assert_eq!(semantic.object_ref_v1()?, materialized.reference_v1());
+            let old_inline = semantic
+                .legacy_inline_object_ref_with_work_v1(&mut || Ok::<(), Infallible>(()))
+                .map_err(NativeProtectedEncodingErrorV1::into_format_error)?;
+            assert_eq!(
+                old_inline,
+                super::super::native_immutable_object_ref_v1(&payload, &roots)
+                    .ok_or("legacy inline ref absent")?
+            );
+            if expected_pages == 2 {
+                assert_ne!(old_inline, plan.reference_v1());
+            }
             let mut seen = 0;
             materialized.visit_v1(|reference, bytes, children| {
                 if let Some((expected, length)) = pages.get(seen).copied() {
@@ -848,9 +892,12 @@ mod physical_tests {
         assert_eq!(observed, 1);
         assert_eq!(native_protected_snapshot_paged_len_v1(&payload)?, None);
         payload.push(b'}');
+        // An older V1 writer may have emitted this as one inline object.
+        assert_eq!(native_protected_snapshot_paged_len_v1(&payload)?, None);
+        payload.resize(MAX_NATIVE_PROTECTED_SNAPSHOT_BYTES_V1 + 1, b' ');
         assert_eq!(
             native_protected_snapshot_paged_len_v1(&payload),
-            Err("inline protected Native snapshot exceeds physical page")
+            Err("inline protected Native snapshot exceeds V1 bound")
         );
         Ok(())
     }
