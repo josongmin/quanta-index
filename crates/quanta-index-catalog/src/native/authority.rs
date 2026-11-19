@@ -4949,7 +4949,44 @@ mod tests {
             ),
             Err(IndexError::Storage(_))
         ));
-        check_eq!(boot_manifest::read_stored(&guard)?, Some(selected));
+        check_eq!(boot_manifest::read_stored(&guard)?, Some(selected.clone()));
+
+        let anchor = object(199, Vec::new());
+        register(&guard, std::slice::from_ref(&anchor))?;
+        check_eq!(
+            reclaim::reference_exists(&guard, anchor.reference, &mut admission_budget())?,
+            false
+        );
+        // Model a selected marker carrier with all of its incoming edges
+        // missing. The durable selection still names it, so GC must refuse.
+        let anchored = NativeBootManifest {
+            protected_source_routes: Some(NativeBootSourceRouteRefV1 {
+                object: object(198, Vec::new()).reference,
+                count: 0,
+                marker_anchor: Some(anchor.reference),
+            }),
+            ..selected
+        };
+        let payload = serde_json::to_vec(&anchored)?;
+        let nonce: Vec<u8> = guard.query_row(
+            "SELECT root_nonce FROM native_capture_format_v1 WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )?;
+        let digest = boot_manifest::checksum(&nonce, &payload);
+        check_eq!(
+            guard.execute(
+                "UPDATE native_capture_format_v1 SET boot_manifest=?1,boot_manifest_digest=?2 WHERE singleton=1",
+                params![&payload, digest.as_slice()],
+            )?,
+            1
+        );
+        check_eq!(
+            reclaim::reference_exists(&guard, anchor.reference, &mut admission_budget()),
+            Err(IndexError::Storage(
+                "selected boot marker anchor lost its ancestry relation".into()
+            ))
+        );
         drop(guard);
         Ok(())
     }
@@ -5008,9 +5045,19 @@ mod tests {
                 },
             },
             publication,
-            protected_source_routes: None,
+            protected_source_routes: Some(NativeBootSourceRouteRefV1 {
+                object: ObjectRef(Digest([254; 32])),
+                count: u32::try_from(
+                    quanta_index_core::index::MAX_NATIVE_PROTECTED_SOURCE_HEADS_V1,
+                )?,
+                marker_anchor: Some(object),
+            }),
         };
         check!(serde_json::to_vec(&manifest)?.len() <= 4096);
+        check_eq!(
+            serde_json::from_slice::<NativeBootManifest>(&serde_json::to_vec(&manifest)?)?,
+            manifest
+        );
         check_eq!(manifest.protected_roots(), [Some(object); 5]);
         Ok(())
     }

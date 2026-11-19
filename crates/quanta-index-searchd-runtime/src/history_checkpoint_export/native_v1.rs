@@ -6,6 +6,7 @@ use quanta_index_contract::index::{
     NativeProtectedNativeSnapshotV1, NativeProtectedSnapshotPlanV1,
 };
 use quanta_index_core::index::{MemoryLease, MemoryLifetime, ObjectRef, StoredObject};
+use std::hash::{BuildHasher, RandomState};
 
 const CHUNK_BYTES: usize = 64 * 1024;
 
@@ -46,7 +47,7 @@ pub(super) fn export_v1(
                         "Native History generation has multiple active members"
                     );
                     export_closure_v1(
-                        input.member,
+                        std::slice::from_ref(&input.member),
                         u32::try_from(
                             source
                                 .selected_config_v1()
@@ -151,7 +152,7 @@ fn export_protected_v1(
                     bytes: u64::try_from(length).map_err(|_| IndexError::ResourceLimited)?,
                     ..WorkUsage::default()
                 })?;
-                let max_pending = u32::try_from(
+                let max_entries = u32::try_from(
                     source
                         .selected_config_v1()
                         .resources
@@ -160,16 +161,14 @@ fn export_protected_v1(
                         .max_entries,
                 )
                 .map_err(|_| IndexError::ResourceLimited)?;
-                for root in &snapshot.roots {
-                    export_closure_v1(
-                        *root,
-                        max_pending,
-                        |reference, budget| reader.get(reference, budget),
-                        output,
-                        budget,
-                    )
-                    .map_err(export_index_error)?;
-                }
+                export_closure_v1(
+                    &snapshot.roots,
+                    max_entries,
+                    |reference, budget| reader.get(reference, budget),
+                    output,
+                    budget,
+                )
+                .map_err(export_index_error)?;
                 write_protected_snapshot_v1(snapshot, &plan, output, budget)?;
                 write_frame(
                     output,
@@ -356,51 +355,185 @@ fn write_native_object_v1(
     write_frame(output, &ExportFrame::NativeObjectEnd { reference }, budget)
 }
 
-/// Child-before-parent transfer preserves the canonical ordered child vector.
-/// Shared subgraphs may be revisited; the original request work bounds every
-/// physical read. No corpus-sized visited set or recursive stack is allocated.
+/// Emit each object once across the entire root set in child-before-parent
+/// order. The parent frames retain the original ordered child vectors.
 fn export_closure_v1(
-    root: ObjectRef,
-    max_pending: u32,
+    roots: &[ObjectRef],
+    max_entries: u32,
     mut get: impl FnMut(ObjectRef, &mut WorkBudget) -> std::result::Result<StoredObject, IndexError>,
     output: &mut impl io::Write,
     budget: &mut WorkBudget,
 ) -> Result<()> {
-    let maximum = usize::try_from(max_pending)?;
+    let maximum = usize::try_from(max_entries)?;
     let mut frontier = ExportFrontier::default();
-    frontier.reserve(1, maximum, budget)?;
-    frontier.pending.push((root, false));
-    while let Some((reference, expanded)) = frontier.pending.pop() {
-        let stored = get(reference, budget)?;
-        if !expanded {
-            let additional = stored
-                .registration
-                .children
-                .len()
-                .checked_add(1)
-                .ok_or(IndexError::ResourceLimited)?;
-            frontier.reserve(additional, maximum, budget)?;
-            frontier.pending.push((reference, true));
-            frontier.pending.extend(
-                stored
+    let mut visits = ExportVisits::default();
+    for &root in roots {
+        frontier.reserve(1, maximum, budget)?;
+        frontier.pending.push((root, false));
+        while let Some((reference, expanded)) = frontier.pending.pop() {
+            if !expanded && !visits.begin(reference, maximum, budget)? {
+                continue;
+            }
+            let stored = get(reference, budget)?;
+            if expanded {
+                write_native_object_v1(
+                    reference,
+                    &stored.payload,
+                    &stored.registration.children,
+                    output,
+                    budget,
+                )?;
+                visits.finish(reference, budget)?;
+            } else {
+                let additional = stored
                     .registration
                     .children
-                    .iter()
-                    .rev()
-                    .map(|child| (*child, false)),
-            );
-            continue;
+                    .len()
+                    .checked_add(1)
+                    .ok_or(IndexError::ResourceLimited)?;
+                frontier.reserve(additional, maximum, budget)?;
+                frontier.pending.push((reference, true));
+                frontier.pending.extend(
+                    stored
+                        .registration
+                        .children
+                        .iter()
+                        .rev()
+                        .map(|child| (*child, false)),
+                );
+            }
         }
-        write_native_object_v1(
-            reference,
-            &stored.payload,
-            &stored.registration.children,
-            output,
-            budget,
-        )?;
     }
     budget.checkpoint()?;
     Ok(())
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExportVisitState {
+    Visiting,
+    Emitted,
+}
+
+#[derive(Clone, Copy)]
+struct ExportVisit {
+    reference: ObjectRef,
+    state: ExportVisitState,
+}
+
+/// A funded slot array exposes the bucket backing size. Keyed hashing keeps
+/// collision handling independent of the order and values of immutable refs.
+#[derive(Default)]
+struct ExportVisits {
+    slots: Vec<Option<ExportVisit>>,
+    count: usize,
+    hash: RandomState,
+    _memory: Option<MemoryLease>,
+}
+
+impl ExportVisits {
+    fn probe(
+        slots: &[Option<ExportVisit>],
+        reference: ObjectRef,
+        hash: &RandomState,
+        budget: &WorkBudget,
+    ) -> Result<usize, IndexError> {
+        let mask = slots
+            .len()
+            .checked_sub(1)
+            .ok_or(IndexError::DigestConflict)?;
+        let mask_bits = u64::try_from(mask).map_err(|_| IndexError::ResourceLimited)?;
+        let mut index = usize::try_from(hash.hash_one(reference) & mask_bits)
+            .map_err(|_| IndexError::ResourceLimited)?;
+        for _ in 0..slots.len() {
+            budget.checkpoint()?;
+            let slot = slots.get(index).ok_or(IndexError::DigestConflict)?;
+            if slot.is_none_or(|visit| visit.reference == reference) {
+                return Ok(index);
+            }
+            index = index.wrapping_add(1) & mask;
+        }
+        Err(IndexError::DigestConflict)
+    }
+
+    fn grow(&mut self, budget: &WorkBudget) -> Result<(), IndexError> {
+        let capacity = self
+            .slots
+            .len()
+            .max(1)
+            .checked_mul(2)
+            .ok_or(IndexError::ResourceLimited)?;
+        let bytes = capacity
+            .checked_mul(std::mem::size_of::<Option<ExportVisit>>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(IndexError::ResourceLimited)?;
+        let memory = budget
+            .reserve_memory(bytes, MemoryLifetime::Temporary)?
+            .ok_or(IndexError::ResourceLimited)?;
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(capacity)
+            .map_err(|_| IndexError::ResourceLimited)?;
+        if slots.capacity() > capacity {
+            return Err(IndexError::ResourceLimited);
+        }
+        slots.resize(capacity, None);
+        for visit in self.slots.iter().flatten().copied() {
+            let index = Self::probe(&slots, visit.reference, &self.hash, budget)?;
+            *slots.get_mut(index).ok_or(IndexError::DigestConflict)? = Some(visit);
+        }
+        self.slots = slots;
+        self._memory = Some(memory);
+        Ok(())
+    }
+
+    fn begin(
+        &mut self,
+        reference: ObjectRef,
+        maximum: usize,
+        budget: &WorkBudget,
+    ) -> Result<bool, IndexError> {
+        if !self.slots.is_empty() {
+            let index = Self::probe(&self.slots, reference, &self.hash, budget)?;
+            if let Some(visit) = self.slots.get(index).and_then(Option::as_ref) {
+                return match visit.state {
+                    ExportVisitState::Visiting => Err(IndexError::DigestConflict),
+                    ExportVisitState::Emitted => Ok(false),
+                };
+            }
+        }
+        if self.count >= maximum {
+            return Err(IndexError::ResourceLimited);
+        }
+        // Keep the power-of-two slot array at most half full.
+        if self.count == self.slots.len() >> 1 {
+            self.grow(budget)?;
+        }
+        let index = Self::probe(&self.slots, reference, &self.hash, budget)?;
+        *self
+            .slots
+            .get_mut(index)
+            .ok_or(IndexError::DigestConflict)? = Some(ExportVisit {
+            reference,
+            state: ExportVisitState::Visiting,
+        });
+        self.count = self
+            .count
+            .checked_add(1)
+            .ok_or(IndexError::ResourceLimited)?;
+        Ok(true)
+    }
+
+    fn finish(&mut self, reference: ObjectRef, budget: &WorkBudget) -> Result<(), IndexError> {
+        let index = Self::probe(&self.slots, reference, &self.hash, budget)?;
+        let visit = self
+            .slots
+            .get_mut(index)
+            .and_then(Option::as_mut)
+            .filter(|visit| visit.state == ExportVisitState::Visiting)
+            .ok_or(IndexError::DigestConflict)?;
+        visit.state = ExportVisitState::Emitted;
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -457,7 +590,7 @@ mod tests {
         MemoryLease, MemoryLeaseOwner, MemoryScope, MemoryScopePort, RegisteredObject, WorkLimits,
     };
     use std::{
-        collections::BTreeMap,
+        collections::{BTreeMap, BTreeSet},
         sync::{
             Arc,
             atomic::{AtomicU64, Ordering},
@@ -646,7 +779,7 @@ mod tests {
         let mut output = Vec::new();
         let memory = Memory(Arc::default(), Some(64 * 1024));
         export_closure_v1(
-            root_ref,
+            &[root_ref],
             500_000,
             |reference, _| {
                 objects
@@ -671,7 +804,6 @@ mod tests {
                 == vec![
                     second.registration.reference,
                     first.registration.reference,
-                    second.registration.reference,
                     root_ref
                 ]
         );
@@ -688,12 +820,82 @@ mod tests {
     }
 
     #[test]
+    fn native_export_visits_compact_route_ancestry_once_across_roots() -> Result<()> {
+        let base = object(vec![0], vec![])?;
+        let base_ref = base.registration.reference;
+        let mut objects = BTreeMap::from([(base_ref, base)]);
+        let mut previous = base_ref;
+        for depth in 1..=12 {
+            let snapshot = object(vec![1, depth], vec![previous])?;
+            let snapshot_ref = snapshot.registration.reference;
+            let mut children = vec![previous, snapshot_ref];
+            children.sort_unstable();
+            let route = object(vec![2, depth], children)?;
+            previous = route.registration.reference;
+            ensure!(objects.insert(snapshot_ref, snapshot).is_none());
+            ensure!(objects.insert(previous, route).is_none());
+        }
+        let memory = Memory::default();
+        let mut budget = WorkBudget::with_request(
+            WorkLimits {
+                reads: 100,
+                writes: 150,
+                bytes: 1_000_000,
+                mutations: 0,
+            },
+            RequestBudgetV1::for_duration(Duration::from_secs(30)),
+        );
+        budget.bind_memory_scope(Some(MemoryScope::new(Arc::new(memory.clone()))));
+        let mut output = Vec::new();
+        let mut reads = BTreeMap::new();
+        export_closure_v1(
+            &[base_ref, previous],
+            100,
+            |reference, budget| {
+                budget.charge(WorkUsage {
+                    reads: 1,
+                    ..WorkUsage::default()
+                })?;
+                *reads.entry(reference).or_insert(0) += 1;
+                objects
+                    .get(&reference)
+                    .cloned()
+                    .ok_or(IndexError::SnapshotUnavailable)
+            },
+            &mut output,
+            &mut budget,
+        )?;
+        ensure!(memory.0.load(Ordering::Relaxed) == 0);
+        ensure!(reads.len() == objects.len() && reads.values().all(|count| *count == 2));
+        let mut emitted = BTreeSet::new();
+        for frame in frames(&output)? {
+            match frame {
+                Frame::NativeObjectBegin {
+                    reference,
+                    children,
+                    ..
+                } => {
+                    let original = objects
+                        .get(&reference)
+                        .ok_or_else(|| anyhow!("unexpected export object"))?;
+                    ensure!(children == original.registration.children);
+                    ensure!(children.iter().all(|child| emitted.contains(child)));
+                }
+                Frame::NativeObjectEnd { reference } => ensure!(emitted.insert(reference)),
+                _ => {}
+            }
+        }
+        ensure!(emitted.len() == objects.len());
+        Ok(())
+    }
+
+    #[test]
     fn native_export_refuses_missing_child_and_exhausted_frontier() -> Result<()> {
         let missing = ObjectRef(Digest([9; 32]));
         let root = object(vec![1], vec![missing])?;
         let mut output = Vec::new();
         let failure = export_closure_v1(
-            root.registration.reference,
+            &[root.registration.reference],
             2,
             |reference, _| {
                 if reference == root.registration.reference {
@@ -707,7 +909,7 @@ mod tests {
         );
         ensure!(failure.is_err() && output.is_empty());
         let failure = export_closure_v1(
-            root.registration.reference,
+            &[root.registration.reference],
             1,
             |_, _| Ok(root.clone()),
             &mut output,
@@ -715,7 +917,7 @@ mod tests {
         );
         ensure!(failure.is_err() && output.is_empty());
         let zero = export_closure_v1(
-            root.registration.reference,
+            &[root.registration.reference],
             0,
             |_, _| Ok(root.clone()),
             &mut output,
@@ -728,9 +930,10 @@ mod tests {
             ) && output.is_empty()
         );
         let slot_bytes = u64::try_from(std::mem::size_of::<(ObjectRef, bool)>())?;
-        let memory = Memory(Arc::default(), Some(2 * slot_bytes));
+        let visit_bytes = u64::try_from(std::mem::size_of::<Option<ExportVisit>>())?;
+        let memory = Memory(Arc::default(), Some(2 * slot_bytes + 2 * visit_bytes));
         let growth = export_closure_v1(
-            root.registration.reference,
+            &[root.registration.reference],
             2,
             |reference, _| {
                 if reference == root.registration.reference {
@@ -760,7 +963,7 @@ mod tests {
         let mut budget = work(memory.clone());
         let mut live_at_refusal = 0;
         let result = export_closure_v1(
-            root.registration.reference,
+            &[root.registration.reference],
             4,
             |reference, _| {
                 if reference == root.registration.reference {

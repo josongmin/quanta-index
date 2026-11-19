@@ -27,7 +27,7 @@ const SCRATCH_BYTES: u64 = 16_384;
 // Existing registration validation reads at most a 1 MiB payload and a
 // 4096-child edge ledger. Retain its whole bounded traversal envelope here;
 // this is scoped logical admission, not SQLite allocator/RSS qualification.
-const REGISTRATION_SCRATCH_BYTES: u64 = 4_259_840;
+pub(super) const REGISTRATION_SCRATCH_BYTES: u64 = 4_259_840;
 const DOMAIN: &[u8] = b"qidx.native.boot-manifest.v1\0";
 
 /// Catalog-issued binding to one original published operation. This is not a
@@ -50,6 +50,9 @@ pub struct NativeBootManifest {
 pub struct NativeBootSourceRouteRefV1 {
     pub object: ObjectRef,
     pub count: u32,
+    /// Direct marker carrier derived from the staged Native ancestry at seal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker_anchor: Option<ObjectRef>,
 }
 
 impl NativeBootManifest {
@@ -84,7 +87,7 @@ impl NativeBootManifest {
     }
 }
 
-fn checksum(nonce: &[u8], payload: &[u8]) -> [u8; 32] {
+pub(super) fn checksum(nonce: &[u8], payload: &[u8]) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(DOMAIN);
     hash.update(nonce);
@@ -145,6 +148,15 @@ pub(super) fn read_stored(
                 }) {
                     return Ok(Err(IndexError::Storage(
                         "boot Source route count is invalid".into(),
+                    )));
+                }
+                if selected.protected_source_routes.is_some_and(|route| {
+                    route
+                        .marker_anchor
+                        .is_some_and(|anchor| anchor == route.object || anchor.0 == Digest([0; 32]))
+                }) {
+                    return Ok(Err(IndexError::Storage(
+                        "boot Source route marker anchor is invalid".into(),
                     )));
                 }
                 if selected.operation.key.workspace != selected.publication.identity.workspace
@@ -243,11 +255,21 @@ pub(super) fn refuse_selected_orphan(
         ..WorkUsage::default()
     })?;
     let _scratch = budget.reserve_memory(SCRATCH_BYTES, MemoryLifetime::Temporary)?;
-    if read_stored(connection)?
-        .is_some_and(|selected| selected.all_protected_roots().any(|root| root == object))
-    {
+    let Some(selected) = read_stored(connection)? else {
+        return Ok(());
+    };
+    if selected.all_protected_roots().any(|root| root == object) {
         return Err(IndexError::Storage(
             "selected boot root lost its custody relation".into(),
+        ));
+    }
+    if selected
+        .protected_source_routes
+        .and_then(|route| route.marker_anchor)
+        == Some(object)
+    {
+        return Err(IndexError::Storage(
+            "selected boot marker anchor lost its ancestry relation".into(),
         ));
     }
     Ok(())
@@ -581,6 +603,7 @@ pub(super) fn validate_protected_routes(
     Ok(NativeBootSourceRouteRefV1 {
         object: route_object,
         count,
+        marker_anchor: None,
     })
 }
 
@@ -872,7 +895,7 @@ impl SqliteCatalog {
         let protected = protected_routes
             .map(|(object, routes, ingress)| {
                 let markers = validate_route_ingress(&tx, key, ingress, object, routes, budget)?;
-                let route = validate_protected_routes(
+                let mut route = validate_protected_routes(
                     &tx,
                     key,
                     object,
@@ -881,6 +904,15 @@ impl SqliteCatalog {
                     Some(ingress),
                     budget,
                 )?;
+                if let Some(origin) = routes.native_origin.as_ref() {
+                    route.marker_anchor = retention::compact_marker_anchor_at_seal(
+                        &tx,
+                        object,
+                        origin,
+                        &markers.objects,
+                        budget,
+                    )?;
+                }
                 Ok::<_, IndexError>((route, ingress, routes.native_origin.is_some(), markers))
             })
             .transpose()?;

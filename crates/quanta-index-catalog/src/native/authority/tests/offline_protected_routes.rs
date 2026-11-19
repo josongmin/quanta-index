@@ -262,6 +262,7 @@ fn selected_two_workspace_route_survives_exact_retirement_and_reopen() -> TestRe
         Some(boot_manifest::NativeBootSourceRouteRefV1 {
             object: route_ref,
             count: 2
+            marker_anchor: None,
         })
     );
     check_eq!(fixture_read_ingress(&catalog, seal_key)?, None);
@@ -550,6 +551,7 @@ fn selected_primary_can_be_outside_complete_preserved_legacy_heads() -> TestResu
         Some(boot_manifest::NativeBootSourceRouteRefV1 {
             object: route_ref,
             count: 1
+            marker_anchor: None,
         })
     );
     let guard = catalog.lock()?;
@@ -642,6 +644,7 @@ fn selected_repomap_only_workspace_is_protected_without_source_route() -> TestRe
         Some(boot_manifest::NativeBootSourceRouteRefV1 {
             object: route_ref,
             count: 0
+            marker_anchor: None,
         })
     );
     let guard = catalog.lock()?;
