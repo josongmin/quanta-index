@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -8,7 +9,9 @@ use std::time::Duration;
 use quanta_index_contract::EmbeddingNormalization;
 use quanta_index_contract::lex::LexicalErrorCode;
 use quanta_index_core::{
-    CoreError, EMBED_CHECKPOINT, MAX_EMBEDDING_DIMENSION, RequestBudgetV1, TextEmbeddingProvider,
+    CoreError, EMBED_CHECKPOINT, MAX_EMBEDDING_DIMENSION, MetricPointV1, MetricSourcePort,
+    PROVIDER_EGRESS_DENIED_CODE, ProviderBudgetLedger, RequestBudgetV1, SemanticEgressGrantV1,
+    TextEmbeddingProvider,
     index::{MemoryLease, MemoryLifetime},
 };
 use serde::{
@@ -22,6 +25,10 @@ use crate::telemetry;
 
 const EMBEDDINGS_PATH: &str = "/v1/embeddings";
 const DEFAULT_BASE_URL: &str = "https://api.openai.com";
+
+fn embedding_endpoint(base_url: &str) -> String {
+    format!("{base_url}{EMBEDDINGS_PATH}")
+}
 pub const LOCAL_CODE_WIRE_MODEL: &str = "jinaai/jina-embeddings-v2-base-code";
 pub const LOCAL_CODE_MODEL_ID: &str = "local-code:jinaai/jina-embeddings-v2-base-code";
 pub const LOCAL_CODE_MODEL_REVISION: &str =
@@ -316,6 +323,61 @@ struct ChargedBody {
     _memory: Option<MemoryLease>,
 }
 
+#[derive(Clone, Copy)]
+struct RequestObservation {
+    input_bytes: u64,
+    texts: usize,
+    estimated_tokens: usize,
+}
+
+struct OpenAiHttpBudget {
+    ledger: Arc<ProviderBudgetLedger>,
+    quote: NonZeroU64,
+}
+
+impl MetricSourcePort for OpenAiHttpBudget {
+    fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
+        let budget = self.ledger.budget();
+        Ok(vec![
+            MetricPointV1::counter(
+                "embed_provider_cost_micros_per_attempt_bound",
+                self.quote.get(),
+            ),
+            MetricPointV1::counter(
+                "embed_provider_cost_micros_ceiling",
+                budget.total_cost_micros_ceiling,
+            ),
+            MetricPointV1::counter(
+                "embed_provider_retry_attempts_cap",
+                u64::from(budget.retry_attempts_cap),
+            ),
+            MetricPointV1::counter(
+                "embed_provider_inflight_requests_cap",
+                budget.inflight_requests_cap,
+            ),
+            MetricPointV1::counter(
+                "embed_provider_inflight_bytes_cap",
+                budget.inflight_bytes_cap,
+            ),
+            MetricPointV1::counter(
+                "embed_provider_charged_cost_micros_total",
+                self.ledger.snapshot()?.spent_cost_micros,
+            ),
+        ])
+    }
+}
+
+enum HttpAttemptError {
+    Terminal(CoreError),
+    Retryable(CoreError),
+}
+
+impl From<CoreError> for HttpAttemptError {
+    fn from(error: CoreError) -> Self {
+        Self::Terminal(error)
+    }
+}
+
 #[derive(Default)]
 struct ByteCounter(u64);
 
@@ -402,6 +464,31 @@ impl OpenAiProviderConfig {
             max_response_bytes: None,
             local_code: false,
         }
+    }
+
+    /// Exact URL the transport sends the embedding input to.
+    #[must_use]
+    pub fn endpoint(&self) -> String {
+        embedding_endpoint(&self.base_url)
+    }
+
+    /// Check a paid embedding grant against the resolved endpoint and model without I/O.
+    pub fn validate_approved_egress(&self, grant: &SemanticEgressGrantV1) -> Result<(), CoreError> {
+        grant.validate()?;
+        let (model_id, revision, _, _) = self.model_metadata()?;
+        if self.local_code
+            || grant.provider_id != "openai"
+            || grant.endpoint != self.endpoint()
+            || grant.model_id != model_id
+            || grant.model_revision != revision
+        {
+            return Err(CoreError::Typed {
+                code: PROVIDER_EGRESS_DENIED_CODE,
+                message: "OpenAI egress grant must name the exact embedding endpoint and model"
+                    .into(),
+            });
+        }
+        Ok(())
     }
 
     /// Reuse the bounded embeddings wire without claiming an OpenAI model or
@@ -622,6 +709,7 @@ pub struct OpenAiEmbeddingProvider {
     /// every HTTP attempt. Standalone callers keep the explicit off-native
     /// budget contract.
     required_execution_custody: bool,
+    paid_attempt_budget: Option<Arc<OpenAiHttpBudget>>,
     retry_sleeper: Arc<dyn RetrySleeper>,
 }
 
@@ -693,6 +781,7 @@ impl OpenAiEmbeddingProvider {
             concurrency: config.concurrency,
             max_response_bytes: config.max_response_bytes,
             required_execution_custody: false,
+            paid_attempt_budget: None,
             retry_sleeper: Arc::new(BudgetPollSleeper),
         })
     }
@@ -704,6 +793,39 @@ impl OpenAiEmbeddingProvider {
     pub fn with_attempt_pool(mut self, attempts: Arc<ProviderAttemptPool>) -> Self {
         self.attempts = attempts;
         self
+    }
+
+    /// Construct the Legacy paid provider from an exact grant and a funded
+    /// HTTP budget. All Source and query sends use this budget. Its metric
+    /// source describes the same installed policy as the transport.
+    pub fn new_approved(
+        mut config: OpenAiProviderConfig,
+        grant: &SemanticEgressGrantV1,
+        ledger: Arc<ProviderBudgetLedger>,
+        max_request_cost_micros: NonZeroU64,
+        transport: Option<Box<dyn EmbeddingTransport>>,
+    ) -> Result<(Self, Arc<dyn MetricSourcePort>), CoreError> {
+        config.validate_approved_egress(grant)?;
+        let budget = ledger.budget();
+        config.max_retries = config.max_retries.min(budget.retry_attempts_cap);
+        let concurrency_cap = usize::try_from(budget.inflight_requests_cap).unwrap_or(usize::MAX);
+        config.concurrency = config.concurrency.min(concurrency_cap);
+        let mut provider = match transport {
+            Some(transport) => Self::new(config, transport)?,
+            None => Self::with_reqwest(config)?,
+        };
+        let policy = Arc::new(OpenAiHttpBudget {
+            ledger,
+            quote: max_request_cost_micros,
+        });
+        provider.paid_attempt_budget = Some(Arc::clone(&policy));
+        Ok((provider, policy))
+    }
+
+    /// Pool held by the provider and its supervisor until drain.
+    #[must_use]
+    pub fn attempt_pool(&self) -> Arc<ProviderAttemptPool> {
+        Arc::clone(&self.attempts)
     }
 
     /// Require a Native execution grant at the physical HTTP boundary.
@@ -794,8 +916,19 @@ impl OpenAiEmbeddingProvider {
         }
         let body = String::from_utf8(encoded)
             .map_err(|error| invalid(&format!("openai: request UTF-8 failed: {error}")))?;
-        let url = format!("{}{EMBEDDINGS_PATH}", self.base_url);
-        let raw = self.post_with_retry(&url, &body, texts.len(), estimated_tokens, budget)?;
+        let url = embedding_endpoint(&self.base_url);
+        let input_bytes = texts.iter().try_fold(0_u64, |total, text| {
+            u64::try_from(text.len())
+                .ok()
+                .and_then(|bytes| total.checked_add(bytes))
+                .ok_or_else(|| invalid("openai: text byte count exceeds provider representation"))
+        })?;
+        let observation = RequestObservation {
+            input_bytes,
+            texts: texts.len(),
+            estimated_tokens,
+        };
+        let raw = self.post_with_retry(&url, &body, observation, budget)?;
         let per_item_metadata = std::mem::size_of::<EmbeddingItem>();
         let metadata_bytes = texts
             .len()
@@ -854,15 +987,13 @@ impl OpenAiEmbeddingProvider {
         &self,
         url: &str,
         body: &str,
-        texts_in_request: usize,
-        estimated_tokens: usize,
+        observation: RequestObservation,
         budget: &RequestBudgetV1,
     ) -> Result<ChargedBody, CoreError> {
         let mut last_error: Option<CoreError> = None;
         for attempt in 0..=self.max_retries {
             budget.checkpoint(EMBED_CHECKPOINT)?;
-            telemetry::record_http_request(texts_in_request, estimated_tokens);
-            match self.post_under_budget(url, body, budget) {
+            match self.post_under_budget(url, body, observation, attempt, budget) {
                 Ok(charged) => match classify_status(charged.response.status) {
                     StatusClass::Success => {
                         return Ok(ChargedBody {
@@ -894,13 +1025,10 @@ impl OpenAiEmbeddingProvider {
                         ));
                     }
                 },
-                Err(err) => {
-                    telemetry::record_transport_error();
-                    last_error = Some(err);
-                }
+                Err(HttpAttemptError::Terminal(error)) => return Err(error),
+                Err(HttpAttemptError::Retryable(error)) => last_error = Some(error),
             }
             if attempt < self.max_retries {
-                telemetry::record_retry();
                 self.retry_sleeper
                     .sleep_backoff(backoff_delay(attempt), budget)?;
             }
@@ -924,18 +1052,10 @@ impl OpenAiEmbeddingProvider {
         &self,
         url: &str,
         body: &str,
+        observation: RequestObservation,
+        retry_index: u32,
         budget: &RequestBudgetV1,
-    ) -> Result<ChargedResponse, CoreError> {
-        let timeout = self.timeout.min(budget.remaining());
-        if timeout.is_zero() {
-            // The deadline passed between the checkpoint and here.
-            return Err(budget.interrupted_at(EMBED_CHECKPOINT).unwrap_or_else(|| {
-                typed(
-                    LexicalErrorCode::SemProviderTransport,
-                    "openai: no time left in the request budget for an attempt",
-                )
-            }));
-        }
+    ) -> Result<ChargedResponse, HttpAttemptError> {
         // The request may return before a blocking HTTP transport does. This
         // finite lease retains its original Native admission on the physical
         // thread, without extending the caller's deadline or cancellation.
@@ -943,12 +1063,11 @@ impl OpenAiEmbeddingProvider {
         if self.required_execution_custody && custody.is_none() {
             return Err(CoreError::InvalidContract(
                 "openai: physical attempt lacks an admitted execution grant".into(),
-            ));
+            )
+            .into());
         }
         if self.required_execution_custody && self.max_response_bytes.is_none() {
-            return Err(invalid(
-                "openai: native response byte ceiling is not configured",
-            ));
+            return Err(invalid("openai: native response byte ceiling is not configured").into());
         }
         let copy_bytes = body
             .len()
@@ -980,13 +1099,36 @@ impl OpenAiEmbeddingProvider {
         let max_response_bytes = self.max_response_bytes;
         let url = url.to_string();
         let body = body.to_string();
-        let (done, outcome) = mpsc::channel();
+        let paid_attempt_budget = self.paid_attempt_budget.clone();
+        let attempt_budget = budget.clone();
+        let configured_timeout = self.timeout;
         // Tracked, never detached (S21-09): the pool bounds inflight
         // attempts, refuses past shutdown, and owns the thread until it
         // ends or the supervised drain escalates it by name.
-        self.attempts
-            .spawn_tracked_with_custody("openai-embed-attempt", custody, move || {
-                let result = transport
+        let run = move || {
+            let _copy_memory = request_copy_memory;
+            // Scheduling may consume the remaining request budget. Check on
+            // the physical worker before committing spend or opening HTTP.
+            attempt_budget.checkpoint(EMBED_CHECKPOINT)?;
+            let timeout = configured_timeout.min(attempt_budget.remaining());
+            if timeout.is_zero() {
+                return Err(attempt_budget
+                    .interrupted_at(EMBED_CHECKPOINT)
+                    .unwrap_or_else(|| {
+                        typed(
+                            LexicalErrorCode::SemProviderTransport,
+                            "openai: no time left in the request budget for an attempt",
+                        )
+                    })
+                    .into());
+            }
+            drop(attempt_budget);
+            let send = || {
+                if retry_index != 0 {
+                    telemetry::record_retry();
+                }
+                telemetry::record_http_request(observation.texts, observation.estimated_tokens);
+                let response = transport
                     .post_embeddings_owned_bounded(
                         &url,
                         &api_key,
@@ -994,44 +1136,54 @@ impl OpenAiEmbeddingProvider {
                         timeout,
                         max_response_bytes,
                     )
-                    .and_then(|response| {
-                        let response_len = u64::try_from(response.body.len()).map_err(|_error| {
-                            CoreError::Typed {
-                                code: quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
-                                message: "openai: decoded response length exceeds platform representation".into(),
-                            }
-                        })?;
-                        if max_response_bytes.is_some_and(|maximum| response_len > maximum) {
-                            return Err(CoreError::Typed {
-                                code:
-                                    quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
-                                message: "openai: decoded response exceeds configured byte ceiling"
-                                    .into(),
-                            });
-                        }
-                        Ok(ChargedResponse {
-                            response,
-                            memory: response_memory,
-                        })
-                    });
-                // The HTTP call has ended. Release the physical request copy
-                // before waking the parser, so its decoded-buffer admission
-                // cannot overlap with the old copy's live charge.
-                drop(url);
-                drop(request_copy_memory);
-                // The requester may have left: a failed send means exactly
-                // that, and the result is dropped with the receiver.
-                let _abandoned = done.send(result);
-            })?;
+                    .map_err(|error| {
+                        telemetry::record_transport_error();
+                        HttpAttemptError::Retryable(error)
+                    })?;
+                let response_len =
+                    u64::try_from(response.body.len()).map_err(|_error| CoreError::Typed {
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
+                        message: "openai: decoded response length exceeds platform representation"
+                            .into(),
+                    })?;
+                if max_response_bytes.is_some_and(|maximum| response_len > maximum) {
+                    return Err(CoreError::Typed {
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded,
+                        message: "openai: decoded response exceeds configured byte ceiling".into(),
+                    }
+                    .into());
+                }
+                Ok(ChargedResponse {
+                    response,
+                    memory: response_memory,
+                })
+            };
+            match paid_attempt_budget {
+                Some(policy) => policy.ledger.with_http_attempt(
+                    observation.input_bytes,
+                    retry_index,
+                    policy.quote,
+                    send,
+                )?,
+                None => send(),
+            }
+        };
+        let (sequence, outcome) =
+            self.attempts
+                .spawn_tracked_result("openai-embed-attempt", custody, run)?;
         loop {
             match outcome.recv_timeout(BUDGET_POLL_INTERVAL) {
-                Ok(result) => return result,
+                Ok(result) => {
+                    self.attempts.join_returned(sequence)?;
+                    return result;
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => budget.checkpoint(EMBED_CHECKPOINT)?,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(typed(
                         LexicalErrorCode::SemProviderTransport,
                         "openai: embedding attempt thread ended without a result",
-                    ));
+                    )
+                    .into());
                 }
             }
         }
@@ -1250,6 +1402,7 @@ impl ReqwestBlockingTransport {
         let client = reqwest::blocking::Client::builder()
             .timeout(timeout)
             .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
             .build()
             .map_err(|err| {
                 typed(
@@ -2805,6 +2958,109 @@ mod tests {
         );
     }
 
+    fn openai_grant() -> SemanticEgressGrantV1 {
+        SemanticEgressGrantV1 {
+            tenant_id: "fixture-tenant".into(),
+            provider_id: "openai".into(),
+            endpoint: "https://api.openai.com/v1/embeddings".into(),
+            region: "fixture-region".into(),
+            retention: "fixture-retention".into(),
+            model_id: "openai:text-embedding-3-small".into(),
+            model_revision: "2024-01".into(),
+            profile: "fixture-profile".into(),
+            source_content_consent: true,
+        }
+    }
+
+    fn openai_ledger(
+        total_cost_micros_ceiling: u64,
+        retry_attempts_cap: u32,
+    ) -> Arc<ProviderBudgetLedger> {
+        Arc::new(
+            ProviderBudgetLedger::new(quanta_index_core::ProviderWorkBudgetV1 {
+                inflight_requests_cap: 1,
+                inflight_bytes_cap: 64,
+                total_cost_micros_ceiling,
+                retry_attempts_cap,
+            })
+            .expect("fixture budget"),
+        )
+    }
+
+    #[test]
+    fn approved_openai_refuses_a_grant_for_a_different_endpoint() {
+        let mut grant = openai_grant();
+        grant.endpoint = "https://api.openai.com/v1".into();
+        let ledger = openai_ledger(1, 0);
+        let transport = ScriptedTransport::new(vec![Ok(ok_body(&[(0, vec![0.5, 0.5])]))]);
+        let calls = transport.calls_handle();
+        let result = OpenAiEmbeddingProvider::new_approved(
+            cfg(2),
+            &grant,
+            Arc::clone(&ledger),
+            NonZeroU64::MIN,
+            Some(Box::new(transport)),
+        );
+        assert!(matches!(
+            result,
+            Err(CoreError::Typed {
+                code: PROVIDER_EGRESS_DENIED_CODE,
+                ..
+            })
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            ledger.snapshot().expect("spend snapshot").spent_cost_micros,
+            0
+        );
+    }
+
+    #[test]
+    fn approved_openai_attempts_charge_retries_and_refuse_before_the_next_send() {
+        let config = cfg(2).with_max_retries(3);
+        let grant = openai_grant();
+        let ledger = openai_ledger(6, 1);
+        let quote = NonZeroU64::new(3).expect("positive fixture charge");
+        let success = || Ok(ok_body(&[(0, vec![0.5, 0.5])]));
+        let transport = ScriptedTransport::new(vec![
+            Ok(HttpResponse {
+                status: 429,
+                body: String::new(),
+            }),
+            success(),
+            success(),
+        ]);
+        let calls = transport.calls_handle();
+        let (provider, _) = OpenAiEmbeddingProvider::new_approved(
+            config,
+            &grant,
+            Arc::clone(&ledger),
+            quote,
+            Some(Box::new(transport)),
+        )
+        .expect("approved provider starts without network");
+        let provider = provider.with_retry_sleeper(Arc::new(RecordingSleeper::new()));
+        assert_eq!(
+            provider
+                .embed_batch(&["source excerpt"])
+                .expect("funded batch"),
+            vec![vec![0.5, 0.5]],
+        );
+        let error = provider
+            .embed_batch_within(&["query"], &RequestBudgetV1::unbounded())
+            .expect_err("both attempts spent the budget");
+        assert!(matches!(
+            error,
+            CoreError::Typed { code, .. }
+                if code == quanta_index_core::PROVIDER_BUDGET_EXHAUSTED_CODE
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            ledger.snapshot().expect("spend snapshot").spent_cost_micros,
+            6
+        );
+    }
+
     #[test]
     fn exhausted_retries_fail_closed_as_transport() {
         // KNOB PROOF: max_retries=1 -> exactly 2 transport attempts (1 + 1 retry).
@@ -3527,6 +3783,91 @@ mod tests {
                 bytes,
                 Arc::new(AttemptMemoryOwner(Arc::clone(&self.live_memory_bytes))),
             ))
+        }
+    }
+
+    impl quanta_index_core::index::MemoryScopePort for AttemptCustodyProbe {
+        fn reserve(
+            &self,
+            bytes: u64,
+            lifetime: MemoryLifetime,
+        ) -> Result<MemoryLease, quanta_index_core::index::IndexError> {
+            self.reserve_memory_v1(bytes, lifetime)
+                .map_err(|_| quanta_index_core::index::IndexError::ResourceLimited)
+        }
+    }
+
+    #[test]
+    fn interruption_at_http_dispatch_refuses_transport_and_charge() {
+        use quanta_index_core::index::MemoryScope;
+        use quanta_index_core::{
+            BudgetInterruptionV1, REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE,
+            RequestExecutionObserverV1,
+        };
+        use std::sync::atomic::AtomicBool;
+
+        #[derive(Debug)]
+        struct InterruptOnWorker(BudgetInterruptionV1, AtomicBool);
+
+        impl RequestExecutionObserverV1 for InterruptOnWorker {
+            fn interruption(&self) -> Option<BudgetInterruptionV1> {
+                if std::thread::current()
+                    .name()
+                    .is_some_and(|name| name.starts_with("openai-embed-attempt-"))
+                {
+                    self.1.store(true, Ordering::Release);
+                }
+                self.1.load(Ordering::Acquire).then_some(self.0)
+            }
+        }
+
+        for (interruption, expected_code) in [
+            (BudgetInterruptionV1::Cancelled, REQUEST_CANCELLED_CODE),
+            (
+                BudgetInterruptionV1::DeadlineExceeded {
+                    over_by: Duration::ZERO,
+                },
+                REQUEST_DEADLINE_EXCEEDED_CODE,
+            ),
+        ] {
+            let memory = MemoryScope::new(Arc::new(AttemptCustodyProbe {
+                live_attempts: Arc::new(AtomicUsize::new(0)),
+                live_memory_bytes: Arc::new(AtomicU64::new(0)),
+                max_memory_bytes: 1_048_576,
+            }));
+            let budget = RequestBudgetV1::observing_execution_admitted(
+                Arc::new(InterruptOnWorker(interruption, AtomicBool::new(false))),
+                &memory,
+            )
+            .expect("caller starts with a live budget");
+            let transport = ScriptedTransport::new(vec![Ok(ok_body(&[(0, vec![0.5, 0.5])]))]);
+            let calls = transport.calls_handle();
+            let ledger = openai_ledger(1, 0);
+            let (provider, _) = OpenAiEmbeddingProvider::new_approved(
+                cfg(2),
+                &openai_grant(),
+                Arc::clone(&ledger),
+                NonZeroU64::MIN,
+                Some(Box::new(transport)),
+            )
+            .expect("fixture provider");
+            let result = provider.embed_batch_within(&["query"], &budget);
+            assert!(
+                matches!(result, Err(CoreError::Typed { code, .. }) if code == expected_code),
+                "{interruption:?} at dispatch returned {result:?}"
+            );
+            assert!(
+                provider
+                    .attempts
+                    .drain(Duration::from_secs(2))
+                    .unfinished
+                    .is_empty()
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                ledger.snapshot().expect("spend snapshot").spent_cost_micros,
+                0
+            );
         }
     }
 

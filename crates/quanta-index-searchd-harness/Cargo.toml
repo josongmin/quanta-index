@@ -27,7 +27,7 @@ doc = false
 anyhow = { workspace = true }
 # Safe `getrusage(2)` (peak RSS) and `gethostname(2)` for the benchmark
 # artifact's resource and host provenance (QI-BB-010).
-nix = { workspace = true, features = ["resource", "hostname", "fs"] }
+nix = { workspace = true, features = ["resource", "hostname", "fs", "signal"] }
 quanta-index-contract = { version = "0.1.0", path = "../quanta-index-contract" }
 quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 quanta-index-embed = { version = "0.1.0", path = "../quanta-index-embed" }
@@ -88,12 +88,10 @@ required-features = ["legacy-bench"]
 [[bin]]
 name = "relevance_matrix"
 path = "src/bin/relevance_matrix.rs"
-required-features = ["legacy-bench"]
 
 [[bin]]
 name = "relevance_openai_ab"
 path = "src/bin/relevance_openai_ab.rs"
-required-features = ["legacy-bench"]
 
 [[bin]]
 name = "snippet_matrix"

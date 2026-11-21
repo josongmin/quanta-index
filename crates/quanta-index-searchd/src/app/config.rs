@@ -1,3 +1,4 @@
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -120,6 +121,9 @@ pub struct ProviderWorkBudgetConfig {
     /// Retry attempts one reservation may spend
     /// (`QUANTA_INDEX_PROVIDER_MAX_RETRY_ATTEMPTS`).
     pub retry_attempts_cap: u32,
+    /// Approved worst-case charge per OpenAI HTTP attempt. Required for
+    /// OpenAI egress, in the same units as the process spend ceiling.
+    pub openai_max_request_cost_micros: Option<NonZeroU64>,
 }
 
 impl Default for ProviderWorkBudgetConfig {
@@ -129,11 +133,18 @@ impl Default for ProviderWorkBudgetConfig {
             inflight_bytes_cap: 4_194_304,
             total_cost_micros_ceiling: 1_000_000_000_000,
             retry_attempts_cap: 3,
+            openai_max_request_cost_micros: None,
         }
     }
 }
 
 impl ProviderWorkBudgetConfig {
+    /// Load the same operator caps used by the supervised daemon, without
+    /// interpreting any unrelated daemon configuration.
+    pub fn from_env() -> Result<Self> {
+        provider_budget_from_env_with(&optional_env)
+    }
+
     /// The ledger budget this config describes.
     #[must_use]
     pub const fn to_budget(&self) -> ProviderWorkBudgetV1 {
@@ -294,6 +305,12 @@ impl SemanticEmbedderProfile {
         semantic_embedder_profile_from_lookup(&optional_env)
     }
 
+    /// Resolve the OpenAI benchmark settings for review without reading a credential.
+    /// The empty credential keeps this profile unusable for a live provider.
+    pub fn openai_for_input_review_from_env() -> Result<Self> {
+        openai_input_review_profile_from_lookup(&optional_env)
+    }
+
     /// Explicit development-only hash profile for hermetic test rails.
     #[must_use]
     pub const fn hash_dev() -> Self {
@@ -409,6 +426,7 @@ pub struct SearchdConfig {
     /// direct authority path.
     ingest_socket_path: PathBuf,
     semantic_embedder_profile: SemanticEmbedderProfile,
+    openai_request_sample_metrics: bool,
     search_corpus_history_retention_policy: Option<SearchCorpusHistoryRetentionPolicyV1>,
     /// Residency limits for opened sealed generations (QI-BB-001). Optional
     /// operator tuning with a documented default; both env knobs must be
@@ -517,6 +535,7 @@ pub(crate) const ENV_POLICY_FAMILIES: &[EnvPolicyFamily] = &[
             "QUANTA_INDEX_EMBED_MAX_RETRIES",
             "QUANTA_INDEX_EMBED_TIMEOUT_SECS",
             "QUANTA_INDEX_EMBED_CACHE",
+            "QUANTA_INDEX_EMBED_REQUEST_SAMPLE_METRICS",
             "QUANTA_INDEX_EMBED_CONCURRENCY",
             "QUANTA_INDEX_EMBED_CACHE_MAX_ENTRIES",
             "QUANTA_INDEX_EMBED_CACHE_MAX_BYTES",
@@ -526,7 +545,10 @@ pub(crate) const ENV_POLICY_FAMILIES: &[EnvPolicyFamily] = &[
         ],
         apply: |config, lookup| {
             Ok(config
-                .with_semantic_embedder_profile(semantic_embedder_profile_from_lookup(lookup)?))
+                .with_semantic_embedder_profile(semantic_embedder_profile_from_lookup(lookup)?)
+                .with_openai_request_sample_metrics(openai_request_sample_metrics_from_lookup(
+                    lookup,
+                )?))
         },
     },
     EnvPolicyFamily {
@@ -769,6 +791,7 @@ pub(crate) const ENV_POLICY_FAMILIES: &[EnvPolicyFamily] = &[
             "QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_BYTES",
             "QUANTA_INDEX_PROVIDER_COST_CEILING_MICROS",
             "QUANTA_INDEX_PROVIDER_MAX_RETRY_ATTEMPTS",
+            "QUANTA_INDEX_PROVIDER_OPENAI_MAX_REQUEST_COST_MICROS",
         ],
         apply: |config, lookup| {
             Ok(config.with_provider_work_budget(provider_budget_from_env_with(lookup)?))
@@ -825,6 +848,7 @@ impl SearchdConfig {
             control_socket_path,
             ingest_socket_path,
             semantic_embedder_profile: SemanticEmbedderProfile::hash_dev(),
+            openai_request_sample_metrics: false,
             search_corpus_history_retention_policy: None,
             snapshot_registry_policy: SnapshotRegistryPolicy::DEFAULT,
             lexical_execution_budget: LexicalExecutionBudgetV1::DEFAULT,
@@ -938,6 +962,11 @@ impl SearchdConfig {
     #[must_use]
     pub fn semantic_embedder_profile(&self) -> &SemanticEmbedderProfile {
         &self.semantic_embedder_profile
+    }
+
+    #[must_use]
+    pub(super) const fn openai_request_sample_metrics(&self) -> bool {
+        self.openai_request_sample_metrics
     }
 
     #[must_use]
@@ -1288,6 +1317,12 @@ impl SearchdConfig {
     #[must_use]
     pub fn with_semantic_embedder_profile(mut self, profile: SemanticEmbedderProfile) -> Self {
         self.semantic_embedder_profile = profile;
+        self
+    }
+
+    #[must_use]
+    fn with_openai_request_sample_metrics(mut self, enabled: bool) -> Self {
+        self.openai_request_sample_metrics = enabled;
         self
     }
 
@@ -1878,21 +1913,36 @@ fn semantic_embedder_profile_from_lookup(
             if api_key.trim().is_empty() {
                 return Err(anyhow::anyhow!("OPENAI_API_KEY is set but empty"));
             }
-            let model = lookup("QUANTA_INDEX_EMBED_MODEL")?
-                .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
-            let model_revision = openai_model_revision_from_lookup(lookup)?;
-            Ok(SemanticEmbedderProfile::OpenAi {
-                model,
-                model_revision,
-                dimension: embed_dim_from_lookup(lookup, DEFAULT_OPENAI_DIMENSION)?,
-                api_key,
-                tuning: openai_tuning_from_env_with(lookup)?,
-            })
+            openai_profile_from_lookup(lookup, api_key)
         }
         Some(other) => Err(anyhow::anyhow!(
             "unknown QUANTA_INDEX_EMBEDDER '{other}' (expected potion-code|potion-code-full-v2|local-code-jina-v2|openai|unavailable|{DEV_HASH_EMBEDDER_SELECTOR})"
         )),
     }
+}
+
+fn openai_input_review_profile_from_lookup(
+    lookup: &EnvLookup<'_>,
+) -> Result<SemanticEmbedderProfile> {
+    anyhow::ensure!(
+        lookup("QUANTA_INDEX_EMBEDDER")?.as_deref() == Some("openai"),
+        "OpenAI A/B input review requires QUANTA_INDEX_EMBEDDER=openai"
+    );
+    openai_profile_from_lookup(lookup, String::new())
+}
+
+fn openai_profile_from_lookup(
+    lookup: &EnvLookup<'_>,
+    api_key: String,
+) -> Result<SemanticEmbedderProfile> {
+    Ok(SemanticEmbedderProfile::OpenAi {
+        model: lookup("QUANTA_INDEX_EMBED_MODEL")?
+            .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string()),
+        model_revision: openai_model_revision_from_lookup(lookup)?,
+        dimension: embed_dim_from_lookup(lookup, DEFAULT_OPENAI_DIMENSION)?,
+        api_key,
+        tuning: openai_tuning_from_env_with(lookup)?,
+    })
 }
 
 fn default_potion_code_model_dir(lookup: &EnvLookup<'_>) -> Result<PathBuf> {
@@ -1981,6 +2031,14 @@ fn openai_tuning_from_env_with(lookup: &EnvLookup<'_>) -> Result<OpenAiEmbedderT
     Ok(tuning)
 }
 
+fn openai_request_sample_metrics_from_lookup(lookup: &EnvLookup<'_>) -> Result<bool> {
+    match lookup("QUANTA_INDEX_EMBED_REQUEST_SAMPLE_METRICS")?.as_deref() {
+        None | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(_) => anyhow::bail!("QUANTA_INDEX_EMBED_REQUEST_SAMPLE_METRICS must be true or false"),
+    }
+}
+
 /// Pure assembler: maps the raw provider knob strings onto their tuning
 /// fields; the cache retention policy is resolved separately.
 ///
@@ -2019,6 +2077,7 @@ fn provider_budget_from_env_with(lookup: &EnvLookup<'_>) -> Result<ProviderWorkB
         lookup("QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_BYTES")?.as_deref(),
         lookup("QUANTA_INDEX_PROVIDER_COST_CEILING_MICROS")?.as_deref(),
         lookup("QUANTA_INDEX_PROVIDER_MAX_RETRY_ATTEMPTS")?.as_deref(),
+        lookup("QUANTA_INDEX_PROVIDER_OPENAI_MAX_REQUEST_COST_MICROS")?.as_deref(),
     )
 }
 
@@ -2030,6 +2089,7 @@ fn provider_budget_from_raw(
     inflight_bytes: Option<&str>,
     cost_ceiling_micros: Option<&str>,
     retry_attempts: Option<&str>,
+    openai_max_request_cost_micros: Option<&str>,
 ) -> Result<ProviderWorkBudgetConfig> {
     let defaults = ProviderWorkBudgetConfig::default();
     Ok(ProviderWorkBudgetConfig {
@@ -2053,6 +2113,15 @@ fn provider_budget_from_raw(
             retry_attempts,
             defaults.retry_attempts_cap,
         )?,
+        openai_max_request_cost_micros: openai_max_request_cost_micros
+            .filter(|raw| !raw.is_empty())
+            .map(|raw| raw.trim().parse::<NonZeroU64>())
+            .transpose()
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "QUANTA_INDEX_PROVIDER_OPENAI_MAX_REQUEST_COST_MICROS must be a positive integer"
+                )
+            })?,
     })
 }
 
@@ -2476,6 +2545,7 @@ mod tests {
             ("QUANTA_INDEX_EMBED_MAX_RETRIES", "2"),
             ("QUANTA_INDEX_EMBED_TIMEOUT_SECS", "11"),
             ("QUANTA_INDEX_EMBED_CACHE", "on"),
+            ("QUANTA_INDEX_EMBED_REQUEST_SAMPLE_METRICS", "true"),
             ("QUANTA_INDEX_EMBED_CONCURRENCY", "5"),
             ("QUANTA_INDEX_EMBED_CACHE_MAX_ENTRIES", "77"),
             ("QUANTA_INDEX_EMBED_CACHE_MAX_BYTES", "4096"),
@@ -2580,6 +2650,7 @@ mod tests {
             ("QUANTA_INDEX_PROVIDER_MAX_INFLIGHT_BYTES", "8192"),
             ("QUANTA_INDEX_PROVIDER_COST_CEILING_MICROS", "999"),
             ("QUANTA_INDEX_PROVIDER_MAX_RETRY_ATTEMPTS", "7"),
+            ("QUANTA_INDEX_PROVIDER_OPENAI_MAX_REQUEST_COST_MICROS", "4"),
             ("QUANTA_INDEX_PROVIDER_TENANT", "fence-tenant"),
             ("QUANTA_INDEX_PROVIDER_ENDPOINT", "https://fence.example/v1"),
             ("QUANTA_INDEX_PROVIDER_REGION", "fence-region"),
@@ -2786,6 +2857,14 @@ mod tests {
         let from_env = SearchdConfig::from_lookup(None, &env_lookup)
             .expect("the env entry point resolves every family");
         assert_eq!(with_state_root.state_root(), explicit_root.as_path());
+        assert!(with_state_root.openai_request_sample_metrics());
+        assert!(from_env.openai_request_sample_metrics());
+        assert_eq!(
+            with_state_root
+                .provider_work_budget()
+                .openai_max_request_cost_micros,
+            NonZeroU64::new(4)
+        );
         assert_eq!(
             from_env.state_root(),
             Path::new("/tmp/quanta-index-chain-env")
@@ -3693,6 +3772,58 @@ mod tests {
     }
 
     #[test]
+    fn openai_ab_input_review_reuses_live_settings_without_a_key() -> Result<()> {
+        let review_lookup = |name: &str| {
+            Ok(match name {
+                "QUANTA_INDEX_EMBEDDER" => Some("openai".to_owned()),
+                "QUANTA_INDEX_EMBED_MODEL_REVISION" => Some("fixture-revision".to_owned()),
+                "QUANTA_INDEX_EMBED_MAX_RETRIES" => Some("1".to_owned()),
+                "OPENAI_API_KEY" => anyhow::bail!("input review attempted to read the key"),
+                _ => None,
+            })
+        };
+        let mut reviewed = openai_input_review_profile_from_lookup(&review_lookup)?;
+        let SemanticEmbedderProfile::OpenAi { api_key, .. } = &mut reviewed else {
+            anyhow::bail!("input review did not resolve the OpenAI profile");
+        };
+        assert!(api_key.is_empty());
+        *api_key = "fixture-key".to_owned();
+        let live = semantic_embedder_profile_from_lookup(&|name| {
+            if name == "OPENAI_API_KEY" {
+                Ok(Some("fixture-key".to_owned()))
+            } else {
+                review_lookup(name)
+            }
+        })?;
+        assert_eq!(reviewed, live);
+        assert!(
+            semantic_embedder_profile_from_lookup(&|name| {
+                if name == "OPENAI_API_KEY" {
+                    Ok(None)
+                } else {
+                    review_lookup(name)
+                }
+            })
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn request_sample_metrics_are_opt_in_and_reject_invalid_values() {
+        let parse = |value: Option<&str>| {
+            openai_request_sample_metrics_from_lookup(&|name| {
+                assert_eq!(name, "QUANTA_INDEX_EMBED_REQUEST_SAMPLE_METRICS");
+                Ok(value.map(str::to_owned))
+            })
+        };
+        assert!(!parse(None).expect("default"));
+        assert!(parse(Some("true")).expect("enabled"));
+        assert!(!parse(Some("false")).expect("disabled"));
+        assert!(parse(Some("1")).is_err());
+    }
+
+    #[test]
     fn cache_retention_env_binds_each_knob_and_refuses_zero() {
         let lookup = |name: &str| -> Result<Option<String>> {
             Ok(match name {
@@ -3898,15 +4029,17 @@ mod tests {
 
     #[test]
     fn provider_budget_knobs_map_to_fields_with_zero_refused() {
-        let unset = provider_budget_from_raw(None, None, None, None).expect("unset is default");
+        let unset =
+            provider_budget_from_raw(None, None, None, None, None).expect("unset is default");
         assert_eq!(unset, ProviderWorkBudgetConfig::default());
         unset
             .to_budget()
             .validate()
             .expect("the default budget validates");
 
-        let explicit = provider_budget_from_raw(Some("5"), Some("8192"), Some("999"), Some("7"))
-            .expect("explicit knobs parse");
+        let explicit =
+            provider_budget_from_raw(Some("5"), Some("8192"), Some("999"), Some("7"), Some("4"))
+                .expect("explicit knobs parse");
         assert_eq!(
             explicit,
             ProviderWorkBudgetConfig {
@@ -3914,21 +4047,23 @@ mod tests {
                 inflight_bytes_cap: 8192,
                 total_cost_micros_ceiling: 999,
                 retry_attempts_cap: 7,
+                openai_max_request_cost_micros: std::num::NonZeroU64::new(4),
             }
         );
 
         for raw in [
-            (Some("0"), None, None, None),
-            (None, Some("0"), None, None),
-            (None, None, Some("0"), None),
-            (None, None, None, Some("0")),
+            (Some("0"), None, None, None, None),
+            (None, Some("0"), None, None, None),
+            (None, None, Some("0"), None, None),
+            (None, None, None, Some("0"), None),
+            (None, None, None, None, Some("0")),
         ] {
             assert!(
-                provider_budget_from_raw(raw.0, raw.1, raw.2, raw.3).is_err(),
+                provider_budget_from_raw(raw.0, raw.1, raw.2, raw.3, raw.4).is_err(),
                 "a zero cap must fail closed"
             );
         }
-        assert!(provider_budget_from_raw(Some("nope"), None, None, None).is_err());
+        assert!(provider_budget_from_raw(Some("nope"), None, None, None, None).is_err());
     }
 
     #[test]

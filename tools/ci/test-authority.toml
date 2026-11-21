@@ -370,6 +370,7 @@ targets = [
   "benchmark-gold-oracle-python-owner",
   "benchmark-holdout-review-python-owner",
   "benchmark-profile-capture-python-owner",
+  "benchmark-openai-ab-capture-python-owner",
   "benchmark-criterion-capture-python-owner",
   "benchmark-recorded-capture-python-owner",
   "benchmark-retrieval-capture-python-owner",
@@ -577,6 +578,12 @@ rail = "pr-benchmark-control-python"
 id = "benchmark-retrieval-capture-python-owner"
 path = "tools/ci/tests/test_retrieval_capture.py"
 owner = "tools/benchmark/retrieval_capture.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-openai-ab-capture-python-owner"
+path = "tools/ci/tests/test_relevance_openai_ab_capture.py"
+owner = "tools/benchmark/relevance_openai_ab_capture.py"
 rail = "pr-benchmark-control-python"
 
 [[python_targets]]

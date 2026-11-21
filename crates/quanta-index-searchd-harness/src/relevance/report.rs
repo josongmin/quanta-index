@@ -1,6 +1,6 @@
 //! Relevance rail run engine: seed → query → score → gate → artifact.
 //!
-//! Boots one sealed generation over the judged fixture, runs each
+//! Publishes sealed generations through the SDK to pinned Legacy processes, runs each
 //! [`JudgedQuery`] against the live ranker, scores the produced ordering with the
 //! pure [`super::metrics`], and enforces two blocking layers that the
 //! `MEASUREMENT_MATRIX` keeps distinct:
@@ -18,12 +18,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Result as AnyResult;
-use quanta_index_contract::TextQuerySyntax;
-use quanta_index_embed::{
-    OpenAiEmbedStatsSnapshot, reset_openai_embed_stats, snapshot_openai_embed_stats,
-};
+use quanta_index_contract::{SearchCorpusActiveHeadV1, TextQuerySyntax};
+use quanta_index_embed::OpenAiEmbedStatsSnapshot;
 use quanta_index_searchd::app::SemanticEmbedderProfile;
-use quanta_index_searchd::app::config::ProviderEgressGrantConfig;
+use quanta_index_searchd::app::config::ProviderWorkBudgetConfig;
 use serde_json::{Value, json};
 
 use crate::artifact::{
@@ -31,17 +29,18 @@ use crate::artifact::{
     PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest, corpus_digest,
     model_revision_of, saturating_u64,
 };
-use crate::harness::E2eRuntime;
+use crate::legacy_reference::RelevanceProviderInputs;
+#[path = "process.rs"]
+mod process;
 
 /// The artifact dimension the relevance rail writes.
 pub const DIMENSION: &str = "relevance";
 /// The artifact dimension the `OpenAI` A/B capture writes.
 pub const OPENAI_AB_DIMENSION: &str = "relevance-openai-ab";
 use crate::relevance::corpus::{
-    JUDGED_QUERIES, JudgedQuery, LEXICAL_RELEVANCE_CORPUS, RELEVANCE_REPO, RelevanceRoute,
-    SEMANTIC_GATED_QUERIES, SEMANTIC_JUDGED_QUERIES, SOURCEGRAPH_OVERLAP_BUCKETS,
-    SemanticIntentKind, SemanticJudgedQuery, SourcegraphOverlapBucket, TOP_K,
-    semantic_fixture_docs,
+    JUDGED_QUERIES, JudgedQuery, LEXICAL_RELEVANCE_CORPUS, RelevanceRoute, SEMANTIC_GATED_QUERIES,
+    SEMANTIC_JUDGED_QUERIES, SOURCEGRAPH_OVERLAP_BUCKETS, SemanticIntentKind, SemanticJudgedQuery,
+    TOP_K, semantic_fixture_docs,
 };
 use crate::relevance::metrics::{
     GradedDoc, grade_index, ndcg_at_k, recall_at_k, reciprocal_rank_at_k,
@@ -155,6 +154,10 @@ pub struct RelevanceReport {
     pub model_revision: Option<String>,
     /// Model-backed paraphrase gate; absent only on the explicit hash-dev rail.
     pub semantic_quality: Option<SemanticQualitySummary>,
+    /// Peak resident bytes of the external daemon that served this run.
+    pub peak_daemon_rss_bytes: u64,
+    /// Pinned Legacy executable used by both fixture processes.
+    pub legacy_daemon_sha256: String,
 }
 
 const MIN_PARAPHRASE_MRR_AT_10: f64 = 0.65;
@@ -206,110 +209,42 @@ fn to_text_syntax(syntax: BenchSyntax) -> TextQuerySyntax {
     }
 }
 
-/// Boot one runtime, seed the judged fixture, seal + activate.
-pub fn prepare_relevance_runtime() -> AnyResult<E2eRuntime> {
-    let mut rt = E2eRuntime::boot()?;
-    for (path, content) in LEXICAL_RELEVANCE_CORPUS {
-        rt.ingest_text(RELEVANCE_REPO, path, content)?;
-    }
-    let _generation = rt.seal()?;
-    rt.activate_last_sealed_generation()?;
-    Ok(rt)
+/// The judged semantic fixture's exact file/chunk boundaries for both producers.
+#[derive(Clone, Copy)]
+struct SemanticFixturePiece {
+    text: &'static str,
+    start_line: u32,
+    end_line: u32,
 }
 
-fn seed_semantic_relevance_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
-    use crate::harness::E2eTextChunkSpec;
-    // Seed the WHOLE semantic corpus as ONE multi-scope ingest batch (one scope
-    // per file), the realistic shape of a production ingest wave. The semantic
-    // derivation then embeds the entire corpus in a single batched provider call
-    // instead of one call per file, so the provider-stats request count reflects
-    // real batching rather than a per-file seeding artifact. auth/token_refresh.rs
-    // is split into two chunks so same-path collapse still has repeats to fold.
-    let mut chunk_specs: Vec<(&str, Vec<E2eTextChunkSpec<'_>>)> = Vec::new();
-    for (path, content) in semantic_fixture_docs() {
-        if path == "auth/token_refresh.rs" {
-            let half = content.len().div_euclid(2);
-            let (head, tail) = content.split_at(half);
-            chunk_specs.push((
-                path,
+fn semantic_fixture_files() -> Vec<(&'static str, Vec<SemanticFixturePiece>)> {
+    semantic_fixture_docs()
+        .into_iter()
+        .map(|(path, content)| {
+            let pieces = if path == "auth/token_refresh.rs" {
+                let (head, tail) = content.split_at(content.len().div_euclid(2));
                 vec![
-                    E2eTextChunkSpec {
-                        content: head,
+                    SemanticFixturePiece {
+                        text: head,
                         start_line: 1,
                         end_line: 2,
-                        source_repo_id: None,
                     },
-                    E2eTextChunkSpec {
-                        content: tail,
+                    SemanticFixturePiece {
+                        text: tail,
                         start_line: 3,
                         end_line: 4,
-                        source_repo_id: None,
                     },
-                ],
-            ));
-        } else {
-            chunk_specs.push((
-                path,
-                vec![E2eTextChunkSpec {
-                    content,
+                ]
+            } else {
+                vec![SemanticFixturePiece {
+                    text: content,
                     start_line: 1,
                     end_line: 2,
-                    source_repo_id: None,
-                }],
-            ));
-        }
-    }
-    let files: Vec<(&str, &[E2eTextChunkSpec<'_>])> = chunk_specs
-        .iter()
-        .map(|(path, chunks)| (*path, chunks.as_slice()))
-        .collect();
-    let _ids = rt.ingest_text_files_one_batch(&files)?;
-    Ok(())
-}
-
-fn prepare_semantic_relevance_runtime_with_profile(
-    profile: SemanticEmbedderProfile,
-) -> AnyResult<E2eRuntime> {
-    use quanta_index_contract::SearchPlaneTrackKind;
-    let grant = if matches!(
-        profile,
-        SemanticEmbedderProfile::OpenAi { .. } | SemanticEmbedderProfile::LocalCode { .. }
-    ) {
-        ProviderEgressGrantConfig::from_env()?
-    } else {
-        ProviderEgressGrantConfig::default()
-    };
-    let mut rt = E2eRuntime::boot_with_embedder_profile(profile)?.with_provider_egress_grant(grant);
-    seed_semantic_relevance_fixture(&mut rt)?;
-    let _generation = rt.seal_lexical_generation_for_tracks(&[
-        SearchPlaneTrackKind::Lexical,
-        SearchPlaneTrackKind::Semantic,
-    ])?;
-    rt.activate_last_sealed_generation()?;
-    Ok(rt)
-}
-
-/// Boot a HASH-embedder runtime over the SEMANTIC fixture and activate the
-/// Lexical + Semantic tracks so `query_semantic` has a live vector index.
-///
-/// Seeds ONLY the semantic corpus (the lexical corpus is intentionally absent so
-/// the semantic route's produced ids stay within the semantic fixture, never
-/// blurred by lexical-corpus paths). `auth/token_refresh.rs` is ingested as TWO
-/// chunks so the same-path-collapse rule has repeated hits to collapse. Asserting
-/// the `Hash` profile keeps the CI semantic gate deterministic and
-/// neural-quality-free (RFC §5 P1-3); the `OpenAI` A/B is a separate local lane.
-pub fn prepare_semantic_relevance_runtime() -> AnyResult<E2eRuntime> {
-    let rt = prepare_semantic_relevance_runtime_with_profile(SemanticEmbedderProfile::hash_dev())?;
-    if !matches!(
-        rt.embedder_profile(),
-        quanta_index_searchd::app::SemanticEmbedderProfile::Hash { .. }
-    ) {
-        return Err(anyhow::anyhow!(
-            "the semantic CI gate MUST run on the deterministic Hash embedder; got {:?}",
-            rt.embedder_profile()
-        ));
-    }
-    Ok(rt)
+                }]
+            };
+            (path, pieces)
+        })
+        .collect()
 }
 
 /// Collapse repeated same-repo same-path hits to the earliest occurrence,
@@ -330,65 +265,6 @@ fn collapse_same_repo_path(repo_paths: Vec<(String, String)>) -> Vec<String> {
         }
     }
     collapsed
-}
-
-fn produced_semantic_order(
-    rt: &mut E2eRuntime,
-    query_id: &str,
-    query_text: &str,
-) -> AnyResult<Vec<String>> {
-    let result = rt.query_semantic(query_text, TOP_K, None);
-    if let Some(error) = result.typed_error {
-        return Err(anyhow::anyhow!(
-            "relevance query `{}` returned typed error {}: {}",
-            query_id,
-            error.code,
-            error.message
-        ));
-    }
-    let repo_paths = result
-        .candidates
-        .iter()
-        .map(|candidate| {
-            (
-                candidate.repo_id.as_str().to_string(),
-                candidate.repo_relative_path.as_str().to_string(),
-            )
-        })
-        .collect();
-    Ok(collapse_same_repo_path(repo_paths))
-}
-
-/// Run one judged query and return its produced doc-id ordering (top-first).
-///
-/// Fails closed: a typed error on a relevance query is a rail failure, never an
-/// empty-ranking pass.
-fn produced_order(rt: &mut E2eRuntime, query: &JudgedQuery) -> AnyResult<Vec<String>> {
-    let syntax = to_text_syntax(query.syntax);
-    match query.route {
-        RelevanceRoute::Lexical => {
-            let result = rt.query_text(syntax, query.query, TOP_K);
-            if let Some(error) = result.typed_error {
-                return Err(anyhow::anyhow!(
-                    "relevance query `{}` returned typed error {}: {}",
-                    query.id,
-                    error.code,
-                    error.message
-                ));
-            }
-            Ok(result
-                .candidates
-                .iter()
-                .map(|candidate| candidate.repo_relative_path.as_str().to_string())
-                .collect())
-        }
-        RelevanceRoute::Semantic => {
-            // Pure vector ranking: no lexical scope, so the semantic searcher
-            // ranks the whole index by embedding similarity (NOT a lexical-scoped
-            // re-rank, which would blur semantic-route truth — RFC §5 P1-2).
-            produced_semantic_order(rt, query.id, query.query)
-        }
-    }
 }
 
 /// Enforce the ordering invariants for one query, collecting every violation.
@@ -510,44 +386,7 @@ fn aggregate_routes(queries: &[QueryScore]) -> Vec<RouteSummary> {
         .collect()
 }
 
-/// Capture the live quanta-index ordering for one Sourcegraph overlap bucket.
-///
-/// Fail-soft (NOT fail-closed-as-abort): a typed query error is recorded in
-/// `quanta_capture_error` and the ordering is left empty, because the overlap is
-/// an external side lane whose verdict is `unprovisioned` regardless — a capture
-/// error must not turn the whole relevance rail red over an absent dependency.
-/// The error is surfaced verbatim in the artifact, never swallowed.
-fn capture_overlap_bucket(
-    rt: &mut E2eRuntime,
-    bucket: &SourcegraphOverlapBucket,
-) -> OverlapCapture {
-    let result = rt.query_text(to_text_syntax(bucket.syntax), bucket.query, TOP_K);
-    let (quanta_ordering, quanta_capture_error) = match result.typed_error {
-        Some(error) => (
-            Vec::new(),
-            Some(format!("{}: {}", error.code, error.message)),
-        ),
-        None => (
-            result
-                .candidates
-                .iter()
-                .map(|candidate| candidate.repo_relative_path.as_str().to_string())
-                .collect(),
-            None,
-        ),
-    };
-    OverlapCapture {
-        bucket: bucket.bucket,
-        query_family: bucket.query_family,
-        query: bucket.query,
-        syntax: bucket.syntax,
-        sourcegraph_surface: bucket.sourcegraph_surface,
-        quanta_ordering,
-        quanta_capture_error,
-    }
-}
-
-/// Run the production-default relevance rail against a freshly seeded runtime.
+/// Run the production-default relevance rail against fresh pinned processes.
 pub fn run_relevance_report() -> AnyResult<RelevanceReport> {
     run_relevance_report_with_profile(SemanticEmbedderProfile::from_env()?)
 }
@@ -556,79 +395,7 @@ pub fn run_relevance_report() -> AnyResult<RelevanceReport> {
 pub fn run_relevance_report_with_profile(
     profile: SemanticEmbedderProfile,
 ) -> AnyResult<RelevanceReport> {
-    if matches!(profile, SemanticEmbedderProfile::Unavailable) {
-        return Err(anyhow::anyhow!(
-            "relevance evaluation requires an active semantic embedder"
-        ));
-    }
-    let mut rt = prepare_relevance_runtime()?;
-    let mut queries = Vec::with_capacity(
-        JUDGED_QUERIES
-            .len()
-            .saturating_add(SEMANTIC_GATED_QUERIES.len()),
-    );
-    for query in JUDGED_QUERIES {
-        let order = produced_order(&mut rt, query)?;
-        queries.push(score_query(query, order)?);
-    }
-    // The same profile derives corpus vectors and embeds queries. The explicit
-    // hash-dev rail retains its exact-token mechanical gate; learned profiles
-    // additionally run the full discriminative paraphrase set.
-    let learned = !profile.is_dev();
-    let mut sem_rt = prepare_semantic_relevance_runtime_with_profile(profile)?;
-    let model_revision = model_revision_of(sem_rt.embedder_profile());
-    for query in SEMANTIC_GATED_QUERIES {
-        let order = produced_order(&mut sem_rt, query)?;
-        queries.push(score_query(query, order)?);
-    }
-    let semantic_quality = if learned {
-        let mut cases = Vec::new();
-        for query in SEMANTIC_JUDGED_QUERIES
-            .iter()
-            .filter(|query| query.intent_kind == SemanticIntentKind::Paraphrase)
-        {
-            let order = produced_semantic_order(&mut sem_rt, query.id, query.query)?;
-            let metrics = score_semantic_case(query, order.clone())?;
-            queries.push(QueryScore {
-                id: query.id,
-                route: RelevanceRoute::Semantic,
-                intent: query.intent,
-                query: query.query,
-                produced_order: order,
-                mrr_at_10: metrics.mrr_at_10,
-                ndcg_at_10: metrics.ndcg_at_10,
-                recall_at_20: metrics.recall_at_20,
-                failures: Vec::new(),
-            });
-            cases.push(metrics);
-        }
-        Some(summarize_semantic_quality(&cases))
-    } else {
-        None
-    };
-    let mut routes = aggregate_routes(&queries);
-    if let Some(quality) = &semantic_quality
-        && let Some(semantic_route) = routes
-            .iter_mut()
-            .find(|route| route.route == RelevanceRoute::Semantic)
-    {
-        semantic_route.passed &= quality.passed;
-    }
-    // J7Q-01B: capture the quanta-index half of every overlap bucket live. The
-    // Sourcegraph half stays unprovisioned, so this never gates `passed`.
-    let overlap = SOURCEGRAPH_OVERLAP_BUCKETS
-        .iter()
-        .map(|bucket| capture_overlap_bucket(&mut rt, bucket))
-        .collect();
-    let passed = queries.iter().all(QueryScore::passed) && routes.iter().all(|r| r.passed);
-    Ok(RelevanceReport {
-        queries,
-        routes,
-        overlap,
-        passed,
-        model_revision,
-        semantic_quality,
-    })
+    process::run(profile)
 }
 
 /// The bytes both relevance fixtures ingest, in ingest order: the lexical
@@ -669,10 +436,36 @@ pub struct SemanticAbCase {
     pub openai: SemanticCaseMetrics,
 }
 
+impl SemanticAbCase {
+    fn openai_ranks_on_topic_higher(&self) -> bool {
+        match (self.openai.on_topic_rank, self.hash.on_topic_rank) {
+            (Some(openai_rank), Some(hash_rank)) => openai_rank < hash_rank,
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct OpenAiSemanticAbReport {
     pub cases: Vec<SemanticAbCase>,
+    provider_work_budget: ProviderWorkBudgetConfig,
     pub provider_stats: OpenAiEmbedStatsSnapshot,
+    /// Effective process inputs with credentials omitted.
+    runner_config: Value,
+    model_revision: String,
+    source_evidence: OpenAiAbSourceEvidence,
+    peak_daemon_rss_bytes: u64,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+struct OpenAiAbSourceEvidence {
+    legacy_daemon_sha256: String,
+    source_batch_digest: String,
+    hash: SearchCorpusActiveHeadV1,
+    openai: SearchCorpusActiveHeadV1,
+    openai_publication_http_requests: u64,
+    openai_publication_stats: Value,
 }
 
 fn score_semantic_case(
@@ -719,48 +512,137 @@ pub fn openai_profile_from_env_for_relevance_ab() -> AnyResult<SemanticEmbedderP
     }
 }
 
+const APPROVED_AB_INPUT_DIGEST_ENV: &str = "QUANTA_INDEX_OPENAI_AB_APPROVED_INPUT_DIGEST";
+
+struct OpenAiAbInputs {
+    hash_profile: SemanticEmbedderProfile,
+    provider: RelevanceProviderInputs,
+    runner_config: Value,
+    fixture: process::OpenAiAbFixture,
+    config_digest: String,
+    approval_digest: String,
+}
+
+fn prepare_openai_ab_inputs(openai_profile: &SemanticEmbedderProfile) -> AnyResult<OpenAiAbInputs> {
+    let SemanticEmbedderProfile::OpenAi {
+        model,
+        model_revision,
+        dimension,
+        tuning,
+        ..
+    } = openai_profile
+    else {
+        anyhow::bail!("the OpenAI A/B arm requires an OpenAI semantic profile");
+    };
+    let openai_inputs = RelevanceProviderInputs::from_env()?;
+    let grant = &openai_inputs.grant;
+    anyhow::ensure!(
+        grant.source_content_consent,
+        "OpenAI A/B requires explicit provider Source content consent"
+    );
+    let config = tuning.provider_config(
+        model.clone(),
+        model_revision.clone(),
+        *dimension,
+        String::new(),
+    );
+    let (model_id, revision, ..) = config.model_metadata()?;
+    config.validate_approved_egress(&grant.to_grant("openai", &model_id, revision))?;
+    let request_cost = openai_inputs
+        .budget
+        .openai_max_request_cost_micros
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "OpenAI A/B requires QUANTA_INDEX_PROVIDER_OPENAI_MAX_REQUEST_COST_MICROS"
+            )
+        })?;
+    anyhow::ensure!(
+        std::env::var("QUANTA_INDEX_PROVIDER_COST_CEILING_MICROS")
+            .is_ok_and(|value| !value.trim().is_empty())
+            && request_cost.get() <= openai_inputs.budget.total_cost_micros_ceiling,
+        "OpenAI A/B requires an explicit positive cost ceiling funding the approved request cost"
+    );
+    let provider_egress_grant_digest = config_digest(
+        "relevance-openai-ab-provider-grant",
+        &[
+            ("tenant", grant.tenant_id.clone()),
+            ("endpoint", grant.endpoint.clone()),
+            ("region", grant.region.clone()),
+            ("retention", grant.retention.clone()),
+            ("profile", grant.profile.clone()),
+            (
+                "source_content_consent",
+                grant.source_content_consent.to_string(),
+            ),
+        ],
+    );
+    let hash_profile = SemanticEmbedderProfile::hash_dev();
+    let runner_config = openai_ab_runner_config_json(
+        &hash_profile,
+        openai_profile,
+        &openai_inputs.budget,
+        &provider_egress_grant_digest,
+    )?;
+    let fixture = process::OpenAiAbFixture::prepare()?;
+    let config_digest = openai_ab_config_digest(&runner_config);
+    let approval_digest = openai_ab_input_digest(&config_digest, &fixture.source_batch_digest());
+    Ok(OpenAiAbInputs {
+        hash_profile,
+        provider: openai_inputs,
+        runner_config,
+        fixture,
+        config_digest,
+        approval_digest,
+    })
+}
+
+fn openai_ab_input_digest(config_digest_value: &str, source_batch_digest: &str) -> String {
+    config_digest(
+        "relevance-openai-ab-inputs",
+        &[
+            ("config_digest", config_digest_value.to_owned()),
+            ("source_batch_digest", source_batch_digest.to_owned()),
+        ],
+    )
+}
+
+/// Resolve the capture inputs for operator review without launching either arm.
+pub fn describe_openai_ab_inputs(openai_profile: &SemanticEmbedderProfile) -> AnyResult<Value> {
+    let inputs = prepare_openai_ab_inputs(openai_profile)?;
+    Ok(json!({
+        "runner_config": inputs.runner_config,
+        "config_digest": inputs.config_digest,
+        "source_batch_digest": inputs.fixture.source_batch_digest(),
+        "approval_digest": inputs.approval_digest,
+    }))
+}
+
 pub fn run_openai_semantic_ab_report(
     openai_profile: SemanticEmbedderProfile,
 ) -> AnyResult<OpenAiSemanticAbReport> {
-    let mut hash_runtime = prepare_semantic_relevance_runtime()?;
-    let hash_cases: Vec<SemanticCaseMetrics> = SEMANTIC_JUDGED_QUERIES
-        .iter()
-        .map(|query| {
-            produced_semantic_order(&mut hash_runtime, query.id, query.query)
-                .and_then(|order| score_semantic_case(query, order))
-        })
-        .collect::<AnyResult<Vec<_>>>()?;
-
-    reset_openai_embed_stats();
-    let mut openai_runtime = prepare_semantic_relevance_runtime_with_profile(openai_profile)?;
-    let openai_cases: Vec<SemanticCaseMetrics> = SEMANTIC_JUDGED_QUERIES
-        .iter()
-        .map(|query| {
-            produced_semantic_order(&mut openai_runtime, query.id, query.query)
-                .and_then(|order| score_semantic_case(query, order))
-        })
-        .collect::<AnyResult<Vec<_>>>()?;
-    let provider_stats = snapshot_openai_embed_stats();
-
-    let cases = SEMANTIC_JUDGED_QUERIES
-        .iter()
-        .zip(hash_cases)
-        .zip(openai_cases)
-        .map(|((query, hash), openai)| SemanticAbCase {
-            id: query.id,
-            intent_kind: query.intent_kind,
-            intent: query.intent,
-            query: query.query,
-            on_topic_path: query.on_topic_path,
-            hard_negative_path: query.hard_negative_path,
-            hash,
-            openai,
-        })
-        .collect();
+    let inputs = prepare_openai_ab_inputs(&openai_profile)?;
+    anyhow::ensure!(
+        std::env::var(APPROVED_AB_INPUT_DIGEST_ENV).as_deref()
+            == Ok(inputs.approval_digest.as_str()),
+        "OpenAI A/B requires {APPROVED_AB_INPUT_DIGEST_ENV} matching the reviewed config and Source batch"
+    );
+    let model_revision = model_revision_of(&openai_profile)
+        .ok_or_else(|| anyhow::anyhow!("OpenAI A/B requires a model revision"))?;
+    let capture = process::run_openai_ab(
+        &inputs.hash_profile,
+        &openai_profile,
+        &inputs.provider,
+        &inputs.fixture,
+    )?;
 
     Ok(OpenAiSemanticAbReport {
-        cases,
-        provider_stats,
+        cases: capture.cases,
+        provider_work_budget: inputs.provider.budget,
+        provider_stats: capture.provider_stats,
+        runner_config: inputs.runner_config,
+        model_revision,
+        source_evidence: capture.source_evidence,
+        peak_daemon_rss_bytes: capture.peak_daemon_rss_bytes,
     })
 }
 
@@ -875,7 +757,10 @@ fn judgments_json(report: &RelevanceReport) -> AnyResult<Value> {
 #[must_use]
 pub fn detail_json(report: &RelevanceReport) -> Value {
     json!({
+        "backend": "legacy-reference",
         "passed": report.passed,
+        "legacy_daemon_sha256": report.legacy_daemon_sha256,
+        "resource_scope": "peak RSS of pinned Legacy daemon processes",
         "semantic_quality": report.semantic_quality.as_ref().map(|quality| json!({
             "case_count": quality.case_count,
             "top1_count": quality.top1_count,
@@ -953,6 +838,8 @@ pub fn artifact(
                     ("rank_k", RANK_K.to_string()),
                     ("recall_k", RECALL_K.to_string()),
                     ("top_k", TOP_K.to_string()),
+                    ("backend", "legacy-reference".to_string()),
+                    ("legacy_daemon_sha256", report.legacy_daemon_sha256.clone()),
                     ("judged_queries", JUDGED_QUERIES.len().to_string()),
                     (
                         "semantic_gated_queries",
@@ -983,7 +870,9 @@ pub fn artifact(
             model_revision: report.model_revision.clone(),
         },
         host,
-        resources: ResourceUsageV1::observe_self()?,
+        resources: ResourceUsageV1 {
+            peak_rss_bytes: report.peak_daemon_rss_bytes,
+        },
         phases: PhaseDurationsV1::default(),
         disk_amplification: None,
         rows: report.queries.iter().map(query_row).collect(),
@@ -1086,15 +975,6 @@ fn openai_ab_cases_json(report: &OpenAiSemanticAbReport) -> Value {
         .cases
         .iter()
         .map(|case| {
-            // The discriminative comparison is the on-topic RANK, not recall:
-            // openai ranking the on-topic file strictly higher (or retrieving it
-            // when hash dropped it) is the real win.
-            let openai_ranks_on_topic_higher =
-                match (case.openai.on_topic_rank, case.hash.on_topic_rank) {
-                    (Some(openai_rank), Some(hash_rank)) => openai_rank < hash_rank,
-                    (Some(_), None) => true,
-                    _ => false,
-                };
             json!({
                 "id": case.id,
                 "intent_kind": semantic_intent_kind_label(case.intent_kind),
@@ -1115,7 +995,7 @@ fn openai_ab_cases_json(report: &OpenAiSemanticAbReport) -> Value {
                     "recall_at_20": case.openai.recall_at_20 - case.hash.recall_at_20,
                     "on_topic_rank_hash": case.hash.on_topic_rank,
                     "on_topic_rank_openai": case.openai.on_topic_rank,
-                    "openai_ranks_on_topic_higher": openai_ranks_on_topic_higher,
+                    "openai_ranks_on_topic_higher": case.openai_ranks_on_topic_higher(),
                     "top1_win": case.openai.top1_is_on_topic && !case.hash.top1_is_on_topic,
                 },
             })
@@ -1153,7 +1033,79 @@ fn openai_provider_stats_json(stats: &OpenAiEmbedStatsSnapshot) -> Value {
     })
 }
 
-fn openai_ab_detail_json(report: &OpenAiSemanticAbReport) -> Value {
+fn provider_work_budget_json(budget: &ProviderWorkBudgetConfig) -> Value {
+    json!({
+        "inflight_requests_cap": budget.inflight_requests_cap,
+        "inflight_bytes_cap": budget.inflight_bytes_cap,
+        "total_cost_micros_ceiling": budget.total_cost_micros_ceiling,
+        "retry_attempts_cap": budget.retry_attempts_cap,
+        "openai_max_request_cost_micros": budget.openai_max_request_cost_micros,
+    })
+}
+
+/// The effective, non-secret inputs that can change A/B ordering or provider work.
+/// Both artifact detail and its configuration digest consume this same value.
+fn openai_ab_runner_config_json(
+    hash_profile: &SemanticEmbedderProfile,
+    openai_profile: &SemanticEmbedderProfile,
+    budget: &ProviderWorkBudgetConfig,
+    provider_egress_grant_digest: &str,
+) -> AnyResult<Value> {
+    let SemanticEmbedderProfile::OpenAi {
+        model,
+        model_revision,
+        dimension,
+        tuning,
+        ..
+    } = openai_profile
+    else {
+        anyhow::bail!("the OpenAI A/B runner config requires an OpenAI semantic profile");
+    };
+    let hash_model_revision = model_revision_of(hash_profile);
+    let SemanticEmbedderProfile::Hash {
+        dimension: hash_dimension,
+    } = hash_profile
+    else {
+        anyhow::bail!("the OpenAI A/B hash arm requires a Hash semantic profile");
+    };
+    let retention = tuning.cache_retention;
+    Ok(json!({
+        "schema_version": 1,
+        "hash": {
+            "dimension": hash_dimension,
+            "model_revision": hash_model_revision,
+        },
+        "openai": {
+            "model": model,
+            "model_revision": model_revision,
+            "dimension": dimension,
+            "max_batch": tuning.max_batch,
+            "max_estimated_tokens_per_request": tuning.max_estimated_tokens_per_request,
+            "max_retries": tuning.max_retries,
+            "timeout_secs": tuning.timeout.as_secs(),
+            "timeout_subsec_nanos": tuning.timeout.subsec_nanos(),
+            "cache_enabled": tuning.cache_enabled,
+            "cache_retention": {
+                "max_entries": retention.max_entries(),
+                "max_resident_bytes": retention.max_resident_bytes(),
+                "max_namespaces": retention.max_namespaces(),
+                "max_entry_age_secs": retention.max_entry_age().as_secs(),
+                "max_entry_age_subsec_nanos": retention.max_entry_age().subsec_nanos(),
+                "max_total_bytes": retention.max_total_bytes(),
+            },
+            "concurrency": tuning.concurrency,
+        },
+        "provider_work_budget": provider_work_budget_json(budget),
+        "provider_egress_grant_digest": provider_egress_grant_digest,
+    }))
+}
+
+fn openai_ab_detail_json(
+    report: &OpenAiSemanticAbReport,
+    runner_config: Value,
+) -> AnyResult<Value> {
+    let provider_budget = &report.provider_work_budget;
+    let source_evidence = serde_json::to_value(&report.source_evidence)?;
     let paraphrase_case_count = report
         .cases
         .iter()
@@ -1181,15 +1133,13 @@ fn openai_ab_detail_json(report: &OpenAiSemanticAbReport) -> Value {
         .iter()
         .filter(|case| {
             case.intent_kind == SemanticIntentKind::Paraphrase
-                && match (case.openai.on_topic_rank, case.hash.on_topic_rank) {
-                    (Some(openai_rank), Some(hash_rank)) => openai_rank < hash_rank,
-                    (Some(_), None) => true,
-                    _ => false,
-                }
+                && case.openai_ranks_on_topic_higher()
         })
         .count();
-    json!({
+    Ok(json!({
         "status": "captured",
+        "source_evidence": source_evidence,
+        "resource_scope": "peak RSS of pinned Legacy daemon processes",
         "case_count": report.cases.len(),
         "paraphrase_case_count": paraphrase_case_count,
         "paraphrase_hash_top1": paraphrase_hash_top1,
@@ -1197,13 +1147,13 @@ fn openai_ab_detail_json(report: &OpenAiSemanticAbReport) -> Value {
         "paraphrase_openai_ranks_on_topic_higher": paraphrase_openai_ranks_higher,
         "headline_metric": "on_topic_rank",
         "metrics_note": "on_topic_rank is the headline (finest) signal; mrr_at_10/ndcg_at_10 track it. recall@20 is a COARSE top-20-membership signal: vacuous on a <=20-doc corpus but meaningful on a larger one, where it catches files hash drops out of the top 20 entirely",
-        "provider_stats": {
-            "http_request_count": report.provider_stats.http_request_count,
-            "cache_hits": report.provider_stats.cache_hits,
-            "distinct_miss_texts": report.provider_stats.distinct_miss_texts,
-            "retry_count": report.provider_stats.retry_count,
-        },
-    })
+        // The registry captures the summary as the replay envelope. Retain
+        // the same bounded observations and rankings that the sidecars expose.
+        "provider_work_budget": provider_work_budget_json(provider_budget),
+        "provider_stats": openai_provider_stats_json(&report.provider_stats),
+        "case_results": openai_ab_cases_json(report),
+        "runner_config": runner_config,
+    }))
 }
 
 /// One artifact row per A/B case: the `OpenAI` side's produced page.
@@ -1228,14 +1178,26 @@ fn openai_ab_row(case: &SemanticAbCase) -> BenchRowV1 {
     }
 }
 
+fn openai_ab_config_digest(runner_config: &Value) -> String {
+    config_digest(
+        OPENAI_AB_DIMENSION,
+        &[
+            ("rank_k", RANK_K.to_string()),
+            ("recall_k", RECALL_K.to_string()),
+            ("cases", SEMANTIC_JUDGED_QUERIES.len().to_string()),
+            ("runner_config", runner_config.to_string()),
+        ],
+    )
+}
+
 /// The A/B capture artifact: the semantic fixture's bytes, the `OpenAI`
 /// profile's model revision, and one row per case.
 pub fn openai_ab_artifact(
     report: &OpenAiSemanticAbReport,
-    openai_profile: &SemanticEmbedderProfile,
     git_head: GitHeadV1,
     host: HostV1,
 ) -> AnyResult<BenchArtifactV1> {
+    let runner_config = report.runner_config.clone();
     Ok(BenchArtifactV1 {
         dimension: OPENAI_AB_DIMENSION.to_string(),
         mode: BenchMode::Warm,
@@ -1249,34 +1211,27 @@ pub fn openai_ab_artifact(
                     .map(|(path, content)| ((*path).to_string(), (*content).to_string()))
                     .collect::<Vec<_>>(),
             ),
-            config_digest: config_digest(
-                OPENAI_AB_DIMENSION,
-                &[
-                    ("rank_k", RANK_K.to_string()),
-                    ("recall_k", RECALL_K.to_string()),
-                    ("cases", SEMANTIC_JUDGED_QUERIES.len().to_string()),
-                ],
-            ),
-            model_revision: model_revision_of(openai_profile),
+            config_digest: openai_ab_config_digest(&runner_config),
+            model_revision: Some(report.model_revision.clone()),
         },
         host,
-        resources: ResourceUsageV1::observe_self()?,
+        resources: ResourceUsageV1 {
+            peak_rss_bytes: report.peak_daemon_rss_bytes,
+        },
         phases: PhaseDurationsV1::default(),
         disk_amplification: None,
         rows: report.cases.iter().map(openai_ab_row).collect(),
-        detail: openai_ab_detail_json(report),
+        detail: openai_ab_detail_json(report, runner_config)?,
     })
 }
 
 pub fn write_openai_ab_artifacts(
     report: &OpenAiSemanticAbReport,
-    openai_profile: &SemanticEmbedderProfile,
     dir: &Path,
     git_head: GitHeadV1,
     host: HostV1,
 ) -> AnyResult<()> {
-    openai_ab_artifact(report, openai_profile, git_head, host)?
-        .write_to(&dir.join("summary.json"))?;
+    openai_ab_artifact(report, git_head, host)?.write_to(&dir.join("summary.json"))?;
     crate::artifact::write_json_pretty(&dir.join("cases.json"), &openai_ab_cases_json(report))?;
     crate::artifact::write_json_pretty(
         &dir.join("provider-stats.json"),
@@ -1295,6 +1250,8 @@ mod tests {
     //! covered separately by the `relevance_matrix` binary.
     use super::*;
     use crate::relevance::corpus::OrderingInvariants;
+    use quanta_index_embed::EmbeddingCacheRetentionPolicy;
+    use quanta_index_searchd::app::config::OpenAiEmbedderTuning;
 
     fn fixture_query() -> JudgedQuery {
         JudgedQuery {
@@ -1323,11 +1280,362 @@ mod tests {
             .collect()
     }
 
-    fn semantic_fixture_path_set() -> std::collections::BTreeSet<&'static str> {
-        semantic_fixture_docs()
-            .into_iter()
-            .map(|(path, _)| path)
-            .collect()
+    fn ab_fixture_head(incarnation: u8) -> AnyResult<SearchCorpusActiveHeadV1> {
+        use quanta_index_contract::{
+            ACTIVATION_ROOT_INCARNATION_BYTES_V1, GenerationSnapshot, ManifestGeneration, RepoId,
+            RevisionId, SearchCorpusActivationTokenV1, SearchCorpusGenerationIdentityV1,
+            SearchPlaneTrackKind, SemanticContentRootsV1,
+        };
+        let lexical = GenerationSnapshot {
+            repo_id: RepoId::new("repo-e2e")?,
+            revision_id: RevisionId::new("rev-e2e")?,
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: ManifestGeneration::new(1),
+            manifest_digest: "lex-seal:1".to_owned(),
+        };
+        let row_digest = format!("{incarnation:x}").repeat(64);
+        Ok(SearchCorpusActiveHeadV1 {
+            generation: SearchCorpusGenerationIdentityV1 {
+                semantic: GenerationSnapshot {
+                    track: SearchPlaneTrackKind::Semantic,
+                    ..lexical.clone()
+                },
+                lexical,
+                semantic_content: SemanticContentRootsV1 {
+                    row_root_digest: format!("sha256:{row_digest}"),
+                    membership_root_digest: format!("sha256:{}", "c".repeat(64)),
+                },
+            },
+            activation_token: SearchCorpusActivationTokenV1::new(
+                [incarnation; ACTIVATION_ROOT_INCARNATION_BYTES_V1],
+                std::num::NonZeroU64::MIN,
+            )?,
+        })
+    }
+
+    #[test]
+    fn openai_ab_approval_digest_matches_capture_contract() {
+        let config = format!("sha256:{}", "1".repeat(64));
+        let source = format!("sha256:{}", "2".repeat(64));
+        assert_eq!(
+            openai_ab_input_digest(&config, &source),
+            "sha256:131d1a8eee55106c2d9648bac9bda939affdbe5b57a0c691adb45bad662e94a8"
+        );
+    }
+
+    #[test]
+    fn openai_ab_source_batch_is_deterministic() -> AnyResult<()> {
+        let first = process::OpenAiAbFixture::prepare()?;
+        let second = process::OpenAiAbFixture::prepare()?;
+        assert_eq!(first.source_batch_digest(), second.source_batch_digest());
+        Ok(())
+    }
+
+    #[test]
+    fn openai_ab_summary_preserves_request_samples_and_rankings() -> AnyResult<()> {
+        let query = SEMANTIC_JUDGED_QUERIES
+            .iter()
+            .find(|query| query.intent_kind == SemanticIntentKind::Paraphrase)
+            .ok_or_else(|| anyhow::anyhow!("semantic judgment fixture lacks a paraphrase"))?;
+        let profile = SemanticEmbedderProfile::OpenAi {
+            model: "fixture-model".to_string(),
+            model_revision: "fixture-revision".to_string(),
+            dimension: 1536,
+            api_key: "sentinel-secret-key".to_string(),
+            tuning: OpenAiEmbedderTuning::default(),
+        };
+        let provider_work_budget = ProviderWorkBudgetConfig {
+            total_cost_micros_ceiling: 37,
+            openai_max_request_cost_micros: std::num::NonZeroU64::new(1),
+            ..ProviderWorkBudgetConfig::default()
+        };
+        let grant_digest = "sha256:grant-fixture";
+        let report = OpenAiSemanticAbReport {
+            runner_config: openai_ab_runner_config_json(
+                &SemanticEmbedderProfile::hash_dev(),
+                &profile,
+                &provider_work_budget,
+                grant_digest,
+            )?,
+            model_revision: model_revision_of(&profile)
+                .ok_or_else(|| anyhow::anyhow!("fixture OpenAI profile lacks model revision"))?,
+            provider_work_budget,
+            source_evidence: OpenAiAbSourceEvidence {
+                legacy_daemon_sha256: "7".repeat(64),
+                source_batch_digest: format!("sha256:{}", "8".repeat(64)),
+                hash: ab_fixture_head(1)?,
+                openai: ab_fixture_head(2)?,
+                openai_publication_http_requests: 1,
+                openai_publication_stats: json!({"http_request_count": 1}),
+            },
+            peak_daemon_rss_bytes: 4096,
+            cases: vec![SemanticAbCase {
+                id: query.id,
+                intent_kind: query.intent_kind,
+                intent: query.intent,
+                query: query.query,
+                on_topic_path: query.on_topic_path,
+                hard_negative_path: query.hard_negative_path,
+                hash: score_semantic_case(
+                    query,
+                    order(&[query.hard_negative_path, query.on_topic_path]),
+                )?,
+                openai: score_semantic_case(query, order(&[query.on_topic_path]))?,
+            }],
+            provider_stats: OpenAiEmbedStatsSnapshot {
+                total_texts_observed: 260,
+                cache_hits: 0,
+                http_request_count: 257,
+                distinct_miss_texts: 260,
+                retry_count: 0,
+                retryable_status_count: 0,
+                transport_error_count: 0,
+                max_request_texts: 4,
+                max_estimated_tokens: 90,
+                request_samples_dropped: 1,
+                request_samples: vec![
+                    quanta_index_embed::OpenAiRequestSample {
+                        texts_submitted: 1,
+                        estimated_tokens: 30,
+                    };
+                    256
+                ],
+            },
+        };
+        let runner_config = report.runner_config.clone();
+        let detail = openai_ab_detail_json(&report, runner_config.clone())?;
+        assert_eq!(detail["runner_config"], runner_config);
+        assert!(!detail.to_string().contains("sentinel-secret-key"));
+        assert_eq!(
+            detail["source_evidence"]["legacy_daemon_sha256"],
+            json!("7".repeat(64))
+        );
+        assert_eq!(
+            detail["source_evidence"]["source_batch_digest"],
+            json!(format!("sha256:{}", "8".repeat(64)))
+        );
+        assert_eq!(
+            detail["source_evidence"]["hash"],
+            serde_json::to_value(ab_fixture_head(1)?)?
+        );
+        assert_eq!(
+            detail["source_evidence"]["openai"],
+            serde_json::to_value(ab_fixture_head(2)?)?
+        );
+        assert_eq!(
+            detail["source_evidence"]["openai_publication_http_requests"],
+            json!(1)
+        );
+        assert_eq!(
+            detail["runner_config"]["provider_egress_grant_digest"],
+            json!("sha256:grant-fixture")
+        );
+        assert_eq!(
+            detail["provider_work_budget"]["total_cost_micros_ceiling"],
+            json!(37)
+        );
+        let stats = detail.get("provider_stats");
+        assert_eq!(
+            stats.and_then(|stats| stats.get("request_samples")),
+            Some(&json!(vec![
+                json!({"texts_submitted": 1, "estimated_tokens": 30});
+                256
+            ])),
+        );
+        assert_eq!(
+            stats.and_then(|stats| stats.get("max_estimated_tokens")),
+            Some(&json!(90)),
+        );
+        assert_eq!(
+            stats,
+            Some(&openai_provider_stats_json(&report.provider_stats))
+        );
+        let case_results = detail.get("case_results");
+        assert_eq!(
+            case_results.and_then(|cases| cases.pointer("/cases/0/delta/on_topic_rank_hash")),
+            Some(&json!(2)),
+        );
+        assert_eq!(
+            detail.get("paraphrase_openai_ranks_on_topic_higher"),
+            Some(&json!(1))
+        );
+        assert_eq!(case_results, Some(&openai_ab_cases_json(&report)));
+
+        let digest_for = |report: &OpenAiSemanticAbReport| -> AnyResult<String> {
+            Ok(openai_ab_artifact(
+                report,
+                GitHeadV1::parse(&"0".repeat(40))?,
+                HostV1 {
+                    os: "fixture".to_string(),
+                    arch: "fixture".to_string(),
+                    cpu_count: 1,
+                    mem_bytes: 1,
+                    hostname_hash: "sha256:fixture".to_string(),
+                },
+            )?
+            .provenance
+            .config_digest)
+        };
+        let original = digest_for(&report)?;
+        let artifact = openai_ab_artifact(
+            &report,
+            GitHeadV1::parse(&"0".repeat(40))?,
+            HostV1 {
+                os: "fixture".to_string(),
+                arch: "fixture".to_string(),
+                cpu_count: 1,
+                mem_bytes: 1,
+                hostname_hash: "sha256:fixture".to_string(),
+            },
+        )?;
+        assert_eq!(artifact.resources.peak_rss_bytes, 4096);
+        assert_eq!(artifact.detail["runner_config"], report.runner_config);
+        assert_eq!(
+            artifact.provenance.model_revision.as_deref(),
+            Some("fixture-model@fixture-revision:d1536")
+        );
+        let mut different_key = profile.clone();
+        if let SemanticEmbedderProfile::OpenAi { api_key, .. } = &mut different_key {
+            *api_key = "different-sentinel-secret-key".to_string();
+        }
+        assert_eq!(
+            openai_ab_runner_config_json(
+                &SemanticEmbedderProfile::hash_dev(),
+                &different_key,
+                &report.provider_work_budget,
+                grant_digest,
+            )?,
+            runner_config,
+        );
+
+        let tuning_changes: [(&str, fn(&mut OpenAiEmbedderTuning) -> AnyResult<()>); 13] = [
+            ("max_batch", |tuning| {
+                tuning.max_batch += 1;
+                Ok(())
+            }),
+            ("max_estimated_tokens_per_request", |tuning| {
+                tuning.max_estimated_tokens_per_request += 1;
+                Ok(())
+            }),
+            ("max_retries", |tuning| {
+                tuning.max_retries += 1;
+                Ok(())
+            }),
+            ("timeout", |tuning| {
+                tuning.timeout += std::time::Duration::from_secs(1);
+                Ok(())
+            }),
+            ("timeout_subseconds", |tuning| {
+                tuning.timeout += std::time::Duration::from_nanos(1);
+                Ok(())
+            }),
+            ("cache_enabled", |tuning| {
+                tuning.cache_enabled = !tuning.cache_enabled;
+                Ok(())
+            }),
+            ("concurrency", |tuning| {
+                tuning.concurrency += 1;
+                Ok(())
+            }),
+            ("cache_max_entries", |tuning| {
+                let policy = tuning.cache_retention;
+                tuning.cache_retention = EmbeddingCacheRetentionPolicy::new(
+                    policy.max_entries() + 1,
+                    policy.max_resident_bytes(),
+                    policy.max_namespaces(),
+                    policy.max_entry_age(),
+                    policy.max_total_bytes(),
+                )?;
+                Ok(())
+            }),
+            ("cache_max_resident_bytes", |tuning| {
+                let policy = tuning.cache_retention;
+                tuning.cache_retention = EmbeddingCacheRetentionPolicy::new(
+                    policy.max_entries(),
+                    policy.max_resident_bytes() + 1,
+                    policy.max_namespaces(),
+                    policy.max_entry_age(),
+                    policy.max_total_bytes(),
+                )?;
+                Ok(())
+            }),
+            ("cache_max_namespaces", |tuning| {
+                let policy = tuning.cache_retention;
+                tuning.cache_retention = EmbeddingCacheRetentionPolicy::new(
+                    policy.max_entries(),
+                    policy.max_resident_bytes(),
+                    policy.max_namespaces() + 1,
+                    policy.max_entry_age(),
+                    policy.max_total_bytes(),
+                )?;
+                Ok(())
+            }),
+            ("cache_max_entry_age", |tuning| {
+                let policy = tuning.cache_retention;
+                tuning.cache_retention = EmbeddingCacheRetentionPolicy::new(
+                    policy.max_entries(),
+                    policy.max_resident_bytes(),
+                    policy.max_namespaces(),
+                    policy.max_entry_age() + std::time::Duration::from_secs(1),
+                    policy.max_total_bytes(),
+                )?;
+                Ok(())
+            }),
+            ("cache_max_total_bytes", |tuning| {
+                let policy = tuning.cache_retention;
+                tuning.cache_retention = EmbeddingCacheRetentionPolicy::new(
+                    policy.max_entries(),
+                    policy.max_resident_bytes(),
+                    policy.max_namespaces(),
+                    policy.max_entry_age(),
+                    policy.max_total_bytes() + 1,
+                )?;
+                Ok(())
+            }),
+            ("cache_age_subseconds", |tuning| {
+                let policy = tuning.cache_retention;
+                tuning.cache_retention = EmbeddingCacheRetentionPolicy::new(
+                    policy.max_entries(),
+                    policy.max_resident_bytes(),
+                    policy.max_namespaces(),
+                    policy.max_entry_age() + std::time::Duration::from_nanos(1),
+                    policy.max_total_bytes(),
+                )?;
+                Ok(())
+            }),
+        ];
+        for (name, change) in tuning_changes {
+            let mut changed = profile.clone();
+            if let SemanticEmbedderProfile::OpenAi { tuning, .. } = &mut changed {
+                change(tuning)?;
+            }
+            let mut changed_report = report.clone();
+            changed_report.runner_config = openai_ab_runner_config_json(
+                &SemanticEmbedderProfile::hash_dev(),
+                &changed,
+                &report.provider_work_budget,
+                grant_digest,
+            )?;
+            assert_ne!(digest_for(&changed_report)?, original, "{name}");
+        }
+        let mut changed_grant = report.clone();
+        changed_grant.runner_config = openai_ab_runner_config_json(
+            &SemanticEmbedderProfile::hash_dev(),
+            &profile,
+            &report.provider_work_budget,
+            "sha256:other-grant-fixture",
+        )?;
+        assert_ne!(digest_for(&changed_grant)?, original);
+        let mut changed_budget = report.clone();
+        changed_budget.provider_work_budget.retry_attempts_cap += 1;
+        changed_budget.runner_config = openai_ab_runner_config_json(
+            &SemanticEmbedderProfile::hash_dev(),
+            &profile,
+            &changed_budget.provider_work_budget,
+            grant_digest,
+        )?;
+        assert_ne!(digest_for(&changed_budget)?, original);
+        Ok(())
     }
 
     #[test]
@@ -1456,187 +1764,6 @@ mod tests {
         );
     }
 
-    // --- daemon-driven semantic route (Hash embedder, RFC P1-1/P1-2/P1-3) -
-
-    /// Build a `Semantic`-route judged query.
-    ///
-    /// The test then drives the REAL production dispatch arm (`produced_order`
-    /// -> `query_semantic(None)` -> path projection ->
-    /// `collapse_same_repo_path`), not a parallel re-implementation.
-    fn semantic_route_query(id: &'static str, query: &'static str) -> JudgedQuery {
-        JudgedQuery {
-            id,
-            route: RelevanceRoute::Semantic,
-            intent: "semantic route mechanics probe",
-            query,
-            syntax: BenchSyntax::Native,
-            judgments: &[],
-            ordering: OrderingInvariants {
-                top1: None,
-                top_k_contains: &[],
-                forbidden_within: &[],
-            },
-        }
-    }
-
-    /// Boot a HASH-embedder runtime, seed the semantic fixture, and activate
-    /// the Lexical + Semantic tracks.
-    ///
-    /// Delegates to the shared fixture builder used by the model-backed rail;
-    /// only the embedding profile differs. `auth/token_refresh.rs` is ingested
-    /// as TWO chunks so the same-path-collapse rule has repeated hits to collapse.
-    fn prepare_semantic_runtime() -> AnyResult<E2eRuntime> {
-        super::prepare_semantic_relevance_runtime()
-    }
-
-    #[test]
-    fn semantic_route_projects_paths_and_collapses_same_file() {
-        // RFC P1-2: the semantic route MUST score by repo_relative_path (never a
-        // raw chunk id) AND collapse repeated same-path hits to one rank.
-        let mut rt = prepare_semantic_runtime().expect("semantic runtime boots on hash");
-        let q = semantic_route_query("sem.mechanics.path_collapse", "refresh auth token expires");
-        let order = produced_order(&mut rt, &q).expect("semantic route returns an ordering");
-
-        assert!(
-            !order.is_empty(),
-            "an exact-token semantic query must retrieve at least one path under hash"
-        );
-        // Path projection: every returned id is a corpus path, never an engine
-        // chunk id (chunk ids are `e2e-<n>-<path>` shaped).
-        let corpus_paths = semantic_fixture_path_set();
-        for doc in &order {
-            assert!(
-                corpus_paths.contains(doc.as_str()),
-                "semantic route returned `{doc}`, which is not a corpus path \
-                 (raw chunk id leak / wrong projection)"
-            );
-        }
-        // Same-path collapse: even though `auth/token_refresh.rs` was ingested as
-        // two chunks, it appears at most once in the projected ordering.
-        let refresh_hits = order
-            .iter()
-            .filter(|d| d.as_str() == "auth/token_refresh.rs")
-            .count();
-        assert!(
-            refresh_hits <= 1,
-            "auth/token_refresh.rs (2 chunks) must collapse to <=1 rank, saw {refresh_hits}: {order:?}"
-        );
-        // No path may appear twice after collapse.
-        let mut unique = order.clone();
-        unique.sort();
-        unique.dedup();
-        assert_eq!(
-            unique.len(),
-            order.len(),
-            "collapsed semantic ordering must contain no duplicate paths: {order:?}"
-        );
-    }
-
-    #[test]
-    fn semantic_route_is_deterministic_under_hash() {
-        // RFC P1-3 honesty: assert determinism (same input => same ranked order),
-        // NOT neural quality. Two independent runs over identical seeded input
-        // must produce byte-identical orderings AND identical metric vectors.
-        let mut rt_a = prepare_semantic_runtime().expect("run A boots");
-        let q = semantic_route_query("sem.determinism", "refresh auth token expires");
-        let order_a1 = produced_order(&mut rt_a, &q).expect("run A query 1");
-        let order_a2 = produced_order(&mut rt_a, &q).expect("run A query 2");
-        assert_eq!(
-            order_a1, order_a2,
-            "same query on the same generation must be stable within a run"
-        );
-
-        let mut rt_b = prepare_semantic_runtime().expect("run B boots");
-        let order_b = produced_order(&mut rt_b, &q).expect("run B query");
-        assert_eq!(
-            order_a1, order_b,
-            "identical seeded input must yield an identical hash ranking across runs"
-        );
-
-        // Metrics over the same ordering are likewise a pure function.
-        let judged = vec![GradedDoc {
-            doc_id: "auth/token_refresh.rs".to_string(),
-            grade: 3,
-        }];
-        let grades = grade_index(&judged).expect("grade index");
-        let recall_a = recall_at_k(&order_a1, &grades, RECALL_K);
-        let recall_b = recall_at_k(&order_b, &grades, RECALL_K);
-        // Both runs seed identical fixtures through a deterministic embedder,
-        // so the metric must agree to the bit; a tolerance would hide exactly
-        // the nondeterminism this test exists to catch.
-        assert!(
-            recall_a.to_bits() == recall_b.to_bits(),
-            "recall must be identical across deterministic runs: {recall_a} vs {recall_b}"
-        );
-    }
-
-    #[test]
-    fn semantic_exact_token_query_ranks_on_topic_file_first_under_hash() {
-        // RFC P1-3: the semantic-quality claim safe for hash is exact-token rank.
-        // Non-vacuity (R-TEST-19/20): mere retrieval (`any(== on_topic)`) is NOT
-        // discriminative on a <20-doc fixture (every doc is always returned), so
-        // require the on-topic file at RANK 1 — for a single-best-match exact-token
-        // query the file with verbatim overlap deterministically outranks the
-        // ~zero-overlap rest. Still do NOT assert nDCG/MRR tie-order.
-        let mut rt = prepare_semantic_runtime().expect("semantic runtime boots");
-        let mut exact_token_seen = 0_usize;
-        for jq in SEMANTIC_JUDGED_QUERIES {
-            if jq.intent_kind != SemanticIntentKind::ExactToken {
-                continue;
-            }
-            exact_token_seen = exact_token_seen.saturating_add(1);
-            let q = semantic_route_query(jq.id, jq.query);
-            let order = produced_order(&mut rt, &q).expect("exact-token semantic query runs");
-            assert_eq!(
-                order.first().map(String::as_str),
-                Some(jq.on_topic_path),
-                "exact-token query `{}` must rank its on-topic file `{}` at rank 1 under hash; got {order:?}",
-                jq.id,
-                jq.on_topic_path
-            );
-        }
-        assert!(
-            exact_token_seen > 0,
-            "the semantic fixture MUST contain at least one ExactToken judged query"
-        );
-    }
-
-    #[test]
-    fn semantic_paraphrase_query_runs_deterministically_without_quality_claim() {
-        // RFC P1-3 honesty: the paraphrase layer is the discriminative subset a
-        // NEURAL embedder separates. Under hash we assert ONLY that the route runs
-        // and is deterministic — never that hash recalls the paraphrase target
-        // (it is expected not to). This documents the limit instead of faking it.
-        let mut rt = prepare_semantic_runtime().expect("semantic runtime boots");
-        let mut paraphrase_seen = 0_usize;
-        for jq in SEMANTIC_JUDGED_QUERIES {
-            if jq.intent_kind != SemanticIntentKind::Paraphrase {
-                continue;
-            }
-            paraphrase_seen = paraphrase_seen.saturating_add(1);
-            let q = semantic_route_query(jq.id, jq.query);
-            let first = produced_order(&mut rt, &q).expect("paraphrase query run 1");
-            let second = produced_order(&mut rt, &q).expect("paraphrase query run 2");
-            assert_eq!(
-                first, second,
-                "paraphrase query `{}` must be deterministic under hash (mechanics, not quality)",
-                jq.id
-            );
-            // Every returned id is still a path, never a raw chunk id.
-            let corpus_paths = semantic_fixture_path_set();
-            for doc in &first {
-                assert!(
-                    corpus_paths.contains(doc.as_str()),
-                    "paraphrase route returned non-path id `{doc}`"
-                );
-            }
-        }
-        assert!(
-            paraphrase_seen > 0,
-            "the semantic fixture MUST contain at least one Paraphrase judged query (local discriminative layer)"
-        );
-    }
-
     #[test]
     fn correct_order_passes_all_gates() {
         let score = score_query(&fixture_query(), order(&["a", "b", "c", "neg"])).unwrap();
@@ -1704,6 +1831,8 @@ mod tests {
             passed: false,
             model_revision: None,
             semantic_quality: None,
+            peak_daemon_rss_bytes: 1,
+            legacy_daemon_sha256: "0".repeat(64),
         };
         let error = judgments_json(&report).expect_err("missing ranked query must not serialize");
         let first = JUDGED_QUERIES
@@ -1736,6 +1865,8 @@ mod tests {
             passed: true,
             model_revision: None,
             semantic_quality: None,
+            peak_daemon_rss_bytes: 1,
+            legacy_daemon_sha256: "0".repeat(64),
         };
         let value = sourcegraph_overlap_json(&report, "2026-06-09");
         assert_eq!(value["status"], "unprovisioned");

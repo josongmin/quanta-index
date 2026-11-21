@@ -199,6 +199,22 @@ def parse_args(
         type=Path,
         help="external benchmark root; defaults to $QUANTA_BENCH_EVIDENCE_ROOT",
     )
+    capture_ab = subparsers.add_parser(
+        "capture-frozen-openai-ab",
+        help="run a reviewed external-daemon OpenAI A/B executable as a diagnostic",
+    )
+    for name in ("runner", "source-checkout", "out"):
+        capture_ab.add_argument(f"--{name}", type=Path, required=True)
+    capture_ab.add_argument("--runner-sha256", required=True)
+    capture_ab.add_argument("--source-head", required=True)
+    capture_ab.add_argument("--timeout", type=int, default=3600)
+    validate_ab = subparsers.add_parser(
+        "validate-frozen-openai-ab",
+        help="validate preserved OpenAI A/B sidecars without launching a runner",
+    )
+    validate_ab.add_argument("--capture", type=Path, required=True)
+    validate_ab.add_argument("--source-checkout", type=Path, required=True)
+    validate_ab.add_argument("--source-head", required=True)
     for command, help_text in (
         ("run", "run producer recipes serially, then require their evidence"),
         ("validate", "require existing current-source evidence without running producers"),
@@ -1558,6 +1574,48 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "plan":
         return plan_command(repo_root, args.profile)
+    if args.command == "capture-frozen-openai-ab":
+        from relevance_openai_ab_capture import capture_detached_ab
+
+        try:
+            files = capture_detached_ab(
+                runner_binary=args.runner,
+                runner_sha256=args.runner_sha256,
+                source_checkout=args.source_checkout,
+                source_head=args.source_head,
+                out_dir=args.out,
+                env=dict(os.environ, QUANTA_INDEX_EMBEDDER="openai"),
+                timeout=args.timeout,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"ERROR: frozen OpenAI A/B capture refused: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps({
+            "scope": "archived_openai_ab_diagnostic",
+            "source_head": args.source_head,
+            "runner_sha256": args.runner_sha256,
+            "outputs": {name: file.sha256 for name, file in files.items()},
+        }, sort_keys=True))
+        return 0
+    if args.command == "validate-frozen-openai-ab":
+        from relevance_openai_ab_capture import validate_frozen_ab
+
+        try:
+            files = validate_frozen_ab(
+                directory=args.capture,
+                source_checkout=args.source_checkout,
+                source_head=args.source_head,
+                env=os.environ,
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"ERROR: frozen OpenAI A/B validation refused: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps({
+            "scope": "frozen_openai_ab_validation",
+            "source_head": args.source_head,
+            "outputs": {name: file.sha256 for name, file in files.items()},
+        }, sort_keys=True))
+        return 0
     if args.command == "replay":
         if bool(args.reference) == bool(args.family):
             print("ERROR: replay requires exactly one run reference or --family", file=sys.stderr)

@@ -134,11 +134,6 @@ kind = "just-recipe"
 recipe = "rust-verify-quality-ui"
 outputs = ["artifacts/search-quality/ui/latest/summary.json"]
 
-[producers.rust-capture-quality-relevance-openai-ab]
-kind = "just-recipe"
-recipe = "rust-capture-quality-relevance-openai-ab"
-outputs = ["artifacts/search-quality/relevance/openai-ab/latest/summary.json"]
-
 [producers.criterion-lq-norm-pipeline]
 kind = "cargo-bench"
 package = "quanta-index-lq-norm"
@@ -468,22 +463,6 @@ baseline = "none"
 native_schema = "BenchArtifactV1:2"
 authority = "registry"
 
-[families.relevance-openai-ab]
-title = "Semantic provider A/B capture"
-purpose = "search-quality"
-payload = "latency"
-result_unit = "ratio"
-producer = "rust-capture-quality-relevance-openai-ab"
-validator = "bench-artifacts"
-scorer = "quality-integration"
-closure = "benchmark-control-plane"
-host_policy = "any"
-gate_tier = "advisory"
-sample_floor = 0
-baseline = "none"
-native_schema = "BenchArtifactV1:2"
-authority = "registry"
-
 [families.micro-lq-norm-pipeline]
 title = "Crate-local Criterion bench: lq-norm pipeline"
 purpose = "micro"
@@ -663,10 +642,6 @@ families = [
 [profiles.systems]
 description = "Ingest freshness and offered-load diagnostic evidence"
 families = ["freshness", "open-loop"]
-
-[profiles.semantic-ab]
-description = "Provider semantic A/B capture; requires OPENAI_API_KEY"
-families = ["relevance-openai-ab"]
 
 [profiles.micro]
 description = "Crate-local Criterion microbenchmarks"

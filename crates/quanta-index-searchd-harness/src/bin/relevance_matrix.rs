@@ -6,7 +6,7 @@
 //! `artifacts/search-quality/relevance/latest/`, and exits non-zero on any
 //! per-query or per-route failure. `summary.json` is the `BenchArtifactV1`
 //! (QI-BB-010): the exact head of a clean worktree, both fixtures' corpus
-//! digest, the cutoffs' config digest, the host, the process's peak RSS and
+//! digest, the cutoffs' config digest, the host, the pinned daemon's peak RSS and
 //! the embedder the semantic gate ran on. The default profile is potion-code;
 //! `QUANTA_INDEX_EMBEDDER=hash-dev` selects the separate mechanical rail.
 //! This is the authority behind

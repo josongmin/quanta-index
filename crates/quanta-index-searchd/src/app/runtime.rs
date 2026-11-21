@@ -51,8 +51,8 @@ use quanta_index_core::{
 };
 use quanta_index_embed::{
     CachingEmbeddingProvider, EmbeddingCacheIdentityV1, FileEmbeddingCache,
-    OpenAiEmbedTelemetrySource, OpenAiEmbeddingProvider, PotionCodeEmbeddingProvider,
-    ProviderAttemptPool,
+    OpenAiEmbedRequestSampleTelemetrySource, OpenAiEmbedTelemetrySource, OpenAiEmbeddingProvider,
+    PotionCodeEmbeddingProvider, ProviderAttemptPool,
 };
 
 /// Provider HTTP test seam owned by the daemon composition crate. Consumers
@@ -975,7 +975,7 @@ fn build_semantic_embedders(
     budget: &ProviderWorkBudgetConfig,
     grant: &ProviderEgressGrantConfig,
 ) -> Result<SemanticEmbedders, CoreError> {
-    build_semantic_embedders_with_transport(profile, state_root, budget, grant, None)
+    build_semantic_embedders_with_transport(profile, state_root, budget, grant, false, None)
 }
 
 fn build_semantic_embedders_with_transport(
@@ -983,6 +983,7 @@ fn build_semantic_embedders_with_transport(
     state_root: &Path,
     budget: &ProviderWorkBudgetConfig,
     grant: &ProviderEgressGrantConfig,
+    request_sample_metrics: bool,
     transport: Option<Box<dyn quanta_index_embed::EmbeddingTransport>>,
 ) -> Result<SemanticEmbedders, CoreError> {
     let provider_ledger = Arc::new(ProviderBudgetLedger::new(budget.to_budget())?);
@@ -1046,16 +1047,22 @@ fn build_semantic_embedders_with_transport(
                 *dimension,
                 api_key.clone(),
             );
-            let openai = match transport {
-                Some(transport) => OpenAiEmbeddingProvider::new(provider_config, transport)?,
-                None => OpenAiEmbeddingProvider::with_reqwest(provider_config)?,
-            };
-            // The supervisor-owned attempt pool (S21-09): one per process,
-            // shared by the provider (spawn path) and the supervised drain
-            // child (join path). Capped by the same concurrency knob that
-            // bounds the batch fanout.
-            let attempt_pool = Arc::new(ProviderAttemptPool::new(tuning.concurrency)?);
-            let openai = openai.with_attempt_pool(Arc::clone(&attempt_pool));
+            let (model_id, model_revision, _, _) = provider_config.model_metadata()?;
+            let egress_grant = grant.to_grant("openai", &model_id, model_revision);
+            let max_request_cost_micros =
+                budget.openai_max_request_cost_micros.ok_or_else(|| CoreError::Typed {
+                    code: quanta_index_core::PROVIDER_EGRESS_DENIED_CODE,
+                    message: "OpenAI egress requires QUANTA_INDEX_PROVIDER_OPENAI_MAX_REQUEST_COST_MICROS"
+                        .into(),
+                })?;
+            let (openai, budget_metrics) = OpenAiEmbeddingProvider::new_approved(
+                provider_config,
+                &egress_grant,
+                Arc::clone(&provider_ledger),
+                max_request_cost_micros,
+                transport,
+            )?;
+            let attempt_pool = openai.attempt_pool();
             // Raw provider output is unit-normalized by the shared wrapper
             // before either the cache or a path sees it (QI-BB-031).
             let normalized = L2UnitEmbeddingProvider::new(openai)?;
@@ -1064,8 +1071,16 @@ fn build_semantic_embedders_with_transport(
             // how far its raw vectors were from unit as
             // `semantic_embedding_raw_…` (QI-BB-031 #4).
             let raw_norms: Arc<dyn MetricSourcePort> = normalized.raw_norm_tallies();
+            let provider_metrics: Arc<dyn MetricSourcePort> = if request_sample_metrics {
+                Arc::new(OpenAiEmbedRequestSampleTelemetrySource)
+            } else {
+                Arc::new(OpenAiEmbedTelemetrySource)
+            };
             let mut metric_sources: Vec<Arc<dyn MetricSourcePort>> =
-                vec![Arc::new(OpenAiEmbedTelemetrySource), raw_norms];
+                vec![provider_metrics, raw_norms];
+            if request_sample_metrics {
+                metric_sources.push(budget_metrics);
+            }
             let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> = if tuning.cache_enabled {
                 // Persistent content-hash cache under the identity's own
                 // namespace (model, revision, dimension, policy — QI-BB-028)
@@ -1090,13 +1105,6 @@ fn build_semantic_embedders_with_transport(
             } else {
                 Arc::new(normalized)
             };
-            // The grant declares the composed provider's own model identity
-            // (prefix included), which is exactly what the boundary's
-            // declared-model gate compares against — never the bare
-            // profile string.
-            let egress_grant =
-                grant.to_grant("openai", provider.model_id(), provider.model_revision());
-            egress_grant.validate()?;
             let policy = SemanticEgressPolicyV1::External(egress_grant);
             let inner: Arc<dyn QueryTextEmbedderPort + Send + Sync> =
                 Arc::new(QueryEmbedderAdapter(Arc::clone(&provider)));
@@ -2073,6 +2081,7 @@ impl SearchdRuntime {
             &leased_state_root,
             config.provider_work_budget(),
             config.provider_egress_grant(),
+            config.openai_request_sample_metrics(),
             transport,
         )
         .map_err(anyhow::Error::from)?;
@@ -2838,7 +2847,10 @@ mod tests {
     }
 
     fn test_budget() -> super::ProviderWorkBudgetConfig {
-        super::ProviderWorkBudgetConfig::default()
+        super::ProviderWorkBudgetConfig {
+            openai_max_request_cost_micros: std::num::NonZeroU64::new(10),
+            ..Default::default()
+        }
     }
 
     /// A complete egress grant: every field the engine requires, without
@@ -2846,7 +2858,7 @@ mod tests {
     fn test_grant() -> super::ProviderEgressGrantConfig {
         super::ProviderEgressGrantConfig {
             tenant_id: "unit-test-tenant".to_string(),
-            endpoint: "https://unit.test/v1".to_string(),
+            endpoint: "https://api.openai.com/v1/embeddings".to_string(),
             region: "unit-test-region".to_string(),
             retention: "unit-test-30d".to_string(),
             profile: "unit-test-release".to_string(),
@@ -3159,6 +3171,207 @@ mod tests {
         };
         assert_eq!(grant.model_id, "openai:text-embedding-3-small");
         assert!(!grant.source_content_consent);
+        Ok(())
+    }
+
+    #[test]
+    fn openai_request_sample_metrics_are_registered_only_when_configured() -> TestRes {
+        let dir = tempfile::tempdir()?;
+        for enabled in [false, true] {
+            let embedders = super::build_semantic_embedders_with_transport(
+                &openai_profile(false),
+                dir.path(),
+                &test_budget(),
+                &test_grant(),
+                enabled,
+                None,
+            )?;
+            let provider_points = embedders
+                .metric_sources
+                .first()
+                .ok_or("OpenAI provider metrics source missing")?
+                .scrape()?;
+            assert!(
+                provider_points
+                    .iter()
+                    .any(|point| point.name == "embed_provider_http_requests_total")
+            );
+            assert_eq!(
+                provider_points
+                    .iter()
+                    .any(|point| point.name == "embed_provider_request_samples_capacity"),
+                enabled
+            );
+        }
+        Ok(())
+    }
+
+    struct CountingOpenAiTransport {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        status: u16,
+    }
+
+    impl quanta_index_embed::EmbeddingTransport for CountingOpenAiTransport {
+        fn post_embeddings(
+            &self,
+            url: &str,
+            _api_key: &str,
+            _body: &str,
+            _timeout: std::time::Duration,
+        ) -> Result<quanta_index_embed::HttpResponse, quanta_index_core::CoreError> {
+            let _previous = self
+                .calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if url != "https://api.openai.com/v1/embeddings" {
+                return Err(quanta_index_core::CoreError::InvalidContract(
+                    "mock received a different embedding endpoint".into(),
+                ));
+            }
+            Ok(quanta_index_embed::HttpResponse {
+                status: self.status,
+                body: serde_json::json!({
+                    "model": "text-embedding-3-small",
+                    "data": [{"index": 0, "embedding": vec![1.0_f32; 1536]}],
+                })
+                .to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn openai_egress_refuses_wrong_endpoint_or_missing_charge_before_any_io() -> TestRes {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let dir = tempfile::tempdir()?;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut wrong_endpoint = test_grant();
+        wrong_endpoint.endpoint = "https://api.openai.com/v1".into();
+        for (grant, budget, reason) in [
+            (wrong_endpoint, test_budget(), "exact embedding endpoint"),
+            (
+                test_grant(),
+                super::ProviderWorkBudgetConfig::default(),
+                "MAX_REQUEST_COST_MICROS",
+            ),
+        ] {
+            let error = super::build_semantic_embedders_with_transport(
+                &openai_profile(false),
+                dir.path(),
+                &budget,
+                &grant,
+                true,
+                Some(Box::new(CountingOpenAiTransport {
+                    calls: Arc::clone(&calls),
+                    status: 200,
+                })),
+            )
+            .err()
+            .ok_or("invalid egress configuration composed a provider")?;
+            assert!(matches!(
+                &error,
+                quanta_index_core::CoreError::Typed { code, .. }
+                    if *code == quanta_index_core::PROVIDER_EGRESS_DENIED_CODE
+            ));
+            assert!(error.to_string().contains(reason), "{error}");
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn openai_cost_ceiling_is_shared_by_source_and_query() -> TestRes {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let dir = tempfile::tempdir()?;
+        let mut grant = test_grant();
+        grant.source_content_consent = true;
+        let budget = super::ProviderWorkBudgetConfig {
+            inflight_requests_cap: 1,
+            total_cost_micros_ceiling: 10,
+            ..test_budget()
+        };
+        for source_first in [false, true] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let embedders = super::build_semantic_embedders_with_transport(
+                &openai_profile(false),
+                dir.path(),
+                &budget,
+                &grant,
+                true,
+                Some(Box::new(CountingOpenAiTransport {
+                    calls: Arc::clone(&calls),
+                    status: 200,
+                })),
+            )?;
+            let source = || embedders.corpus.embed_batch(&["source content"]).map(drop);
+            let query = || {
+                embedders
+                    .query
+                    .embed_query("query text", &RequestBudgetV1::unbounded())
+                    .map(drop)
+            };
+            let denied = if source_first {
+                source()?;
+                query()
+            } else {
+                query()?;
+                source()
+            };
+            assert!(matches!(
+                &denied,
+                Err(quanta_index_core::CoreError::Typed { code, .. })
+                    if *code == quanta_index_core::PROVIDER_BUDGET_EXHAUSTED_CODE
+            ));
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+            let spent = embedders.provider_ledger.snapshot()?;
+            assert_eq!(spent.spent_cost_micros, 10);
+            assert_eq!(spent.live_tickets, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn openai_retry_ceiling_stops_source_and_query_before_a_third_attempt() -> TestRes {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let dir = tempfile::tempdir()?;
+        let mut grant = test_grant();
+        grant.source_content_consent = true;
+        let budget = super::ProviderWorkBudgetConfig {
+            retry_attempts_cap: 1,
+            ..test_budget()
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let embedders = super::build_semantic_embedders_with_transport(
+            &openai_profile(false),
+            dir.path(),
+            &budget,
+            &grant,
+            false,
+            Some(Box::new(CountingOpenAiTransport {
+                calls: Arc::clone(&calls),
+                status: 429,
+            })),
+        )?;
+        assert!(embedders.corpus.embed_batch(&["source content"]).is_err());
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        assert!(
+            embedders
+                .query
+                .embed_query("query text", &RequestBudgetV1::unbounded())
+                .is_err()
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 4);
+        assert_eq!(embedders.provider_ledger.snapshot()?.spent_cost_micros, 40);
         Ok(())
     }
 

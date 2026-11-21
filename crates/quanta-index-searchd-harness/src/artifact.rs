@@ -599,10 +599,8 @@ fn total_memory_bytes() -> Result<u64, BenchProvenanceError> {
     })
 }
 
-/// The process's peak resident set, from `getrusage(RUSAGE_SELF)`.
-///
-/// The harness drives the daemon in-process, so this is the daemon's peak
-/// plus the harness's own.
+/// The observed process's peak resident set. A rail can observe the caller
+/// in-process or use peak resident bytes observed for a separate daemon.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResourceUsageV1 {
     pub peak_rss_bytes: u64,

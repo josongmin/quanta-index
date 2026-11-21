@@ -10,6 +10,7 @@
 //! receipt.
 
 use std::collections::VecDeque;
+use std::num::NonZeroU64;
 use std::sync::Mutex;
 
 use quanta_index_contract::SearchPlaneErrorCodeV2;
@@ -368,16 +369,16 @@ pub struct ProviderBudgetSnapshotV1 {
 #[derive(Debug, Default)]
 struct LedgerInner {
     snapshot: ProviderBudgetSnapshotV1,
+    inflight_http_requests: u64,
+    inflight_http_bytes: u64,
     audit: VecDeque<ProviderAuditEventV1>,
 }
 
 /// The process-global bounded provider work ledger (S21-08 steps 4, 7).
 ///
-/// One ledger per process bounds concurrent requests, inflight bytes and
-/// total cost with overflow-safe checked accounting. Reservation,
-/// settlement and cancellation are the only mutators; a cancelled ticket
-/// releases its reservation so no detached work can outlive its request
-/// against the caps.
+/// Logical request tickets support query audit and cancellation. A separate
+/// physical lease holds the HTTP request and text bytes while the transport
+/// owns them. Both share the same process spend ceiling.
 #[derive(Debug, Default)]
 pub struct ProviderBudgetLedger {
     budget: ProviderWorkBudgetV1,
@@ -392,6 +393,79 @@ impl ProviderBudgetLedger {
             budget,
             inner: Mutex::new(LedgerInner::default()),
         })
+    }
+
+    /// The caps installed on this process' ledger.
+    #[must_use]
+    pub const fn budget(&self) -> ProviderWorkBudgetV1 {
+        self.budget
+    }
+
+    /// Admit one actual HTTP send and hold request and byte capacity until
+    /// it returns. A failed admission changes no counter. The approved cost
+    /// bound is spent even when the outcome is ambiguous.
+    pub fn with_http_attempt<T>(
+        &self,
+        input_bytes: u64,
+        retry_index: u32,
+        cost_micros: NonZeroU64,
+        send: impl FnOnce() -> T,
+    ) -> Result<T, CoreError> {
+        struct Inflight<'a> {
+            ledger: &'a ProviderBudgetLedger,
+            bytes: u64,
+        }
+
+        impl Drop for Inflight<'_> {
+            fn drop(&mut self) {
+                let mut inner = self
+                    .ledger
+                    .inner
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                inner.inflight_http_requests = inner.inflight_http_requests.saturating_sub(1);
+                inner.inflight_http_bytes = inner.inflight_http_bytes.saturating_sub(self.bytes);
+            }
+        }
+
+        if retry_index > self.budget.retry_attempts_cap {
+            return Err(Self::exhausted("retry cap"));
+        }
+        let mut inner = self.inner.lock().map_err(|err| {
+            CoreError::Storage(format!(
+                "semantic admission: provider budget ledger lock poisoned: {err}"
+            ))
+        })?;
+        let requests = inner
+            .inflight_http_requests
+            .checked_add(1)
+            .filter(|&requests| requests <= self.budget.inflight_requests_cap)
+            .ok_or_else(|| Self::exhausted("HTTP inflight request cap"))?;
+        let bytes = inner
+            .inflight_http_bytes
+            .checked_add(input_bytes)
+            .filter(|&bytes| bytes <= self.budget.inflight_bytes_cap)
+            .ok_or_else(|| Self::exhausted("HTTP inflight byte cap"))?;
+        let spent = inner
+            .snapshot
+            .spent_cost_micros
+            .checked_add(cost_micros.get())
+            .ok_or_else(|| Self::overflow("spent cost accounting"))?;
+        let committed = spent
+            .checked_add(inner.snapshot.reserved_cost_micros)
+            .ok_or_else(|| Self::overflow("cost accounting"))?;
+        if committed > self.budget.total_cost_micros_ceiling {
+            return Err(Self::exhausted("cost cap"));
+        }
+        inner.inflight_http_requests = requests;
+        inner.inflight_http_bytes = bytes;
+        inner.snapshot.spent_cost_micros = spent;
+        drop(inner);
+        let _inflight = Inflight {
+            ledger: self,
+            bytes: input_bytes,
+        };
+        Ok(send())
     }
 
     /// Reserve one admitted request's work (S21-08 step 4).
@@ -791,6 +865,34 @@ mod tests {
             observed_dimension: 64,
             correlation: None,
         }
+    }
+
+    #[test]
+    fn http_admission_holds_slots_and_bytes_and_keeps_committed_spend() {
+        let ledger = ProviderBudgetLedger::new(ProviderWorkBudgetV1 {
+            inflight_requests_cap: 2,
+            inflight_bytes_cap: 8,
+            total_cost_micros_ceiling: 6,
+            retry_attempts_cap: 1,
+        })
+        .expect("valid budget");
+        let quote = NonZeroU64::new(2).expect("positive quote");
+        assert!(ledger.with_http_attempt(1, 2, quote, || {}).is_err());
+        assert!(ledger.with_http_attempt(9, 0, quote, || {}).is_err());
+        ledger
+            .with_http_attempt(7, 0, quote, || {
+                assert!(ledger.with_http_attempt(2, 0, quote, || {}).is_err());
+                ledger
+                    .with_http_attempt(1, 0, quote, || {
+                        assert!(ledger.with_http_attempt(0, 0, quote, || {}).is_err());
+                        assert_eq!(ledger.snapshot().expect("counters").spent_cost_micros, 4);
+                    })
+                    .expect("query");
+            })
+            .expect("Source");
+        ledger.with_http_attempt(7, 1, quote, || {}).expect("retry");
+        assert!(ledger.with_http_attempt(1, 0, quote, || {}).is_err());
+        assert_eq!(ledger.snapshot().expect("counters").spent_cost_micros, 6);
     }
 
     #[expect(

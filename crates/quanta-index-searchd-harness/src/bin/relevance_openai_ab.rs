@@ -1,29 +1,27 @@
 //! `relevance_openai_ab` — local OpenAI-vs-Hash semantic capture lane.
 //!
-//! Runs the semantic judged fixture twice: once on the deterministic `Hash`
-//! embedder and once on the env-resolved `OpenAI` profile, then writes the
-//! advisory artifacts under `artifacts/search-quality/relevance/openai-ab/`.
+//! Publishes and queries the semantic fixture through the SDK against two fresh
+//! processes of `QUANTA_INDEX_LEGACY_SEARCHD_BIN` pinned by
+//! `QUANTA_INDEX_LEGACY_SEARCHD_SHA256`. The `Hash` arm is deterministic and the
+//! `OpenAI` arm uses the env-resolved profile and the daemon's provider telemetry.
+//! Advisory artifacts default to `artifacts/search-quality/relevance/openai-ab/`.
 //! This is intentionally NOT a blocking CI rail: it is a local discriminative
 //! probe for paraphrase-quality deltas and provider request-shaping telemetry.
 
-use std::path::{Path, PathBuf};
+#[path = "common/artifact_out_dir.rs"]
+mod artifact_out_dir;
+
+use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Result as AnyResult;
+use quanta_index_searchd::app::SemanticEmbedderProfile;
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::relevance::corpus::SemanticIntentKind;
 use quanta_index_searchd_harness::relevance::report::{
-    OpenAiSemanticAbReport, openai_profile_from_env_for_relevance_ab,
+    OpenAiSemanticAbReport, describe_openai_ab_inputs, openai_profile_from_env_for_relevance_ab,
     run_openai_semantic_ab_report, write_openai_ab_artifacts,
 };
-
-fn parse_out_dir() -> PathBuf {
-    let mut args = std::env::args().skip(1);
-    match (args.next().as_deref(), args.next()) {
-        (Some("--out-dir"), Some(path)) => PathBuf::from(path),
-        _ => PathBuf::from("artifacts/search-quality/relevance/openai-ab/latest"),
-    }
-}
 
 fn intent_kind_label(kind: SemanticIntentKind) -> &'static str {
     match kind {
@@ -38,8 +36,8 @@ fn run(out_dir: &Path) -> AnyResult<OpenAiSemanticAbReport> {
     let host = HostV1::observe()?;
     let profile = openai_profile_from_env_for_relevance_ab()
         .map_err(|err| anyhow::anyhow!("invalid OpenAI profile env: {err:#}"))?;
-    let report = run_openai_semantic_ab_report(profile.clone())?;
-    write_openai_ab_artifacts(&report, &profile, out_dir, git_head, host)?;
+    let report = run_openai_semantic_ab_report(profile)?;
+    write_openai_ab_artifacts(&report, out_dir, git_head, host)?;
     Ok(report)
 }
 
@@ -49,7 +47,32 @@ fn run(out_dir: &Path) -> AnyResult<OpenAiSemanticAbReport> {
     reason = "local capture binary reports capture status on stdout/stderr by design"
 )]
 fn main() -> ExitCode {
-    let out_dir = parse_out_dir();
+    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if matches!(args.as_slice(), [arg] if arg == "--print-inputs") {
+        return match SemanticEmbedderProfile::openai_for_input_review_from_env()
+            .and_then(|profile| describe_openai_ab_inputs(&profile))
+        {
+            Ok(inputs) => {
+                println!("{inputs}");
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("relevance_openai_ab: {err:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    let out_dir = match artifact_out_dir::parse(
+        args,
+        "artifacts/search-quality/relevance/openai-ab/latest",
+    ) {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("relevance_openai_ab: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
     let report = match run(&out_dir) {
         Ok(report) => report,
         Err(err) => {

@@ -13,6 +13,7 @@ use std::io::Write;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
+    mpsc,
 };
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -26,6 +27,7 @@ const DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// One tracked attempt thread.
 struct TrackedAttempt {
+    sequence: u64,
     /// `pool-prefix + sequence`: names the work, never the payload.
     name: String,
     /// `None` once joined.
@@ -105,6 +107,14 @@ impl ProviderAttemptPool {
         prefix: &str,
         work: impl FnOnce() + Send + 'static,
     ) -> Result<(), CoreError> {
+        self.spawn_registered(prefix, work).map(|_| ())
+    }
+
+    fn spawn_registered(
+        &self,
+        prefix: &str,
+        work: impl FnOnce() + Send + 'static,
+    ) -> Result<u64, CoreError> {
         let mut live = self.inner.lock().map_err(|err| {
             CoreError::Storage(format!("provider attempt pool lock poisoned: {err}"))
         })?;
@@ -146,11 +156,12 @@ impl ProviderAttemptPool {
                 ))
             })?;
         live.attempts.push(TrackedAttempt {
+            sequence: seq,
             name,
             handle: Some(handle),
         });
         drop(live);
-        Ok(())
+        Ok(seq)
     }
 
     /// Spawn an admitted physical attempt. A bounded native lease stays with
@@ -167,6 +178,51 @@ impl ProviderAttemptPool {
             let _custody = custody;
             work();
         })
+    }
+
+    /// The result channel becomes ready only after work and physical custody
+    /// have been released. The caller joins this sequence before it serves
+    /// the result, so a sequential request can immediately reuse the slot.
+    pub(crate) fn spawn_tracked_result<T: Send + 'static>(
+        &self,
+        prefix: &str,
+        custody: Option<Box<dyn ProviderAttemptLeaseV1>>,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> Result<(u64, mpsc::Receiver<T>), CoreError> {
+        let (send, receive) = mpsc::channel();
+        let sequence = self.spawn_registered(prefix, move || {
+            let value = work();
+            drop(custody);
+            let _abandoned = send.send(value);
+        })?;
+        Ok((sequence, receive))
+    }
+
+    /// Called only after receiving the result, when the worker can no longer
+    /// block on transport or hold the custody lease. A concurrent drain or
+    /// scrape may already have joined it.
+    pub(crate) fn join_returned(&self, sequence: u64) -> Result<(), CoreError> {
+        let mut live = self.inner.lock().map_err(|err| {
+            CoreError::Storage(format!("provider attempt pool lock poisoned: {err}"))
+        })?;
+        if let Some(index) = live
+            .attempts
+            .iter()
+            .position(|item| item.sequence == sequence)
+        {
+            let attempt = live.attempts.swap_remove(index);
+            let handle = attempt.handle.ok_or_else(|| {
+                CoreError::InvalidContract("returned provider attempt lacks a join handle".into())
+            })?;
+            if handle.join().is_err() {
+                live.panicked.push(attempt.name);
+                return Err(CoreError::Storage(
+                    "provider attempt panicked after returning".into(),
+                ));
+            }
+        }
+        drop(live);
+        Ok(())
     }
 
     /// Attempts currently tracked (live plus finished-but-unreaped). For
@@ -381,6 +437,21 @@ mod tests {
     }
 
     #[test]
+    fn returned_results_release_custody_and_reopen_a_single_slot() {
+        let pool = ProviderAttemptPool::new(1).expect("valid pool");
+        let dropped = Arc::new(AtomicUsize::new(0));
+        for value in 1..=16 {
+            let (sequence, outcome) = pool
+                .spawn_tracked_result("query", Some(lease(&dropped)), move || value)
+                .expect("previous attempt freed the slot");
+            assert_eq!(outcome.recv().expect("attempt returned"), value);
+            assert_eq!(dropped.load(Ordering::SeqCst), value);
+            pool.join_returned(sequence).expect("join completed work");
+            assert_eq!(pool.live_attempts(), 0);
+        }
+    }
+
+    #[test]
     fn full_pool_refuses_and_reaps_on_completion() {
         let pool = Arc::new(ProviderAttemptPool::new(1).expect("valid pool"));
         let (done_tx, done_rx) = mpsc::channel::<()>();
@@ -484,6 +555,7 @@ mod tests {
             .expect("registry lock")
             .attempts
             .push(TrackedAttempt {
+                sequence: 0,
                 name: "torn".into(),
                 handle: None,
             });

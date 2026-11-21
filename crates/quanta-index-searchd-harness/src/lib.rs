@@ -8,6 +8,8 @@
 mod fixture_support;
 #[cfg(feature = "legacy-bench")]
 mod harness;
+#[cfg(unix)]
+pub mod legacy_reference;
 #[path = "harness/source_publication.rs"]
 mod source_publication;
 
@@ -26,7 +28,6 @@ pub mod native_index;
 pub mod offered_load;
 #[cfg(feature = "legacy-bench")]
 pub mod ops;
-#[cfg(feature = "legacy-bench")]
 pub mod relevance;
 #[cfg(feature = "legacy-bench")]
 pub mod scale;

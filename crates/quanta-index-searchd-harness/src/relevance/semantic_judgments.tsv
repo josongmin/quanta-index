@@ -1,0 +1,14 @@
+id	intent_kind	intent	query	on_topic_path	hard_negative_path
+sem.refresh_auth_token.exact	exact_token	locate the file that refreshes the auth token (exact-token query)	refresh auth token expires	auth/token_refresh.rs	util/string_pad.rs
+sem.evict_cache.paraphrase	paraphrase	find where stale in-memory entries are removed	remove stale entries from the in-memory store	cache/eviction.rs	db/migration.rs
+sem.retry_backoff.paraphrase	paraphrase	find where repeated attempts are spaced out after a failure	pause longer between repeated attempts when a call keeps failing	net/retry_backoff.rs	diag/flaky_report.rs
+sem.dedup.paraphrase	paraphrase	find where duplicate items are removed keeping the first	drop duplicate items keeping only the first occurrence	collections/unique.rs	resource/drop_guard.rs
+sem.rate_limit.paraphrase	paraphrase	find where excess calls are rejected against an allowance	reject calls that go over the permitted budget per second	net/throttle.rs	finance/cost_budget.rs
+sem.serialize.paraphrase	paraphrase	find where a value is converted to bytes for persistence	turn the record into bytes for writing to disk	codec/encode.rs	io/disk_writer.rs
+sem.pagination.paraphrase	paraphrase	find where the next page of results is fetched	load the following chunk of results after the current one	api/paginate.rs	diag/result_chunk.rs
+sem.graceful_shutdown.paraphrase	paraphrase	find where new work stops while in-flight work finishes	stop taking new work and let running jobs finish	runtime/graceful_drain.rs	scheduler/job_runner.rs
+sem.memoize.paraphrase	paraphrase	find where a costly computation result is cached	remember the output of a costly pure function call	compute/memoize.rs	docs/pure_functions.rs
+sem.pool_checkout.paraphrase	paraphrase	find where a free handle is leased from a pool	check out a spare worker connection that is not busy	db/pool_acquire.rs	concurrency/busy_wait.rs
+sem.sanitize.paraphrase	paraphrase	find where untrusted input is made safe before rendering	remove dangerous characters from user supplied text	security/sanitize.rs	text/trim_display.rs
+sem.debounce.paraphrase	paraphrase	find where a burst of triggers is coalesced until quiet	ignore rapid repeated triggers and act only once they settle	events/debounce.rs	ui/button_press.rs
+sem.backpressure.paraphrase	paraphrase	find where a fast producer is slowed for a slow consumer	slow the producer when the consumer cannot keep up	stream/backpressure.rs	perf/speedup.rs

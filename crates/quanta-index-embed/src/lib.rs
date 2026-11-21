@@ -31,6 +31,7 @@ pub use pool::{
     ProviderAttemptPool,
 };
 pub use telemetry::{
-    OpenAiEmbedStatsSnapshot, OpenAiEmbedTelemetrySource, OpenAiRequestSample,
-    REQUEST_SAMPLE_CAPACITY, reset_openai_embed_stats, snapshot_openai_embed_stats,
+    OpenAiEmbedRequestSampleTelemetrySource, OpenAiEmbedStatsSnapshot, OpenAiEmbedTelemetrySource,
+    OpenAiRequestSample, REQUEST_SAMPLE_CAPACITY, reset_openai_embed_stats,
+    snapshot_openai_embed_stats,
 };

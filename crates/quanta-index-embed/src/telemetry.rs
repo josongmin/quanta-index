@@ -9,7 +9,7 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use quanta_index_core::{CoreError, MetricPointV1, MetricSourcePort};
 
@@ -54,19 +54,31 @@ struct OpenAiEmbedStats {
     total_texts_observed: AtomicU64,
     cache_hits: AtomicU64,
     distinct_miss_texts: AtomicU64,
-    http_request_count: AtomicU64,
     retry_count: AtomicU64,
     retryable_status_count: AtomicU64,
     transport_error_count: AtomicU64,
-    max_request_texts: AtomicU64,
-    max_estimated_tokens: AtomicU64,
-    request_samples_dropped: AtomicU64,
-    request_samples: Mutex<VecDeque<OpenAiRequestSample>>,
+    requests: Mutex<RequestWindow>,
+}
+
+#[derive(Default)]
+struct RequestWindow {
+    http_request_count: u64,
+    max_request_texts: u64,
+    max_estimated_tokens: u64,
+    request_samples_dropped: u64,
+    samples: VecDeque<OpenAiRequestSample>,
 }
 
 fn stats() -> &'static OpenAiEmbedStats {
     static STATS: OnceLock<OpenAiEmbedStats> = OnceLock::new();
     STATS.get_or_init(OpenAiEmbedStats::default)
+}
+
+fn request_window(stats: &OpenAiEmbedStats) -> MutexGuard<'_, RequestWindow> {
+    match stats.requests.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 fn usize_to_u64(value: usize) -> u64 {
@@ -97,25 +109,18 @@ pub(crate) fn record_http_request(texts_submitted: usize, estimated_tokens: usiz
     let stats = stats();
     let texts_submitted = usize_to_u64(texts_submitted);
     let estimated_tokens = usize_to_u64(estimated_tokens);
-    let _previous: u64 = stats.http_request_count.fetch_add(1, Ordering::Relaxed);
-    let _previous: u64 = stats
-        .max_request_texts
-        .fetch_max(texts_submitted, Ordering::Relaxed);
-    let _previous: u64 = stats
-        .max_estimated_tokens
-        .fetch_max(estimated_tokens, Ordering::Relaxed);
-    if let Ok(mut guard) = stats.request_samples.lock() {
-        if guard.len() >= REQUEST_SAMPLE_CAPACITY {
-            let _oldest: Option<OpenAiRequestSample> = guard.pop_front();
-            let _previous: u64 = stats
-                .request_samples_dropped
-                .fetch_add(1, Ordering::Relaxed);
-        }
-        guard.push_back(OpenAiRequestSample {
-            texts_submitted,
-            estimated_tokens,
-        });
+    let mut window = request_window(stats);
+    window.http_request_count = window.http_request_count.saturating_add(1);
+    window.max_request_texts = window.max_request_texts.max(texts_submitted);
+    window.max_estimated_tokens = window.max_estimated_tokens.max(estimated_tokens);
+    if window.samples.len() >= REQUEST_SAMPLE_CAPACITY {
+        let _oldest: Option<OpenAiRequestSample> = window.samples.pop_front();
+        window.request_samples_dropped = window.request_samples_dropped.saturating_add(1);
     }
+    window.samples.push_back(OpenAiRequestSample {
+        texts_submitted,
+        estimated_tokens,
+    });
 }
 
 pub(crate) fn record_retry() {
@@ -137,23 +142,33 @@ pub(crate) fn record_transport_error() {
 #[must_use]
 pub fn snapshot_openai_embed_stats() -> OpenAiEmbedStatsSnapshot {
     let stats = stats();
-    let request_samples = match stats.request_samples.lock() {
-        Ok(guard) => guard.iter().cloned().collect(),
-        // A poisoned diagnostics lock cannot invalidate the atomic counters.
-        // Return an explicitly empty sample list instead of propagating stale data.
-        Err(_poisoned) => Vec::new(),
+    let (
+        http_request_count,
+        max_request_texts,
+        max_estimated_tokens,
+        request_samples_dropped,
+        request_samples,
+    ) = {
+        let window = request_window(stats);
+        (
+            window.http_request_count,
+            window.max_request_texts,
+            window.max_estimated_tokens,
+            window.request_samples_dropped,
+            window.samples.iter().cloned().collect(),
+        )
     };
     OpenAiEmbedStatsSnapshot {
         total_texts_observed: stats.total_texts_observed.load(Ordering::Relaxed),
         cache_hits: stats.cache_hits.load(Ordering::Relaxed),
         distinct_miss_texts: stats.distinct_miss_texts.load(Ordering::Relaxed),
-        http_request_count: stats.http_request_count.load(Ordering::Relaxed),
+        http_request_count,
         retry_count: stats.retry_count.load(Ordering::Relaxed),
         retryable_status_count: stats.retryable_status_count.load(Ordering::Relaxed),
         transport_error_count: stats.transport_error_count.load(Ordering::Relaxed),
-        max_request_texts: stats.max_request_texts.load(Ordering::Relaxed),
-        max_estimated_tokens: stats.max_estimated_tokens.load(Ordering::Relaxed),
-        request_samples_dropped: stats.request_samples_dropped.load(Ordering::Relaxed),
+        max_request_texts,
+        max_estimated_tokens,
+        request_samples_dropped,
         request_samples,
     }
 }
@@ -170,29 +185,83 @@ pub struct OpenAiEmbedTelemetrySource;
 impl MetricSourcePort for OpenAiEmbedTelemetrySource {
     fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
         let snapshot = snapshot_openai_embed_stats();
-        Ok(vec![
+        Ok(provider_metric_points(&snapshot))
+    }
+}
+
+fn provider_metric_points(snapshot: &OpenAiEmbedStatsSnapshot) -> Vec<MetricPointV1> {
+    vec![
+        MetricPointV1::counter(
+            "embed_provider_http_requests_total",
+            snapshot.http_request_count,
+        ),
+        MetricPointV1::counter("embed_provider_retries_total", snapshot.retry_count),
+        MetricPointV1::counter(
+            "embed_provider_http_failures_total",
+            snapshot.retryable_status_count,
+        ),
+        MetricPointV1::counter(
+            "embed_provider_transport_failures_total",
+            snapshot.transport_error_count,
+        ),
+        MetricPointV1::counter(
+            "embed_provider_texts_observed_total",
+            snapshot.total_texts_observed,
+        ),
+        MetricPointV1::counter(
+            "embed_provider_request_samples_dropped_total",
+            snapshot.request_samples_dropped,
+        ),
+    ]
+}
+
+/// Opt-in diagnostic points for a pinned OpenAI A/B daemon. The ordinary
+/// provider scrape stays constant-size; only this source emits the bounded
+/// request window. Maxima and totals retain the entire process lifetime.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OpenAiEmbedRequestSampleTelemetrySource;
+
+impl MetricSourcePort for OpenAiEmbedRequestSampleTelemetrySource {
+    fn scrape(&self) -> Result<Vec<MetricPointV1>, CoreError> {
+        let snapshot = snapshot_openai_embed_stats();
+        let capacity = u64::try_from(REQUEST_SAMPLE_CAPACITY).map_err(|_| {
+            CoreError::InvalidContract("request sample capacity exceeds u64".to_owned())
+        })?;
+        let mut points = provider_metric_points(&snapshot);
+        points.reserve(
+            snapshot
+                .request_samples
+                .len()
+                .saturating_mul(2)
+                .saturating_add(5),
+        );
+        points.extend([
+            MetricPointV1::counter("embed_provider_cache_hits_total", snapshot.cache_hits),
             MetricPointV1::counter(
-                "embed_provider_http_requests_total",
-                snapshot.http_request_count,
-            ),
-            MetricPointV1::counter("embed_provider_retries_total", snapshot.retry_count),
-            MetricPointV1::counter(
-                "embed_provider_http_failures_total",
-                snapshot.retryable_status_count,
+                "embed_provider_distinct_miss_texts_total",
+                snapshot.distinct_miss_texts,
             ),
             MetricPointV1::counter(
-                "embed_provider_transport_failures_total",
-                snapshot.transport_error_count,
+                "embed_provider_max_request_texts",
+                snapshot.max_request_texts,
             ),
             MetricPointV1::counter(
-                "embed_provider_texts_observed_total",
-                snapshot.total_texts_observed,
+                "embed_provider_max_estimated_tokens",
+                snapshot.max_estimated_tokens,
             ),
-            MetricPointV1::counter(
-                "embed_provider_request_samples_dropped_total",
-                snapshot.request_samples_dropped,
-            ),
-        ])
+            MetricPointV1::gauge_count("embed_provider_request_samples_capacity", capacity),
+        ]);
+        for (slot, sample) in snapshot.request_samples.iter().enumerate() {
+            points.push(MetricPointV1::gauge_count(
+                format!("embed_provider_request_sample_{slot}_texts_submitted"),
+                sample.texts_submitted,
+            ));
+            points.push(MetricPointV1::gauge_count(
+                format!("embed_provider_request_sample_{slot}_estimated_tokens"),
+                sample.estimated_tokens,
+            ));
+        }
+        Ok(points)
     }
 }
 
@@ -201,16 +270,10 @@ pub fn reset_openai_embed_stats() {
     stats.total_texts_observed.store(0, Ordering::Relaxed);
     stats.cache_hits.store(0, Ordering::Relaxed);
     stats.distinct_miss_texts.store(0, Ordering::Relaxed);
-    stats.http_request_count.store(0, Ordering::Relaxed);
     stats.retry_count.store(0, Ordering::Relaxed);
     stats.retryable_status_count.store(0, Ordering::Relaxed);
     stats.transport_error_count.store(0, Ordering::Relaxed);
-    stats.max_request_texts.store(0, Ordering::Relaxed);
-    stats.max_estimated_tokens.store(0, Ordering::Relaxed);
-    stats.request_samples_dropped.store(0, Ordering::Relaxed);
-    if let Ok(mut guard) = stats.request_samples.lock() {
-        guard.clear();
-    }
+    *request_window(stats) = RequestWindow::default();
 }
 
 #[cfg(test)]
@@ -259,6 +322,79 @@ mod tests {
                 .all(|point| quanta_index_contract::is_metric_name_v1(&point.name)),
             "every name is wire-valid"
         );
+    }
+
+    #[test]
+    fn opt_in_request_sample_source_exports_a_bounded_dense_window() {
+        record_http_request(3, 9);
+        let points = OpenAiEmbedRequestSampleTelemetrySource
+            .scrape()
+            .expect("request sample scrape");
+        assert_eq!(
+            points.len(),
+            points
+                .iter()
+                .filter(|point| point.name.ends_with("_texts_submitted"))
+                .count()
+                .saturating_mul(2)
+                .saturating_add(11)
+        );
+        let sample_count = points
+            .iter()
+            .filter(|point| point.name.ends_with("_texts_submitted"))
+            .count();
+        assert!((1..=REQUEST_SAMPLE_CAPACITY).contains(&sample_count));
+        assert!(points.iter().any(|point| {
+            point.name == "embed_provider_request_samples_capacity"
+                && point.value == MetricValueV1::Gauge(256.0)
+        }));
+        for slot in 0..sample_count {
+            for suffix in ["texts_submitted", "estimated_tokens"] {
+                assert!(points.iter().any(|point| {
+                    point.name == format!("embed_provider_request_sample_{slot}_{suffix}")
+                }));
+            }
+        }
+        for name in [
+            "embed_provider_cache_hits_total",
+            "embed_provider_distinct_miss_texts_total",
+            "embed_provider_max_request_texts",
+            "embed_provider_max_estimated_tokens",
+        ] {
+            let _value = counter(&points, name);
+        }
+        assert!(
+            points
+                .iter()
+                .all(|point| quanta_index_contract::is_metric_name_v1(&point.name))
+        );
+    }
+
+    #[test]
+    fn request_snapshot_is_coherent_during_concurrent_recording() {
+        std::thread::scope(|scope| {
+            for _worker in 0..2 {
+                let _thread = scope.spawn(|| {
+                    for _request in 0..512 {
+                        record_http_request(3, 9);
+                    }
+                });
+            }
+            for _snapshot in 0..512 {
+                let snapshot = snapshot_openai_embed_stats();
+                assert_eq!(
+                    snapshot.http_request_count,
+                    snapshot.request_samples_dropped.saturating_add(
+                        u64::try_from(snapshot.request_samples.len()).expect("bounded window")
+                    )
+                );
+                assert!(snapshot.request_samples.len() <= REQUEST_SAMPLE_CAPACITY);
+                assert!(snapshot.request_samples.iter().all(|sample| {
+                    sample.texts_submitted <= snapshot.max_request_texts
+                        && sample.estimated_tokens <= snapshot.max_estimated_tokens
+                }));
+            }
+        });
     }
 
     /// The sample window never grows past its capacity, the maxima stay

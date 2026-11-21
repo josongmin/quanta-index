@@ -96,6 +96,61 @@ Options: `--criterion-samples` (default 100), `--criterion-warmup` (3 seconds),
 `--producer-timeout`. At least ten samples are required. Use fresh outputs;
 interrupted or incomplete captures cannot be validated as complete profiles.
 
+## Archived OpenAI A/B diagnostic
+
+Use the reviewed A/B executable, its build receipt, and the matching clean
+source checkout. `benchctl.py capture-frozen-openai-ab` requires `--runner`,
+`--runner-sha256` with a `sha256:` prefix, `--source-checkout`, `--source-head`,
+and a fresh absolute `--out` directory outside that checkout. It runs on Linux
+and macOS with atomic no-replacement rename support on the output filesystem.
+The command publishes `summary.json`, `cases.json`, and `provider-stats.json`
+together after validation. A path created concurrently stays intact and the
+capture fails. Successful capture prints the sidecar digests and the source
+and runner identity.
+
+For the external-daemon runner, set `QUANTA_INDEX_LEGACY_SEARCHD_BIN` to the
+approved absolute executable path and `QUANTA_INDEX_LEGACY_SEARCHD_SHA256` to its
+64-character lowercase digest. Set `QUANTA_INDEX_PROVIDER_ENDPOINT` to
+`https://api.openai.com/v1/embeddings` and set
+`QUANTA_INDEX_PROVIDER_OPENAI_MAX_REQUEST_COST_MICROS` to the approved
+worst-case charge for one request under the selected model and input limits,
+including oversized single inputs. Set
+`QUANTA_INDEX_PROVIDER_COST_CEILING_MICROS` to the approved total in the
+same units. The daemon debits
+that bound before each outbound attempt, including retries and attempts whose
+outcome is ambiguous. Source and query HTTP attempts share the process cost,
+concurrency, and input-byte limits.
+
+With the intended provider environment set, run the reviewed executable as
+`QUANTA_INDEX_EMBEDDER=openai /absolute/path/to/relevance_openai_ab --print-inputs`.
+This prints the resolved configuration including defaults, its digest, and the
+exact Source batch digest without launching either daemon or calling OpenAI.
+After review, set `QUANTA_INDEX_OPENAI_AB_APPROVED_INPUT_DIGEST` to the printed
+`approval_digest`. The capture runs a credential-free `--print-inputs` on the
+pinned runner and independently checks its config and Source digest before
+starting the paid run. The capture also requires the committed
+`semantic_judgments.tsv` and an approved daemon pin. The runner checks the
+same approval before starting either arm, and the capture checks it again
+against the completed results.
+
+The runner checks the daemon's installed limits before publishing Source. The
+capture verifies the executable bytes, the two activation roots, query-phase
+provider observations, the supplied provider settings and grant, and the cases
+from the approved checkout.
+
+For preserved results, use
+`benchctl.py validate-frozen-openai-ab --capture DIR --source-checkout CHECKOUT --source-head HEAD`.
+Supply the original non-secret provider grant settings. Historical in-process
+captures use their original Rust judgment roster. Results from the current
+runner also require their daemon SHA-256 and input approval digest. Validation
+reads the three sidecars and prints their digests. It requires neither an API
+key nor an executable.
+
+`just rust-capture-quality-relevance-openai-ab RUNNER SHA SOURCE_CHECKOUT
+SOURCE_HEAD OUT` calls the same capture command. The former `benchctl run
+semantic-ab` profile is retired. Review preserved outputs through the archived
+capture contract and retain their original source revision.
+
 ## Retrieval correctness proof
 
 During edits:
