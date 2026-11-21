@@ -829,7 +829,7 @@ mod tests {
 
         args.push("--settle-published-only".into());
         ensure!(SearchdCommand::from_args(args.clone()).is_err());
-        args.pop();
+        ensure!(args.pop().as_deref() == Some("--settle-published-only"));
         args.push("true".into());
         ensure!(SearchdCommand::from_args(args).is_err());
         ensure!(

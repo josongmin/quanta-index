@@ -3332,6 +3332,18 @@ fn connect_before_deadline(socket_path: &Path, deadline: Instant) -> std::io::Re
     Ok(stream)
 }
 
+/// Probe a filesystem socket without waiting for a pending connection.
+/// A successful probe retains the connected stream for kernel peer checks.
+#[doc(hidden)]
+pub fn connect_unix_probe(socket_path: &Path) -> std::io::Result<UnixStream> {
+    let endpoint = SocketEndpoint::new(socket_path)?;
+    let address = SocketAddrUnix::new(endpoint.address.as_ref()).map_err(std::io::Error::from)?;
+    let socket = create_connect_socket()?;
+    connect(&socket, &address).map_err(std::io::Error::from)?;
+    endpoint.require_current()?;
+    Ok(UnixStream::from(socket))
+}
+
 fn check_stream_budget(budget: &RequestBudgetV1) -> std::io::Result<()> {
     if budget.is_cancelled() {
         // `read_exact` retries Interrupted indefinitely. Other must escape

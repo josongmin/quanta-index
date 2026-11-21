@@ -87,6 +87,8 @@ pub use server::{
     send_request_with_budget_bound_peer_v1,
     send_stream_request,
 };
+#[doc(hidden)]
+pub use server::connect_unix_probe;
 pub use socket_access::{
     GROUP_DIRECTORY_MODE, GROUP_SOCKET_MODE, PRIVATE_DIRECTORY_MODE, PRIVATE_SOCKET_MODE,
     PeerCredentials, PeerRefusal, SharedSocketAccess, SocketAccessPolicy, WORLD_DIRECTORY_MODE,
