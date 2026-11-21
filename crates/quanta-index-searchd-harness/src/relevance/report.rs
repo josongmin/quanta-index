@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 use crate::artifact::{
     BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
     PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest, corpus_digest,
-    model_revision_of, saturating_u64,
+    framed_digest, model_revision_of, saturating_u64,
 };
 use crate::legacy_reference::RelevanceProviderInputs;
 #[path = "process.rs"]
@@ -520,6 +520,7 @@ struct OpenAiAbInputs {
     runner_config: Value,
     fixture: process::OpenAiAbFixture,
     config_digest: String,
+    judgments_digest: String,
     approval_digest: String,
 }
 
@@ -585,23 +586,55 @@ fn prepare_openai_ab_inputs(openai_profile: &SemanticEmbedderProfile) -> AnyResu
     )?;
     let fixture = process::OpenAiAbFixture::prepare()?;
     let config_digest = openai_ab_config_digest(&runner_config);
-    let approval_digest = openai_ab_input_digest(&config_digest, &fixture.source_batch_digest());
+    let judgments_digest = openai_ab_judgments_digest();
+    let approval_digest = openai_ab_input_digest(
+        &config_digest,
+        &fixture.source_batch_digest(),
+        &judgments_digest,
+    );
     Ok(OpenAiAbInputs {
         hash_profile,
         provider: openai_inputs,
         runner_config,
         fixture,
         config_digest,
+        judgments_digest,
         approval_digest,
     })
 }
 
-fn openai_ab_input_digest(config_digest_value: &str, source_batch_digest: &str) -> String {
+fn openai_ab_judgments_digest() -> String {
+    let parts = SEMANTIC_JUDGED_QUERIES
+        .iter()
+        .flat_map(|case| {
+            [
+                case.id,
+                semantic_intent_kind_label(case.intent_kind),
+                case.intent,
+                case.query,
+                case.on_topic_path,
+                case.hard_negative_path,
+            ]
+        })
+        .map(str::as_bytes)
+        .collect::<Vec<_>>();
+    framed_digest(
+        "quanta-index:bench:relevance-openai-ab:judgments:v1",
+        &parts,
+    )
+}
+
+fn openai_ab_input_digest(
+    config_digest_value: &str,
+    source_batch_digest: &str,
+    judgments_digest: &str,
+) -> String {
     config_digest(
         "relevance-openai-ab-inputs",
         &[
             ("config_digest", config_digest_value.to_owned()),
             ("source_batch_digest", source_batch_digest.to_owned()),
+            ("judgments_digest", judgments_digest.to_owned()),
         ],
     )
 }
@@ -613,6 +646,7 @@ pub fn describe_openai_ab_inputs(openai_profile: &SemanticEmbedderProfile) -> An
         "runner_config": inputs.runner_config,
         "config_digest": inputs.config_digest,
         "source_batch_digest": inputs.fixture.source_batch_digest(),
+        "judgments_digest": inputs.judgments_digest,
         "approval_digest": inputs.approval_digest,
     }))
 }
@@ -624,7 +658,7 @@ pub fn run_openai_semantic_ab_report(
     anyhow::ensure!(
         std::env::var(APPROVED_AB_INPUT_DIGEST_ENV).as_deref()
             == Ok(inputs.approval_digest.as_str()),
-        "OpenAI A/B requires {APPROVED_AB_INPUT_DIGEST_ENV} matching the reviewed config and Source batch"
+        "OpenAI A/B requires {APPROVED_AB_INPUT_DIGEST_ENV} matching the reviewed config, Source batch and judgments"
     );
     let model_revision = model_revision_of(&openai_profile)
         .ok_or_else(|| anyhow::anyhow!("OpenAI A/B requires a model revision"))?;
@@ -1231,9 +1265,14 @@ pub fn write_openai_ab_artifacts(
     git_head: GitHeadV1,
     host: HostV1,
 ) -> AnyResult<()> {
-    openai_ab_artifact(report, git_head, host)?.write_to(&dir.join("summary.json"))?;
-    crate::artifact::write_json_pretty(&dir.join("cases.json"), &openai_ab_cases_json(report))?;
-    crate::artifact::write_json_pretty(
+    use crate::artifact::write_json_pretty_noclobber;
+
+    write_json_pretty_noclobber(
+        &dir.join("summary.json"),
+        &openai_ab_artifact(report, git_head, host)?,
+    )?;
+    write_json_pretty_noclobber(&dir.join("cases.json"), &openai_ab_cases_json(report))?;
+    write_json_pretty_noclobber(
         &dir.join("provider-stats.json"),
         &openai_provider_stats_json(&report.provider_stats),
     )?;
@@ -1317,9 +1356,10 @@ mod tests {
     fn openai_ab_approval_digest_matches_capture_contract() {
         let config = format!("sha256:{}", "1".repeat(64));
         let source = format!("sha256:{}", "2".repeat(64));
+        let judgments = format!("sha256:{}", "3".repeat(64));
         assert_eq!(
-            openai_ab_input_digest(&config, &source),
-            "sha256:131d1a8eee55106c2d9648bac9bda939affdbe5b57a0c691adb45bad662e94a8"
+            openai_ab_input_digest(&config, &source, &judgments),
+            "sha256:c4e075295756e5653886b25e2ef802fd9628cd4c0a878bf08f80776fdcdd1d82"
         );
     }
 

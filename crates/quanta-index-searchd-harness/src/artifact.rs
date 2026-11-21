@@ -847,14 +847,13 @@ pub(crate) fn write_json_pretty(path: &Path, value: &serde_json::Value) -> anyho
     Ok(())
 }
 
-/// Publish a complete JSON refusal at a new path without replacing a prior
-/// receipt.
+/// Publish complete JSON at a new path without replacing the existing entry.
 ///
 /// The sibling temporary file stays on the same filesystem; `persist_noclobber`
 /// uses an atomic no-replace publication step.
 pub(crate) fn write_json_pretty_noclobber(
     path: &Path,
-    value: &serde_json::Value,
+    value: &impl serde::Serialize,
 ) -> anyhow::Result<()> {
     let parent = path
         .parent()

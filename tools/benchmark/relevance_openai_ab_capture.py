@@ -19,7 +19,7 @@ import stat
 import subprocess
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import ModuleType
@@ -162,16 +162,29 @@ def _source_cases(checkout: Path, head: str) -> tuple[list[dict[str, str]], bool
     return cases, uses_tsv
 
 
-def _framed_config_digest(dimension: str, entries: Mapping[str, str]) -> str:
+def _framed_digest(domain: str, parts: Iterable[bytes]) -> str:
     digest = hashlib.sha256()
-    digest.update(f"quanta-index:bench:{dimension}:config:v1".encode())
+    digest.update(domain.encode())
     digest.update(b"\0")
-    for key, value in sorted(entries.items()):
-        raw = f"{key}={value}".encode()
+    for raw in parts:
         digest.update(str(len(raw)).encode())
         digest.update(b"\0")
         digest.update(raw)
     return "sha256:" + digest.hexdigest()
+
+
+def _framed_config_digest(dimension: str, entries: Mapping[str, str]) -> str:
+    return _framed_digest(
+        f"quanta-index:bench:{dimension}:config:v1",
+        (f"{key}={value}".encode() for key, value in sorted(entries.items())),
+    )
+
+
+def _judgments_digest(cases: list[dict[str, str]]) -> str:
+    return _framed_digest(
+        "quanta-index:bench:relevance-openai-ab:judgments:v1",
+        (case[column].encode("utf-8") for case in cases for column in _JUDGED_COLUMNS),
+    )
 
 
 def _config_digest(runner_config: dict[str, Any]) -> str:
@@ -187,11 +200,13 @@ def _config_digest(runner_config: dict[str, Any]) -> str:
     )
 
 
-def _approved_input_digest(config_digest: str, source_batch_digest: str) -> str:
-    return _framed_config_digest(
-        "relevance-openai-ab-inputs",
-        {"config_digest": config_digest, "source_batch_digest": source_batch_digest},
-    )
+def _approved_input_digest(
+    config_digest: str, source_batch_digest: str, judgments_digest: str | None
+) -> str:
+    entries = {"config_digest": config_digest, "source_batch_digest": source_batch_digest}
+    if judgments_digest is not None:
+        entries["judgments_digest"] = judgments_digest
+    return _framed_config_digest("relevance-openai-ab-inputs", entries)
 
 
 def _configured_bool(name: str, raw: str) -> bool:
@@ -863,6 +878,7 @@ def validate_capture(
     expected_cases: list[dict[str, str]],
     approved_env: Mapping[str, str],
     expected_legacy_daemon_sha256: str | None = None,
+    allow_archived_input_digest: bool = False,
 ) -> dict[str, RawFile]:
     """Validate one complete original A/B output set without synthesizing metrics."""
     _require(
@@ -928,10 +944,16 @@ def validate_capture(
             stats,
             runner_config,
         )
+        source_digest = detail["source_evidence"]["source_batch_digest"]
+        permitted_digests = {
+            _approved_input_digest(config_digest, source_digest, _judgments_digest(expected_cases))
+        }
+        if allow_archived_input_digest:
+            # Preserved captures checked the exact cases from the pinned checkout.
+            permitted_digests.add(_approved_input_digest(config_digest, source_digest, None))
         _require(
-            _approved_input_digest(config_digest, detail["source_evidence"]["source_batch_digest"])
-            == approved_input_digest,
-            "Source batch or runner config differs from the approved input digest",
+            approved_input_digest in permitted_digests,
+            "Source batch, judgments or runner config differs from the approved input digest",
         )
     _validate_cases(cases, summary, expected_cases)
     return files
@@ -968,13 +990,19 @@ def validate_frozen_ab(
         expected_cases=expected_cases,
         approved_env=env,
         expected_legacy_daemon_sha256=daemon_sha256,
+        allow_archived_input_digest=True,
     )
     require_frozen_source(checkout, source_head)
     return captured
 
 
 def _verify_runner_inputs(
-    runner: Path, checkout: Path, env: dict[str, str], timeout: int, log_dir: Path
+    runner: Path,
+    checkout: Path,
+    env: dict[str, str],
+    timeout: int,
+    log_dir: Path,
+    judgments_digest: str,
 ) -> None:
     preview_env = dict(env)
     preview_env.pop("OPENAI_API_KEY", None)
@@ -994,7 +1022,13 @@ def _verify_runner_inputs(
     _require(
         isinstance(inputs, dict)
         and set(inputs)
-        == {"runner_config", "config_digest", "source_batch_digest", "approval_digest"},
+        == {
+            "runner_config",
+            "config_digest",
+            "source_batch_digest",
+            "judgments_digest",
+            "approval_digest",
+        },
         "runner preview shape differs",
     )
     config = inputs["runner_config"]
@@ -1005,7 +1039,11 @@ def _verify_runner_inputs(
     _require(inputs["config_digest"] == config_digest, "runner preview config digest differs")
     _require(is_digest(source_digest), "runner preview Source batch digest is invalid")
     _require(
-        _approved_input_digest(config_digest, source_digest)
+        inputs["judgments_digest"] == judgments_digest,
+        "runner preview judgments differ from the approved checkout",
+    )
+    _require(
+        _approved_input_digest(config_digest, source_digest, judgments_digest)
         == inputs["approval_digest"]
         == env[APPROVED_AB_INPUT_DIGEST],
         "runner preview differs from the approved input digest",
@@ -1141,14 +1179,16 @@ def capture_detached_ab(
         empty = scratch / "empty"
         empty.mkdir()
         # Check the destination filesystem's exclusive rename support before the paid run.
-        _publish_create_only(empty, stage, final.parent)
+        _publish_create_only(empty, scratch / "publish-probe", final.parent)
         preview_logs = scratch / "preview-logs"
         logs = scratch / "logs"
         preview_logs.mkdir()
         logs.mkdir()
         require_frozen_source(checkout, source_head)
         preview_start = time.monotonic()
-        _verify_runner_inputs(private_runner, checkout, env, timeout, preview_logs)
+        _verify_runner_inputs(
+            private_runner, checkout, env, timeout, preview_logs, _judgments_digest(expected_cases)
+        )
         require_frozen_source(checkout, source_head)
         _require(RawFile.capture(runner_binary) == original, "runner changed before execution")
         _require(

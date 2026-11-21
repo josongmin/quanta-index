@@ -26,6 +26,7 @@ from relevance_openai_ab_capture import (  # noqa: E402
     OPENAI_REQUEST_COST,
     _approved_input_digest,
     _config_digest,
+    _judgments_digest,
     _source_cases,
     capture_detached_ab,
     validate_capture,
@@ -275,6 +276,7 @@ def _fake_runner(root: Path, fixture_dir: Path, marker: Path, *, partial: bool =
         f"pathlib.Path({str(marker)!r}).write_text(sys.argv[0])\n"
         "assert len(sys.argv) == 3 and sys.argv[1] == '--out-dir'\n"
         "output = pathlib.Path(sys.argv[2])\n"
+        "output.mkdir()\n"
         f"source = pathlib.Path({str(fixture_dir)!r})\n"
         "for name in ('summary.json', 'cases.json', 'provider-stats.json'):\n"
         + ("    if name == 'provider-stats.json': break\n" if partial else "")
@@ -393,7 +395,9 @@ def _write_reviewed_inputs(
     options: dict, config: dict, source_batch_digest: str, root: Path
 ) -> None:
     config_digest = _config_digest(config)
-    approval_digest = _approved_input_digest(config_digest, source_batch_digest)
+    cases, _ = _source_cases(options["source_checkout"], options["source_head"])
+    judgments_digest = _judgments_digest(cases)
+    approval_digest = _approved_input_digest(config_digest, source_batch_digest, judgments_digest)
     options["env"][APPROVED_AB_INPUT_DIGEST] = approval_digest
     (root / "preview.json").write_text(
         json.dumps(
@@ -401,6 +405,7 @@ def _write_reviewed_inputs(
                 "runner_config": config,
                 "config_digest": config_digest,
                 "source_batch_digest": source_batch_digest,
+                "judgments_digest": judgments_digest,
                 "approval_digest": approval_digest,
             }
         )
@@ -617,6 +622,40 @@ def test_detached_ab_refuses_a_self_consistent_unapproved_preview(tmp_path: Path
     assert not options["out_dir"].exists()
 
 
+def test_detached_ab_refuses_different_query_before_paid_dispatch(tmp_path: Path) -> None:
+    options, _, marker, _, _ = _prepared_capture(tmp_path)
+    approved_cases, _ = _source_cases(options["source_checkout"], options["source_head"])
+    approved_cases[0]["query"] = "different synthetic query"
+    preview_path = tmp_path / "preview.json"
+    preview = json.loads(preview_path.read_text())
+    preview["judgments_digest"] = _judgments_digest(approved_cases)
+    preview["approval_digest"] = _approved_input_digest(
+        preview["config_digest"], preview["source_batch_digest"], preview["judgments_digest"]
+    )
+    options["env"][APPROVED_AB_INPUT_DIGEST] = preview["approval_digest"]
+    preview_path.write_text(json.dumps(preview))
+
+    with pytest.raises(EvidenceError, match="preview judgments differ from the approved checkout"):
+        capture_detached_ab(**options)
+    assert not marker.exists()
+    assert not options["out_dir"].exists()
+
+
+def test_frozen_external_ab_accepts_previous_approval_only_when_reading_results(
+    tmp_path: Path,
+) -> None:
+    options, fixture, marker, _, _ = _prepared_capture(tmp_path)
+    preview = json.loads((tmp_path / "preview.json").read_text())
+    options["env"][APPROVED_AB_INPUT_DIGEST] = _approved_input_digest(
+        preview["config_digest"], preview["source_batch_digest"], None
+    )
+    assert len(_validate_preserved(options, fixture)) == 3
+    with pytest.raises(EvidenceError, match="preview differs from the approved input digest"):
+        capture_detached_ab(**options)
+    assert not marker.exists()
+    assert not options["out_dir"].exists()
+
+
 @pytest.mark.parametrize("collision", ["empty-directory", "file", "symlink"])
 def test_detached_ab_never_replaces_a_concurrently_created_output(
     tmp_path: Path, monkeypatch, collision: str
@@ -688,8 +727,8 @@ def test_detached_ab_requires_input_approval_before_launch(tmp_path: Path, appro
 
 def test_approved_input_digest_matches_rust_contract() -> None:
     assert (
-        _approved_input_digest("sha256:" + "1" * 64, "sha256:" + "2" * 64)
-        == "sha256:131d1a8eee55106c2d9648bac9bda939affdbe5b57a0c691adb45bad662e94a8"
+        _approved_input_digest("sha256:" + "1" * 64, "sha256:" + "2" * 64, "sha256:" + "3" * 64)
+        == "sha256:c4e075295756e5653886b25e2ef802fd9628cd4c0a878bf08f80776fdcdd1d82"
     )
 
 

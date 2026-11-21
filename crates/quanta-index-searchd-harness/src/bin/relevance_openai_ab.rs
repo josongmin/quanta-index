@@ -4,7 +4,8 @@
 //! processes of `QUANTA_INDEX_LEGACY_SEARCHD_BIN` pinned by
 //! `QUANTA_INDEX_LEGACY_SEARCHD_SHA256`. The `Hash` arm is deterministic and the
 //! `OpenAI` arm uses the env-resolved profile and the daemon's provider telemetry.
-//! Advisory artifacts default to `artifacts/search-quality/relevance/openai-ab/`.
+//! Writes raw sidecars into a new staging directory. The capture adapter
+//! validates and publishes the three files together.
 //! This is intentionally NOT a blocking CI rail: it is a local discriminative
 //! probe for paraphrase-quality deltas and provider request-shaping telemetry.
 
@@ -14,7 +15,7 @@ mod artifact_out_dir;
 use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::Result as AnyResult;
+use anyhow::{Context as _, Result as AnyResult};
 use quanta_index_searchd::app::SemanticEmbedderProfile;
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::relevance::corpus::SemanticIntentKind;
@@ -36,9 +37,49 @@ fn run(out_dir: &Path) -> AnyResult<OpenAiSemanticAbReport> {
     let host = HostV1::observe()?;
     let profile = openai_profile_from_env_for_relevance_ab()
         .map_err(|err| anyhow::anyhow!("invalid OpenAI profile env: {err:#}"))?;
+    create_staging_directory(out_dir)?;
     let report = run_openai_semantic_ab_report(profile)?;
     write_openai_ab_artifacts(&report, out_dir, git_head, host)?;
     Ok(report)
+}
+
+fn create_staging_directory(out_dir: &Path) -> AnyResult<()> {
+    if let Some(parent) = out_dir.parent().filter(|path| !path.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::create_dir(out_dir).with_context(|| {
+        format!(
+            "OpenAI A/B requires a fresh staging directory: {}",
+            out_dir.display()
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openai_ab_refuses_existing_staging_directory() -> AnyResult<()> {
+        let root = tempfile::tempdir()?;
+        let stage = root.path().join("parent").join("capture");
+        create_staging_directory(&stage)?;
+        anyhow::ensure!(
+            create_staging_directory(&stage).is_err(),
+            "an existing empty stage accepted a second producer"
+        );
+        let summary = stage.join("summary.json");
+        std::fs::write(&summary, b"previous capture")?;
+        anyhow::ensure!(
+            create_staging_directory(&stage).is_err(),
+            "an existing populated stage accepted a second producer"
+        );
+        anyhow::ensure!(
+            std::fs::read(summary)? == b"previous capture",
+            "the original capture changed"
+        );
+        Ok(())
+    }
 }
 
 #[expect(

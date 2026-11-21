@@ -123,15 +123,18 @@ concurrency, and input-byte limits.
 
 With the intended provider environment set, run the reviewed executable as
 `QUANTA_INDEX_EMBEDDER=openai /absolute/path/to/relevance_openai_ab --print-inputs`.
-This prints the resolved configuration including defaults, its digest, and the
-exact Source batch digest without launching either daemon or calling OpenAI.
+This prints the resolved configuration including defaults and the digests of
+that configuration, the exact Source batch, and the compiled judgment roster.
+It runs without launching either daemon or calling OpenAI.
 After review, set `QUANTA_INDEX_OPENAI_AB_APPROVED_INPUT_DIGEST` to the printed
 `approval_digest`. The capture runs a credential-free `--print-inputs` on the
-pinned runner and independently checks its config and Source digest before
-starting the paid run. The capture also requires the committed
-`semantic_judgments.tsv` and an approved daemon pin. The runner checks the
-same approval before starting either arm, and the capture checks it again
-against the completed results.
+pinned runner and compares the compiled judgments with the committed
+`semantic_judgments.tsv` before starting the paid run. Settings, Source and
+judgments are bound by the same approval digest. The adapter validates this
+digest before giving the runner its credential and before publishing results.
+The runner acquires a new staging directory before starting either arm and
+writes sidecars with exclusive creation. The adapter publishes them together
+after validation.
 
 The runner checks the daemon's installed limits before publishing Source. The
 capture verifies the executable bytes, the two activation roots, query-phase
@@ -141,8 +144,10 @@ from the approved checkout.
 For preserved results, use
 `benchctl.py validate-frozen-openai-ab --capture DIR --source-checkout CHECKOUT --source-head HEAD`.
 Supply the original non-secret provider grant settings. Historical in-process
-captures use their original Rust judgment roster. Results from the current
-runner also require their daemon SHA-256 and input approval digest. Validation
+captures use their original Rust judgment roster. External-daemon captures
+also require their daemon SHA-256 and original input approval digest. Archived
+external-daemon results can be checked with the original approval format.
+Validation
 reads the three sidecars and prints their digests. It requires neither an API
 key nor an executable.
 
