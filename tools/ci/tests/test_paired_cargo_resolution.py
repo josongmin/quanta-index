@@ -171,6 +171,60 @@ def test_p10_archive_pin_rejects_changed_bytes_before_copy(tmp_path):
     assert not pinned.exists()
 
 
+def _commit_fixture_checkout(root: Path) -> None:
+    for args in (
+        ["init", "-q"],
+        ["add", "."],
+        [
+            "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+            "commit", "-qm", "fixture",
+        ],
+    ):
+        subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+
+@pytest.mark.parametrize("dirty_source", ["quanta", "paired", "hidden-helper"])
+def test_cross_repo_script_rejects_dirty_source_before_python_helper(
+    resolution, tmp_path, monkeypatch, dirty_source,
+):
+    quanta, paired, _, _ = resolution
+    runner_path = Path("scripts/verify-repomap-cross-repo.sh")
+    runner = quanta / runner_path
+    runner.parent.mkdir()
+    runner.write_bytes((Path(__file__).resolve().parents[3] / runner_path).read_bytes())
+    helper_path = "scripts/lib/python-env.sh"
+    helper = paired / helper_path
+    helper.parent.mkdir(parents=True)
+    marker = tmp_path / "python-helper-sourced"
+    helper.write_text(
+        f": > {shlex.quote(str(marker))}\n"
+        f"cg_resolve_python_bin() {{ printf '%s\\n' {shlex.quote(sys.executable)}; }}\n"
+    )
+    for root in (quanta, paired):
+        _commit_fixture_checkout(root)
+
+    expected_error = "cross-repo proof requires a clean checkout"
+    if dirty_source == "hidden-helper":
+        git = ["git", "-C", str(paired)]
+        subprocess.run(
+            [*git, "update-index", "--assume-unchanged", "--", helper_path],
+            check=True, capture_output=True,
+        )
+        helper.write_bytes(helper.read_bytes() + b"# hidden worktree change\n")
+        assert subprocess.check_output([*git, "status", "--porcelain"]) == b""
+        expected_error = "paired Python helper differs from the frozen Git blob"
+    else:
+        dirty_root = quanta if dirty_source == "quanta" else paired
+        (dirty_root / "dirty.txt").touch()
+
+    monkeypatch.setenv("QUANTA_P11_R5_QBC_LANE", "registered-resolution")
+    completed = subprocess.run(["bash", str(runner), str(paired)], text=True, capture_output=True)
+
+    assert not marker.exists()
+    assert completed.returncode != 0
+    assert expected_error in completed.stderr
+
+
 @pytest.mark.parametrize("mutate", [False, True])
 @pytest.mark.parametrize("temporary", ["default", "custom", "alias"])
 @pytest.mark.parametrize("preflight_failure", [False, True])
@@ -312,20 +366,7 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
     (bin_dir / "just").chmod(0o700)
     for root in (quanta, paired):
         (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
-        for args in (
-            ["init", "-q"],
-            ["add", "."],
-            [
-                "-c",
-                "user.name=Fixture",
-                "-c",
-                "user.email=fixture@example.invalid",
-                "commit",
-                "-qm",
-                "fixture",
-            ],
-        ):
-            subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+        _commit_fixture_checkout(root)
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
     if use_p10 and mutate:
         built.write_bytes(b"#!/bin/sh\nprintf different\n")

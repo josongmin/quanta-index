@@ -14,12 +14,6 @@ fi
 quanta_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 semantica_root="${1:?Semantica checkout path is required}"
 semantica_root="$(cd -- "$semantica_root" && pwd -P)"
-# Use the same supported interpreter as the producer's QBC front door.
-# The host's python3 may be Xcode Python 3.9 even when QBC has Python 3.12.
-# The supplied producer owns this external helper; import guards validate it.
-# shellcheck source=/dev/null
-source "$semantica_root/scripts/lib/python-env.sh"
-paired_python="$(cg_resolve_python_bin "$semantica_root")"
 provided_binary="${QUANTA_INDEX_SEARCHD_BIN:-}"
 r5_lane="${QUANTA_P11_R5_QBC_LANE:?registered QBC lane is required}"
 if [[ -n "$provided_binary" && "$provided_binary" != /* ]]; then
@@ -29,20 +23,53 @@ fi
 require_frozen_source() {
   local root="$1"
   local head="$2"
-  if [[ "$(git -C "$root" rev-parse HEAD)" != "$head" ]]; then
+  local current_head status
+  current_head="$(git --no-replace-objects -C "$root" rev-parse --verify HEAD)" || exit 1
+  if [[ "$current_head" != "$head" ]]; then
     printf 'source HEAD changed during cross-repo proof: %s\n' "$root" >&2
     exit 1
   fi
-  if [[ -n "$(git -C "$root" status --porcelain=v1 --untracked-files=all)" ]]; then
+  status="$(git --no-replace-objects -C "$root" status --porcelain=v1 --untracked-files=all)" || exit 1
+  if [[ -n "$status" ]]; then
     printf 'cross-repo proof requires a clean checkout: %s\n' "$root" >&2
     exit 1
   fi
 }
 
-quanta_head="$(git -C "$quanta_root" rev-parse HEAD)"
-semantica_head="$(git -C "$semantica_root" rev-parse HEAD)"
+quanta_head="$(git --no-replace-objects -C "$quanta_root" rev-parse --verify HEAD)"
+semantica_head="$(git --no-replace-objects -C "$semantica_root" rev-parse --verify HEAD)"
 require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"
+
+# Resolve Python with the same policy as QBC. Validate the worktree helper and
+# source the checked Git bytes so a later worktree replacement cannot run.
+paired_python="$(
+  helper_relative="scripts/lib/python-env.sh"
+  helper="$semantica_root/$helper_relative"
+  if [[ -L "$semantica_root/scripts" || -L "$semantica_root/scripts/lib" ||
+        -L "$helper" || ! -f "$helper" ]]; then
+    printf 'paired Python helper is not a physical regular file: %s\n' "$helper" >&2
+    exit 1
+  fi
+  entry="$(git --no-replace-objects -C "$semantica_root" ls-tree --full-tree \
+    "$semantica_head" -- "$helper_relative")" || exit 1
+  IFS=$' \t' read -r mode type blob path <<< "$entry"
+  if [[ "$type" != blob || "$path" != "$helper_relative" ||
+        ( "$mode" != 100644 && "$mode" != 100755 ) ]]; then
+    printf 'paired Python helper is not a regular file in frozen HEAD: %s\n' "$helper" >&2
+    exit 1
+  fi
+  helper_snapshot="$(mktemp "${TMPDIR:-/tmp}/quanta-paired-python-XXXXXX")" || exit 1
+  trap 'rm -f -- "$helper_snapshot"' EXIT
+  git --no-replace-objects -C "$semantica_root" cat-file blob "$blob" > "$helper_snapshot" || exit 1
+  if ! cmp -s -- "$helper" "$helper_snapshot"; then
+    printf 'paired Python helper differs from the frozen Git blob: %s\n' "$helper" >&2
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  source "$helper_snapshot" || exit 1
+  cg_resolve_python_bin "$semantica_root"
+)"
 
 resolved_pair() {
   local consumer="$1"
