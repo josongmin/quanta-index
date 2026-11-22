@@ -47,6 +47,7 @@ use super::{
 
 const SDK_TIMEOUT: Duration = Duration::from_secs(60);
 const STAGE_TIMEOUT: Duration = Duration::from_secs(60);
+const MAX_SEMANTIC_CONFIG_BYTES: u64 = 64 * 1024;
 const CORPUS_TEXT_ADMISSION_POLICY: Digest = Digest([31; 32]);
 
 /// Explicit benchmark binding for a configured Native local-code owner.
@@ -68,6 +69,7 @@ pub struct NativeSemanticCorpusInput<'a> {
 
 struct AdmittedSemanticCorpus {
     config: PathBuf,
+    config_bytes: Vec<u8>,
     socket: PathBuf,
     state_root: PathBuf,
     config_sha256: String,
@@ -84,11 +86,44 @@ struct AdmittedSemanticCorpus {
 impl AdmittedSemanticCorpus {
     fn verify_config(&self) -> Result<()> {
         anyhow::ensure!(
-            digest(&fs::read(&self.config)?) == self.config_sha256,
+            read_semantic_config(&self.config)? == self.config_bytes,
             "Native Semantic config changed during benchmark execution"
         );
         Ok(())
     }
+
+    fn write_boot_config(&self, path: &Path) -> Result<()> {
+        self.verify_config()?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(&self.config_bytes)?;
+        Ok(())
+    }
+}
+
+fn read_semantic_config(path: &Path) -> Result<Vec<u8>> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((OFlag::O_NONBLOCK | OFlag::O_NOFOLLOW).bits())
+        .open(path)
+        .context("open Native Semantic config")?;
+    let metadata = file.metadata()?;
+    anyhow::ensure!(
+        metadata.is_file() && metadata.len() <= MAX_SEMANTIC_CONFIG_BYTES,
+        "Native Semantic config must be an absolute regular file <=64KiB"
+    );
+    let mut bytes = Vec::new();
+    let _read = file
+        .take(MAX_SEMANTIC_CONFIG_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        u64::try_from(bytes.len())? <= MAX_SEMANTIC_CONFIG_BYTES,
+        "Native Semantic config exceeds 64KiB"
+    );
+    Ok(bytes)
 }
 
 fn lower_sha256(raw: &str, name: &str) -> Result<()> {
@@ -179,12 +214,7 @@ impl NativeSemanticCorpusInput<'_> {
             (1..=3600).contains(&self.wait_seconds),
             "Semantic coverage wait must be 1..=3600 seconds"
         );
-        let metadata = fs::symlink_metadata(self.config_path)?;
-        anyhow::ensure!(
-            metadata.file_type().is_file() && metadata.len() <= 64 * 1024,
-            "Native Semantic config must be an absolute regular file <=64KiB"
-        );
-        let bytes = fs::read(self.config_path)?;
+        let bytes = read_semantic_config(self.config_path)?;
         anyhow::ensure!(
             digest(&bytes) == self.config_sha256,
             "Native Semantic config SHA-256 differs"
@@ -297,6 +327,7 @@ impl NativeSemanticCorpusInput<'_> {
         text_layout.verify_external_config(&config)?;
         Ok(AdmittedSemanticCorpus {
             config: self.config_path.to_path_buf(),
+            config_bytes: bytes,
             socket: self.socket_path.to_path_buf(),
             state_root,
             config_sha256: self.config_sha256.to_owned(),
@@ -928,17 +959,14 @@ fn measure_native_corpus_inner(
     let executable = NativeExecutable::capture(input.daemon_bin)?;
     let temp = TempDir::new()?;
     fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
-    let (root, socket, config) = if let Some(semantic) = &semantic {
-        semantic.verify_config()?;
-        (
-            semantic.state_root.clone(),
-            semantic.socket.clone(),
-            semantic.config.clone(),
-        )
+    // Both boots consume the admitted bytes even if the operator path changes.
+    let config = temp.path().join("native.json");
+    let (root, socket) = if let Some(semantic) = &semantic {
+        semantic.write_boot_config(&config)?;
+        (semantic.state_root.clone(), semantic.socket.clone())
     } else {
         let root = temp.path().join("state");
         let socket = temp.path().join("native.sock");
-        let config = temp.path().join("native.json");
         let workload = NativeForegroundWorkload {
             limits: FIXED_FOREGROUND_WORK_LIMITS,
             mode: NativeWorkloadMode::Fixed,
@@ -952,7 +980,7 @@ fn measure_native_corpus_inner(
             .pointer_mut("/resources/physical/inventory/max_files")
             .context("Native config inventory file limit absent")? = json!(30_000);
         fs::write(&config, serde_json::to_vec(&configured)?)?;
-        (root, socket, config)
+        (root, socket)
     };
     let first_trace = input
         .trace_max_output_bytes
@@ -1622,6 +1650,30 @@ mod tests {
                 .is_err_and(|cause| cause.to_string() == "output root must be a new absolute path"),
             "matching Layered and Semantic inputs should reach the output preflight"
         );
+
+        let original = fs::read(&config_path)?;
+        let sha = digest(&original);
+        let admitted =
+            semantic_preflight_input(&config_path, &sha, &socket).preflight(input.text_layout)?;
+        let boot_config = temp.path().join("boot.json");
+        admitted.write_boot_config(&boot_config)?;
+        assert_eq!(fs::read(&boot_config)?, original);
+        let equivalent = temp.path().join("equivalent.json");
+        fs::rename(&config_path, &equivalent)?;
+        std::os::unix::fs::symlink(&equivalent, &config_path)?;
+        assert!(admitted.verify_config().is_err());
+        assert_eq!(fs::read(&boot_config)?, original);
+        fs::remove_file(&config_path)?;
+        fs::write(
+            &config_path,
+            vec![0; usize::try_from(MAX_SEMANTIC_CONFIG_BYTES)? + 1],
+        )?;
+        assert!(
+            admitted
+                .verify_config()
+                .is_err_and(|cause| { cause.to_string().contains("regular file <=64KiB") })
+        );
+
         for (pointer, changed, expected) in [
             ("/text/layout", json!("tree-v1"), "Text layout"),
             (
