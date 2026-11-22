@@ -259,7 +259,7 @@ def test_verified_migration_requires_current_named_nextest_observation(
         ("release_valid", "retained old-Q tests require VERIFIED execution"),
     ],
 )
-def test_retirement_requires_complete_nextest_evidence(checker, capsys, evidence, expected_error):
+def test_retirement_requires_complete_nextest_evidence(checker, capsys, monkeypatch, evidence, expected_error):
     crate = "quanta-index-lexical"
     test_source = f"crates/{crate}/tests/replacement.rs"
     library_event = evidence in {"same_leaf_different_library_module", "valid_library_module"}
@@ -341,6 +341,8 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, evidence
         if evidence != "events_only":
             receipt_fields += f', inventory_sha256 = "{inventory_digest}"'
     release = evidence.startswith("release_")
+    if release:
+        monkeypatch.setattr(retirement_nextest, "release_event_roster", lambda *_: {event: {}})
     candidate_lock = b'version = 4\n# candidate lock\n'
     stale_lock = b'version = 4\n# previous lock\n'
     lock = checker.ROOT / "Cargo.lock"
@@ -532,7 +534,10 @@ def test_release_source_manifest_rejects_checkout_drift(tmp_path, monkeypatch, s
 
 
 @pytest.mark.parametrize("changed", [
-    None, "test", "old-q", "supplier-removed", "test-restored", "old-q-restored", "metadata-restored",
+    None, "test", "native-daemon", "old-q", "supplier-removed", "test-restored",
+    "old-q-restored", "metadata-restored", "retained-dylib", "extra-selection", "omitted-selection",
+    "outside-roster", "retained-outside-roster", "outside-roster-without-expectation",
+    "retained-outside-roster-without-expectation",
 ])
 def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, monkeypatch, changed):
     checkout = tmp_path / "source"
@@ -565,6 +570,8 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         assert os.access(retained, os.X_OK)
         assert retained.read_bytes() == b"old daemon"
         executable = target / "replacement"
+        daemon = target / "debug/quanta-index-searchd"
+        dylib = target / "debug/deps/libnative.dylib"
         row = {"binary-id": binary_id, "binary-path": str(executable), "binary-name": "replacement", "kind": "test"}
         rows = {binary_id: row}
         for name, kind in extra_targets.items():
@@ -580,19 +587,33 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
                 legacy_path.unlink()
             for built in rows.values():
                 Path(built["binary-path"]).write_bytes(b"test binary")
+            dylib.parent.mkdir(parents=True)
+            daemon.write_bytes(b"native daemon")
+            dylib.write_bytes(b"native library")
             stdout.write(json.dumps({
-                "rust-build-meta": {"target-directory": str(target)}, "rust-binaries": rows,
+                "rust-build-meta": {
+                    "target-directory": str(target),
+                    "non-test-binaries": {
+                        "test-subject": [
+                            {"name": "quanta-index-searchd", "kind": "bin-exe", "path": "debug/quanta-index-searchd"},
+                            {"name": "native", "kind": "dylib", "path": "debug/deps/libnative.dylib"},
+                        ],
+                    },
+                },
+                "rust-binaries": rows,
             }).encode())
         elif args[0] == "metadata":
             stdout.write(json.dumps({"workspace_root": str(checkout), "target_directory": str(target)}).encode())
         elif args[1] == "list":
+            cases = {"passes": {"ignored": False, "filter-match": {"status": "matches"}}}
+            if changed in {"extra-selection", "outside-roster-without-expectation"}:
+                cases["unexpected"] = dict(cases["passes"])
             stdout.write(json.dumps({
-                "test-count": 1,
+                "test-count": len(cases),
                 "rust-suites": {
                     name: {
                         **built, "package-name": "quanta-index-lexical", "status": "listed",
-                        "testcases": {"passes": {"ignored": False, "filter-match": {"status": "matches"}}}
-                        if name == binary_id else {},
+                        "testcases": cases if name == binary_id else {},
                     }
                     for name, built in rows.items()
                 },
@@ -601,6 +622,8 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             assert args[1] == "run" and env["NEXTEST_EXPERIMENTAL_LIBTEST_JSON"] == "1"
             if changed == "test":
                 executable.write_bytes(b"other binary")
+            if changed == "native-daemon":
+                daemon.write_bytes(b"other daemon")
             if changed == "old-q":
                 retained.write_bytes(b"other old daemon")
             restored = {
@@ -614,24 +637,60 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
                 restored.write_bytes(original + b"changed")
                 restored.write_bytes(original)
                 os.utime(restored, ns=(file_stat.st_atime_ns, file_stat.st_mtime_ns))
-            for line in (
-                {"type": "suite", "event": "started", "test_count": 1, "nextest": meta},
-                {"type": "test", "event": "started", "name": event},
-                {"type": "test", "event": "ok", "name": event},
-                {"type": "suite", "event": "ok", "passed": 1, "failed": 0, "ignored": 0, "nextest": meta},
-            ):
+            executed = [event]
+            if changed == "outside-roster-without-expectation":
+                executed.append(binary_id + "$unexpected")
+            events = [{"type": "suite", "event": "started", "test_count": len(executed), "nextest": meta}]
+            for name in executed:
+                events.extend((
+                    {"type": "test", "event": "started", "name": name},
+                    {"type": "test", "event": "ok", "name": name},
+                ))
+            events.append({
+                "type": "suite", "event": "ok", "passed": len(executed), "failed": 0, "ignored": 0, "nextest": meta,
+            })
+            for line in events:
                 stdout.write((json.dumps(line) + "\n").encode())
 
     monkeypatch.setattr(retirement_nextest, "_require_frozen_checkout", lambda *_: None)
     monkeypatch.setattr(retirement_nextest, "_capture_frozen_checkout", lambda *_: {})
     monkeypatch.setattr(retirement_nextest, "release_tree_sha256", lambda *_: "a" * 64)
+    committed_events = {event: {}, binary_id + "$missing": {}}
+    monkeypatch.setattr(retirement_nextest, "release_event_roster", lambda *_: committed_events)
     monkeypatch.setattr(retirement_nextest, "subprocess", SimpleNamespace(run=run))
     args = dict(
         lane="test-integration-lane", package="quanta-index-lexical",
         include_lib=True, test_targets=["replacement", "additional"],
         filterset="test(=passes)", features=["native-one, native-two"],
+        expected_events=[event],
     )
-    if changed not in {None, "supplier-removed"}:
+    if changed == "outside-roster":
+        args["expected_events"].append(binary_id + "$unexpected")
+        with pytest.raises(ValueError, match="outside the committed retirement roster"):
+            retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
+        assert not calls
+        assert not list(evidence.iterdir())
+        return
+    if changed == "outside-roster-without-expectation":
+        del args["expected_events"]
+        with pytest.raises(ValueError, match="outside the committed retirement roster"):
+            retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
+        assert len(calls) == 3
+        assert not list(evidence.glob("*-nextest.jsonl"))
+        return
+    if changed in {"extra-selection", "omitted-selection"}:
+        if changed == "omitted-selection":
+            args["expected_events"].append(binary_id + "$missing")
+        message = r"extra=\[.*unexpected" if changed == "extra-selection" else r"missing=\[.*missing"
+        with pytest.raises(ValueError, match=message):
+            retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
+        assert len(calls) == 3
+        assert not list(evidence.glob("*-nextest.jsonl"))
+        return
+    if changed not in {
+        None, "supplier-removed", "retained-dylib", "retained-outside-roster",
+        "retained-outside-roster-without-expectation",
+    }:
         with pytest.raises(ValueError, match="build inputs or evidence changed"):
             retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
         assert not list(evidence.glob("*-source-manifest.json"))
@@ -639,10 +698,16 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         path = retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
         manifest = json.loads(path.read_bytes())
         assert manifest["execution"]["workspace_root"] == str(checkout)
-        assert manifest["execution"]["executables"] == {
+        assert manifest["execution"]["selection"]["expected_events"] == [event]
+        expected_executables = {
             f"quanta-index-lexical::{name}": hashlib.sha256(b"test binary").hexdigest()
             for name in ("replacement", *extra_targets)
         }
+        expected_executables.update({
+            "runtime/debug/quanta-index-searchd": hashlib.sha256(b"native daemon").hexdigest(),
+            "runtime/debug/deps/libnative.dylib": hashlib.sha256(b"native library").hexdigest(),
+        })
+        assert manifest["execution"]["executables"] == expected_executables
         run_id = path.name.removesuffix("-source-manifest.json")
         target = evidence / f"{run_id}-target"
         assert manifest["execution"]["legacy_searchd"] == {
@@ -654,18 +719,27 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         ]
         relocated = evidence.rename(tmp_path / "relocated")
         legacy_path.unlink(missing_ok=True)
-        artifact = retirement_nextest.RawFile.capture(relocated / path.name)
-        retirement_nextest.check_frozen_inputs(
-            artifact,
-            {
-                "run_id": run_id,
-                "source_manifest_sha256": artifact.sha256.removeprefix("sha256:"),
-                "inventory_sha256": manifest["inventory_sha256"],
-                "events_sha256": manifest["events_sha256"],
-            },
-            checkout,
-            "b" * 40,
-        )
+        retained_manifest = relocated / path.name
+        if changed == "retained-outside-roster-without-expectation":
+            del manifest["execution"]["selection"]["expected_events"]
+            retained_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        artifact = retirement_nextest.RawFile.capture(retained_manifest)
+        observation = {
+            "run_id": run_id,
+            "source_manifest_sha256": artifact.sha256.removeprefix("sha256:"),
+            "inventory_sha256": manifest["inventory_sha256"],
+            "events_sha256": manifest["events_sha256"],
+        }
+        if changed == "retained-dylib":
+            (relocated / target.name / "debug/deps/libnative.dylib").write_bytes(b"other library")
+            with pytest.raises(ValueError, match="retained Nextest executable bytes differ"):
+                retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "b" * 40)
+        elif changed in {"retained-outside-roster", "retained-outside-roster-without-expectation"}:
+            del committed_events[event]
+            with pytest.raises(ValueError, match="outside the committed retirement roster"):
+                retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "c" * 40)
+        else:
+            retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "b" * 40)
     assert len(calls) == 4
     resolution = ["--locked", "--offline", "--no-default-features", "--features",
                   "quanta-index-lexical/native-one,quanta-index-lexical/native-two"]
@@ -676,6 +750,71 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
     assert calls[1] == ["metadata", "--format-version", "1", *resolution]
     assert calls[2][:2] == ["nextest", "list"] and calls[3][:2] == ["nextest", "run"]
     assert calls[2][2:8] == calls[3][2:8]
+
+
+@pytest.mark.parametrize("runtime_path", ["../native", "/native", "debug/./native"])
+def test_runtime_artifact_path_must_be_canonical_under_target(tmp_path, runtime_path):
+    target = tmp_path / "target"
+    binaries = tmp_path / "binaries.json"
+    binaries.write_text(json.dumps({
+        "rust-build-meta": {
+            "target-directory": str(target),
+            "non-test-binaries": {"test-subject": [{"path": runtime_path}]},
+        },
+        "rust-binaries": {"test-binary": {"binary-id": "test-binary", "binary-path": str(target / "test")}},
+    }), encoding="utf-8")
+    cargo = tmp_path / "cargo.json"
+    cargo.write_text(json.dumps({
+        "target_directory": str(target), "workspace_root": str(tmp_path),
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="runtime artifact is outside its Cargo target or has a noncanonical path"):
+        retirement_nextest._build_paths(
+            retirement_nextest.RawFile.capture(binaries), retirement_nextest.RawFile.capture(cargo), root=tmp_path,
+        )
+
+
+def test_release_roster_resolves_committed_events_and_deduplicates_shared_witnesses(tmp_path):
+    path = "crates/quanta-index-lexical/tests/retained.rs"
+    source = tmp_path / path
+    source.parent.mkdir(parents=True)
+    source.write_text("#[test]\nfn keep() {}\n#[test]\nfn replacement() {}\n", encoding="utf-8")
+    inventory = tmp_path / "tools/ci/inventory"
+    inventory.mkdir(parents=True)
+    (inventory.parent / "test-authority.toml").write_text(
+        f'[[integration_targets]]\npath = "{path}"\nowner = "quanta-index-lexical"\n', encoding="utf-8",
+    )
+    lexical = inventory / "lexical-test-disposition.toml"
+    lexical.write_text(
+        f'[[targets]]\npath = "{path}"\n'
+        '[[targets.dispositions]]\ndisposition = "retain"\ntests = ["keep"]\n'
+        '[[targets.dispositions]]\ndisposition = "migrate"\n'
+        f'candidates = [{{path = "{path}", tests = ["replacement"]}}]\n',
+        encoding="utf-8",
+    )
+    (inventory / "runtime-legacy-migration.toml").write_text(
+        'exact_oracles = []\n[[current_proofs]]\n'
+        f'candidates = [{{path = "{path}", tests = ["replacement"]}}]\n',
+        encoding="utf-8",
+    )
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", *args],
+            cwd=tmp_path, text=True,
+        ).strip()
+
+    git("init", "-q")
+    git("add", ".")
+    git("commit", "-qm", "committed roster")
+    revision = git("rev-parse", "HEAD")
+    lexical.write_text("targets = []\n", encoding="utf-8")
+    (inventory.parent / "test-authority.toml").write_text("integration_targets = []\n", encoding="utf-8")
+
+    assert retirement_nextest.release_event_roster(tmp_path, revision) == {
+        "quanta-index-lexical::retained$keep": {"source": path, "case": "keep"},
+        "quanta-index-lexical::retained$replacement": {"source": path, "case": "replacement"},
+    }
 
 
 def test_retained_executable_digest_reuses_only_unchanged_bytes(tmp_path, monkeypatch):
@@ -781,7 +920,7 @@ def test_shipment_checks_committed_roster_not_working_tree(checker, capsys):
     ],
 )
 def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
-    checker, tmp_path, capsys, evidence, expected_error,
+    checker, tmp_path, capsys, monkeypatch, evidence, expected_error,
 ):
     source = "crates/quanta-index-lexical/tests/sealed_commitment_cost.rs"
     cases = [
@@ -791,6 +930,9 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
     body = (checker.ROOT / source).read_bytes()
     package, target = "quanta-index-lexical", "sealed_commitment_cost"
     binary_id = f"{package}::{target}"
+    monkeypatch.setattr(retirement_nextest, "release_event_roster", lambda *_: {
+        f"{binary_id}${case}": {} for case in cases
+    })
     run_id = "3739620b-a0ff-451d-897f-e5a32fc146eb"
     evidence_dir = tmp_path.with_name(f"{tmp_path.name}-retained-evidence")
     evidence_dir.mkdir()

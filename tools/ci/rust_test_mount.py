@@ -178,12 +178,12 @@ def mounted_test_module(
     return matches[0]
 
 
-def retirement_event_matcher(
+def retirement_event_resolver(
     root: Path,
     read_source: Callable[[str], str],
     *,
     resolve_path: Callable[[Path], Path | None] | None = None,
-) -> Callable[[Path, str, str], bool]:
+) -> Callable[[Path, str], str | None]:
     """Resolve the Nextest binary and module from the candidate test source."""
 
     @cache
@@ -273,17 +273,28 @@ def retirement_event_matcher(
         visit(syntax, ())
         return tests
 
-    def matches(path: Path, binary: str, name: str) -> bool:
-        expected_binary, modules = event_owner(path)
-        if binary != expected_binary:
-            return False
-        *actual_modules, leaf = name.split("::")
+    def resolve(path: Path, case: str) -> str | None:
+        binary, modules = event_owner(path)
         if path.relative_to(root).parts[2] == "src":
-            inline_modules = library_tests(path).get(leaf, [])
-            return (
-                len(inline_modules) == 1
-                and tuple(actual_modules) == modules + inline_modules[0]
-            )
-        return tuple(actual_modules) == modules
+            inline_modules = library_tests(path).get(case, [])
+            if len(inline_modules) != 1:
+                return None
+            modules += inline_modules[0]
+        name = "::".join((*modules, case))
+        return f"{binary}${name}"
+
+    return resolve
+
+
+def retirement_event_matcher(
+    root: Path,
+    read_source: Callable[[str], str],
+    *,
+    resolve_path: Callable[[Path], Path | None] | None = None,
+) -> Callable[[Path, str, str], bool]:
+    resolve_event = retirement_event_resolver(root, read_source, resolve_path=resolve_path)
+
+    def matches(path: Path, binary: str, name: str) -> bool:
+        return resolve_event(path, name.rsplit("::", 1)[-1]) == f"{binary}${name}"
 
     return matches

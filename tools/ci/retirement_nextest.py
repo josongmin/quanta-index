@@ -10,14 +10,24 @@ import stat
 import subprocess
 import tempfile
 from collections.abc import Callable
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
 from uuid import uuid4
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
+    import tomli as tomllib
 
 from tools.benchmark.evidence import RawFile
 from tools.ci.nextest_events import parse_nextest, parse_nextest_inventory
 from tools.ci.proof_json import parse_proof_json
-from tools.ci.source_closure import ClosureError, capture_committed_source, require_source_files_unchanged
+from tools.ci.rust_test_mount import committed_path_resolver, retirement_event_resolver
+from tools.ci.source_closure import (
+    ClosureError,
+    capture_committed_source,
+    require_source_files_unchanged,
+)
 
 RUST_PROOF_SOURCE = re.compile(r"crates/[a-z0-9-]+/(?:src|tests)/(?:[a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-]+\.rs")
 NEXTEST_RUN_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
@@ -34,6 +44,71 @@ MIGRATION_LEDGERS = (
     b"tools/ci/inventory/lexical-test-disposition.toml",
     b"tools/ci/inventory/runtime-legacy-migration.toml",
 )
+
+
+def release_event_roster(root: Path, revision: str) -> dict[str, dict[str, str]]:
+    """Resolve the exact Nextest events required by both committed retirement ledgers."""
+    root = root.resolve(strict=True)
+    if not GIT_REVISION.fullmatch(revision):
+        raise ValueError("retirement roster requires a full Git revision")
+
+    def git(workspace: Path, *args: str) -> bytes:
+        return subprocess.check_output(["git", "--no-replace-objects", *args], cwd=workspace)
+
+    @cache
+    def read(relative: str) -> str:
+        return git(root, "show", f"{revision}:{relative}").decode("utf-8")
+
+    lexical, runtime = (tomllib.loads(read(path.decode("ascii"))) for path in MIGRATION_LEDGERS)
+    candidates = [
+        candidate
+        for target in lexical["targets"]
+        for group in target["dispositions"]
+        for candidate in group.get("candidates", [])
+    ]
+    candidates.extend(
+        {"path": target["path"], "tests": group["tests"]}
+        for target in lexical["targets"]
+        for group in target["dispositions"] if group["disposition"] == "retain"
+    )
+    candidates.extend(
+        candidate
+        for group in runtime["current_proofs"] + runtime["exact_oracles"]
+        for candidate in group["candidates"]
+    )
+    declared: set[tuple[str, str]] = set()
+    for candidate in candidates:
+        relative, tests = candidate["path"], candidate["tests"]
+        if not isinstance(relative, str) or not RUST_PROOF_SOURCE.fullmatch(relative):
+            raise ValueError(f"invalid retirement roster source: {relative!r}")
+        if not isinstance(tests, list) or not tests or any(
+            not isinstance(case, str) or not case.isascii() or not case.isidentifier() for case in tests
+        ):
+            raise ValueError(f"invalid retirement roster test declaration: {relative}")
+        declared.update((relative, case) for case in tests)
+
+    resolve = retirement_event_resolver(root, read, resolve_path=committed_path_resolver(git, root, revision))
+    events: dict[str, dict[str, str]] = {}
+    for relative, case in sorted(declared):
+        read(relative)
+        event = resolve(root / relative, case)
+        if event is None or not NEXTEST_EVENT.fullmatch(event) or event in events:
+            raise ValueError(f"retirement roster event is missing or ambiguous: {relative}::{case}")
+        events[event] = {"source": relative, "case": case}
+    if not events:
+        raise ValueError("retirement roster has no events")
+    return events
+
+
+@lru_cache(maxsize=8)
+def _committed_event_names(root: Path, revision: str) -> frozenset[str]:
+    return frozenset(release_event_roster(root, revision))
+
+
+def _require_roster_membership(root: Path, revision: str, events: set[str]) -> None:
+    outside = events - _committed_event_names(root, revision)
+    if outside:
+        raise ValueError(f"Nextest events outside the committed retirement roster: {sorted(outside)}")
 
 
 @lru_cache(maxsize=32)
@@ -128,7 +203,8 @@ def check_frozen_inputs(
     target_dir, paths = _build_paths(binaries, cargo, root=Path(workspace_root))
     _require_collected_build(binaries, inventory)
     selection = execution["selection"]
-    _check_selection(selection, inventory)
+    selected = _check_selection(selection, inventory)
+    _require_roster_membership(root, release_revision, selected)
     expected_commands = _execution_commands(
         selection, target_dir.parent / binaries.path.name, target_dir.parent / cargo.path.name,
     )
@@ -238,7 +314,31 @@ def _build_paths(binaries: RawFile, cargo: RawFile, *, root: Path) -> tuple[Path
         paths[name] = path
     if len(set(paths.values())) != len(paths):
         raise ValueError("Nextest build inventory repeats an executable path")
-    return Path(target), paths
+    target_dir = Path(target)
+    runtime_rows = build_meta.get("non-test-binaries", {})
+    if not isinstance(runtime_rows, dict) or any(not isinstance(rows, list) for rows in runtime_rows.values()):
+        raise ValueError("Nextest runtime artifact inventory is malformed")
+    bound_paths = set(paths.values())
+    for entries in runtime_rows.values():
+        for entry in entries:
+            raw_path = entry.get("path") if isinstance(entry, dict) else None
+            if not isinstance(raw_path, str):
+                raise ValueError("Nextest runtime artifact lacks a path")
+            relative = Path(raw_path)
+            if (
+                relative.is_absolute() or not relative.parts or ".." in relative.parts
+                or relative.as_posix() != raw_path
+            ):
+                raise ValueError("Nextest runtime artifact is outside its Cargo target or has a noncanonical path")
+            path = target_dir / relative
+            if path in bound_paths:
+                continue
+            name = f"runtime/{raw_path}"
+            if name in paths:
+                raise ValueError("Nextest runtime artifact repeats a test executable identity")
+            paths[name] = path
+            bound_paths.add(path)
+    return target_dir, paths
 
 
 def _require_collected_build(binaries: RawFile, inventory: RawFile) -> None:
@@ -253,10 +353,21 @@ def _require_collected_build(binaries: RawFile, inventory: RawFile) -> None:
         raise ValueError("Nextest collection differs from the built executable inventory")
 
 
-def _check_selection(selection: dict, inventory: RawFile) -> None:
-    if not isinstance(selection, dict) or set(selection) != {
+def _exact_events(values: object) -> set[str]:
+    if (
+        not isinstance(values, list) or not values
+        or any(not isinstance(value, str) or not NEXTEST_EVENT.fullmatch(value) for value in values)
+        or len(set(values)) != len(values)
+    ):
+        raise ValueError("expected Nextest events must be unique exact package::binary$test names")
+    return set(values)
+
+
+def _check_selection(selection: dict, inventory: RawFile) -> set[str]:
+    fields = {
         "lane", "package", "include_lib", "test_targets", "filterset", "features",
-    }:
+    }
+    if not isinstance(selection, dict) or set(selection) not in (fields, fields | {"expected_events"}):
         raise ValueError("invalid retained Nextest selection")
     if (
         not all(isinstance(selection[key], str) and selection[key] for key in ("lane", "package", "filterset"))
@@ -269,7 +380,8 @@ def _check_selection(selection: dict, inventory: RawFile) -> None:
         or not (selection["include_lib"] or selection["test_targets"])
     ):
         raise ValueError("invalid retained Nextest selection")
-    suites = parse_nextest_inventory(inventory).suite_counts
+    listed = parse_nextest_inventory(inventory)
+    suites = listed.suite_counts
     test_targets = set(selection["test_targets"])
     if len(test_targets) != len(selection["test_targets"]):
         raise ValueError("recorded Nextest test targets are duplicated")
@@ -283,6 +395,15 @@ def _check_selection(selection: dict, inventory: RawFile) -> None:
         raise ValueError(f"Nextest collection lacks recorded test targets: {sorted(missing)}")
     if selection["include_lib"] and not any(kind == "lib" for _, _, kind in suites):
         raise ValueError("Nextest collection lacks the recorded library target")
+    selected = set(listed)
+    if "expected_events" in selection:
+        expected = _exact_events(selection["expected_events"])
+        if selected != expected:
+            raise ValueError(
+                "Nextest collection differs from the expected event set: "
+                f"missing={sorted(expected - selected)} extra={sorted(selected - expected)}"
+            )
+    return selected
 
 
 def _execution_commands(selection: dict, binaries: Path, cargo: Path) -> dict[str, list[str]]:
@@ -319,6 +440,7 @@ def _legacy_binary_path(path: str, digest: str) -> Path:
 def capture_release_execution(
     root: Path, revision: str, evidence_dir: Path, *, lane: str, package: str,
     include_lib: bool, test_targets: list[str], filterset: str, features: list[str],
+    expected_events: list[str] | None = None,
 ) -> Path:
     """Build once, then publish collection and successful execution from the same test binaries."""
     if not include_lib and not test_targets:
@@ -327,6 +449,10 @@ def capture_release_execution(
     evidence_dir = evidence_dir.resolve(strict=True)
     if evidence_dir.is_relative_to(root) or not evidence_dir.is_dir():
         raise ValueError("retirement evidence must use an existing directory outside the checkout")
+    selected_events = None
+    if expected_events is not None:
+        selected_events = _exact_events(expected_events)
+        _require_roster_membership(root, revision, selected_events)
     source_states = _capture_frozen_checkout(root, revision)
     run_id = str(uuid4())
     target_dir = evidence_dir / f"{run_id}-target"
@@ -377,6 +503,8 @@ def capture_release_execution(
         "lane": lane, "package": package, "include_lib": include_lib, "test_targets": test_targets,
         "filterset": filterset, "features": resolved_features,
     }
+    if selected_events is not None:
+        selection["expected_events"] = sorted(selected_events)
     legacy_binary = None
     if LEGACY_BINARY_ENV in environment or LEGACY_SHA_ENV in environment:
         original_legacy_path = Path(environment.get(LEGACY_BINARY_ENV, ""))
@@ -411,7 +539,9 @@ def capture_release_execution(
         inputs.append(retained_legacy)
     inventory = capture("inventory.json", *commands["inventory.json"])
     _require_collected_build(binaries, inventory)
-    _check_selection(selection, inventory)
+    selected = _check_selection(selection, inventory)
+    if selected_events is None:
+        _require_roster_membership(root, revision, selected)
     require_unchanged(inputs, "Nextest build inputs changed during collection")
     events = capture(
         "nextest.jsonl", *commands["nextest.jsonl"],
@@ -544,19 +674,27 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description=capture_release_execution.__doc__)
     parser.add_argument("--revision", required=True)
-    parser.add_argument("--evidence-dir", type=Path, required=True)
-    parser.add_argument("--lane", required=True)
-    parser.add_argument("--package", required=True)
+    parser.add_argument("--list-roster", action="store_true", help="Print the committed exact event roster without running Cargo")
+    parser.add_argument("--evidence-dir", type=Path)
+    parser.add_argument("--lane")
+    parser.add_argument("--package")
     parser.add_argument("--lib", action="store_true")
     parser.add_argument("--test", dest="test_targets", action="append", default=[])
-    parser.add_argument("--filterset", required=True)
+    parser.add_argument("--filterset")
+    parser.add_argument("--expect-event", action="append", help="Require this exact selected package::binary$test event")
     parser.add_argument("--features", action="append", default=[])
     args = parser.parse_args()
     try:
+        if args.list_roster:
+            roster = release_event_roster(Path.cwd(), args.revision)
+            print(json.dumps({"revision": args.revision, "events": roster}, sort_keys=True, indent=2))
+            raise SystemExit(0)
+        if not all((args.evidence_dir, args.lane, args.package, args.filterset)):
+            parser.error("execution requires --evidence-dir, --lane, --package and --filterset")
         manifest = capture_release_execution(
             Path.cwd(), args.revision, args.evidence_dir, lane=args.lane,
             package=args.package, include_lib=args.lib, test_targets=args.test_targets,
-            filterset=args.filterset, features=args.features,
+            filterset=args.filterset, features=args.features, expected_events=args.expect_event,
         )
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"Retirement execution evidence unavailable: {error}\n")
