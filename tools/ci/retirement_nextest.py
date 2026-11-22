@@ -672,7 +672,12 @@ def capture_release_execution(
     }
     if selected_events is not None:
         selection["expected_events"] = sorted(selected_events)
-    legacy_binary = _read_legacy_input(environment)
+    legacy_binary = None
+    if _uses_old_q(package, test_targets):
+        legacy_binary = _read_legacy_input(environment)
+    else:
+        environment.pop(LEGACY_BINARY_ENV, None)
+        environment.pop(LEGACY_SHA_ENV, None)
     commands = _execution_commands(
         selection, evidence_dir / f"{run_id}-binaries.json", evidence_dir / f"{run_id}-cargo.json",
     )
@@ -811,7 +816,7 @@ def capture_release_roster(
             package, targets = selection["package"], selection["test_targets"]
             _require_approved_old_q(root, revision, package, targets, os.environ.get(LEGACY_SHA_ENV))
             _require_capture_host(package, targets)
-        if pending:
+        if any(_uses_old_q(selection["package"], selection["test_targets"]) for selection in pending):
             _read_legacy_input(os.environ)
         for selection in selections:
             require_evidence_directory()

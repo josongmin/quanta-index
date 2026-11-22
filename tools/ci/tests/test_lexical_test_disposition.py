@@ -538,6 +538,7 @@ def test_release_source_manifest_rejects_checkout_drift(tmp_path, monkeypatch, s
     "old-q-restored", "metadata-restored", "retained-dylib", "extra-selection", "omitted-selection",
     "outside-roster", "retained-outside-roster", "outside-roster-without-expectation",
     "retained-outside-roster-without-expectation", "roster-resume", "roster-changed-terminal",
+    "native-stale-old-q",
 ])
 def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, monkeypatch, changed):
     checkout = tmp_path / "source"
@@ -557,6 +558,16 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
     legacy_sha = hashlib.sha256(b"old daemon").hexdigest()
     monkeypatch.setenv(retirement_nextest.LEGACY_BINARY_ENV, str(legacy_path))
     monkeypatch.setenv(retirement_nextest.LEGACY_SHA_ENV, legacy_sha)
+    uses_old_q = changed != "native-stale-old-q"
+    if uses_old_q:
+        monkeypatch.setattr(retirement_nextest, "OLD_Q_TARGETS", {"quanta-index-lexical": {"replacement"}})
+        monkeypatch.setattr(retirement_nextest, "_approved_linux_old_q_sha256", lambda *_: legacy_sha)
+        monkeypatch.setattr(retirement_nextest, "platform", SimpleNamespace(
+            system=lambda: "Linux", machine=lambda: "x86_64",
+        ))
+    else:
+        legacy_path.unlink()
+    platforms = {"host": {"platform": {"triple": "x86_64-unknown-linux-gnu"}}, "targets": []}
 
     def run(argv, *, cwd, env, stdout, check):
         assert cwd == checkout and check is True
@@ -566,9 +577,14 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         assert env["QUANTA_INDEX_RESOURCE_ADMISSION"] == "1"
         assert "QUANTA_INDEX_CACHE_ROOT" not in env
         retained = target / "legacy-searchd"
-        assert env[retirement_nextest.LEGACY_BINARY_ENV] == str(retained)
-        assert os.access(retained, os.X_OK)
-        assert retained.read_bytes() == b"old daemon"
+        if uses_old_q:
+            assert env[retirement_nextest.LEGACY_BINARY_ENV] == str(retained)
+            assert os.access(retained, os.X_OK)
+            assert retained.read_bytes() == b"old daemon"
+        else:
+            assert retirement_nextest.LEGACY_BINARY_ENV not in env
+            assert retirement_nextest.LEGACY_SHA_ENV not in env
+            assert not retained.exists()
         executable = target / "replacement"
         daemon = target / "debug/quanta-index-searchd"
         dylib = target / "debug/deps/libnative.dylib"
@@ -593,6 +609,7 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             stdout.write(json.dumps({
                 "rust-build-meta": {
                     "target-directory": str(target),
+                    "platforms": platforms,
                     "non-test-binaries": {
                         "test-subject": [
                             {"name": "quanta-index-searchd", "kind": "bin-exe", "path": "debug/quanta-index-searchd"},
@@ -610,6 +627,7 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
                 cases["unexpected"] = dict(cases["passes"])
             stdout.write(json.dumps({
                 "test-count": len(cases),
+                "rust-build-meta": {"platforms": platforms},
                 "rust-suites": {
                     name: {
                         **built, "package-name": "quanta-index-lexical", "status": "listed",
@@ -690,6 +708,7 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
     if changed not in {
         None, "supplier-removed", "retained-dylib", "retained-outside-roster",
         "retained-outside-roster-without-expectation", "roster-resume", "roster-changed-terminal",
+        "native-stale-old-q",
     }:
         with pytest.raises(ValueError, match="build inputs or evidence changed"):
             retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
@@ -710,9 +729,10 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         assert manifest["execution"]["executables"] == expected_executables
         run_id = path.name.removesuffix("-source-manifest.json")
         target = evidence / f"{run_id}-target"
-        assert manifest["execution"]["legacy_searchd"] == {
+        expected_legacy = {
             "path": str(target / "legacy-searchd"), "sha256": legacy_sha,
-        }
+        } if uses_old_q else None
+        assert manifest["execution"]["legacy_searchd"] == expected_legacy
         assert list(manifest["execution"]["commands"].values()) == [
             ["--lane", args["lane"], *cmd]
             for cmd in (calls[0], calls[1], calls[2], calls[3])
@@ -877,6 +897,8 @@ def test_capture_roster_admits_pending_batches_before_work_and_serializes_owners
     assert launched == []
 
     retained[(legacy,)] = evidence / "verified-manifest.json"
+    monkeypatch.setenv(retirement_nextest.LEGACY_BINARY_ENV, str(tmp_path / "expired-old-q"))
+    monkeypatch.setenv(retirement_nextest.LEGACY_SHA_ENV, "a" * 64)
     active = run()
     assert next(active) == evidence / "new-manifest.json"
     with pytest.raises(ValueError, match="already holds the evidence directory"):
