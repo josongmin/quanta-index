@@ -483,6 +483,7 @@ def test_disconnected_rust_sources_block_retirement(checkout, capsys):
         'const FORMAT: &str = r#"tantivy::DocAddress"#;\n'
         '// use tantivy_fst::Automaton;\n'
         'use internal::{tantivy as local_type};\n'
+        'quote! { use internal::{tantivy as local_type}; }\n'
     )
     assert checker.main() == 1
     assert capsys.readouterr().err.splitlines() == [
@@ -531,9 +532,18 @@ def test_nested_vendor_link_cannot_hide_a_package(checkout, capsys):
     assert capsys.readouterr().err == "vendor: vendor/bundle/renamed\n"
 
 
-def test_retirement_detects_crate_paths_in_macro_tokens(checkout, capsys):
+@pytest.mark.parametrize(
+    "statement",
+    (
+        "quote! { use tantivy /* old */ ::Index; }",
+        "quote! { use {std::fmt, tantivy as old}; }",
+        "quote! { use ::{tantivy_fst as old}; }",
+        "macro_rules! m { () => { pub use {tantivy as old}; }; }",
+    ),
+)
+def test_retirement_detects_crate_paths_in_macro_tokens(checkout, capsys, statement):
     checker, _ = checkout
-    (checker.ROOT / "unmounted.rs").write_text("quote! { use tantivy /* old */ ::Index; }")
+    (checker.ROOT / "unmounted.rs").write_text(statement)
     assert checker.main() == 1
     assert capsys.readouterr().err == "Rust source: unmounted.rs\n"
 

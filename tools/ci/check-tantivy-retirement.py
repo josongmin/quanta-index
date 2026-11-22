@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, BinaryIO
 from urllib.parse import unquote, urlsplit
 
 if TYPE_CHECKING:
-    from tree_sitter import Node
+    from tree_sitter import Node, Parser
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_PACKAGE = "quanta-index-searchd-runtime"
@@ -679,7 +679,21 @@ def rust_imports_tantivy(node: Node | None) -> bool:
     return tantivy_identifier(node)
 
 
-def rust_references_tantivy(root: Node) -> bool:
+def rust_macro_group_imports_tantivy(group: Node, parser: Parser) -> bool:
+    # Rust macro bodies expose groups as token trees. Parse a root use group
+    # with the same path rules as normal imports.
+    source = group.text
+    if group.type != "token_tree" or source is None or not source.startswith(b"{"):
+        return False
+    declaration = parser.parse(b"use " + source + b";").root_node.named_child(0)
+    return (
+        declaration is not None
+        and declaration.type == "use_declaration"
+        and rust_imports_tantivy(declaration.child_by_field_name("argument"))
+    )
+
+
+def rust_references_tantivy(root: Node, parser: Parser) -> bool:
     pending = [root]
     while pending:
         node = pending.pop()
@@ -701,6 +715,10 @@ def rust_references_tantivy(root: Node) -> bool:
             for previous, token, following in zip(tokens, tokens[1:], tokens[2:]):
                 if tantivy_identifier(token) and (
                     following.type == "::" or previous.type in {"use", "crate"}
+                ):
+                    return True
+                if previous.type == "use" and rust_macro_group_imports_tantivy(
+                    following if token.type == "::" else token, parser,
                 ):
                     return True
         pending.extend(node.named_children)
@@ -781,7 +799,7 @@ def retirement_findings(root: Path) -> list[str]:
     parser = get_parser("rust")
     for source in sorted(rust_source_files(root)):
         data = source.read_bytes()
-        if b"tantivy" in data and rust_references_tantivy(parser.parse(data).root_node):
+        if b"tantivy" in data and rust_references_tantivy(parser.parse(data).root_node, parser):
             findings.append(f"Rust source: {source.relative_to(root)}")
 
     vendor = root / "vendor"
