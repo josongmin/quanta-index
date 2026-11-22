@@ -16,12 +16,103 @@ use quanta_index_core::{
 };
 use serde::{
     Deserialize, Deserializer,
-    de::{self, SeqAccess, Visitor},
+    de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor},
 };
 use std::{fmt, mem};
 
 mod cbor_replay;
 pub(super) use cbor_replay::decode_cbor_replay;
+
+/// Resolve a closed History shape key without retaining decoded text.
+struct ShapeFieldSeed(&'static [&'static str]);
+
+impl<'de> DeserializeSeed<'de> for ShapeFieldSeed {
+    type Value = &'static str;
+
+    fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        struct Key(&'static [&'static str]);
+        impl Visitor<'_> for Key {
+            type Value = &'static str;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a known History shape field")
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                self.0
+                    .iter()
+                    .copied()
+                    .find(|field| *field == value)
+                    .ok_or_else(|| E::unknown_field(value, self.0))
+            }
+
+            fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+                let text = std::str::from_utf8(value)
+                    .map_err(|_| E::invalid_value(de::Unexpected::Bytes(value), &self))?;
+                self.visit_str(text)
+            }
+        }
+        decoder.deserialize_identifier(Key(self.0))
+    }
+}
+
+macro_rules! closed_shape {
+    (struct $name:ident { $($field:ident : $ty:ty $(= $map_default:ident)?),+ $(,)? }) => {
+        struct $name {
+            $($field: $ty,)+
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                struct Shape;
+                impl<'de> Visitor<'de> for Shape {
+                    type Value = $name;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        formatter.write_str(concat!("a ", stringify!($name), " History shape"))
+                    }
+
+                    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                        $(let mut $field: Option<$ty> = None;)+
+                        while let Some(key) = map.next_key_seed(ShapeFieldSeed(FIELDS))? {
+                            match key {
+                                $(stringify!($field) => {
+                                    if $field.is_some() {
+                                        return Err(de::Error::duplicate_field(stringify!($field)));
+                                    }
+                                    $field = Some(map.next_value::<$ty>()?);
+                                },)+
+                                _ => unreachable!("shape key seed only returns schema keys"),
+                            }
+                        }
+                        Ok($name {
+                            $($field: closed_shape!(@map_value $field $(= $map_default)?),)+
+                        })
+                    }
+
+                    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                        let mut index = 0usize;
+                        $(let $field = seq.next_element::<$ty>()?
+                            .ok_or_else(|| de::Error::invalid_length(index, &self))?;
+                          index = index.saturating_add(1);)+
+                        if seq.next_element::<de::IgnoredAny>()?.is_some() {
+                            return Err(de::Error::invalid_length(index.saturating_add(1), &self));
+                        }
+                        Ok($name { $($field,)+ })
+                    }
+                }
+                decoder.deserialize_struct(stringify!($name), FIELDS, Shape)
+            }
+        }
+    };
+    (@map_value $field:ident) => {
+        $field.ok_or_else(|| de::Error::missing_field(stringify!($field)))?
+    };
+    (@map_value $field:ident = default) => {
+        $field.unwrap_or_default()
+    };
+}
 
 fn add(left: u64, right: u64) -> Option<u64> {
     left.checked_add(right)
@@ -142,16 +233,75 @@ impl SizeOfShape for CommitShape {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RefDeleteShape {
-    name: TextBytes,
-}
+closed_shape!(
+    struct RefDeleteShape {
+        name: TextBytes,
+    }
+);
 
-#[derive(Deserialize)]
 enum RefShape {
     Upsert(RefTagShape),
     Delete(RefDeleteShape),
+}
+
+impl<'de> Deserialize<'de> for RefShape {
+    fn deserialize<D: Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        const VARIANTS: &[&str] = &["Upsert", "Delete"];
+        struct VariantSeed;
+        impl<'de> DeserializeSeed<'de> for VariantSeed {
+            type Value = &'static str;
+
+            fn deserialize<D: Deserializer<'de>>(
+                self,
+                decoder: D,
+            ) -> Result<Self::Value, D::Error> {
+                struct Variant;
+                impl Visitor<'_> for Variant {
+                    type Value = &'static str;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                        formatter.write_str("a History ref variant")
+                    }
+
+                    fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                        VARIANTS
+                            .iter()
+                            .copied()
+                            .find(|name| *name == value)
+                            .ok_or_else(|| E::unknown_variant(value, VARIANTS))
+                    }
+
+                    fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+                        let text = std::str::from_utf8(value)
+                            .map_err(|_| E::invalid_value(de::Unexpected::Bytes(value), &self))?;
+                        self.visit_str(text)
+                    }
+                }
+                decoder.deserialize_identifier(Variant)
+            }
+        }
+
+        struct RefVisitor;
+        impl<'de> Visitor<'de> for RefVisitor {
+            type Value = RefShape;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a History ref mutation")
+            }
+
+            fn visit_enum<A: de::EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
+                let (name, value) = de::EnumAccess::variant_seed(data, VariantSeed)?;
+                match name {
+                    "Upsert" => de::VariantAccess::newtype_variant::<RefTagShape>(value)
+                        .map(RefShape::Upsert),
+                    "Delete" => de::VariantAccess::newtype_variant::<RefDeleteShape>(value)
+                        .map(RefShape::Delete),
+                    _ => unreachable!("variant seed only returns schema names"),
+                }
+            }
+        }
+        decoder.deserialize_enum("RefShape", VARIANTS, RefVisitor)
+    }
 }
 
 impl SizeOfShape for RefShape {
@@ -177,19 +327,19 @@ impl SizeOfShape for DiffHunkShape {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BatchShape {
-    repo_id: TextBytes,
-    revision_id: TextBytes,
-    generation: u64,
-    manifest_digest: Option<TextBytes>,
-    batch_digest: TextBytes,
-    commits: SequenceSize<CommitShape>,
-    refs: SequenceSize<RefShape>,
-    tags: SequenceSize<RefShape>,
-    diff_hunks: SequenceSize<DiffHunkShape>,
-}
+closed_shape!(
+    struct BatchShape {
+        repo_id: TextBytes,
+        revision_id: TextBytes,
+        generation: u64,
+        manifest_digest: Option<TextBytes> = default,
+        batch_digest: TextBytes,
+        commits: SequenceSize<CommitShape>,
+        refs: SequenceSize<RefShape>,
+        tags: SequenceSize<RefShape>,
+        diff_hunks: SequenceSize<DiffHunkShape>,
+    }
+);
 
 impl SizeOfShape for BatchShape {
     fn size(self) -> Option<ShapeSize> {
@@ -212,13 +362,13 @@ impl SizeOfShape for BatchShape {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GenerationShape {
-    repo_id: TextBytes,
-    revision_id: TextBytes,
-    generation: u64,
-}
+closed_shape!(
+    struct GenerationShape {
+        repo_id: TextBytes,
+        revision_id: TextBytes,
+        generation: u64,
+    }
+);
 
 impl SizeOfShape for GenerationShape {
     fn size(self) -> Option<ShapeSize> {
@@ -229,16 +379,16 @@ impl SizeOfShape for GenerationShape {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FenceShape {
-    generation: GenerationShape,
-    manifest_digest: Option<TextBytes>,
-    publication_count: u64,
-    first_replay: [u8; 32],
-    final_replay: [u8; 32],
-    final_durable_sequence: u64,
-}
+closed_shape!(
+    struct FenceShape {
+        generation: GenerationShape,
+        manifest_digest: Option<TextBytes> = default,
+        publication_count: u64,
+        first_replay: [u8; 32],
+        final_replay: [u8; 32],
+        final_durable_sequence: u64,
+    }
+);
 
 impl SizeOfShape for FenceShape {
     fn size(self) -> Option<ShapeSize> {
@@ -257,12 +407,12 @@ impl SizeOfShape for FenceShape {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SemanticRootsShape {
-    row_root_digest: TextBytes,
-    membership_root_digest: TextBytes,
-}
+closed_shape!(
+    struct SemanticRootsShape {
+        row_root_digest: TextBytes,
+        membership_root_digest: TextBytes,
+    }
+);
 
 impl SizeOfShape for SemanticRootsShape {
     fn size(self) -> Option<ShapeSize> {
@@ -274,22 +424,22 @@ impl SizeOfShape for SemanticRootsShape {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReceiptShape {
-    generation: u64,
-    manifest_digest: Option<TextBytes>,
-    batch_digest: TextBytes,
-    accepted_replace_scopes: u32,
-    accepted_tombstone_scopes: u32,
-    accepted_semantic_replace_scopes: u32,
-    accepted_semantic_tombstone_scopes: u32,
-    accepted_clear_surfaces: u32,
-    sealed: bool,
-    applied: bool,
-    durable_sequence: u64,
-    semantic_content: Option<SemanticRootsShape>,
-}
+closed_shape!(
+    struct ReceiptShape {
+        generation: u64,
+        manifest_digest: Option<TextBytes> = default,
+        batch_digest: TextBytes,
+        accepted_replace_scopes: u32,
+        accepted_tombstone_scopes: u32,
+        accepted_semantic_replace_scopes: u32,
+        accepted_semantic_tombstone_scopes: u32,
+        accepted_clear_surfaces: u32,
+        sealed: bool,
+        applied: bool,
+        durable_sequence: u64,
+        semantic_content: Option<SemanticRootsShape> = default,
+    }
+);
 
 impl SizeOfShape for ReceiptShape {
     fn size(self) -> Option<ShapeSize> {
@@ -317,15 +467,15 @@ impl SizeOfShape for ReceiptShape {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PublicationShape {
-    ordinal: u64,
-    before: [u8; 32],
-    after: [u8; 32],
-    batch: BatchShape,
-    ack: ReceiptShape,
-}
+closed_shape!(
+    struct PublicationShape {
+        ordinal: u64,
+        before: [u8; 32],
+        after: [u8; 32],
+        batch: BatchShape,
+        ack: ReceiptShape,
+    }
+);
 
 impl SizeOfShape for PublicationShape {
     fn size(self) -> Option<ShapeSize> {
@@ -336,13 +486,13 @@ impl SizeOfShape for PublicationShape {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SourceShape {
-    wire_version: u32,
-    fence: FenceShape,
-    publications: SequenceSize<PublicationShape>,
-}
+closed_shape!(
+    struct SourceShape {
+        wire_version: u32,
+        fence: FenceShape,
+        publications: SequenceSize<PublicationShape>,
+    }
+);
 
 impl SizeOfShape for SourceShape {
     fn size(self) -> Option<ShapeSize> {
@@ -353,13 +503,13 @@ impl SizeOfShape for SourceShape {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ContributorIdentityShape {
-    canonical: TextBytes,
-    name: Option<TextBytes>,
-    email: Option<TextBytes>,
-}
+closed_shape!(
+    struct ContributorIdentityShape {
+        canonical: TextBytes,
+        name: Option<TextBytes> = default,
+        email: Option<TextBytes> = default,
+    }
+);
 
 impl SizeOfShape for ContributorIdentityShape {
     fn size(self) -> Option<ShapeSize> {
@@ -376,13 +526,13 @@ impl SizeOfShape for ContributorIdentityShape {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ContributorEntryShape {
-    source_repo_id: TextBytes,
-    repo_relative_path: TextBytes,
-    contributors: SequenceSize<ContributorIdentityShape>,
-}
+closed_shape!(
+    struct ContributorEntryShape {
+        source_repo_id: TextBytes,
+        repo_relative_path: TextBytes,
+        contributors: SequenceSize<ContributorIdentityShape>,
+    }
+);
 
 impl SizeOfShape for ContributorEntryShape {
     fn size(self) -> Option<ShapeSize> {
@@ -396,16 +546,15 @@ impl SizeOfShape for ContributorEntryShape {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ContributorBatchShape {
-    repo_id: TextBytes,
-    revision_id: TextBytes,
-    #[serde(rename = "generation")]
-    _generation: u64,
-    batch_digest: TextBytes,
-    entries: SequenceSize<ContributorEntryShape>,
-}
+closed_shape!(
+    struct ContributorBatchShape {
+        repo_id: TextBytes,
+        revision_id: TextBytes,
+        generation: u64,
+        batch_digest: TextBytes,
+        entries: SequenceSize<ContributorEntryShape>,
+    }
+);
 
 impl SizeOfShape for ContributorBatchShape {
     fn size(self) -> Option<ShapeSize> {
@@ -481,10 +630,10 @@ fn decode_backing(size: ShapeSize, parser_scratch: u64) -> Result<RowBacking, Co
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native_history::build::{LoadedBootSourceV1, decode_boot_source_v1};
     use crate::native_history::build::source_input::{
         decode_history_batch_object, decode_history_source_object,
     };
+    use crate::native_history::build::{LoadedBootSourceV1, decode_boot_source_v1};
     use quanta_index_contract::{
         BatchPublishReceipt, FileContributorIngestBatch, HistoryIngestBatch, ManifestGeneration,
         RepoId, RepoRelativePath, RevisionId, SearchPlaneErrorCodeV2,
@@ -502,6 +651,44 @@ mod tests {
         atomic::{AtomicU64, Ordering},
     };
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn history_shape_decoder_keeps_nullable_fields_and_closed_maps() {
+        let batch = br#"{"repo_id":"r","revision_id":"v","generation":1,"batch_digest":"d","commits":[],"refs":[],"tags":[],"diff_hunks":[]}"#;
+        let decoded: BatchShape = decode_json_shape(batch).expect("omitted nullable digest");
+        assert!(decoded.manifest_digest.is_none());
+        assert_eq!(decoded.commits.count, 0);
+
+        let identity: ContributorIdentityShape =
+            decode_json_shape(br#"{"canonical":"a@example.test"}"#)
+                .expect("omitted nullable identity fields");
+        assert!(identity.name.is_none());
+        assert!(identity.email.is_none());
+
+        for invalid in [
+            br#"{"repo_id":"r","revision_id":"v","generation":1,"batch_digest":"d","commits":[],"refs":[],"tags":[],"diff_hunks":[],"unknown":0}"#.as_slice(),
+            br#"{"repo_id":"r","revision_id":"v","generation":1,"batch_digest":"d","batch_digest":"e","commits":[],"refs":[],"tags":[],"diff_hunks":[]}"#.as_slice(),
+        ] {
+            assert!(decode_json_shape::<BatchShape>(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn history_ref_shape_keeps_external_newtype_variants() {
+        let upsert: RefShape = decode_json_shape(br#"{"Upsert":{"name":"main","sha":"abc"}}"#)
+            .expect("externally tagged upsert");
+        assert!(matches!(upsert, RefShape::Upsert(_)));
+        let delete: RefShape =
+            decode_json_shape(br#"{"Delete":{"name":"main"}}"#).expect("externally tagged delete");
+        assert!(matches!(delete, RefShape::Delete(_)));
+        for invalid in [
+            br#""Upsert""#.as_slice(),
+            br#"{"0":{"name":"main","sha":"abc"}}"#.as_slice(),
+            br#"{"Delete":{"name":"main","other":0}}"#.as_slice(),
+        ] {
+            assert!(decode_json_shape::<RefShape>(invalid).is_err());
+        }
+    }
 
     struct Ledger {
         live: AtomicU64,
