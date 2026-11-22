@@ -36,3 +36,5 @@ Prefix 게시가 확인되고 ANN4K와 제품 4K가 모두 종료되면 `product
 - **ANN4K · VERIFIED.** `2a4843ca-a052-44e2-b98e-12d96e2073b3`에서 1 PASS·exit 0. 비어 있지 않은 필터 6개가 각각 파일 640/640·raw 10/10을 기록했다. 빈 필터는 0건이다.
 - **제품 4K · FAILED.** `492227b4-a0d2-4863-9433-e69d6d85a674`에서 1 FAIL·exit 100. 초기 4,096개 소스는 18.258초에 게시됐다. 이후 materialization의 1,200초 공통 watchdog이 만료됐다. 진행 폴링은 완료 3,077건을 관측했고, 실패 직후의 비원자적 공개 상태 조회에서는 완료 3,490건, 대기 603건, claim 3건이었다. Provider는 고유 행 3,520개와 질의 0개를 기록했다. 초기 검색과 후속 증분·overlay·두 번의 재시작 검증은 이 본문에서 실행되지 않았다.
 - **공통 입력.** 원 비교 함수로 시작 시점 공통 소스 1,071개와 resolver 입력 67개를 대조했으며 차이가 없었다. 제품 종료 기록에는 소스 경로 drift 204개와 resolver 경로 drift 2개가 있다. 결합 상태는 `quality_incomplete`다.
+
+제품 fixture의 `batch_limit`과 `max_in_flight`는 각각 1이다. 후기 공개 영수증의 관측 처리율은 초당 약 3.4–4.6건이었다. 603건은 실제 대기 상태였고, 관찰 폴링과 임베딩 중복만으로는 지연을 설명할 근거가 없다. 첫 128건 trace에서는 CoverageSave와 그 안의 Catalog 잠금이 다음 계측 지점을 좁혀 준다. 후기 원인을 확정하려면 같은 owner 처리에서 대기·provider·객체 설치·Catalog 게시를 대조해야 한다. [직렬 fixture](../../../crates/quanta-index-searchd-runtime/tests/native_product_process.rs#L1346) · [초기 worker 관측](01-attribution.md#prefix-실측-결과)

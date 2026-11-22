@@ -913,6 +913,7 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
     proof = by_id[release_fixture.PAIR_PROOF]
     fixture = json.loads((root / proof["artifact"]).read_text())
     from tools.ci import paired_r5_release as release
+    from tools.ci import paired_r5_result as runner
     from tools.ci.tests.p11_test_issuer import sign_statement
 
     monkeypatch.setattr(WRITER.platform, "system", lambda: "Linux")
@@ -1092,13 +1093,13 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
         def refuse_signature_write(*_):
             raise OSError("fixture signature storage error")
 
-        temporary.setattr(release, "_write_output_temporary", refuse_signature_write)
+        temporary.setattr(runner, "_write_output_temporary", refuse_signature_write)
         with pytest.raises(OSError, match="signature storage error"):
             finalize(lambda: None)
         assert not list(raw_root.glob("paired-*/*.sig"))
         assert not list(raw_root.glob("paired-*/terminal.json"))
     with monkeypatch.context() as temporary:
-        write = release._write_output_temporary
+        write = runner._write_output_temporary
 
         def refuse_terminal_write(parent, name, content):
             if name == "terminal.json":
@@ -1106,7 +1107,7 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
                 raise OSError("fixture terminal storage error")
             return write(parent, name, content)
 
-        temporary.setattr(release, "_write_output_temporary", refuse_terminal_write)
+        temporary.setattr(runner, "_write_output_temporary", refuse_terminal_write)
         with pytest.raises(OSError, match="terminal storage error"):
             finalize(lambda: None)
         assert not list(raw_root.glob("paired-*/*.sig"))

@@ -198,8 +198,10 @@ The Python runner passes its verified custody copy to QBC as the daemon path
 for both phases, including when the runner is invoked directly.
 In both modes, the caller hashes the running Linux executable before and
 after restart. The runner checks both observations against the pinned SHA-256,
-binds the witness to the caller run's nonce, and rechecks its bytes before
-publishing the capture index.
+and binds the witness to the caller run's nonce. Before publishing the capture
+index, the runner replays the witness, Nextest outputs, and QBC receipts and
+locators. All four QBC executions must share one lane, source snapshot, and
+toolchain. The runner publishes the complete index atomically.
 
 The typed selected-run archive is also used by the default recipe. Set
 `QUANTA_P11_R5_EVIDENCE_ROOT` to a fresh absolute external path to choose its

@@ -595,7 +595,9 @@
   supports that executed body. Catalog rerun
   `401e1d5a-bfc6-4959-a7eb-7d8b5dc0ffe4` ran 11/11 with exit 0. The 668-path
   preflight, admission, completion and live readback all match. The
-  Source exporter rerun remains on the shared Q lane.
+  Source exporter rerun remains on the shared Q lane. The later Lindera
+  lockfile change leaves the resolved Catalog and SearchPlane package and
+  feature graphs unchanged. It changes the Runtime graph.
 - S coordinator readback used to drop fresh Required DATA on writer or
   phase rejection before SDK failure handoff could take it. The coordinator
   now stages the existing pending slot before the read and releases it on
@@ -607,7 +609,16 @@
   second body, `rejected_required_history_readback_reaches_sdk_failure_handoff_v93`.
   It persists a well-formed but forged History recency absence, checks the
   exact writer refusal, and accounts for the grant through handoff and drop.
-  The two-body S owner target is **NOT_RUN** for this change.
+  S `15865f1d2a6` completes the transfer-phase callers. The owner target's
+  locked offline metadata resolves its Python floor, retrieval owner test,
+  SQLite and SDK ingress features. After primary overlay drift refusals,
+  S `e3c1370e218` sealed both overlays. History DATA run
+  `20261122T061002.854465Z-2c6f512e8440` selected the whole owner target
+  and **FAILED** with Cargo exit 101 and zero bodies on an unresolved
+  lifecycle codec import in `quanta-runtime-analysis`. The live call now
+  imports the lifecycle types through their mounted portable module.
+  The post-fix observation found no stable interval for another exact
+  capture. Corrected-cohort DATA and CLI run remain **NOT_RUN**.
 
 ## Current NC-H implementation map
 

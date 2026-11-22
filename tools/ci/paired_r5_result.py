@@ -10,6 +10,7 @@ import re
 import secrets
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -26,12 +27,19 @@ from tools.ci.daemon_execution_evidence import (
     read_witness,
     verify_r5_witness,
 )
+from tools.ci.lint.handoff_validation import (
+    _open_repo_output_parent,
+    _read_repo_regular_bytes,
+    _require_output_parent_identity,
+    _write_output_temporary,
+)
 from tools.ci.nextest_events import parse_nextest_bytes, parse_nextest_inventory_bytes
 from tools.ci.p11_attestation import SOCKET_ENV, remove_signing_agent
 from tools.ci.paired_cargo_resolution import REQUIRED_QUANTA_PACKAGES, resolve_from_qbc
 from tools.ci.proof_json import parse_proof_json
 
 SCHEMA = "quanta-paired-r5-runner-candidate/v1"
+INDEX = "paired-r5-result.json"
 DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 CASES = r5_cases({}, allow_legacy=True)
 
@@ -219,6 +227,27 @@ def _archive_capture(directory: Path, phase: str, capture: Any) -> dict[str, str
         result[name] = str(destination)
         result[f"{name}_sha256"] = _sha(raw)
     return result
+
+
+def read_runner_capture(directory: Path, name: str) -> bytes:
+    if name == R5_WITNESS_FILE:
+        return read_witness(directory, name)
+    return _read_repo_regular_bytes(directory, name, label="original QBC capture")
+
+
+def publish_paired_output(parent: int, name: str, raw: bytes) -> None:
+    temporary = _write_output_temporary(parent, name, raw)
+    try:
+        os.link(temporary, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+    except BaseException:
+        os.unlink(temporary, dir_fd=parent)
+        raise
+    try:
+        os.unlink(temporary, dir_fd=parent)
+        os.fsync(parent)
+    except BaseException:
+        os.unlink(name, dir_fd=parent)
+        raise
 
 
 def _qbc_modules(root: Path) -> tuple[Any, Any, Any]:
@@ -576,6 +605,142 @@ def _resolved_after(
     )
 
 
+def verify_runner_capture(
+    record: dict, read: Callable[[str], bytes], *, cases: tuple[R5Case, ...]
+) -> dict[str, Any]:
+    """Replay the paired candidate's raw observations and QBC outputs."""
+    run_ids = set()
+    nonces = set()
+    source_lanes = set()
+    for case, row in zip(cases, record["cases"], strict=True):
+        label, package, feature, binary, kind, test = case
+        event = f"{package}::{binary}${test}"
+        if [
+            row[k] for k in ("package", "feature", "binary", "kind", "selected_test", "event_name")
+        ] != [package, feature, binary, kind, test, event]:
+            raise ValueError("paired QBC case identity differs from the release witness")
+        outputs = {}
+        for phase in ("list", "run"):
+            capture = row["executions"][phase]
+            source_digest, toolchain, stdout = _read_phase(case, phase, capture, read)
+            custody = capture["qbc_custody"]
+            source_lanes.add(
+                (
+                    custody["lane_id"],
+                    custody["execution_root"],
+                    custody["target_root"],
+                    source_digest,
+                    toolchain,
+                )
+            )
+            if custody["run_id"] in run_ids:
+                raise ValueError("QBC completion is reused across list/run or caller/kernel")
+            if capture["nonce"] in nonces:
+                raise ValueError("paired phases reuse a QBC request nonce")
+            nonces.add(capture["nonce"])
+            run_ids.add(custody["run_id"])
+            outputs[phase] = stdout
+        if row["nextest"] != validate_selected(outputs["list"], outputs["run"], case):
+            raise ValueError("paired QBC result differs from its collected and executed body")
+        if label == "caller":
+            verify_captured_daemon_witness(
+                read(R5_WITNESS_FILE),
+                row["executions"]["run"],
+                test=event,
+                daemon_sha256=record["daemon_sha256"],
+            )
+    if len(source_lanes) != 1:
+        raise ValueError(
+            "paired QBC executions must share one lane and source snapshot and toolchain"
+        )
+    return {
+        "toolchain": "sha256:" + next(iter(source_lanes))[-1],
+        "features": sorted({feature for case in cases for feature in case[2].split(",")}),
+    }
+
+
+def _read_phase(
+    case: tuple[str, str, str, str, str, str],
+    phase: str,
+    capture: dict,
+    read: Callable[[str], bytes],
+) -> tuple[str, str, bytes]:
+    prefix = f"{case[0]}-{phase}-"
+    locator_raw = read(prefix + "completion.json")
+    locator = parse_proof_json(locator_raw)
+    custody = capture["qbc_custody"]
+    streams = {}
+    for name, field in (
+        ("receipt.json", "receipt"),
+        ("stdout.log", "stdout"),
+        ("stderr.log", "stderr"),
+    ):
+        raw = read(prefix + name)
+        digest = _sha(raw)
+        if digest != capture["archived"][name + "_sha256"] or digest != custody[field + "_sha256"]:
+            raise ValueError("original QBC completion bytes differ from the paired capture")
+        streams[name] = raw
+    receipt = parse_proof_json(streams["receipt.json"])
+    if not isinstance(receipt, dict) or not isinstance(locator, dict):
+        raise ValueError("QBC completion requires its original receipt and locator")
+    command = phase_command(case, phase)
+    if not all(
+        isinstance(custody.get(k), str) and Path(custody[k]).is_absolute()
+        for k in ("execution_root", "target_root", "receipt_path")
+    ):
+        raise ValueError("QBC completion lacks its registered lane paths")
+    identity = (custody["lane_id"], custody["run_id"])
+    if (
+        not all(isinstance(value, str) and value for value in identity)
+        or (receipt.get("lane"), receipt.get("last_run_id_v1")) != identity
+        or receipt.get("run_state") != "finished"
+        or receipt.get("command") != command
+        or any(
+            type(receipt.get(k)) is not int or receipt[k] != 0
+            for k in ("last_exit_code", "command_exit_code_v1")
+        )
+    ):
+        raise ValueError("QBC receipt does not record the successful selected process")
+    source_digest = receipt.get("source_snapshot_digest")
+    if not isinstance(source_digest, str) or not DIGEST.fullmatch(source_digest):
+        raise ValueError("QBC receipt is missing its source snapshot")
+    environment = receipt.get("artifact_env_payload")
+    if not isinstance(environment, dict) or _sha(_canonical(environment)) != receipt.get(
+        "artifact_env_digest"
+    ):
+        raise ValueError("QBC receipt environment differs from its digest")
+    if any(
+        Path(custody.get(field, "")) != Path(custody["receipt_path"]).with_name(filename)
+        for field, filename in (("stdout_path", "stdout.log"), ("stderr_path", "stderr.log"))
+    ):
+        raise ValueError("QBC completion streams differ from the physical receipt")
+    validate_locator_fields(
+        locator,
+        nonce=capture["nonce"],
+        request_sha=capture["request_env_sha256"],
+        command=command,
+        lane=identity[0],
+        run_id=identity[1],
+        path=custody["receipt_path"],
+        size=len(streams["receipt.json"]),
+        receipt_sha=custody["receipt_sha256"],
+        cwd=custody["execution_root"],
+        source_digest=source_digest,
+        artifact_env=receipt.get("artifact_env_digest"),
+    )
+    if (
+        _sha(locator_raw) != capture["locator_sha256"]
+        or receipt.get("lane_execution_root_v1") != custody["execution_root"]
+        or receipt.get("command_cwd_v1") != custody["execution_root"]
+        or receipt.get("target_dir") != custody["target_root"]
+    ):
+        raise ValueError("QBC locator differs from the receipt, source or physical lane")
+    toolchain = receipt.get("toolchain_digest")
+    if not isinstance(toolchain, str) or not DIGEST.fullmatch(toolchain):
+        raise ValueError("QBC receipt lacks its observed toolchain digest")
+    return source_digest, toolchain, streams["stdout.log"]
+
+
 def verify_pair_boundary(
     root: Path,
     pair: Path,
@@ -735,19 +900,15 @@ def _main(signer_socket: str | None) -> int:
     }
     if release is None:
         verify_pair_boundary(root, semantica, payload, args.qbc_lane, cases=registered_cases)
-    # The kernel and final resolver runs follow the caller's observation.
-    caller = case_results[0]
-    verify_captured_daemon_witness(
-        read_witness(output, R5_WITNESS_FILE),
-        caller["executions"]["run"],
-        test=caller["event_name"],
-        daemon_sha256=args.daemon_digest,
-    )
-    target = output / "paired-r5-result.json"
-    with target.open("xb") as handle:
-        handle.write(_canonical(payload) + b"\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    parent = _open_repo_output_parent(output, INDEX, create=False)
+    try:
+        verify_runner_capture(
+            payload, lambda name: read_runner_capture(output, name), cases=registered_cases,
+        )
+        _require_output_parent_identity(output, INDEX, parent)
+        publish_paired_output(parent, INDEX, _canonical(payload) + b"\n")
+    finally:
+        os.close(parent)
     if release is not None:
         terminal = prepare_terminal(
             root,
@@ -759,7 +920,7 @@ def _main(signer_socket: str | None) -> int:
             signer_socket=signer_socket,
         )
         print(f"paired-r5-release-terminal: {terminal}")
-    print(f"paired-r5-runner-candidate: {target}")
+    print(f"paired-r5-runner-candidate: {output / INDEX}")
     return 0
 
 

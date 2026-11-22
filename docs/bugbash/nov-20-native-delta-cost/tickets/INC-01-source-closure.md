@@ -85,9 +85,15 @@
 - Cold bootstrap의 signed epoch 갱신 전에 기존 checkpoint 호환성과 선행·완료 checkpoint를 검증한다. Runtime의 두 승계 모듈은 Unix에서 signed Store, SDK ingress, Original snapshot, 기존 retrieval authority를 함께 쓸 때 열린다. Feature closure 4개, 경계 검사 24개, 현행 Store 스키마와 lease 관련 실제 SQL 조건 12개를 확인했다.
 - pre-V9 fixture에서 훅이 항상 전달하던 `None` 단언을 제거했다. 이 fixture는 signed V9 부재를 조회하며, 절단 시점의 durable carrier 부재는 별도 확인이 필요하다.
 
+### 동일 시도 재시작과 Q 응답 경계
+
+- Native SDK 복구는 signed Store에서 Source intent·Q target·body version, 현재 BoundV2 owner와 OS lease, V9·carrier 부재를 확인한 뒤 기존 scheduler를 다시 실행한다. 복구한 body는 실제 producer의 plan·outcomes·dedupe와 대조한다. 기존 replay 작성 시각을 사용하고, 새로 준비한 재생 요청을 저장된 요청과 대조한 뒤 같은 owner로 writer를 준비한다. 이 분기는 새로운 `StartBoundV2`나 Source CAS를 호출하지 않는다. pre-V9 절단은 실제 signed Store가 두 단계의 부재를 확인한 뒤 발화한다.
+- Linux Product suite 네 건을 등록했다. pre-V9 동일 시도, 129건의 durable prefix, Q 페이지 ACK 후 S progress 기록 전 종료, Q seal receipt 확인 후 S 처리 전 종료다. 페이지 절단은 새 fence의 128·129 ACK를 요구하고, seal 절단은 재시작 전 Q의 정확한 영속 receipt를 읽는다. 네 selector가 각각 본문 하나로 해석됐다. 현행 SQLite 문장으로 정상·다른 Source/target·stale owner/lease·다른 body version·경쟁 시도·늦은 V9/carrier를 포함한 11개 조건을 확인했다. Rust 및 설치 Product 본문은 `NOT_RUN`이다.
+- warm DELTA의 일반 수화와 Original 유료 V1 검증은 서로 다른 권한과 작업량을 확인한다. 유료 본문 검증을 유지한다. 0 B 수용에는 정확한 V1·V2 CAS 참조와 커밋 시점까지 유효한 불변성 증명, 실제 participant commit을 타는 계측 회귀가 남아 있다.
+
 ### 남은 구현과 검증
 
-1. 승계한 BoundV2로 writer 준비를 재개한다. 보존된 target execution의 전체 plan·scheduled outcomes·dedupe key와 v159의 고정 replay request를 대조하고, 복구한 scheduler resident에서 실제 writer receipt를 발급한다. 기존 시도와 Q operation으로 DELTA 준비를 계속한다. `native_delta_rearms_same_bound_attempt_before_v9_or_carrier_v3`와 `native_delta_recovers_pending_carrier_before_writer_markers_v3`에서 초기 부팅부터 ACK·검색 공개·Source CAS 횟수를 확인한다. 오래된 stage는 별도의 attempt·carrier·writer fence로 회수한다.
+1. `native_delta_rearms_same_bound_attempt_before_v9_or_carrier_v3`와 `native_delta_recovers_pending_carrier_before_writer_markers_v3`에서 초기 부팅부터 동일 attempt·Q operation의 ACK, G2 검색 공개 및 Source CAS 1회를 확인한다. 오래된 stage는 기존 attempt·carrier·writer fence로 회수한다.
 2. 단일 페이지와 새 다중 페이지 회귀를 실행한다. Page ACK가 S 기록 전에 유실되는 경우, Q가 seal을 영속화한 직후 응답이 유실되는 경우, fence 변경, binding 전후를 각각 확인한다. 동일 Source CAS, writer 준비, Q Submit 횟수와 History 참조를 확인한다. 현행 V39 signed SQL worker와 Q 서버를 같은 코호트에 설치한다.
 3. Java FULL 전환 후 해당 스냅샷의 Product 기준 세대와 첫 V2 DELTA를 검증한다. Native FULL의 검증된 C1 tree를 보존해 HEAD·manifest·root가 일치하면 DELTA 준비에서 선행 V2 tree를 재구성하지 않는다. Target V1·V2 전체 본문 검사는 준비와 커밋에 남아 있고, 커밋은 그 전에 V1 target·predecessor도 hydrate한다. Source CAS 전후 각 단계의 손상 검사는 유지하면서 같은 단계 안의 중복 읽기를 줄이고, 변경분과 전체 호환 읽기를 각각 계측한다.
 4. 기존 QBC lane에서 Wire와 Store의 focused 본문을 먼저 실행한다. 11월 22일 외장 볼륨의 미참조 snapshot 1개를 회수했다. 현행 캡처 두 번은 Quanta sibling overlay가 캡처 중 변경돼 중단됐다. 기존 동결본으로 실행한 Reader statement-set 요청 `875bf4e6c1b48bfc57260f3002ec44db`는 호스트 컴파일 admission에서 exit 75로 종료돼 본문 0개다. 후속은 SDK·Watch 변경과 손상된 receipt, Source CAS 직후 및 V9/V5 준비 후 중단 복구다. 정상과 재시작에서 실제 변경·삭제·Rename 결과, Source CAS와 게시 횟수, 무관 본문 바이트를 확인한다.

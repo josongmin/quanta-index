@@ -254,6 +254,7 @@ def test_verified_migration_requires_current_named_nextest_observation(
         ("release_missing_test_target", "Nextest collection lacks recorded test targets"),
         ("release_missing_lib_target", "Nextest collection lacks the recorded library target"),
         ("release_wrong_workspace", "Nextest build metadata differs from the workspace or its Cargo target"),
+        ("release_unbound_legacy_path", "old-Q execution path differs from the retained executable"),
         ("release_changed_legacy_binary", "old-Q executable SHA-256 differs"),
         ("release_valid", None),
     ],
@@ -406,10 +407,13 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, evidence
             if evidence == "release_wrong_feature_command":
                 commands["cargo.json"].extend(["--features", f"{crate}/different"])
             legacy = None
-            if evidence == "release_changed_legacy_binary":
-                binary_path = checker.ROOT / "old-searchd"
-                (target_dir / "legacy-searchd").write_bytes(b"replacement old daemon")
-                legacy = {"path": str(binary_path), "sha256": hashlib.sha256(b"old daemon").hexdigest()}
+            if evidence in {"release_changed_legacy_binary", "release_unbound_legacy_path"}:
+                retained = target_dir / "legacy-searchd"
+                retained.write_bytes(
+                    b"replacement old daemon" if evidence == "release_changed_legacy_binary" else b"old daemon"
+                )
+                executed = checker.ROOT / "old-searchd" if evidence == "release_unbound_legacy_path" else retained
+                legacy = {"path": str(executed), "sha256": hashlib.sha256(b"old daemon").hexdigest()}
             source_binding["execution"] = {
                 "workspace_root": str(checker.ROOT),
                 "binaries_sha256": "sha256:" + hashlib.sha256(binaries_bytes).hexdigest(),
@@ -524,7 +528,9 @@ def test_release_source_manifest_rejects_checkout_drift(tmp_path, monkeypatch, s
         retirement_nextest.release_source_manifest(checkout, revision, inventory, events)
 
 
-@pytest.mark.parametrize("changed", [None, "test", "old-q"])
+@pytest.mark.parametrize("changed", [
+    None, "test", "old-q", "supplier-removed", "test-restored", "old-q-restored", "metadata-restored",
+])
 def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, monkeypatch, changed):
     checkout = tmp_path / "source"
     checkout.mkdir()
@@ -551,7 +557,10 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         assert target.parent == evidence and env["QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR"] == "1"
         assert env["QUANTA_INDEX_RESOURCE_ADMISSION"] == "1"
         assert "QUANTA_INDEX_CACHE_ROOT" not in env
-        assert env[retirement_nextest.LEGACY_BINARY_ENV] == str(legacy_path)
+        retained = target / "legacy-searchd"
+        assert env[retirement_nextest.LEGACY_BINARY_ENV] == str(retained)
+        assert os.access(retained, os.X_OK)
+        assert retained.read_bytes() == b"old daemon"
         executable = target / "replacement"
         row = {"binary-id": binary_id, "binary-path": str(executable), "binary-name": "replacement", "kind": "test"}
         rows = {binary_id: row}
@@ -564,6 +573,8 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         args = argv[3:]
         calls.append(args)
         if "binaries-only" in args:
+            if changed == "supplier-removed":
+                legacy_path.unlink()
             for built in rows.values():
                 Path(built["binary-path"]).write_bytes(b"test binary")
             stdout.write(json.dumps({
@@ -588,7 +599,18 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             if changed == "test":
                 executable.write_bytes(b"other binary")
             if changed == "old-q":
-                legacy_path.write_bytes(b"other old daemon")
+                retained.write_bytes(b"other old daemon")
+            restored = {
+                "test-restored": executable,
+                "old-q-restored": retained,
+                "metadata-restored": Path(args[args.index("--binaries-metadata") + 1]),
+            }.get(changed)
+            if restored is not None:
+                original = restored.read_bytes()
+                file_stat = restored.stat()
+                restored.write_bytes(original + b"changed")
+                restored.write_bytes(original)
+                os.utime(restored, ns=(file_stat.st_atime_ns, file_stat.st_mtime_ns))
             for line in (
                 {"type": "suite", "event": "started", "test_count": 1, "nextest": meta},
                 {"type": "test", "event": "started", "name": event},
@@ -606,7 +628,7 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         include_lib=True, test_targets=["replacement", "additional"],
         filterset="test(=passes)", features=["native-one, native-two"],
     )
-    if changed is not None:
+    if changed not in {None, "supplier-removed"}:
         with pytest.raises(ValueError, match="build inputs or evidence changed"):
             retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
         assert not list(evidence.glob("*-source-manifest.json"))
@@ -618,15 +640,18 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             f"quanta-index-lexical::{name}": hashlib.sha256(b"test binary").hexdigest()
             for name in ("replacement", *extra_targets)
         }
-        assert manifest["execution"]["legacy_searchd"] == {"path": str(legacy_path), "sha256": legacy_sha}
+        run_id = path.name.removesuffix("-source-manifest.json")
+        target = evidence / f"{run_id}-target"
+        assert manifest["execution"]["legacy_searchd"] == {
+            "path": str(target / "legacy-searchd"), "sha256": legacy_sha,
+        }
         assert list(manifest["execution"]["commands"].values()) == [
             ["--lane", args["lane"], *cmd]
             for cmd in (calls[0], calls[1], calls[2], calls[3])
         ]
         relocated = evidence.rename(tmp_path / "relocated")
-        legacy_path.unlink()
+        legacy_path.unlink(missing_ok=True)
         artifact = retirement_nextest.RawFile.capture(relocated / path.name)
-        run_id = path.name.removesuffix("-source-manifest.json")
         retirement_nextest.check_frozen_inputs(
             artifact,
             {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -23,6 +24,7 @@ from tools.ci.paired_r5_result import (
     validate_locator,
     validate_selected,
 )
+from tools.ci.tests.p11_test_issuer import nextest_bytes
 
 
 def test_paired_runner_imports_its_owner_from_foreign_cwd(tmp_path: Path) -> None:
@@ -931,7 +933,8 @@ def test_qbc_children_do_not_inherit_the_producer_signing_agent(tmp_path, monkey
     "change",
     [
         None, "quanta", "semantica", "built", "provided", "custody", "kernel",
-        "witness", "missing-witness",
+        "witness", "missing-witness", "archived-stdout", "archived-locator",
+        "split-toolchain", "publication-sync", "existing-index",
     ],
 )
 def test_staged_runner_rechecks_witness_and_custody_before_publication(
@@ -978,6 +981,20 @@ def test_staged_runner_rechecks_witness_and_custody_before_publication(
     witness = evidence / RUNNER.R5_WITNESS_FILE
     index = evidence / "paired-r5-result.json"
     queries = []
+    completed_runs = {}
+    source_digest = "a" * 64
+    completion = SimpleNamespace(
+        LOCATOR_PATH_ENV_V1="LOCATOR",
+        LOCATOR_NONCE_ENV_V1="NONCE",
+        REQUEST_ENV_DIGEST_ENV_V1="REQUEST",
+        EXPECTED_SOURCE_HEAD_ENV_V1="SOURCE",
+        read_completion_locator_bytes_v1=Path.read_bytes,
+    )
+    owner = SimpleNamespace(
+        _campaign_cargo_admission_owner_v1=lambda: SimpleNamespace(
+            campaign_source_snapshot_digest_v1=lambda _root: source_digest
+        )
+    )
 
     def resolver(q, s, consumer, feature, lane):
         assert (q, s, lane) == (root, pair, "fixture")
@@ -995,31 +1012,91 @@ def test_staged_runner_rechecks_witness_and_custody_before_publication(
             witness.write_bytes(witness.read_bytes() + b"\n")
         elif change == "missing-witness":
             witness.unlink()
+        elif change == "archived-stdout":
+            path = evidence / "caller-run-stdout.log"
+            path.write_bytes(path.read_bytes() + b"\n")
+        elif change == "archived-locator":
+            (evidence / "caller-run-completion.json").write_bytes(
+                (evidence / "caller-list-completion.json").read_bytes()
+            )
+        elif change == "existing-index":
+            index.write_bytes(b"existing index")
         return result
 
-    def completed_case(_pair, _root, output, _source_head, _quanta_head, case,
-                       *_qbc_inputs, archive, cases):
-        assert archive is None and cases == CASES and output == evidence
-        label, package, _, binary, _, test = case
-        event = f"{package}::{binary}${test}"
-        if label == "kernel":
-            return {"event_name": event}
-        nonce = "c" * 32
-        observation = {
-            "schema_version": 1,
-            "test": event,
-            "nonce": nonce,
-            "executables": [digest, digest],
+    def execute_phase(semantica, case, phase, command, _owner, _completion, env, lane, *, cases):
+        assert (semantica, lane, cases) == (pair, "fixture", CASES)
+        assert env[RUNNER.DAEMON_PATH_ENV] == str(binaries["custody"])
+        role, package, _, binary, kind, test = case
+        run_id = f"{role}-{phase}"
+        physical = tmp_path / "qbc" / run_id
+        physical.mkdir(parents=True)
+        receipt_path = physical / "receipt.json"
+        target_root = tmp_path / "target"
+        listed, events = nextest_bytes(package, binary, kind, test)
+        stdout = listed if phase == "list" else events
+        artifact_env = {"CODEGRAPH_PERSONA": "agent"}
+        env_digest = hashlib.sha256(
+            json.dumps(artifact_env, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        toolchain = "9" if change == "split-toolchain" and run_id == "kernel-run" else "8"
+        receipt = {
+            "lane": lane, "last_run_id_v1": run_id, "run_state": "finished",
+            "last_exit_code": 0, "command_exit_code_v1": 0, "command": command,
+            "source_snapshot_digest": source_digest, "toolchain_digest": toolchain * 64,
+            "lane_execution_root_v1": str(pair), "command_cwd_v1": str(pair),
+            "target_dir": str(target_root), "artifact_env_payload": artifact_env,
+            "artifact_env_digest": env_digest,
         }
-        raw = json.dumps(observation).encode()
-        witness.write_bytes(raw)
-        return {
-            "event_name": event,
-            "executions": {
-                "run": {"nonce": nonce, "daemon_witness_sha256": hashlib.sha256(raw).hexdigest()}
-            },
+        receipt_raw = json.dumps(receipt).encode()
+        custody = {
+            "lane_id": lane, "run_id": run_id, "execution_root": str(pair),
+            "target_root": str(target_root),
         }
+        for stream, name, raw in (
+            ("receipt", "receipt.json", receipt_raw),
+            ("stdout", "stdout.log", stdout),
+            ("stderr", "stderr.log", b""),
+        ):
+            path = physical / name
+            path.write_bytes(raw)
+            custody[f"{stream}_path"] = str(path)
+            custody[f"{stream}_sha256"] = hashlib.sha256(raw).hexdigest()
+        locator = {
+            "schema_version": "qbc-verification-completion-locator/v1",
+            "lane": lane, "run_id": run_id, "nonce": env["NONCE"],
+            "receipt_path": str(receipt_path), "receipt_size_bytes": len(receipt_raw),
+            "receipt_sha256": custody["receipt_sha256"], "cargo_argv": command,
+            "source_snapshot_schema": "source-snapshot-identity.v1",
+            "source_snapshot_digest": source_digest, "artifact_env_digest": env_digest,
+            "request_env_sha256": env["REQUEST"], "command_cwd": str(pair), "receipt_exit_code": 0,
+        }
+        Path(env["LOCATOR"]).write_text(json.dumps(locator))
+        completed_runs[receipt_path] = SimpleNamespace(
+            run=SimpleNamespace(
+                lane=lane, run_id=run_id, exit_code=0, command=tuple(command),
+                result_directory=physical, execution_root=pair, command_cwd=pair,
+            ),
+            receipt_bytes=receipt_raw, stdout=stdout, stderr=b"",
+            receipt_digest=custody["receipt_sha256"], process_exit_code_v1=0,
+            receipt_payload_v1=lambda: receipt, custody_payload_v1=lambda: custody,
+        )
+        if run_id == "caller-run":
+            assert env[RUNNER.WITNESS_DIR_ENV] == str(evidence)
+            witness.write_text(json.dumps({
+                "schema_version": 1, "test": f"{package}::{binary}${test}",
+                "nonce": env[RUNNER.WITNESS_NONCE_ENV], "executables": [digest, digest],
+            }))
+        return 0
 
+    if change == "publication-sync":
+        sync = os.fsync
+
+        def fail_index_sync(descriptor):
+            if index.exists():
+                raise OSError(errno.EIO, "candidate index sync failed")
+            sync(descriptor)
+
+        monkeypatch.setattr(RUNNER.os, "fsync", fail_index_sync)
     monkeypatch.delenv(RUNNER.SOCKET_ENV, raising=False)
     monkeypatch.setattr(sys, "argv", [
         "paired_r5_result.py",
@@ -1036,17 +1113,29 @@ def test_staged_runner_rechecks_witness_and_custody_before_publication(
         "--runtime-resolution", json.dumps(resolutions["runtime"]),
         "--kernel-resolution", json.dumps(resolutions["kernel"]),
     ])
-    monkeypatch.setattr(RUNNER, "_qbc_modules", lambda _root: (None, None, None))
-    monkeypatch.setattr(RUNNER, "_one", completed_case)
+    completed = SimpleNamespace(read_completed_run_receipt_at_path_v1=completed_runs.__getitem__)
+    monkeypatch.setattr(RUNNER, "_qbc_modules", lambda _root: (completed, completion, owner))
+    monkeypatch.setattr(RUNNER, "_execute_qbc_phase", execute_phase)
     monkeypatch.setattr(RUNNER, "_resolved_after", resolver)
+    errors = {
+        "quanta": "source changed", "semantica": "source changed",
+        "built": "daemon bytes changed", "provided": "daemon bytes changed",
+        "custody": "daemon bytes changed", "kernel": "resolver identity changed",
+        "witness": "archived capture", "archived-stdout": "completion bytes differ",
+        "archived-locator": "completion locator differs", "split-toolchain": "share one lane",
+    }
     if change == "missing-witness":
         with pytest.raises(FileNotFoundError, match=RUNNER.R5_WITNESS_FILE):
             RUNNER.main()
-    elif change:
-        with pytest.raises(
-            ValueError,
-            match="source changed|daemon bytes changed|resolver identity changed|archived capture",
-        ):
+    elif change == "publication-sync":
+        with pytest.raises(OSError, match="candidate index sync failed"):
+            RUNNER.main()
+    elif change == "existing-index":
+        with pytest.raises(FileExistsError):
+            RUNNER.main()
+        assert index.read_bytes() == b"existing index"
+    elif change in errors:
+        with pytest.raises(ValueError, match=errors[change]):
             RUNNER.main()
     else:
         assert RUNNER.main() == 0
@@ -1056,7 +1145,9 @@ def test_staged_runner_rechecks_witness_and_custody_before_publication(
             hashlib.sha256(witness.read_bytes()).hexdigest()
         )
         assert capsys.readouterr().out == f"paired-r5-runner-candidate: {index}\n"
-    assert index.exists() == (change is None)
+    assert index.exists() == (change in (None, "existing-index"))
+    assert not list(evidence.glob(".paired-r5-result.json.*.tmp"))
+    assert len(completed_runs) == 4
     assert queries == [
         ("quanta-runtime", "index-sdk-ingress,retrieval-authority-contract-surface"),
         ("quanta-runtime-retrieval-kernel", "index-sdk-ingress-surface"),

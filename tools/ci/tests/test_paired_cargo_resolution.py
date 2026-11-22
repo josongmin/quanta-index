@@ -283,19 +283,13 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
         "    assert evidence == evidence.resolve() and evidence.is_dir()\n"
         f"    pathlib.Path({str(evidence_parent_record)!r}).write_text(str(evidence.parent))\n"
         f"    if {(mutate and not use_p10)!r}: pathlib.Path({str(built)!r}).write_bytes(b'changed release bytes')\n"
-        "    if case[0] != 'caller': return {}\n"
-        "    event = f'{case[1]}::{case[3]}${case[5]}'\n"
-        "    nonce = 'd' * 32\n"
-        "    witness = json.dumps(dict(schema_version=1, test=event, nonce=nonce, "
-        "executables=[daemon_digest, daemon_digest])).encode()\n"
-        "    (evidence / runner.R5_WITNESS_FILE).write_bytes(witness)\n"
-        "    return dict(event_name=event, executions=dict(run=dict(nonce=nonce, "
-        "daemon_witness_sha256=hashlib.sha256(witness).hexdigest())))\n"
+        "    return {}\n"
         "def qbc_modules(_):\n"
         f"    if {preflight_failure!r}: raise SystemExit(7)\n"
         "    return None, None, None\n"
         "runner._qbc_modules = qbc_modules\n"
         "runner._one = local_phase\n"
+        "runner.verify_runner_capture = lambda *args, **kwargs: None\n"
         "runner._verify_resolution_files = lambda *args, **kwargs: None\n"
         "runner._resolved_after = lambda root, pair, consumer, feature, lane: dict(consumer=consumer, feature=feature)\n"
         "def admit_release(root, pair, daemon, **options):\n"
@@ -352,7 +346,6 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
         candidate = evidence_parent / "result" / "paired-r5-result.json"
         assert candidate.exists() == (not mutate)
         candidate.unlink(missing_ok=True)
-        (candidate.parent / "r5-caller-daemon.json").unlink()
         candidate.parent.rmdir()
         evidence_parent.rmdir()
     if preflight_failure or mutate:

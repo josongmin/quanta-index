@@ -1,5 +1,7 @@
 # 07 · 최종 후보의 SDK60·Large·ANN·Hybrid·E07
 
+**15:26 KST Root 코드 합류와 실측 입장.** Q `1277bc645f6c`에 품질 판정 경로 검증과 미사용 Lindera 제거를 합쳤다. Python 집중 **349/349 · exit 0**이며 퇴역 이관 본문은 [06](06-tantivy-retirement.md)의 동일 후보 증거가 필요하다. 원 quiet-host 사전검사는 Rust 13개와 1분 부하 **36.80 / 상한 8**에서 거절됐다. Caddy·etcd SDK60과 Large 두 재시작의 이 후보 본문은 **NOT_RUN**이다. S/Q 동결 실물 유실과 재캡처 공간 부족으로 서명 설치는 **BLOCKED**, 설치 복구 **0/3**과 독립 블라인드 SDK 품질 판정은 **NOT_RUN**이다. [실행 인계](LANES.md#root-합류-실행표--11월-22일-1515-kst) · [CURRENT 설치](03-signed-published-cp2.md)
+
 **잔여 인계 · 11월 22일 01:34 KST.** 최종 설치 전에 기존 D 서명 입력, TEXT quiet-host 및 원 코퍼스, B ANN4K/whole SDK 원 oracle, F-EVAL 독립 심사를 각 오너가 병렬 준비한다. 이미 있는 서명 소비·벤치 코드와 동결 R56/ANN 결과를 각 범위에서 인수한다. 현행 06.4 후보의 SDK60/Large·signed Hybrid·ANN·Mixed/E07·두 비교 기준 실행과 원 영수증이 남았다. [레인별 검수](LANES.md#지금-병렬로-준비할-작업)
 
 **담당** 기존 TEXT와 B는 생산·벤치, D는 설치 신원 공급, F는 실제 설치 증거 소비·품질/성능 통합. **상태** R56의 Record와 Large는 동결본 `VERIFIED`; 최종 퇴역 후보의 제품 수용 `NOT_RUN`.
@@ -21,6 +23,8 @@
 ## 먼저 작성할 Hybrid 코드
 
 - [ ] **07.1** **선행 입력** D 오너에게서 승인 Q ELF·설치 선택·Native BOOT·config/policy를 함께 인증하는 기존 계약과 검증 결과를 인수한다. 현재 peer 및 선택 일치 검사는 그 계약의 소비 기반으로 재사용한다.
+
+**07.1 D3 공급 상태 · 11월 22일 15:28 KST.** 유실 후보의 재캡처 복구 제어는 검증됐다. 내부 용량 기준에 미달해 현행 S/Q 재캡처와 D3 ELF 공급이 **BLOCKED**다. 같은 서명 설치에 결속한 Q 선택·Native BOOT·config/policy 검증 출력은 공급 대기 상태다. [현행 공급 제어와 입장](03-signed-published-cp2.md#현행-d3-재캡처-복구--11월-22일)
 
 **07.1 직접 서명 입장 · 04:12 KST.** CURRENT 직접 서명도 기존 D 재개기가 현행 Source에 고정한 승인 요청과 공용 네 역할 빌드 영수증을 검증한 뒤 스테이지를 준비한다. 기존 승인 선택·BOOT·config/policy 발행은 D3 ELF와 동결 S/Q 공급을 기다린다. [03 제어 회귀](03-signed-published-cp2.md#current-소실재개서명-수리--2026-11-22)
 
@@ -231,6 +235,8 @@ split manifest의 `query_family_ids`에 객체나 혼합 타입이 들어오면 
 11월 22일 블라인드 qrels 재생기는 두 리뷰와 재정의 양식 SHA가 서로 다른지 검증한다. 기존 소비기는 같은 양식 SHA를 다른 역할에서 재사용한 라벨을 수용했다. 리뷰 간 중복과 재정의 리뷰 재사용 회귀를 추가했다. 관련 Python 회귀 **324/324**가 통과했다. 실제 SDK 캡처·독립 심사·품질 평가는 **NOT_RUN**이다. [라벨 소비기](../../../../tools/benchmark/retrieval/holdout_review.py) · [회귀](../../../../tools/ci/tests/test_holdout_review.py)
 
 **14:52 KST 심사자 동일성 수리.** 동일 ID에 가장자리 공백이나 탭을 붙이면 양식 발급·Native 라벨 재생·최종 승인 파서에서 다른 심사자로 취급됐다. 공용 평가기의 동일성 비교를 세 경로에 적용하고 영수증에는 제출된 ID를 보존한다. 수정 전 발급·재생 **3 FAIL**, 최종 승인 **1 FAIL**을 재현했다. 수정 후 holdout review·Native file evidence **273/273**, 최종 승인과 고정 영수증 집중 선택 **3/3**을 확인했다. 독립 심사와 Hybrid 승격 실측은 **NOT_RUN**이다. [공용 비교](../../../../tools/benchmark/retrieval/evaluator.py#L163) · [최종 승인](../../../../tools/benchmark/retrieval/run.py#L2894)
+
+**15:14 KST Native 품질 판정 입력 경로 수리.** 이전 승인기는 재생 중 cohort·심사 목록·영수증의 심볼릭 링크가 교체돼도 최초 해석 경로의 해시만 확인했다. 공개 입력 세 종류를 같은 바이트의 다른 파일로 바꾼 경우에 종전 품질 승인기가 거절하지 않았다. 이제 선언 경로의 현재 대상도 처음 재생한 경로와 대조한다. 수정 전 **3 FAIL**, 수정 후 `test_native_file_decision.py`·CLI·native file evidence·holdout review **349/349 · exit 0**이다. 이 결과는 평가기 회귀다. 실제 서명 SDK 캡처, 독립 블라인드 심사와 Hybrid 실측은 **NOT_RUN**이다. [판정기](../../../../tools/benchmark/retrieval/native_file_decision.py#L845) · [회귀](../../../../tools/ci/tests/test_native_file_decision.py#L346)
 
 ## 원 E07과 비교
 

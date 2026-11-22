@@ -480,10 +480,10 @@ tests = [
 [[targets.dispositions]]
 disposition = "migrate"
 proof = "NOT_RUN"
-replacement = "native_index_uds::read_sessions::query::preview::native_select_path_combines_path_and_body_matches_after_cold_reopen is partial. Also require duplicate chunks within one repository and path to collapse"
+replacement = "Native exact path grouping collapses all owners with the same repository and path before the global cut, selects by score then owner, and the public UDS path query preserves path/body matches across cold reopen. Candidate-bound execution remains NOT_RUN."
 candidates = [
+  {path = "crates/quanta-index-lexical/src/native/text_path_group.rs", tests = ["exact_grouping_selects_score_then_owner_before_global_cut"]},
   {path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/read_sessions/query/preview.rs", tests = ["native_select_path_combines_path_and_body_matches_after_cold_reopen"]},
-  {path = "crates/quanta-index-searchd-runtime/tests/e2e_exact_count_window.rs", tests = ["select_file_collapses_duplicate_chunks_before_top_k_and_reports_exact_total"]},
 ]
 tests = [
   "tantivy_select_path_collapses_multiple_chunks_per_path",

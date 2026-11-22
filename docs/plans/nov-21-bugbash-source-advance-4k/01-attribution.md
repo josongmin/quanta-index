@@ -53,3 +53,5 @@ python3 -m tools.benchmark.retrieval.causal_cost_diagnostic native-ingest \
 | `native_coverage_save/3` | 170 |
 
 부모·자식 수치는 합산하지 않는다. 현재 `build_prepare`에서 `lexical_build`의 관측 읽기가 가장 크다. qtrace는 `PARTIAL_DIAGNOSTIC`이며 17,858개 입력 이벤트가 누락되고 5개 span이 열린 채 끝났다. 474,637개 수락 이벤트는 모두 기록됐고 61,877,651바이트에서 정상 종료했다. 첫 미종결 span은 `native_source_map_apply` 아래의 `managed_object_confirm/3`이다. 표는 카운터가 있는 닫힌 span만 사용한다. 과거 실패에는 단계별 승인 읽기 내역이 없어 두 실행의 비용 차이를 개별 단계에 귀속할 수 없다.
+
+같은 캡처를 `closed-workers`로 읽으면 닫힌 worker 범위 134개가 나온다. 133개는 정상 종료했고 1개는 `aborted`다. 전체 worker wall time 중앙값은 176.341ms였다. 관측 단계에서 `native_coverage_save/3` 중앙값이 63.756ms로 가장 컸고, 그 내부 Catalog 잠금 보유 중앙값은 40.499ms였다. 이 시간은 서로 겹친다. 정상 종료 133개에서 각각 CoverageSave 아래 reserve·install·confirm이 한 번씩, Catalog 잠금 보유가 두 번 관측됐다. 초기 설치 그룹을 더 합칠 근거는 확인되지 않았다. 4K 후반 materialization의 건당 지연은 별도로 계측해야 한다.

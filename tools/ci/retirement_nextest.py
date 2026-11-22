@@ -26,6 +26,7 @@ GIT_REVISION = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 NEXTEST_EVENT = re.compile(r"[a-z0-9-]+::[a-zA-Z0-9_-]+\$[a-zA-Z0-9_]+(?:::[a-zA-Z0-9_]+)*")
 LEGACY_BINARY_ENV = "QUANTA_INDEX_LEGACY_SEARCHD_BIN"
 LEGACY_SHA_ENV = "QUANTA_INDEX_LEGACY_SEARCHD_SHA256"
+LEGACY_EXECUTABLE = "legacy-searchd"
 
 # The evidence digests are written after the run, so their two ledgers are
 # excluded from source identity. Every other committed path is included.
@@ -52,30 +53,31 @@ def release_tree_sha256(root: Path, revision: str) -> str:
     return digest.hexdigest()
 
 
+def _retained_file_state(path: Path, *, label: str = "input") -> tuple[tuple[int, ...], ...]:
+    parents = []
+    for parent in reversed(path.parents):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"invalid retained Nextest {label} directory: {parent}")
+        parents.append((info.st_dev, info.st_ino, info.st_mode))
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"invalid retained Nextest {label}: {path}")
+    return (*parents, (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+                       info.st_size, info.st_mtime_ns, info.st_ctime_ns))
+
+
 def retained_executable_digests() -> Callable[[Path], str]:
     """Hash each unchanged executable once while checking a single ledger."""
     verified: dict[Path, tuple[tuple[tuple[int, ...], ...], str]] = {}
 
-    def identity(path: Path) -> tuple[tuple[int, ...], ...]:
-        parents = []
-        for parent in reversed(path.parents):
-            info = parent.lstat()
-            if not stat.S_ISDIR(info.st_mode):
-                raise ValueError(f"invalid retained Nextest executable directory: {parent}")
-            parents.append((info.st_dev, info.st_ino, info.st_mode))
-        info = path.lstat()
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError(f"invalid retained Nextest executable: {path}")
-        return (*parents, (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
-                           info.st_size, info.st_mtime_ns, info.st_ctime_ns))
-
     def read(path: Path) -> str:
         path = path.absolute()
-        before = identity(path)
+        before = _retained_file_state(path, label="executable")
         if (previous := verified.get(path)) is not None and previous[0] == before:
             return previous[1]
         digest = RawFile.capture(path).sha256.removeprefix("sha256:")
-        if identity(path) != before:
+        if _retained_file_state(path, label="executable") != before:
             raise ValueError(f"retained Nextest executable changed while hashing: {path}")
         verified[path] = (before, digest)
         return digest
@@ -137,8 +139,10 @@ def check_frozen_inputs(
     if legacy is not None:
         if not isinstance(legacy, dict) or set(legacy) != {"path", "sha256"}:
             raise ValueError(f"invalid retained old-Q executable identity for {run_id}")
-        _legacy_binary_path(legacy["path"], legacy["sha256"])
-        retained_legacy = folder / f"{run_id}-target" / "legacy-searchd"
+        executed = _legacy_binary_path(legacy["path"], legacy["sha256"])
+        if executed != target_dir / LEGACY_EXECUTABLE:
+            raise ValueError(f"old-Q execution path differs from the retained executable for {run_id}")
+        retained_legacy = folder / f"{run_id}-target" / LEGACY_EXECUTABLE
         if digest(retained_legacy) != legacy["sha256"]:
             raise ValueError("old-Q executable SHA-256 differs from the retirement execution pin")
     fingerprints = execution["executables"]
@@ -334,6 +338,26 @@ def capture_release_execution(
     }
     # Cargo's target belongs to this proof. The lock belongs to the host cache.
     environment.pop("QUANTA_INDEX_CACHE_ROOT", None)
+    input_states: dict[Path, tuple[tuple[int, ...], ...]] = {}
+
+    def pin(path: Path) -> RawFile:
+        before = _retained_file_state(path)
+        artifact = RawFile.capture(path)
+        if _retained_file_state(path) != before:
+            raise ValueError(f"Nextest input changed while hashing: {path}")
+        input_states[artifact.path] = before
+        return artifact
+
+    def require_unchanged(artifacts: list[RawFile], failure: str) -> None:
+        for artifact in artifacts:
+            path = artifact.path
+            expected = input_states[path]
+            if (
+                _retained_file_state(path) != expected
+                or RawFile.capture(path) != artifact
+                or _retained_file_state(path) != expected
+            ):
+                raise ValueError(f"{failure}: {path.name}")
 
     def capture(suffix: str, *command: str, env: dict[str, str] = environment) -> RawFile:
         _require_frozen_checkout(root, revision, source_states)
@@ -341,7 +365,7 @@ def capture_release_execution(
         with path.open("xb") as output:
             subprocess.run([str(root / "scripts/cargow"), *command], cwd=root, env=env, stdout=output, check=True)
         _require_frozen_checkout(root, revision, source_states)
-        return RawFile.capture(path)
+        return pin(path)
 
     resolved_features = [
         feature if "/" in feature else f"{package}/{feature}"
@@ -353,7 +377,6 @@ def capture_release_execution(
         "lane": lane, "package": package, "include_lib": include_lib, "test_targets": test_targets,
         "filterset": filterset, "features": resolved_features,
     }
-    legacy = None
     legacy_binary = None
     if LEGACY_BINARY_ENV in environment or LEGACY_SHA_ENV in environment:
         original_legacy_path = Path(environment.get(LEGACY_BINARY_ENV, ""))
@@ -364,36 +387,37 @@ def capture_release_execution(
         legacy_binary = RawFile.capture(_legacy_binary_path(legacy_path, legacy_digest))
         if legacy_binary.sha256 != f"sha256:{legacy_digest}":
             raise ValueError("old-Q executable SHA-256 differs from the retirement execution pin")
-        environment[LEGACY_BINARY_ENV] = legacy_path
-        legacy = {"path": legacy_path, "sha256": legacy_digest}
     commands = _execution_commands(
         selection, evidence_dir / f"{run_id}-binaries.json", evidence_dir / f"{run_id}-cargo.json",
     )
     target_dir.mkdir(mode=0o700)
+    legacy = None
     retained_legacy = None
     if legacy_binary is not None:
-        retained_legacy = legacy_binary.copy_to(target_dir / "legacy-searchd")
+        retained_legacy = legacy_binary.copy_to(target_dir / LEGACY_EXECUTABLE)
         retained_legacy.path.chmod(0o700)
+        input_states[retained_legacy.path] = _retained_file_state(retained_legacy.path)
+        execution_path = str(retained_legacy.path)
+        environment[LEGACY_BINARY_ENV] = execution_path
+        legacy = {"path": execution_path, "sha256": retained_legacy.sha256.removeprefix("sha256:")}
     binaries = capture("binaries.json", *commands["binaries.json"])
     cargo = capture("cargo.json", *commands["cargo.json"])
     observed_target, paths = _build_paths(binaries, cargo, root=root)
     if observed_target != target_dir:
         raise ValueError("Nextest build did not use the isolated execution target")
-    pinned = {name: RawFile.capture(path) for name, path in paths.items()}
+    pinned = {name: pin(path) for name, path in paths.items()}
     inputs = [binaries, cargo, *pinned.values()]
-    if legacy_binary is not None and retained_legacy is not None:
-        inputs.extend((legacy_binary, retained_legacy))
+    if retained_legacy is not None:
+        inputs.append(retained_legacy)
     inventory = capture("inventory.json", *commands["inventory.json"])
     _require_collected_build(binaries, inventory)
     _check_selection(selection, inventory)
-    if any(RawFile.capture(item.path) != item for item in inputs):
-        raise ValueError("Nextest build inputs changed during collection")
+    require_unchanged(inputs, "Nextest build inputs changed during collection")
     events = capture(
         "nextest.jsonl", *commands["nextest.jsonl"],
         env={**environment, "NEXTEST_EXPERIMENTAL_LIBTEST_JSON": "1"},
     )
-    if any(RawFile.capture(item.path) != item for item in (*inputs, inventory, events)):
-        raise ValueError("Nextest build inputs or evidence changed during execution")
+    require_unchanged([*inputs, inventory, events], "Nextest build inputs or evidence changed during execution")
     source = _source_manifest_for_execution(root, revision, inventory.path, events.path, source_states)
     if source["inventory_sha256"] != inventory.sha256.removeprefix("sha256:") or source["events_sha256"] != events.sha256.removeprefix("sha256:"):
         raise ValueError("Nextest results changed before manifest publication")

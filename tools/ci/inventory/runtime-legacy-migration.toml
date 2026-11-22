@@ -255,9 +255,10 @@ source_sha256 = "60d04b76b506ee03b67a27fade66a1c6bef3e11fa9f1c7221485c590afe0917
 proof = "NOT_RUN"
 candidates = [
   { path = "crates/quanta-index-search-plane/src/snapshot_registry.rs", tests = ["eviction_and_retire_do_not_invalidate_handles_in_flight"] },
-  { path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/physical_mixed_pressure/wal_reclaim.rs", tests = ["held_sqlite_reader_does_not_preempt_gc_and_wal_reclaims_after_release"] },
+  { path = "crates/quanta-index-catalog/src/native/authority.rs", tests = ["read_settlement_release_is_exact_and_observes_last_pin_in_one_commit"] },
+  { path = "crates/quanta-index-searchd-runtime/tests/native_index_uds/physical_mixed_pressure.rs", tests = ["native_mixed_pin_pressure_reclaims_under_same_cap_after_last_release"] },
 ]
-gap = "Native SQLite WAL retention does not prove the Legacy StillReferenced holders count and generation-directory removal oracle"
+gap = "Native equivalents cover the StillReferenced holder count, exact last-pin settlement, physical object retention while pinned, and removal after release; candidate-bound execution remains NOT_RUN"
 
 [[exact_oracles]]
 test = "a_new_writer_is_refused_typed_above_the_rss_ceiling_and_admitted_below_it"
