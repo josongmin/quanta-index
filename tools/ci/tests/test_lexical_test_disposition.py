@@ -300,8 +300,13 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, monkeypa
         "binary-id": binary_id, "binary-path": str(target_dir / "replacement"),
         "binary-name": target, "kind": kind,
     }
+    build_metadata = {
+        "target-directory": str(target_dir),
+        "platforms": {"host": {"platform": {"triple": "x86_64-unknown-linux-gnu"}}, "targets": []},
+    }
     inventory = {
         "test-count": 1,
+        "rust-build-meta": build_metadata,
         "rust-suites": {
             binary_id: {
                 **binary,
@@ -383,7 +388,7 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, monkeypa
             if evidence == "release_swapped_binary":
                 built["binary-path"] = str(target_dir / "different-replacement")
             binaries_bytes = json.dumps({
-                "rust-build-meta": {"target-directory": str(target_dir)},
+                "rust-build-meta": build_metadata,
                 "rust-binaries": {binary_id: built},
             }).encode()
             cargo_bytes = json.dumps({
@@ -541,7 +546,7 @@ def test_release_source_manifest_rejects_checkout_drift(tmp_path, monkeypatch, s
     "outside-roster", "retained-outside-roster", "outside-roster-without-expectation",
     "outside-profile", "outside-profile-without-expectation", "retained-outside-profile",
     "retained-outside-roster-without-expectation", "roster-resume", "roster-changed-terminal",
-    "native-stale-old-q",
+    "native-stale-old-q", "native-platform-drift", "retained-native-platform-drift",
 ])
 def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, monkeypatch, changed):
     checkout = tmp_path / "source"
@@ -562,7 +567,9 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
     legacy_sha = hashlib.sha256(b"old daemon").hexdigest()
     monkeypatch.setenv(retirement_nextest.LEGACY_BINARY_ENV, str(legacy_path))
     monkeypatch.setenv(retirement_nextest.LEGACY_SHA_ENV, legacy_sha)
-    uses_old_q = changed != "native-stale-old-q"
+    uses_old_q = changed not in {
+        "native-stale-old-q", "native-platform-drift", "retained-native-platform-drift",
+    }
     if uses_old_q:
         monkeypatch.setattr(retirement_nextest, "OLD_Q_TARGETS", {"quanta-index-lexical": {"replacement"}})
         monkeypatch.setattr(retirement_nextest, "_approved_linux_old_q_sha256", lambda *_: legacy_sha)
@@ -572,6 +579,7 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
     else:
         legacy_path.unlink()
     platforms = {"host": {"platform": {"triple": "x86_64-unknown-linux-gnu"}}, "targets": []}
+    other_platforms = {"host": {"platform": {"triple": "aarch64-apple-darwin"}}, "targets": []}
 
     def run(argv, *, cwd, env, stdout, check):
         assert cwd == checkout and check is True
@@ -632,7 +640,9 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
                 cases["unexpected"] = dict(cases["passes"])
             stdout.write(json.dumps({
                 "test-count": len(cases),
-                "rust-build-meta": {"platforms": platforms},
+                "rust-build-meta": {
+                    "platforms": other_platforms if changed == "native-platform-drift" else platforms,
+                },
                 "rust-suites": {
                     name: {
                         **built, "package-name": "quanta-index-lexical", "status": "listed",
@@ -722,10 +732,17 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         assert len(calls) == 3
         assert not list(evidence.glob("*-nextest.jsonl"))
         return
+    if changed == "native-platform-drift":
+        with pytest.raises(ValueError, match="collection platform differs from the build"):
+            retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
+        assert len(calls) == 3
+        assert not list(evidence.glob("*-nextest.jsonl"))
+        assert not list(evidence.glob("*-source-manifest.json"))
+        return
     if changed not in {
         None, "supplier-removed", "retained-dylib", "retained-outside-roster", "retained-outside-profile",
         "retained-outside-roster-without-expectation", "roster-resume", "roster-changed-terminal",
-        "native-stale-old-q",
+        "native-stale-old-q", "retained-native-platform-drift",
     }:
         with pytest.raises(ValueError, match="build inputs or evidence changed"):
             retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
@@ -767,6 +784,14 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
                 selection, evidence / f"{run_id}-binaries.json", evidence / f"{run_id}-cargo.json",
             )
             retained_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        elif changed == "retained-native-platform-drift":
+            inventory = relocated / f"{run_id}-inventory.json"
+            collection = json.loads(inventory.read_bytes())
+            collection["rust-build-meta"]["platforms"] = other_platforms
+            inventory_bytes = json.dumps(collection).encode()
+            inventory.write_bytes(inventory_bytes)
+            manifest["inventory_sha256"] = hashlib.sha256(inventory_bytes).hexdigest()
+            retained_manifest.write_text(json.dumps(manifest), encoding="utf-8")
         artifact = retirement_nextest.RawFile.capture(retained_manifest)
         observation = {
             "run_id": run_id,
@@ -784,6 +809,9 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
                 retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "c" * 40)
         elif changed == "retained-outside-profile":
             with pytest.raises(ValueError, match="features differ from the committed retirement profile"):
+                retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "b" * 40)
+        elif changed == "retained-native-platform-drift":
+            with pytest.raises(ValueError, match="collection platform differs from the build"):
                 retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "b" * 40)
         else:
             retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "b" * 40)

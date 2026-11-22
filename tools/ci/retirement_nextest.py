@@ -489,17 +489,16 @@ def _nextest_platforms(artifact: RawFile) -> tuple[str, str]:
 
 
 def _require_retirement_platforms(binaries: RawFile, inventory: RawFile, selection: dict) -> None:
-    package, targets = selection["package"], selection["test_targets"]
-    uses_old_q = _uses_old_q(package, targets)
-    if not uses_old_q and not _requires_linux_boot_inventory(package, targets):
-        return
     host_and_target = _nextest_platforms(binaries)
     if _nextest_platforms(inventory) != host_and_target:
         raise ValueError("Nextest collection platform differs from the build platform")
-    if uses_old_q:
+    package, targets = selection["package"], selection["test_targets"]
+    if _uses_old_q(package, targets):
         if host_and_target != (LINUX_OLD_Q_PLATFORM, LINUX_OLD_Q_PLATFORM):
             raise ValueError("retained old-Q coverage requires x86-64 Linux host and target")
-    elif not all("linux" in triple.split("-") for triple in host_and_target):
+    elif _requires_linux_boot_inventory(package, targets) and not all(
+        "linux" in triple.split("-") for triple in host_and_target
+    ):
         raise ValueError("Lexical inventory coverage requires a Linux host and target")
 
 
