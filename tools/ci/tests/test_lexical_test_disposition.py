@@ -917,6 +917,8 @@ def test_shipment_checks_committed_roster_not_working_tree(checker, capsys):
         ("foreign", "Nextest event"),
         ("without_old_q", "retained old-Q executable is absent"),
         ("changed_old_q", "old-Q executable SHA-256 differs"),
+        ("unapproved_old_q", "does not match the committed approved Linux old-Q SHA-256"),
+        ("dirty_approval", "does not match the committed approved Linux old-Q SHA-256"),
         ("relabeled_pending", "frozen old-Q tests must retain their original disposition"),
     ],
 )
@@ -942,8 +944,22 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
     binary = target_dir / target
     binary.write_bytes(b"retained test executable")
     old_q = target_dir / "legacy-searchd"
-    old_q.write_bytes(b"changed old daemon" if evidence == "changed_old_q" else b"old daemon")
-    legacy_digest = hashlib.sha256(b"old daemon").hexdigest()
+    approved_digest = hashlib.sha256(b"old daemon").hexdigest()
+    old_q.write_bytes(b"changed old daemon" if evidence in {
+        "changed_old_q", "unapproved_old_q", "dirty_approval",
+    } else b"old daemon")
+    legacy_digest = (
+        hashlib.sha256(old_q.read_bytes()).hexdigest()
+        if evidence in {"unapproved_old_q", "dirty_approval"}
+        else approved_digest
+    )
+    circleci = checker.ROOT / ".circleci/config.yml"
+    circleci.parent.mkdir(exist_ok=True)
+    ci_config = (
+        "jobs:\n  verify-rust-tests:\n    environment:\n"
+        f'      QUANTA_INDEX_LEGACY_SEARCHD_SHA256: "{approved_digest}"\n'
+    )
+    circleci.write_text(ci_config, encoding="utf-8")
     row = {
         "binary-id": binary_id, "binary-path": str(binary),
         "binary-name": target, "kind": "test",
@@ -1061,10 +1077,54 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
     git("add", str(checker.MANIFEST.relative_to(checker.ROOT)))
     git("commit", "-qm", "candidate roster")
     revision = git("rev-parse", "HEAD")
+    if evidence == "dirty_approval":
+        circleci.write_text(ci_config.replace(approved_digest, legacy_digest), encoding="utf-8")
 
     assert checker.main(revision=revision, evidence_dir=evidence_dir) == (0 if expected_error is None else 1)
     if expected_error is not None:
         assert expected_error in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("provide_binary", "error"),
+    [(False, "retained old-Q executable is absent"),
+     (True, "does not match the committed approved Linux old-Q SHA-256")],
+)
+def test_retained_old_q_capture_rejects_a_missing_or_self_pinned_binary_before_build(
+    tmp_path, monkeypatch, provide_binary, error,
+):
+    checkout = tmp_path / "checkout"
+    circleci = checkout / ".circleci/config.yml"
+    circleci.parent.mkdir(parents=True)
+    circleci.write_text(
+        "jobs:\n  verify-rust-tests:\n    environment:\n"
+        f'      QUANTA_INDEX_LEGACY_SEARCHD_SHA256: "{"a" * 64}"\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(["git", "-C", str(checkout), "add", "."], check=True)
+    subprocess.run([
+        "git", "-C", str(checkout), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+        "commit", "-qm", "approved fixture",
+    ], check=True)
+    revision = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    for key in (retirement_nextest.LEGACY_BINARY_ENV, retirement_nextest.LEGACY_SHA_ENV):
+        monkeypatch.delenv(key, raising=False)
+    if provide_binary:
+        foreign = tmp_path / "foreign-searchd"
+        foreign.write_bytes(b"unapproved executable with a valid self-reported digest")
+        foreign.chmod(0o700)
+        monkeypatch.setenv(retirement_nextest.LEGACY_BINARY_ENV, str(foreign))
+        monkeypatch.setenv(retirement_nextest.LEGACY_SHA_ENV, hashlib.sha256(foreign.read_bytes()).hexdigest())
+    monkeypatch.setattr(retirement_nextest, "_capture_frozen_checkout", lambda *_: pytest.fail("entered capture"))
+    with pytest.raises(ValueError, match=error):
+        retirement_nextest.capture_release_execution(
+            checkout, revision, evidence, lane="test-integration-lane", package="quanta-index-lexical",
+            include_lib=False, test_targets=["sealed_commitment_cost"], filterset="all()", features=[],
+        )
+    assert not list(evidence.iterdir())
 
 
 def test_retirement_without_body_proof_requires_the_feature_to_be_gone(checker, capsys):

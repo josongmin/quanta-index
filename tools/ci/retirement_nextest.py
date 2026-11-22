@@ -160,6 +160,34 @@ def retained_executable_digests() -> Callable[[Path], str]:
     return read
 
 
+@lru_cache(maxsize=8)
+def _approved_linux_old_q_sha256(root: Path, revision: str) -> str:
+    import yaml
+
+    if not GIT_REVISION.fullmatch(revision):
+        raise ValueError("old-Q approval requires a full Git revision")
+    try:
+        raw = subprocess.check_output(
+            ["git", "--no-replace-objects", "show", f"{revision}:.circleci/config.yml"], cwd=root,
+        )
+        digest = yaml.safe_load(raw)["jobs"]["verify-rust-tests"]["environment"][LEGACY_SHA_ENV]
+    except (KeyError, TypeError, subprocess.CalledProcessError, yaml.YAMLError) as error:
+        raise ValueError("release candidate lacks the committed approved Linux old-Q pin") from error
+    if not isinstance(digest, str) or not SHA256.fullmatch(digest):
+        raise ValueError("release candidate has an invalid approved Linux old-Q SHA-256")
+    return digest
+
+
+def _require_approved_old_q(
+    root: Path, revision: str, package: str, test_targets: list[str], digest: str | None,
+) -> None:
+    if package == "quanta-index-lexical" and "sealed_commitment_cost" in test_targets:
+        if digest is None:
+            raise ValueError("retained old-Q executable is absent")
+        if digest != _approved_linux_old_q_sha256(root, revision):
+            raise ValueError("retained old-Q executable does not match the committed approved Linux old-Q SHA-256")
+
+
 def check_frozen_inputs(
     artifact: RawFile, observation: dict, root: Path, release_revision: str,
     *, executable_digest: Callable[[Path], str] | None = None,
@@ -212,9 +240,13 @@ def check_frozen_inputs(
         raise ValueError(f"retained Nextest commands differ from the recorded selection for {run_id}")
     digest = executable_digest or retained_executable_digests()
     legacy = execution["legacy_searchd"]
+    if legacy is not None and (not isinstance(legacy, dict) or set(legacy) != {"path", "sha256"}):
+        raise ValueError(f"invalid retained old-Q executable identity for {run_id}")
+    _require_approved_old_q(
+        root, release_revision, selection["package"], selection["test_targets"],
+        legacy["sha256"] if legacy is not None else None,
+    )
     if legacy is not None:
-        if not isinstance(legacy, dict) or set(legacy) != {"path", "sha256"}:
-            raise ValueError(f"invalid retained old-Q executable identity for {run_id}")
         executed = _legacy_binary_path(legacy["path"], legacy["sha256"])
         if executed != target_dir / LEGACY_EXECUTABLE:
             raise ValueError(f"old-Q execution path differs from the retained executable for {run_id}")
@@ -453,6 +485,7 @@ def capture_release_execution(
     if expected_events is not None:
         selected_events = _exact_events(expected_events)
         _require_roster_membership(root, revision, selected_events)
+    _require_approved_old_q(root, revision, package, test_targets, os.environ.get(LEGACY_SHA_ENV))
     source_states = _capture_frozen_checkout(root, revision)
     run_id = str(uuid4())
     target_dir = evidence_dir / f"{run_id}-target"
