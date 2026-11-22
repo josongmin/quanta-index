@@ -1727,9 +1727,9 @@ pub fn quanta_index_contract::index::LegacyRepoMapImportPageV1::fmt(&self, f: &m
 impl core::marker::Copy for quanta_index_contract::index::LegacyRepoMapImportPageV1
 impl core::marker::StructuralPartialEq for quanta_index_contract::index::LegacyRepoMapImportPageV1
 impl serde_core::ser::Serialize for quanta_index_contract::index::LegacyRepoMapImportPageV1
-pub fn quanta_index_contract::index::LegacyRepoMapImportPageV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::index::LegacyRepoMapImportPageV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::index::LegacyRepoMapImportPageV1
-pub fn quanta_index_contract::index::LegacyRepoMapImportPageV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::index::LegacyRepoMapImportPageV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::index::LegacyRepoMapImportPageV1
 impl core::marker::Send for quanta_index_contract::index::LegacyRepoMapImportPageV1
 impl core::marker::Sync for quanta_index_contract::index::LegacyRepoMapImportPageV1
@@ -1759,9 +1759,9 @@ impl core::fmt::Debug for quanta_index_contract::index::LegacyRepoMapImportV1
 pub fn quanta_index_contract::index::LegacyRepoMapImportV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::index::LegacyRepoMapImportV1
 impl serde_core::ser::Serialize for quanta_index_contract::index::LegacyRepoMapImportV1
-pub fn quanta_index_contract::index::LegacyRepoMapImportV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::index::LegacyRepoMapImportV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::index::LegacyRepoMapImportV1
-pub fn quanta_index_contract::index::LegacyRepoMapImportV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::index::LegacyRepoMapImportV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::index::LegacyRepoMapImportV1
 impl core::marker::Send for quanta_index_contract::index::LegacyRepoMapImportV1
 impl core::marker::Sync for quanta_index_contract::index::LegacyRepoMapImportV1
@@ -1801,9 +1801,9 @@ impl core::fmt::Debug for quanta_index_contract::index::LegacySourceOriginV1
 pub fn quanta_index_contract::index::LegacySourceOriginV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::index::LegacySourceOriginV1
 impl serde_core::ser::Serialize for quanta_index_contract::index::LegacySourceOriginV1
-pub fn quanta_index_contract::index::LegacySourceOriginV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::index::LegacySourceOriginV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::index::LegacySourceOriginV1
-pub fn quanta_index_contract::index::LegacySourceOriginV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::index::LegacySourceOriginV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::index::LegacySourceOriginV1
 impl core::marker::Send for quanta_index_contract::index::LegacySourceOriginV1
 impl core::marker::Sync for quanta_index_contract::index::LegacySourceOriginV1
@@ -1826,9 +1826,9 @@ pub fn quanta_index_contract::index::LexicalSourceHeadsCommitmentV1::fmt(&self, 
 impl core::marker::Copy for quanta_index_contract::index::LexicalSourceHeadsCommitmentV1
 impl core::marker::StructuralPartialEq for quanta_index_contract::index::LexicalSourceHeadsCommitmentV1
 impl serde_core::ser::Serialize for quanta_index_contract::index::LexicalSourceHeadsCommitmentV1
-pub fn quanta_index_contract::index::LexicalSourceHeadsCommitmentV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::index::LexicalSourceHeadsCommitmentV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::index::LexicalSourceHeadsCommitmentV1
-pub fn quanta_index_contract::index::LexicalSourceHeadsCommitmentV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::index::LexicalSourceHeadsCommitmentV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::index::LexicalSourceHeadsCommitmentV1
 impl core::marker::Send for quanta_index_contract::index::LexicalSourceHeadsCommitmentV1
 impl core::marker::Sync for quanta_index_contract::index::LexicalSourceHeadsCommitmentV1
@@ -1935,9 +1935,9 @@ impl core::fmt::Debug for quanta_index_contract::index::NativeImportedSourceHead
 pub fn quanta_index_contract::index::NativeImportedSourceHeadV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::index::NativeImportedSourceHeadV1
 impl serde_core::ser::Serialize for quanta_index_contract::index::NativeImportedSourceHeadV1
-pub fn quanta_index_contract::index::NativeImportedSourceHeadV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::index::NativeImportedSourceHeadV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::index::NativeImportedSourceHeadV1
-pub fn quanta_index_contract::index::NativeImportedSourceHeadV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::index::NativeImportedSourceHeadV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::index::NativeImportedSourceHeadV1
 impl core::marker::Send for quanta_index_contract::index::NativeImportedSourceHeadV1
 impl core::marker::Sync for quanta_index_contract::index::NativeImportedSourceHeadV1
@@ -2556,9 +2556,9 @@ impl core::fmt::Debug for quanta_index_contract::index::SourceRecord
 pub fn quanta_index_contract::index::SourceRecord::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::index::SourceRecord
 impl serde_core::ser::Serialize for quanta_index_contract::index::SourceRecord
-pub fn quanta_index_contract::index::SourceRecord::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::index::SourceRecord::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::index::SourceRecord
-pub fn quanta_index_contract::index::SourceRecord::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::index::SourceRecord::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::index::SourceRecord
 impl core::marker::Send for quanta_index_contract::index::SourceRecord
 impl core::marker::Sync for quanta_index_contract::index::SourceRecord
@@ -9380,9 +9380,9 @@ pub fn quanta_index_contract::native_protocol::NativeDslKindV1::fmt(&self, f: &m
 impl core::marker::Copy for quanta_index_contract::native_protocol::NativeDslKindV1
 impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslKindV1
 impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslKindV1
-pub fn quanta_index_contract::native_protocol::NativeDslKindV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::native_protocol::NativeDslKindV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslKindV1
-pub fn quanta_index_contract::native_protocol::NativeDslKindV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::native_protocol::NativeDslKindV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslKindV1
 impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslKindV1
 impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslKindV1
@@ -9405,9 +9405,9 @@ impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslRowsV
 pub fn quanta_index_contract::native_protocol::NativeDslRowsV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslRowsV1
 impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslRowsV1
-pub fn quanta_index_contract::native_protocol::NativeDslRowsV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::native_protocol::NativeDslRowsV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslRowsV1
-pub fn quanta_index_contract::native_protocol::NativeDslRowsV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::native_protocol::NativeDslRowsV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslRowsV1
 impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslRowsV1
 impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslRowsV1
@@ -10439,9 +10439,9 @@ impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslCorpu
 pub fn quanta_index_contract::native_protocol::NativeDslCorpusV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslCorpusV1
 impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslCorpusV1
-pub fn quanta_index_contract::native_protocol::NativeDslCorpusV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::native_protocol::NativeDslCorpusV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslCorpusV1
-pub fn quanta_index_contract::native_protocol::NativeDslCorpusV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::native_protocol::NativeDslCorpusV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslCorpusV1
 impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslCorpusV1
 impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslCorpusV1
@@ -10463,9 +10463,9 @@ impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslCurso
 pub fn quanta_index_contract::native_protocol::NativeDslCursorV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslCursorV1
 impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslCursorV1
-pub fn quanta_index_contract::native_protocol::NativeDslCursorV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::native_protocol::NativeDslCursorV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslCursorV1
-pub fn quanta_index_contract::native_protocol::NativeDslCursorV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::native_protocol::NativeDslCursorV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslCursorV1
 impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslCursorV1
 impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslCursorV1
@@ -10485,9 +10485,9 @@ impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslFileV
 pub fn quanta_index_contract::native_protocol::NativeDslFileV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslFileV1
 impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslFileV1
-pub fn quanta_index_contract::native_protocol::NativeDslFileV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::native_protocol::NativeDslFileV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslFileV1
-pub fn quanta_index_contract::native_protocol::NativeDslFileV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::native_protocol::NativeDslFileV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslFileV1
 impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslFileV1
 impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslFileV1
@@ -10510,9 +10510,9 @@ pub fn quanta_index_contract::native_protocol::NativeDslMatchRangeV1::fmt(&self,
 impl core::marker::Copy for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
 impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
 impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
-pub fn quanta_index_contract::native_protocol::NativeDslMatchRangeV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::native_protocol::NativeDslMatchRangeV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
-pub fn quanta_index_contract::native_protocol::NativeDslMatchRangeV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::native_protocol::NativeDslMatchRangeV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
 impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
 impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslMatchRangeV1
@@ -10563,9 +10563,9 @@ impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslQuery
 pub fn quanta_index_contract::native_protocol::NativeDslQueryV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslQueryV1
 impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslQueryV1
-pub fn quanta_index_contract::native_protocol::NativeDslQueryV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::native_protocol::NativeDslQueryV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslQueryV1
-pub fn quanta_index_contract::native_protocol::NativeDslQueryV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::native_protocol::NativeDslQueryV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslQueryV1
 impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslQueryV1
 impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslQueryV1
@@ -10586,9 +10586,9 @@ impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslRunti
 pub fn quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
 impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
-pub fn quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
-pub fn quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
 impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
 impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslRuntimeCatalogV1
@@ -10612,9 +10612,9 @@ impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslRunti
 pub fn quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
 impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
-pub fn quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
-pub fn quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::native_protocol::NativeDslRuntimeHitV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
 impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
 impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslRuntimeHitV1
@@ -10639,9 +10639,9 @@ impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslScope
 pub fn quanta_index_contract::native_protocol::NativeDslScopeV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslScopeV1
 impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslScopeV1
-pub fn quanta_index_contract::native_protocol::NativeDslScopeV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::native_protocol::NativeDslScopeV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslScopeV1
-pub fn quanta_index_contract::native_protocol::NativeDslScopeV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::native_protocol::NativeDslScopeV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslScopeV1
 impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslScopeV1
 impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslScopeV1
@@ -10665,9 +10665,9 @@ impl core::fmt::Debug for quanta_index_contract::native_protocol::NativeDslStruc
 pub fn quanta_index_contract::native_protocol::NativeDslStructuralHitV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
 impl serde_core::ser::Serialize for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
-pub fn quanta_index_contract::native_protocol::NativeDslStructuralHitV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::native_protocol::NativeDslStructuralHitV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
-pub fn quanta_index_contract::native_protocol::NativeDslStructuralHitV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::native_protocol::NativeDslStructuralHitV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
 impl core::marker::Send for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
 impl core::marker::Sync for quanta_index_contract::native_protocol::NativeDslStructuralHitV1
@@ -13567,9 +13567,9 @@ impl core::fmt::Debug for quanta_index_contract::GoTestTraceModuleContextV1
 pub fn quanta_index_contract::GoTestTraceModuleContextV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::GoTestTraceModuleContextV1
 impl serde_core::ser::Serialize for quanta_index_contract::GoTestTraceModuleContextV1
-pub fn quanta_index_contract::GoTestTraceModuleContextV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::GoTestTraceModuleContextV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::GoTestTraceModuleContextV1
-pub fn quanta_index_contract::GoTestTraceModuleContextV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::GoTestTraceModuleContextV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::GoTestTraceModuleContextV1
 impl core::marker::Send for quanta_index_contract::GoTestTraceModuleContextV1
 impl core::marker::Sync for quanta_index_contract::GoTestTraceModuleContextV1
@@ -15930,9 +15930,9 @@ pub fn quanta_index_contract::GoTestTraceFrameClassV1::fmt(&self, f: &mut core::
 impl core::marker::Copy for quanta_index_contract::GoTestTraceFrameClassV1
 impl core::marker::StructuralPartialEq for quanta_index_contract::GoTestTraceFrameClassV1
 impl serde_core::ser::Serialize for quanta_index_contract::GoTestTraceFrameClassV1
-pub fn quanta_index_contract::GoTestTraceFrameClassV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::GoTestTraceFrameClassV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::GoTestTraceFrameClassV1
-pub fn quanta_index_contract::GoTestTraceFrameClassV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::GoTestTraceFrameClassV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::GoTestTraceFrameClassV1
 impl core::marker::Send for quanta_index_contract::GoTestTraceFrameClassV1
 impl core::marker::Sync for quanta_index_contract::GoTestTraceFrameClassV1
@@ -16296,9 +16296,9 @@ impl core::fmt::Debug for quanta_index_contract::GoTestTraceFileHitV1
 pub fn quanta_index_contract::GoTestTraceFileHitV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::GoTestTraceFileHitV1
 impl serde_core::ser::Serialize for quanta_index_contract::GoTestTraceFileHitV1
-pub fn quanta_index_contract::GoTestTraceFileHitV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::GoTestTraceFileHitV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::GoTestTraceFileHitV1
-pub fn quanta_index_contract::GoTestTraceFileHitV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::GoTestTraceFileHitV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::GoTestTraceFileHitV1
 impl core::marker::Send for quanta_index_contract::GoTestTraceFileHitV1
 impl core::marker::Sync for quanta_index_contract::GoTestTraceFileHitV1
@@ -16318,9 +16318,9 @@ impl core::fmt::Debug for quanta_index_contract::GoTestTraceFileLaneWitnessV1
 pub fn quanta_index_contract::GoTestTraceFileLaneWitnessV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::GoTestTraceFileLaneWitnessV1
 impl serde_core::ser::Serialize for quanta_index_contract::GoTestTraceFileLaneWitnessV1
-pub fn quanta_index_contract::GoTestTraceFileLaneWitnessV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::GoTestTraceFileLaneWitnessV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::GoTestTraceFileLaneWitnessV1
-pub fn quanta_index_contract::GoTestTraceFileLaneWitnessV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::GoTestTraceFileLaneWitnessV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::GoTestTraceFileLaneWitnessV1
 impl core::marker::Send for quanta_index_contract::GoTestTraceFileLaneWitnessV1
 impl core::marker::Sync for quanta_index_contract::GoTestTraceFileLaneWitnessV1
@@ -16340,9 +16340,9 @@ impl core::fmt::Debug for quanta_index_contract::GoTestTraceFilePoolRowV1
 pub fn quanta_index_contract::GoTestTraceFilePoolRowV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::GoTestTraceFilePoolRowV1
 impl serde_core::ser::Serialize for quanta_index_contract::GoTestTraceFilePoolRowV1
-pub fn quanta_index_contract::GoTestTraceFilePoolRowV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::GoTestTraceFilePoolRowV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::GoTestTraceFilePoolRowV1
-pub fn quanta_index_contract::GoTestTraceFilePoolRowV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::GoTestTraceFilePoolRowV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::GoTestTraceFilePoolRowV1
 impl core::marker::Send for quanta_index_contract::GoTestTraceFilePoolRowV1
 impl core::marker::Sync for quanta_index_contract::GoTestTraceFilePoolRowV1
@@ -16391,9 +16391,9 @@ impl core::fmt::Debug for quanta_index_contract::GoTestTraceFileRankPoolsV1
 pub fn quanta_index_contract::GoTestTraceFileRankPoolsV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::GoTestTraceFileRankPoolsV1
 impl serde_core::ser::Serialize for quanta_index_contract::GoTestTraceFileRankPoolsV1
-pub fn quanta_index_contract::GoTestTraceFileRankPoolsV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::GoTestTraceFileRankPoolsV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::GoTestTraceFileRankPoolsV1
-pub fn quanta_index_contract::GoTestTraceFileRankPoolsV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::GoTestTraceFileRankPoolsV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::GoTestTraceFileRankPoolsV1
 impl core::marker::Send for quanta_index_contract::GoTestTraceFileRankPoolsV1
 impl core::marker::Sync for quanta_index_contract::GoTestTraceFileRankPoolsV1
@@ -16444,9 +16444,9 @@ impl core::fmt::Debug for quanta_index_contract::HybridFileHitV1
 pub fn quanta_index_contract::HybridFileHitV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::HybridFileHitV1
 impl serde_core::ser::Serialize for quanta_index_contract::HybridFileHitV1
-pub fn quanta_index_contract::HybridFileHitV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::HybridFileHitV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::HybridFileHitV1
-pub fn quanta_index_contract::HybridFileHitV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::HybridFileHitV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::HybridFileHitV1
 impl core::marker::Send for quanta_index_contract::HybridFileHitV1
 impl core::marker::Sync for quanta_index_contract::HybridFileHitV1
@@ -17495,9 +17495,9 @@ pub fn quanta_index_contract::GoTestTraceFrameClassV1::fmt(&self, f: &mut core::
 impl core::marker::Copy for quanta_index_contract::GoTestTraceFrameClassV1
 impl core::marker::StructuralPartialEq for quanta_index_contract::GoTestTraceFrameClassV1
 impl serde_core::ser::Serialize for quanta_index_contract::GoTestTraceFrameClassV1
-pub fn quanta_index_contract::GoTestTraceFrameClassV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::GoTestTraceFrameClassV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::GoTestTraceFrameClassV1
-pub fn quanta_index_contract::GoTestTraceFrameClassV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::GoTestTraceFrameClassV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::GoTestTraceFrameClassV1
 impl core::marker::Send for quanta_index_contract::GoTestTraceFrameClassV1
 impl core::marker::Sync for quanta_index_contract::GoTestTraceFrameClassV1
@@ -20820,9 +20820,9 @@ impl core::fmt::Debug for quanta_index_contract::GoTestTraceFileHitV1
 pub fn quanta_index_contract::GoTestTraceFileHitV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::GoTestTraceFileHitV1
 impl serde_core::ser::Serialize for quanta_index_contract::GoTestTraceFileHitV1
-pub fn quanta_index_contract::GoTestTraceFileHitV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::GoTestTraceFileHitV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::GoTestTraceFileHitV1
-pub fn quanta_index_contract::GoTestTraceFileHitV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::GoTestTraceFileHitV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::GoTestTraceFileHitV1
 impl core::marker::Send for quanta_index_contract::GoTestTraceFileHitV1
 impl core::marker::Sync for quanta_index_contract::GoTestTraceFileHitV1
@@ -20842,9 +20842,9 @@ impl core::fmt::Debug for quanta_index_contract::GoTestTraceFileLaneWitnessV1
 pub fn quanta_index_contract::GoTestTraceFileLaneWitnessV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::GoTestTraceFileLaneWitnessV1
 impl serde_core::ser::Serialize for quanta_index_contract::GoTestTraceFileLaneWitnessV1
-pub fn quanta_index_contract::GoTestTraceFileLaneWitnessV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::GoTestTraceFileLaneWitnessV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::GoTestTraceFileLaneWitnessV1
-pub fn quanta_index_contract::GoTestTraceFileLaneWitnessV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::GoTestTraceFileLaneWitnessV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::GoTestTraceFileLaneWitnessV1
 impl core::marker::Send for quanta_index_contract::GoTestTraceFileLaneWitnessV1
 impl core::marker::Sync for quanta_index_contract::GoTestTraceFileLaneWitnessV1
@@ -20864,9 +20864,9 @@ impl core::fmt::Debug for quanta_index_contract::GoTestTraceFilePoolRowV1
 pub fn quanta_index_contract::GoTestTraceFilePoolRowV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::GoTestTraceFilePoolRowV1
 impl serde_core::ser::Serialize for quanta_index_contract::GoTestTraceFilePoolRowV1
-pub fn quanta_index_contract::GoTestTraceFilePoolRowV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::GoTestTraceFilePoolRowV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::GoTestTraceFilePoolRowV1
-pub fn quanta_index_contract::GoTestTraceFilePoolRowV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::GoTestTraceFilePoolRowV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::GoTestTraceFilePoolRowV1
 impl core::marker::Send for quanta_index_contract::GoTestTraceFilePoolRowV1
 impl core::marker::Sync for quanta_index_contract::GoTestTraceFilePoolRowV1
@@ -20942,9 +20942,9 @@ impl core::fmt::Debug for quanta_index_contract::GoTestTraceFileRankPoolsV1
 pub fn quanta_index_contract::GoTestTraceFileRankPoolsV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::GoTestTraceFileRankPoolsV1
 impl serde_core::ser::Serialize for quanta_index_contract::GoTestTraceFileRankPoolsV1
-pub fn quanta_index_contract::GoTestTraceFileRankPoolsV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::GoTestTraceFileRankPoolsV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::GoTestTraceFileRankPoolsV1
-pub fn quanta_index_contract::GoTestTraceFileRankPoolsV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::GoTestTraceFileRankPoolsV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::GoTestTraceFileRankPoolsV1
 impl core::marker::Send for quanta_index_contract::GoTestTraceFileRankPoolsV1
 impl core::marker::Sync for quanta_index_contract::GoTestTraceFileRankPoolsV1
@@ -20985,9 +20985,9 @@ impl core::fmt::Debug for quanta_index_contract::GoTestTraceModuleContextV1
 pub fn quanta_index_contract::GoTestTraceModuleContextV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::GoTestTraceModuleContextV1
 impl serde_core::ser::Serialize for quanta_index_contract::GoTestTraceModuleContextV1
-pub fn quanta_index_contract::GoTestTraceModuleContextV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::GoTestTraceModuleContextV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::GoTestTraceModuleContextV1
-pub fn quanta_index_contract::GoTestTraceModuleContextV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::GoTestTraceModuleContextV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::GoTestTraceModuleContextV1
 impl core::marker::Send for quanta_index_contract::GoTestTraceModuleContextV1
 impl core::marker::Sync for quanta_index_contract::GoTestTraceModuleContextV1
@@ -21226,9 +21226,9 @@ impl core::fmt::Debug for quanta_index_contract::HybridFileHitV1
 pub fn quanta_index_contract::HybridFileHitV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for quanta_index_contract::HybridFileHitV1
 impl serde_core::ser::Serialize for quanta_index_contract::HybridFileHitV1
-pub fn quanta_index_contract::HybridFileHitV1::serialize<__S>(&self, __serializer: __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+pub fn quanta_index_contract::HybridFileHitV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::HybridFileHitV1
-pub fn quanta_index_contract::HybridFileHitV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::HybridFileHitV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::HybridFileHitV1
 impl core::marker::Send for quanta_index_contract::HybridFileHitV1
 impl core::marker::Sync for quanta_index_contract::HybridFileHitV1
