@@ -112,6 +112,7 @@ crate quanta_index_contract
 │   │   ├── mod native_restore: pub(self)
 │   │   │   └── struct NativeHistoryRestoreInputV1: pub
 │   │   ├── mod snapshot_checkpoint: pub(self)
+│   │   │   ├── struct HistoryExportBodyRef: pub(self)
 │   │   │   ├── struct HistorySnapshotCheckpointV1: pub
 │   │   │   ├── enum HistorySnapshotExportFrameV1: pub
 │   │   │   ├── struct HistorySnapshotPageV1: pub
@@ -147,6 +148,22 @@ crate quanta_index_contract
 │       ├── struct NativeImportedSourceHeadV1: pub
 │       ├── struct RestoreFieldKeyV1: pub(self)
 │       │   └── type Value: pub(self)
+│       ├── struct SourceChunkBodyV1: pub(self)
+│       ├── struct SourceFileBeginBodyV1: pub(self)
+│       ├── struct SourceFileEndBodyV1: pub(self)
+│       ├── struct SourceFrameBodyRefV1: pub(self)
+│       ├── struct SourceFrameBodySeedV1: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct SourceFrameDecodeSeedV1: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct SourceFrameKindReadV1: pub(self)
+│       ├── enum SourceFrameKindV1: pub(self)
+│       ├── struct SourceFrameValueCheckV1: pub(self)
+│       ├── struct SourceHeadBeginBodyV1: pub(self)
+│       ├── struct SourceHeadCompleteBodyV1: pub(self)
+│       ├── struct SourceInventoryCompleteBodyV1: pub(self)
+│       ├── struct SourceRepoMapBeginBodyV1: pub(self)
+│       ├── struct SourceRepoMapCompleteBodyV1: pub(self)
 │       └── enum SourceSnapshotExportFrameV1: pub
 ├── mod ipc: pub
 │   ├── mod batch_body: pub(self)
