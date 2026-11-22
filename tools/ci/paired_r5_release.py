@@ -23,6 +23,7 @@ from tools.ci.daemon_execution_evidence import (
 from tools.ci.lint.handoff_validation import (
     _open_repo_output_parent,
     _read_repo_regular_bytes,
+    _restore_prior_output,
 )
 from tools.ci.paired_r5_result import (
     INDEX,
@@ -292,12 +293,12 @@ def prepare_terminal(
             require_current_release()
             if any(_sha(read(name)) != digest for name, digest in sealed.items()):
                 raise ValueError("staged QBC evidence changed during signing")
-            publish_paired_output(parent, SIGNATURE, signature)
+            publish_paired_output(root, directory / SIGNATURE, parent, signature)
             try:
                 # A reader may treat this file as the completion marker.
-                publish_paired_output(parent, terminal_path.name, _canonical(terminal) + b"\n")
+                publish_paired_output(root, terminal_path, parent, _canonical(terminal) + b"\n")
             except BaseException:
-                os.unlink(SIGNATURE, dir_fd=parent)
+                _restore_prior_output(parent, SIGNATURE, None)
                 raise
     finally:
         os.close(parent)

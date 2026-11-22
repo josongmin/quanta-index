@@ -1112,6 +1112,29 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
             finalize(lambda: None)
         assert not list(raw_root.glob("paired-*/*.sig"))
         assert not list(raw_root.glob("paired-*/terminal.json"))
+
+    for publication_name in (release.SIGNATURE, "terminal.json"):
+        with monkeypatch.context() as temporary:
+            previous_candidates = set(raw_root.glob("paired-*"))
+            detached = raw_root / f"detached-{publication_name}"
+            write = runner._write_output_temporary
+
+            def replace_output_parent(parent, name, content):
+                if name == publication_name:
+                    (candidate_dir,) = set(raw_root.glob("paired-*")) - previous_candidates
+                    candidate_dir.rename(detached)
+                    candidate_dir.mkdir()
+                return write(parent, name, content)
+
+            temporary.setattr(runner, "_write_output_temporary", replace_output_parent)
+            with pytest.raises(ValueError, match="output parent changed during publication"):
+                finalize(lambda: None)
+            assert (detached / release.INDEX).is_file()
+            assert not (detached / release.SIGNATURE).exists()
+            assert not (detached / "terminal.json").exists()
+            assert not list(raw_root.glob("paired-*/*.sig"))
+            assert not list(raw_root.glob("paired-*/terminal.json"))
+
     terminal_path = finalize(lambda: None)
     terminal = json.loads(terminal_path.read_bytes())
 

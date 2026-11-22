@@ -31,6 +31,7 @@ from tools.ci.lint.handoff_validation import (
     _open_repo_output_parent,
     _read_repo_regular_bytes,
     _require_output_parent_identity,
+    _restore_prior_output,
     _write_output_temporary,
 )
 from tools.ci.nextest_events import parse_nextest_bytes, parse_nextest_inventory_bytes
@@ -235,7 +236,9 @@ def read_runner_capture(directory: Path, name: str) -> bytes:
     return _read_repo_regular_bytes(directory, name, label="original QBC capture")
 
 
-def publish_paired_output(parent: int, name: str, raw: bytes) -> None:
+def publish_paired_output(root: Path, relative: Path, parent: int, raw: bytes) -> None:
+    _require_output_parent_identity(root, relative.as_posix(), parent)
+    name = relative.name
     temporary = _write_output_temporary(parent, name, raw)
     try:
         os.link(temporary, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
@@ -245,8 +248,9 @@ def publish_paired_output(parent: int, name: str, raw: bytes) -> None:
     try:
         os.unlink(temporary, dir_fd=parent)
         os.fsync(parent)
+        _require_output_parent_identity(root, relative.as_posix(), parent)
     except BaseException:
-        os.unlink(name, dir_fd=parent)
+        _restore_prior_output(parent, name, None)
         raise
 
 
@@ -905,8 +909,7 @@ def _main(signer_socket: str | None) -> int:
         verify_runner_capture(
             payload, lambda name: read_runner_capture(output, name), cases=registered_cases,
         )
-        _require_output_parent_identity(output, INDEX, parent)
-        publish_paired_output(parent, INDEX, _canonical(payload) + b"\n")
+        publish_paired_output(output, Path(INDEX), parent, _canonical(payload) + b"\n")
     finally:
         os.close(parent)
     if release is not None:
