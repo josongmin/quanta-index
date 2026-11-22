@@ -22,6 +22,7 @@ use quanta_index_core::{
 };
 use quanta_index_searchd::cli::{NativeHistoryExportCommandV1, NativeHistoryExportScopeV1};
 use serde::Serialize;
+use serde::ser::SerializeStruct as _;
 
 use super::{boot, with_native_recovery_control_v1};
 use crate::deployment_selection;
@@ -35,8 +36,6 @@ pub use source_v1::run_source_v1;
 
 const MAX_FRAME_BYTES: usize = MAX_HISTORY_SNAPSHOT_PAGE_BYTES_V1 + 4096;
 
-#[derive(Serialize)]
-#[serde(tag = "kind", content = "body", rename_all = "snake_case")]
 enum ExportFrame<'a> {
     NativeProtectedComplete {
         source_root_nonce: quanta_index_core::index::Digest,
@@ -82,6 +81,108 @@ enum ExportFrame<'a> {
         row_count: u64,
         terminal_ack: &'a quanta_index_contract::BatchPublishReceipt,
     },
+}
+
+// Keep the adjacent-tag frame shape and field order stable: write_frame counts
+// the JSON once before writing those exact bytes to the authenticated stream.
+struct ExportBody<'frame, 'value>(&'frame ExportFrame<'value>);
+
+macro_rules! serialize_body {
+    ($serializer:expr, $name:literal, { $($field:ident),+ $(,)? }) => {{
+        let mut body = $serializer.serialize_struct($name, [$(stringify!($field)),+].len())?;
+        $(body.serialize_field(stringify!($field), $field)?;)+
+        body.end()
+    }};
+}
+
+impl Serialize for ExportBody<'_, '_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            ExportFrame::NativeProtectedComplete {
+                source_root_nonce,
+                source_routes,
+                snapshot,
+            } => serialize_body!(serializer, "NativeProtectedComplete", {
+                source_root_nonce,
+                source_routes,
+                snapshot
+            }),
+            ExportFrame::NativeObjectBegin {
+                reference,
+                payload_bytes,
+                children,
+            } => serialize_body!(serializer, "NativeObjectBegin", {
+                reference,
+                payload_bytes,
+                children
+            }),
+            ExportFrame::NativeObjectChunk { offset, bytes } => {
+                serialize_body!(serializer, "NativeObjectChunk", { offset, bytes })
+            }
+            ExportFrame::NativeObjectEnd { reference } => {
+                serialize_body!(serializer, "NativeObjectEnd", { reference })
+            }
+            ExportFrame::NativeHistory {
+                source_root_nonce,
+                source_view,
+                instance,
+                member,
+                cut,
+            } => serialize_body!(serializer, "NativeHistory", {
+                source_root_nonce,
+                source_view,
+                instance,
+                member,
+                cut
+            }),
+            ExportFrame::NativeInventoryComplete { repo_id, count } => {
+                serialize_body!(serializer, "NativeInventoryComplete", { repo_id, count })
+            }
+            ExportFrame::CheckpointPage(page) => page.serialize(serializer),
+            ExportFrame::InventoryKey { generation } => {
+                serialize_body!(serializer, "InventoryKey", { generation })
+            }
+            ExportFrame::InventoryComplete { repo_id, count } => {
+                serialize_body!(serializer, "InventoryComplete", { repo_id, count })
+            }
+            ExportFrame::Complete {
+                generation,
+                legacy_root,
+                durable_epoch,
+                snapshot_digest,
+                row_count,
+                terminal_ack,
+            } => serialize_body!(serializer, "Complete", {
+                generation,
+                legacy_root,
+                durable_epoch,
+                snapshot_digest,
+                row_count,
+                terminal_ack
+            }),
+        }
+    }
+}
+
+impl Serialize for ExportFrame<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let kind = match self {
+            ExportFrame::NativeProtectedComplete { .. } => "native_protected_complete",
+            ExportFrame::NativeObjectBegin { .. } => "native_object_begin",
+            ExportFrame::NativeObjectChunk { .. } => "native_object_chunk",
+            ExportFrame::NativeObjectEnd { .. } => "native_object_end",
+            ExportFrame::NativeHistory { .. } => "native_history",
+            ExportFrame::NativeInventoryComplete { .. } => "native_inventory_complete",
+            ExportFrame::CheckpointPage(..) => "checkpoint_page",
+            ExportFrame::InventoryKey { .. } => "inventory_key",
+            ExportFrame::InventoryComplete { .. } => "inventory_complete",
+            ExportFrame::Complete { .. } => "complete",
+        };
+        let mut frame = serializer.serialize_struct("ExportFrame", 2)?;
+        frame.serialize_field("kind", kind)?;
+        frame.serialize_field("body", &ExportBody(self))?;
+        frame.end()
+    }
 }
 
 struct FrameCensus<'a> {
