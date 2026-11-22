@@ -537,7 +537,7 @@ def test_release_source_manifest_rejects_checkout_drift(tmp_path, monkeypatch, s
     None, "test", "native-daemon", "old-q", "supplier-removed", "test-restored",
     "old-q-restored", "metadata-restored", "retained-dylib", "extra-selection", "omitted-selection",
     "outside-roster", "retained-outside-roster", "outside-roster-without-expectation",
-    "retained-outside-roster-without-expectation",
+    "retained-outside-roster-without-expectation", "roster-resume", "roster-changed-terminal",
 ])
 def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, monkeypatch, changed):
     checkout = tmp_path / "source"
@@ -689,7 +689,7 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         return
     if changed not in {
         None, "supplier-removed", "retained-dylib", "retained-outside-roster",
-        "retained-outside-roster-without-expectation",
+        "retained-outside-roster-without-expectation", "roster-resume", "roster-changed-terminal",
     }:
         with pytest.raises(ValueError, match="build inputs or evidence changed"):
             retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
@@ -740,6 +740,19 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
                 retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "c" * 40)
         else:
             retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "b" * 40)
+        if changed in {"roster-resume", "roster-changed-terminal"}:
+            selection = manifest["execution"]["selection"]
+            monkeypatch.setattr(retirement_nextest, "release_capture_batches", lambda *_: [selection])
+            captures = retirement_nextest.capture_release_roster(
+                checkout, "b" * 40, relocated, lane=selection["lane"],
+            )
+            if changed == "roster-changed-terminal":
+                terminal = relocated / f"{run_id}-nextest.jsonl"
+                terminal.write_bytes(b" " + terminal.read_bytes())
+                with pytest.raises(ValueError, match="differs from the planned passing batch"):
+                    list(captures)
+            else:
+                assert list(captures) == [retained_manifest]
     assert len(calls) == 4
     resolution = ["--locked", "--offline", "--no-default-features", "--features",
                   "quanta-index-lexical/native-one,quanta-index-lexical/native-two"]
@@ -797,6 +810,10 @@ def test_release_roster_resolves_committed_events_and_deduplicates_shared_witnes
         f'candidates = [{{path = "{path}", tests = ["replacement"]}}]\n',
         encoding="utf-8",
     )
+    (source.parent.parent / "Cargo.toml").write_text(
+        '[[test]]\nname = "retained"\nrequired-features = ["retirement"]\n',
+        encoding="utf-8",
+    )
 
     def git(*args):
         return subprocess.check_output(
@@ -815,6 +832,65 @@ def test_release_roster_resolves_committed_events_and_deduplicates_shared_witnes
         "quanta-index-lexical::retained$keep": {"source": path, "case": "keep"},
         "quanta-index-lexical::retained$replacement": {"source": path, "case": "replacement"},
     }
+    assert retirement_nextest.release_capture_batches(tmp_path, revision) == [{
+        "package": "quanta-index-lexical", "include_lib": False,
+        "test_targets": ["retained"], "features": ["quanta-index-lexical/retirement"],
+        "filterset": "(binary(=retained) & (test(=keep) | test(=replacement)))",
+        "expected_events": [
+            "quanta-index-lexical::retained$keep",
+            "quanta-index-lexical::retained$replacement",
+        ],
+    }]
+
+
+def test_capture_roster_admits_pending_batches_before_work_and_serializes_owners(tmp_path, monkeypatch):
+    checkout = tmp_path / "source"
+    checkout.mkdir()
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    native = "quanta-index-core::quanta_index_core$local"
+    legacy = "quanta-index-lexical::legacy_existing$retained"
+    batches = [
+        {"package": "quanta-index-core", "test_targets": [], "expected_events": [native]},
+        {"package": "quanta-index-lexical", "test_targets": ["legacy_existing"], "expected_events": [legacy]},
+    ]
+    monkeypatch.setattr(retirement_nextest, "_require_frozen_checkout", lambda *_: None)
+    monkeypatch.setattr(retirement_nextest, "release_capture_batches", lambda *_: batches)
+    retained = {}
+    monkeypatch.setattr(retirement_nextest, "_reusable_captures", lambda *_: retained)
+    monkeypatch.setattr(retirement_nextest, "_require_capture_host", lambda *_: None)
+    monkeypatch.delenv(retirement_nextest.LEGACY_SHA_ENV, raising=False)
+    monkeypatch.delenv(retirement_nextest.LEGACY_BINARY_ENV, raising=False)
+    launched = []
+
+    def capture(*_, **selection):
+        launched.append(selection["expected_events"][0])
+        return evidence / "new-manifest.json"
+
+    monkeypatch.setattr(retirement_nextest, "capture_release_execution", capture)
+
+    def run():
+        return retirement_nextest.capture_release_roster(checkout, "b" * 40, evidence, lane="proof-lane")
+
+    with pytest.raises(ValueError, match="retained old-Q executable is absent"):
+        list(run())
+    assert launched == []
+
+    retained[(legacy,)] = evidence / "verified-manifest.json"
+    active = run()
+    assert next(active) == evidence / "new-manifest.json"
+    with pytest.raises(ValueError, match="already holds the evidence directory"):
+        list(run())
+    assert list(active) == [retained[(legacy,)]]
+    assert launched == [native]
+
+    active = run()
+    assert next(active) == evidence / "new-manifest.json"
+    evidence.rename(tmp_path / "original-evidence")
+    evidence.mkdir()
+    with pytest.raises(ValueError, match="retirement evidence directory changed"):
+        list(active)
+    assert launched == [native, native]
 
 
 def test_retained_executable_digest_reuses_only_unchanged_bytes(tmp_path, monkeypatch):
