@@ -825,7 +825,7 @@ impl core::marker::StructuralPartialEq for quanta_index_contract::index::History
 impl serde_core::ser::Serialize for quanta_index_contract::index::HistorySnapshotExportFrameV1
 pub fn quanta_index_contract::index::HistorySnapshotExportFrameV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::index::HistorySnapshotExportFrameV1
-pub fn quanta_index_contract::index::HistorySnapshotExportFrameV1::deserialize<__D>(__deserializer: __D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub fn quanta_index_contract::index::HistorySnapshotExportFrameV1::deserialize<D: serde_core::de::Deserializer<'de>>(decoder: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 impl core::marker::Freeze for quanta_index_contract::index::HistorySnapshotExportFrameV1
 impl core::marker::Send for quanta_index_contract::index::HistorySnapshotExportFrameV1
 impl core::marker::Sync for quanta_index_contract::index::HistorySnapshotExportFrameV1
