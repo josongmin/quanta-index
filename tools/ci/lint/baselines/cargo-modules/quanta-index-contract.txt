@@ -116,7 +116,21 @@ crate quanta_index_contract
 │   │   │   ├── struct HistorySnapshotCheckpointV1: pub
 │   │   │   ├── enum HistorySnapshotExportFrameV1: pub
 │   │   │   ├── struct HistorySnapshotPageV1: pub
-│   │   │   └── struct HistorySnapshotRowV1: pub
+│   │   │   ├── struct HistorySnapshotRowV1: pub
+│   │   │   └── mod export_decode: pub(self)
+│   │   │       ├── enum BodyReplay: pub(self)
+│   │   │       │   ├── type Deserializer: pub(self)
+│   │   │       │   └── type Error: pub(self)
+│   │   │       ├── struct FieldKey: pub(self)
+│   │   │       │   ├── type Value: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── struct HistoryFrameBodySeedV1: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       ├── enum HistoryFrameKindV1: pub(self)
+│   │   │       ├── struct HistoryFrameVisitor: pub(self)
+│   │   │       │   └── type Value: pub(self)
+│   │   │       └── struct HistoryKindTag: pub(self)
+│   │   │           └── type Value: pub(self)
 │   │   └── mod source_input: pub(self)
 │   │       ├── struct HistoryReplayFenceV1: pub
 │   │       ├── struct HistoryReplayPublicationV1: pub
