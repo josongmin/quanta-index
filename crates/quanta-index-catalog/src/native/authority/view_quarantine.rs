@@ -19,7 +19,7 @@ fn schema_state(catalog: &SqliteCatalog) -> u8 {
         .load(std::sync::atomic::Ordering::Acquire)
 }
 
-fn mark_schema_current(catalog: &SqliteCatalog) {
+pub(super) fn mark_schema_current(catalog: &SqliteCatalog) {
     catalog.native_quarantine_schema.store(
         capture_format::QUARANTINE_SCHEMA_CURRENT,
         std::sync::atomic::Ordering::Release,
@@ -790,6 +790,24 @@ pub(super) fn stage_transient_incidents(
     Ok(staged)
 }
 
+/// Establish receipt availability inside the retirement transaction. A v20
+/// root with no transient incident keeps its original schema; a transient
+/// incident must be made durable before its last view can be deleted.
+pub(super) fn stage_retirement_incidents(
+    catalog: &SqliteCatalog,
+    connection: &Connection,
+    budget: &mut WorkBudget,
+) -> Result<bool, IndexError> {
+    if schema_state(catalog) == capture_format::QUARANTINE_SCHEMA_ABSENT {
+        if !has_transient(catalog) {
+            return Ok(false);
+        }
+        ensure_or_verify_schema(catalog, connection)?;
+    }
+    let _staged = stage_transient_incidents(catalog, connection, budget)?;
+    Ok(true)
+}
+
 fn finish_pending_incidents(
     catalog: &SqliteCatalog,
     connection: &mut Connection,
@@ -1010,5 +1028,93 @@ impl SqliteCatalog {
         budget: &mut WorkBudget,
     ) -> Result<ObjectRef, IndexError> {
         self.quarantine_view_object(view, body, budget)
+    }
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+    use quanta_index_contract::index::{CollectionId, SlotId, TenantId, WorktreeId};
+    use quanta_index_core::{RequestBudgetV1, index::WorkLimits};
+    use std::time::Duration;
+
+    #[test]
+    fn retirement_only_installs_quarantine_for_a_durable_incident()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_secs(1))?;
+        let mut connection = catalog.lock()?;
+        let mut budget = WorkBudget::with_request(
+            WorkLimits {
+                reads: 1_000,
+                writes: 1_000,
+                bytes: 1_000_000,
+                mutations: 1_000,
+            },
+            RequestBudgetV1::for_duration(Duration::from_secs(30)),
+        );
+        let absent = capture_format::QUARANTINE_SCHEMA_ABSENT;
+        let current = capture_format::QUARANTINE_SCHEMA_CURRENT;
+        {
+            let tx = begin(&mut connection)?;
+            assert!(!stage_retirement_incidents(&catalog, &tx, &mut budget)?);
+            tx.commit()?;
+        }
+        assert_eq!(
+            capture_format::installed_extensions(&connection, catalog.path())?.0,
+            absent
+        );
+
+        let view = ViewRef {
+            workspace: quanta_index_contract::index::WorkspaceKey {
+                tenant: TenantId([1; 16]),
+                collection: CollectionId([2; 16]),
+                worktree: WorktreeId([3; 16]),
+                slot: SlotId([4; 16]),
+            },
+            epoch: 1,
+            sequence: 1,
+            digest: Digest([5; 32]),
+        };
+        let body = ObjectRef(Digest([6; 32]));
+        super::super::register(
+            &connection,
+            &[quanta_index_core::index::RegisteredObject::unscoped(
+                body,
+                128,
+                Vec::new(),
+            )],
+        )?;
+        assert!(
+            catalog
+                .transient_source_body_quarantines
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert((view, body), None)
+                .is_none()
+        );
+
+        for commit in [false, true] {
+            let tx = begin(&mut connection)?;
+            assert!(stage_retirement_incidents(&catalog, &tx, &mut budget)?);
+            assert_eq!(schema_state(&catalog), absent);
+            assert!(
+                body_incidents::state(&tx, body, &mut budget)?
+                    == Some(body_incidents::State::Pending)
+            );
+            if commit {
+                tx.commit()?;
+                mark_schema_current(&catalog);
+            } else {
+                tx.rollback()?;
+            }
+            let expected = if commit { current } else { absent };
+            assert_eq!(schema_state(&catalog), expected);
+            assert_eq!(
+                capture_format::installed_extensions(&connection, catalog.path())?.0,
+                expected
+            );
+        }
+        Ok(())
     }
 }

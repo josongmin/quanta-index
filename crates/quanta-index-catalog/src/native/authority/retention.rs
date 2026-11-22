@@ -979,6 +979,7 @@ fn delete_retired_view(
     catalog: &SqliteCatalog,
     connection: &Connection,
     view: &CatalogView,
+    receipts_available: bool,
     budget: &mut WorkBudget,
 ) -> Result<Option<ObjectRef>, IndexError> {
     let workspace_blob = workspace_key(view.identity.workspace)?;
@@ -986,13 +987,17 @@ fn delete_retired_view(
     let sequence = int(view.identity.sequence)?;
     // The view delete cascades its receipt. Complete any older single-view
     // fence while the original view and its root edges still exist.
-    let completed_body = super::view_quarantine::resume_receipt_by_key(
-        catalog,
-        connection,
-        view.identity,
-        &workspace_blob,
-        budget,
-    )?;
+    let completed_body = if receipts_available {
+        super::view_quarantine::resume_receipt_by_key(
+            catalog,
+            connection,
+            view.identity,
+            &workspace_blob,
+            budget,
+        )?
+    } else {
+        None
+    };
     let root_count = distinct_roots(view).len();
     if root_count == 0 || root_count > 7 {
         return Err(IndexError::Storage(
@@ -1239,7 +1244,8 @@ impl CatalogExactHistoryPort for SqliteCatalog {
         }
         // A retired view can be the last witness for a process-local
         // incident. Persist the body before pruning any exact view evidence.
-        let _staged = super::view_quarantine::stage_transient_incidents(self, &tx, budget)?;
+        let receipts_available =
+            super::view_quarantine::stage_retirement_incidents(self, &tx, budget)?;
         let mut cursor = after;
         let mut examined = 0_u32;
         let mut retired = 0_u32;
@@ -1283,7 +1289,8 @@ impl CatalogExactHistoryPort for SqliteCatalog {
             if protected {
                 blocked = blocked.checked_add(1).ok_or(IndexError::ResourceLimited)?;
             } else {
-                if let Some(body) = delete_retired_view(self, &tx, &view, budget)?
+                if let Some(body) =
+                    delete_retired_view(self, &tx, &view, receipts_available, budget)?
                     && !completed_quarantine_bodies.contains(&body)
                 {
                     completed_quarantine_bodies.push(body);
@@ -1300,6 +1307,9 @@ impl CatalogExactHistoryPort for SqliteCatalog {
         let has_more = next.is_some();
         budget.checkpoint()?;
         tx.commit().map_err(|error| sql(&error))?;
+        if receipts_available {
+            super::view_quarantine::mark_schema_current(self);
+        }
         for body in completed_quarantine_bodies {
             super::view_quarantine::clear_transient_body(self, body);
         }

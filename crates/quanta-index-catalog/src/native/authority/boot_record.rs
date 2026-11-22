@@ -9,7 +9,8 @@ use quanta_index_core::index::{
     OperationStatus, ViewRef, WorkBudget, WorkUsage,
 };
 use rusqlite::{Connection, OptionalExtension as _, params, types::ValueRef};
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::ser::SerializeStruct as _;
 use sha2::{Digest as _, Sha256};
 
 use super::{
@@ -27,8 +28,7 @@ const DOMAIN: &[u8] = b"qidx.native.boot-manifest.v1\0";
 
 /// Catalog-issued binding to one original published operation. This is not a
 /// producer completion seal or proof of the referenced physical object bytes.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeBootManifest {
     pub operation: ImmutableOperation,
     /// Canonical publication metadata permits digest validation after its view
@@ -36,18 +36,227 @@ pub struct NativeBootManifest {
     pub publication: CatalogView,
     /// An immutable, physically verified route object holds all additional
     /// source/revision heads and their original boot roots.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protected_source_routes: Option<NativeBootSourceRouteRefV1>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeBootSourceRouteRefV1 {
     pub object: ObjectRef,
     pub count: u32,
     /// Direct marker carrier derived from the staged Native ancestry at seal.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marker_anchor: Option<ObjectRef>,
+}
+
+// Both optional fields are omitted from named records but default when absent
+// during decoding. Positional records retain the same trailing-field default.
+struct BootFieldSeed(&'static [&'static str]);
+
+impl<'de> serde::de::DeserializeSeed<'de> for BootFieldSeed {
+    type Value = &'static str;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        struct FieldVisitor(&'static [&'static str]);
+
+        impl serde::de::Visitor<'_> for FieldVisitor {
+            type Value = &'static str;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a boot record field")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                self.0
+                    .iter()
+                    .copied()
+                    .find(|field| *field == value)
+                    .ok_or_else(|| E::unknown_field(value, self.0))
+            }
+
+            fn visit_bytes<E: serde::de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+                match std::str::from_utf8(value) {
+                    Ok(name) => self.visit_str(name),
+                    Err(_) => Err(E::unknown_field(&String::from_utf8_lossy(value), self.0)),
+                }
+            }
+        }
+
+        deserializer.deserialize_identifier(FieldVisitor(self.0))
+    }
+}
+
+impl serde::Serialize for NativeBootManifest {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct(
+            "NativeBootManifest",
+            if self.protected_source_routes.is_some() {
+                3
+            } else {
+                2
+            },
+        )?;
+        state.serialize_field("operation", &self.operation)?;
+        state.serialize_field("publication", &self.publication)?;
+        if self.protected_source_routes.is_some() {
+            state.serialize_field("protected_source_routes", &self.protected_source_routes)?;
+        }
+        state.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for NativeBootManifest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &["operation", "publication", "protected_source_routes"];
+        struct Record;
+
+        impl<'de> serde::de::Visitor<'de> for Record {
+            type Value = NativeBootManifest;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct NativeBootManifest")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let (mut operation, mut publication, mut protected_source_routes) =
+                    (None, None, None);
+                while let Some(key) = map.next_key_seed(BootFieldSeed(FIELDS))? {
+                    match key {
+                        "operation" => {
+                            if operation.is_some() {
+                                return Err(A::Error::duplicate_field(key));
+                            }
+                            operation = Some(map.next_value()?);
+                        }
+                        "publication" => {
+                            if publication.is_some() {
+                                return Err(A::Error::duplicate_field(key));
+                            }
+                            publication = Some(map.next_value()?);
+                        }
+                        "protected_source_routes" => {
+                            if protected_source_routes.is_some() {
+                                return Err(A::Error::duplicate_field(key));
+                            }
+                            protected_source_routes = Some(map.next_value()?);
+                        }
+                        _ => unreachable!("closed boot field seed"),
+                    }
+                }
+                Ok(NativeBootManifest {
+                    operation: operation.ok_or_else(|| A::Error::missing_field("operation"))?,
+                    publication: publication
+                        .ok_or_else(|| A::Error::missing_field("publication"))?,
+                    protected_source_routes: protected_source_routes.unwrap_or_default(),
+                })
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let expected = &"struct NativeBootManifest with 3 elements";
+                Ok(NativeBootManifest {
+                    operation: seq
+                        .next_element()?
+                        .ok_or_else(|| A::Error::invalid_length(0, expected))?,
+                    publication: seq
+                        .next_element()?
+                        .ok_or_else(|| A::Error::invalid_length(1, expected))?,
+                    protected_source_routes: seq.next_element()?.unwrap_or_default(),
+                })
+            }
+        }
+
+        deserializer.deserialize_struct("NativeBootManifest", FIELDS, Record)
+    }
+}
+
+impl serde::Serialize for NativeBootSourceRouteRefV1 {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct(
+            "NativeBootSourceRouteRefV1",
+            if self.marker_anchor.is_some() { 3 } else { 2 },
+        )?;
+        state.serialize_field("object", &self.object)?;
+        state.serialize_field("count", &self.count)?;
+        if self.marker_anchor.is_some() {
+            state.serialize_field("marker_anchor", &self.marker_anchor)?;
+        }
+        state.end()
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for NativeBootSourceRouteRefV1 {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &["object", "count", "marker_anchor"];
+        struct Record;
+
+        impl<'de> serde::de::Visitor<'de> for Record {
+            type Value = NativeBootSourceRouteRefV1;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct NativeBootSourceRouteRefV1")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let (mut object, mut count, mut marker_anchor) = (None, None, None);
+                while let Some(key) = map.next_key_seed(BootFieldSeed(FIELDS))? {
+                    match key {
+                        "object" => {
+                            if object.is_some() {
+                                return Err(A::Error::duplicate_field(key));
+                            }
+                            object = Some(map.next_value()?);
+                        }
+                        "count" => {
+                            if count.is_some() {
+                                return Err(A::Error::duplicate_field(key));
+                            }
+                            count = Some(map.next_value()?);
+                        }
+                        "marker_anchor" => {
+                            if marker_anchor.is_some() {
+                                return Err(A::Error::duplicate_field(key));
+                            }
+                            marker_anchor = Some(map.next_value()?);
+                        }
+                        _ => unreachable!("closed boot field seed"),
+                    }
+                }
+                Ok(NativeBootSourceRouteRefV1 {
+                    object: object.ok_or_else(|| A::Error::missing_field("object"))?,
+                    count: count.ok_or_else(|| A::Error::missing_field("count"))?,
+                    marker_anchor: marker_anchor.unwrap_or_default(),
+                })
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let expected = &"struct NativeBootSourceRouteRefV1 with 3 elements";
+                Ok(NativeBootSourceRouteRefV1 {
+                    object: seq
+                        .next_element()?
+                        .ok_or_else(|| A::Error::invalid_length(0, expected))?,
+                    count: seq
+                        .next_element()?
+                        .ok_or_else(|| A::Error::invalid_length(1, expected))?,
+                    marker_anchor: seq.next_element()?.unwrap_or_default(),
+                })
+            }
+        }
+
+        deserializer.deserialize_struct("NativeBootSourceRouteRefV1", FIELDS, Record)
+    }
 }
 
 impl NativeBootManifest {
