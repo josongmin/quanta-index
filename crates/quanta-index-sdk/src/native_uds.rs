@@ -188,10 +188,18 @@ impl SourceInputView for BorrowedSourceInput<'_> {
 }
 
 // Same canonical envelope, borrowing the caller-funded request without a DTO clone.
-#[derive(Serialize)]
 struct BorrowedNativeRequestEnvelope<'a> {
     request_id: u64,
     payload: &'a NativeIndexRequest,
+}
+
+impl Serialize for BorrowedNativeRequestEnvelope<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut envelope = serializer.serialize_struct("BorrowedNativeRequestEnvelope", 2)?;
+        envelope.serialize_field("request_id", &self.request_id)?;
+        envelope.serialize_field("payload", self.payload)?;
+        envelope.end()
+    }
 }
 
 #[derive(Clone, Copy)]
