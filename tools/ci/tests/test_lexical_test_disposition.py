@@ -917,6 +917,7 @@ def test_shipment_checks_committed_roster_not_working_tree(checker, capsys):
         ("foreign", "Nextest event"),
         ("without_old_q", "retained old-Q executable is absent"),
         ("changed_old_q", "old-Q executable SHA-256 differs"),
+        ("relabeled_pending", "frozen old-Q tests must retain their original disposition"),
     ],
 )
 def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
@@ -1045,13 +1046,17 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
         "{" + ", ".join(f"{key} = {json.dumps(value)}" for key, value in observation.items()) + "}"
         for observation in observations
     ) + "]"
-    roster = roster.replace(
-        'disposition = "retain"\nproof = "NOT_RUN"',
-        'disposition = "retain"\nproof = "VERIFIED"\n'
-        f'candidates = [{{path = "{source}", tests = {json.dumps(cases)}}}]\n'
-        f'observations = {toml_observations}',
-        1,
-    )
+    pending_retain = 'disposition = "retain"\nproof = "NOT_RUN"'
+    if evidence == "relabeled_pending":
+        roster = roster.replace(pending_retain, 'disposition = "migrate"\nproof = "NOT_RUN"', 1)
+    else:
+        roster = roster.replace(
+            pending_retain,
+            'disposition = "retain"\nproof = "VERIFIED"\n'
+            f'candidates = [{{path = "{source}", tests = {json.dumps(cases)}}}]\n'
+            f'observations = {toml_observations}',
+            1,
+        )
     checker.MANIFEST.write_text(roster, encoding="utf-8")
     git("add", str(checker.MANIFEST.relative_to(checker.ROOT)))
     git("commit", "-qm", "candidate roster")

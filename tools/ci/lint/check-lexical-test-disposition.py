@@ -39,6 +39,9 @@ TEST_FUNCTION = re.compile(
 ALLOWED_DISPOSITIONS = {"retain", "migrate", "retire"}
 ALLOWED_PROOF = {"VERIFIED", "FAILED", "BLOCKED", "NOT_RUN", "NOT_APPLICABLE"}
 
+# The seal-cost oracles run against fixed old-Q even after the engine is removed.
+RETAINED_OLD_Q_TARGET = "crates/quanta-index-lexical/tests/sealed_commitment_cost.rs"
+
 # Removal of the adapter and its Cargo feature only proves the old execution
 # path is gone. A body waiver applies to reviewed engine-only test identities.
 ENGINE_ONLY_RETIREMENTS = frozenset({
@@ -249,6 +252,8 @@ def main(
                 errors.append(
                     f"{relative}: retirement requires VERIFIED proof or a removed frozen engine target"
                 )
+            if relative == RETAINED_OLD_Q_TARGET and disposition != "retain":
+                errors.append(f"{relative}: frozen old-Q tests must retain their original disposition")
             retained_release = disposition == "retain" and revision is not None
             if retained_release and proof != "VERIFIED":
                 errors.append(f"{relative}: retained old-Q tests require VERIFIED execution")
@@ -265,12 +270,12 @@ def main(
             elif remaining and proof == "VERIFIED":
                 errors.append(f"{relative}: verified disposition still has missing assertions")
                 proof = "BLOCKED"
-            if (disposition in ("migrate", "retire") or retained_release) and (
+            if disposition in ("migrate", "retire", "retain") and (
                 "candidates" in group or proof == "VERIFIED"
             ):
                 try:
                     expected = replacement_test_ids(group.get("candidates"))
-                    if retained_release:
+                    if disposition == "retain":
                         retained = {
                             (relative, test) for test in tests if isinstance(test, str)
                         }

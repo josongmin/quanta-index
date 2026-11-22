@@ -18,6 +18,9 @@ path = "crates/quanta-index-lexical/tests/sealed_commitment_cost.rs"
 disposition = "retain"
 proof = "NOT_RUN"
 replacement = "fixed old-Q public SDK compatibility rail; engine is external to the NoFeatures graph"
+candidates = [
+  {path = "crates/quanta-index-lexical/tests/sealed_commitment_cost.rs", tests = ["file_admission_counts_verified_changed_sources_separately", "a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files"]},
+]
 tests = [
   "file_admission_counts_verified_changed_sources_separately",
   "a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files",
