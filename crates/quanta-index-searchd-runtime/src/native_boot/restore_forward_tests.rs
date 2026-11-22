@@ -280,7 +280,7 @@ fn probe_previous_native_v1(
     current_wire: &[u8],
     check: impl FnOnce(
         &crate::deployment_selection::DeploymentSelectionDocumentV1,
-        &mut WorkBudget,
+        &mut quanta_index_core::index::WorkBudget,
     ) -> TestResult,
 ) -> TestResult {
     let selection = current.base.join("previous-native-selection.json");
