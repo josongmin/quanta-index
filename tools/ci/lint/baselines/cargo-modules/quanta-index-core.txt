@@ -17,6 +17,7 @@ crate quanta_index_core
 │   ├── enum DiagnosticHealthCodeV1: pub
 │   ├── struct DiagnosticInodeCensusV1: pub(crate)
 │   ├── struct DiagnosticLaneV1: pub
+│   ├── enum DiagnosticManagedInstallCensusKindV1: pub
 │   ├── enum DiagnosticObjectInstallPhaseV1: pub
 │   ├── enum DiagnosticObjectKindV1: pub
 │   ├── enum DiagnosticOccupancyBucketV1: pub

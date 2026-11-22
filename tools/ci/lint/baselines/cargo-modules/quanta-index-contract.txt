@@ -81,6 +81,7 @@ crate quanta_index_contract
 │   ├── struct ProjectionCertificate: pub
 │   ├── struct ProjectionOwnerContribution: pub
 │   ├── enum ProjectionPayloadDigestErrorV3: pub
+│   ├── struct ProjectionReplayStamp: pub
 │   ├── struct ProjectionTransition: pub
 │   ├── enum Refusal: pub
 │   ├── struct SourceCut: pub
@@ -144,6 +145,8 @@ crate quanta_index_contract
 │       ├── struct LegacySourceOriginV1: pub
 │       ├── struct LexicalSourceHeadsCommitmentV1: pub
 │       ├── struct NativeImportedSourceHeadV1: pub
+│       ├── struct RestoreFieldKeyV1: pub(self)
+│       │   └── type Value: pub(self)
 │       └── enum SourceSnapshotExportFrameV1: pub
 ├── mod ipc: pub
 │   ├── mod batch_body: pub(self)
@@ -929,6 +932,7 @@ crate quanta_index_contract
 │   ├── enum NativeCutoverSourceJoinErrorV1: pub
 │   └── struct NativeCutoverSourceLineageV1: pub(self)
 ├── mod native_protocol: pub
+│   ├── struct NativeCandidateInstallationV1: pub
 │   ├── struct NativeEffortDone: pub
 │   ├── enum NativeEffortPreference: pub
 │   ├── enum NativeEffortReason: pub
@@ -944,6 +948,9 @@ crate quanta_index_contract
 │   ├── struct NativeLiteralHit: pub
 │   ├── struct NativeLiteralPage: pub
 │   ├── struct NativePathPage: pub
+│   ├── struct NativeProducerProjectionOwnerPageV1: pub
+│   ├── struct NativeProducerProjectionOwnerRowsV1: pub
+│   ├── struct NativeProducerProjectionOwnerV1: pub
 │   ├── struct NativeProducerSourceOwner: pub
 │   ├── struct NativeProducerSourcePage: pub
 │   ├── struct NativeProducerSourcePageWire: pub(self)
@@ -954,6 +961,9 @@ crate quanta_index_contract
 │   ├── struct NativeProjectionRead: pub
 │   ├── struct NativeProtectedRepoMapResolutionV1: pub
 │   ├── struct NativeReadSessionId: pub
+│   ├── struct NativeRepoMapEventFrontierV1: pub
+│   ├── struct NativeRepoMapGraphDescriptorV1: pub
+│   ├── struct NativeRepoMapGraphInstallationV1: pub
 │   ├── struct NativeRepositoryPathCursor: pub
 │   ├── struct NativeRepositoryPathEntry: pub
 │   ├── struct NativeRepositoryPathPage: pub
@@ -969,6 +979,9 @@ crate quanta_index_contract
 │   ├── struct NativeTextHit: pub
 │   ├── struct NativeTextResult: pub
 │   ├── trait SourceOwnerItem: pub(self)
+│   ├── struct SourceStageHistoryRefsV1: pub
+│   ├── struct SourceStageReplayContextV1: pub
+│   ├── struct SourceStageReplayReceiptV1: pub
 │   ├── mod dsl: pub(self)
 │   │   ├── struct NativeDslCorpusV1: pub
 │   │   ├── struct NativeDslCursorV1: pub
@@ -977,12 +990,16 @@ crate quanta_index_contract
 │   │   ├── struct NativeDslMatchRangeV1: pub
 │   │   ├── struct NativeDslPageV1: pub
 │   │   ├── struct NativeDslQueryV1: pub
+│   │   ├── enum NativeDslReplayBasisV1: pub
+│   │   ├── struct NativeDslReplayV1: pub
 │   │   ├── enum NativeDslRowsV1: pub
 │   │   ├── struct NativeDslRuntimeCatalogV1: pub
 │   │   ├── struct NativeDslRuntimeHitV1: pub
 │   │   ├── struct NativeDslScopeV1: pub
 │   │   └── struct NativeDslStructuralHitV1: pub
 │   ├── mod graph: pub(self)
+│   │   ├── type BoundedFileNodes: pub(self)
+│   │   ├── struct FileFactsWire: pub(self)
 │   │   ├── struct GraphEdge: pub
 │   │   ├── struct GraphNode: pub
 │   │   ├── struct GraphOwnerOutput: pub
@@ -993,9 +1010,22 @@ crate quanta_index_contract
 │   │   ├── struct NativeGraphQuery: pub
 │   │   ├── struct NativeGraphResult: pub
 │   │   ├── struct NativeGraphRow: pub
+│   │   ├── struct NativeRepoMapFileFactsV1: pub
+│   │   ├── mod prior_file: pub(self)
+│   │   │   ├── struct BorrowedResult: pub(self)
+│   │   │   ├── struct NativeRepoMapPriorFileResultV1: pub
+│   │   │   ├── struct NativeRepoMapPriorFileV1: pub
+│   │   │   ├── struct NativeRepoMapPriorNodeDegreeV1: pub
+│   │   │   ├── type PriorDegrees: pub(self)
+│   │   │   ├── type PriorEdges: pub(self)
+│   │   │   └── struct PriorFileWire: pub(self)
 │   │   ├── mod producer: pub(self)
+│   │   │   ├── struct NativeRepoMapFileOwnerProjectionV1: pub
 │   │   │   ├── enum NativeRepoMapOwnerError: pub
-│   │   │   └── struct NativeRepoMapOwnerProjection: pub
+│   │   │   ├── struct NativeRepoMapOwnerProjection: pub
+│   │   │   └── mod input_stamp: pub(self)
+│   │   │       ├── struct FileInputsV1: pub(self)
+│   │   │       └── struct IncidentEdgeV1: pub(self)
 │   │   └── mod ranking: pub(self)
 │   │       ├── struct GraphProjectionRow: pub
 │   │       ├── struct LimitedFocusSubject: pub(self)
@@ -1309,6 +1339,7 @@ crate quanta_index_contract
 │   │   ├── type ChunkStatsTables: pub(self)
 │   │   ├── struct ChunkStatsV1: pub(self)
 │   │   ├── struct CompileCborWriter: pub(self)
+│   │   ├── struct CompiledPartsV1: pub(self)
 │   │   ├── struct FileEntryInput: pub(self)
 │   │   ├── struct RepoMapGraphCompiler: pub
 │   │   └── struct SymbolEntryInput: pub(self)
