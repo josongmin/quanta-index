@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import re
 import stat
 import subprocess
@@ -37,6 +38,9 @@ NEXTEST_EVENT = re.compile(r"[a-z0-9-]+::[a-zA-Z0-9_-]+\$[a-zA-Z0-9_]+(?:::[a-zA
 LEGACY_BINARY_ENV = "QUANTA_INDEX_LEGACY_SEARCHD_BIN"
 LEGACY_SHA_ENV = "QUANTA_INDEX_LEGACY_SEARCHD_SHA256"
 LEGACY_EXECUTABLE = "legacy-searchd"
+LEXICAL_OLD_Q_TARGETS = frozenset({"legacy_existing", "sealed_commitment_cost"})
+LEXICAL_LINUX_TARGETS = LEXICAL_OLD_Q_TARGETS | {"boot_inventory_data"}
+LINUX_OLD_Q_PLATFORM = "x86_64-unknown-linux-gnu"
 
 # The evidence digests are written after the run, so their two ledgers are
 # excluded from source identity. Every other committed path is included.
@@ -181,7 +185,7 @@ def _approved_linux_old_q_sha256(root: Path, revision: str) -> str:
 def _require_approved_old_q(
     root: Path, revision: str, package: str, test_targets: list[str], digest: str | None,
 ) -> None:
-    if package == "quanta-index-lexical" and "sealed_commitment_cost" in test_targets:
+    if package == "quanta-index-lexical" and LEXICAL_OLD_Q_TARGETS.intersection(test_targets):
         if digest is None:
             raise ValueError("retained old-Q executable is absent")
         if digest != _approved_linux_old_q_sha256(root, revision):
@@ -233,6 +237,7 @@ def check_frozen_inputs(
     selection = execution["selection"]
     selected = _check_selection(selection, inventory)
     _require_roster_membership(root, release_revision, selected)
+    _require_lexical_platforms(binaries, inventory, selection)
     expected_commands = _execution_commands(
         selection, target_dir.parent / binaries.path.name, target_dir.parent / cargo.path.name,
     )
@@ -385,6 +390,40 @@ def _require_collected_build(binaries: RawFile, inventory: RawFile) -> None:
         raise ValueError("Nextest collection differs from the built executable inventory")
 
 
+def _nextest_platforms(artifact: RawFile) -> tuple[str, str]:
+    try:
+        meta = parse_proof_json(artifact.read_control())["rust-build-meta"]
+        platforms = meta["platforms"]
+        host = platforms["host"]["platform"]["triple"]
+        targets = platforms["targets"]
+        if not isinstance(targets, list) or len(targets) > 1:
+            raise ValueError("Nextest retirement requires one effective Cargo target")
+        target = targets[0]["platform"]["triple"] if targets else host
+        if not all(isinstance(triple, str) and triple for triple in (host, target)):
+            raise ValueError("invalid Nextest host or target triple")
+        if "target-platforms" in meta and (
+            tuple(row["triple"] for row in meta["target-platforms"]) != (target,)
+        ):
+            raise ValueError("Nextest target snapshots disagree")
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("Nextest host and target platform metadata is absent or invalid") from error
+    return host, target
+
+
+def _require_lexical_platforms(binaries: RawFile, inventory: RawFile, selection: dict) -> None:
+    targets = selection["test_targets"]
+    if selection["package"] != "quanta-index-lexical" or not LEXICAL_LINUX_TARGETS.intersection(targets):
+        return
+    host_and_target = _nextest_platforms(binaries)
+    if _nextest_platforms(inventory) != host_and_target:
+        raise ValueError("Nextest collection platform differs from the build platform")
+    if LEXICAL_OLD_Q_TARGETS.intersection(targets):
+        if host_and_target != (LINUX_OLD_Q_PLATFORM, LINUX_OLD_Q_PLATFORM):
+            raise ValueError("retained old-Q coverage requires x86-64 Linux host and target")
+    elif not all("linux" in triple.split("-") for triple in host_and_target):
+        raise ValueError("Lexical inventory coverage requires a Linux host and target")
+
+
 def _exact_events(values: object) -> set[str]:
     if (
         not isinstance(values, list) or not values
@@ -486,6 +525,11 @@ def capture_release_execution(
         selected_events = _exact_events(expected_events)
         _require_roster_membership(root, revision, selected_events)
     _require_approved_old_q(root, revision, package, test_targets, os.environ.get(LEGACY_SHA_ENV))
+    if package == "quanta-index-lexical" and LEXICAL_LINUX_TARGETS.intersection(test_targets):
+        if platform.system() != "Linux":
+            raise ValueError("Lexical retirement capture requires a Linux host")
+        if LEXICAL_OLD_Q_TARGETS.intersection(test_targets) and platform.machine() != "x86_64":
+            raise ValueError("retained old-Q execution requires an x86-64 Linux host")
     source_states = _capture_frozen_checkout(root, revision)
     run_id = str(uuid4())
     target_dir = evidence_dir / f"{run_id}-target"
@@ -573,6 +617,7 @@ def capture_release_execution(
     inventory = capture("inventory.json", *commands["inventory.json"])
     _require_collected_build(binaries, inventory)
     selected = _check_selection(selection, inventory)
+    _require_lexical_platforms(binaries, inventory, selection)
     if selected_events is None:
         _require_roster_membership(root, revision, selected)
     require_unchanged(inputs, "Nextest build inputs changed during collection")

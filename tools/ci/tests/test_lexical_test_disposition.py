@@ -919,6 +919,10 @@ def test_shipment_checks_committed_roster_not_working_tree(checker, capsys):
         ("changed_old_q", "old-Q executable SHA-256 differs"),
         ("unapproved_old_q", "does not match the committed approved Linux old-Q SHA-256"),
         ("dirty_approval", "does not match the committed approved Linux old-Q SHA-256"),
+        ("darwin_pass", "requires x86-64 Linux host and target"),
+        ("cross_compiled", "requires x86-64 Linux host and target"),
+        ("collection_platform_drift", "Nextest collection platform differs"),
+        ("missing_platform", "Nextest host and target platform metadata is absent or invalid"),
         ("relabeled_pending", "frozen old-Q tests must retain their original disposition"),
     ],
 )
@@ -964,14 +968,34 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
         "binary-id": binary_id, "binary-path": str(binary),
         "binary-name": target, "kind": "test",
     }
+    linux = "x86_64-unknown-linux-gnu"
+    darwin = "aarch64-apple-darwin"
+
+    def platform_metadata(host, target=None):
+        return {
+            "target-directory": str(target_dir),
+            "platforms": {
+                "host": {"platform": {"triple": host}},
+                "targets": [] if target is None else [{"platform": {"triple": target}}],
+            },
+            "target-platforms": [{"triple": target or host}],
+        }
+
+    builds = platform_metadata(
+        darwin if evidence == "darwin_pass" else linux,
+        "aarch64-unknown-linux-gnu" if evidence == "cross_compiled" else None,
+    )
+    if evidence == "missing_platform":
+        builds = {"target-directory": str(target_dir)}
     binaries_bytes = json.dumps({
-        "rust-build-meta": {"target-directory": str(target_dir)},
+        "rust-build-meta": builds,
         "rust-binaries": {binary_id: row},
     }).encode()
     cargo_bytes = json.dumps({
         "target_directory": str(target_dir), "workspace_root": str(checker.ROOT),
     }).encode()
     inventory_bytes = json.dumps({
+        "rust-build-meta": platform_metadata(darwin) if evidence == "collection_platform_drift" else builds,
         "test-count": len(cases),
         "rust-suites": {binary_id: {
             **row, "package-name": package, "status": "listed",
@@ -1123,6 +1147,47 @@ def test_retained_old_q_capture_rejects_a_missing_or_self_pinned_binary_before_b
         retirement_nextest.capture_release_execution(
             checkout, revision, evidence, lane="test-integration-lane", package="quanta-index-lexical",
             include_lib=False, test_targets=["sealed_commitment_cost"], filterset="all()", features=[],
+        )
+    assert not list(evidence.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("host", "build_target", "expected_error"),
+    [
+        ("aarch64-unknown-linux-gnu", None, None),
+        ("aarch64-apple-darwin", None, "requires a Linux host and target"),
+        ("aarch64-unknown-linux-gnu", "aarch64-apple-darwin", "requires a Linux host and target"),
+    ],
+)
+def test_boot_inventory_platform_preserves_linux_inotify_coverage(tmp_path, host, build_target, expected_error):
+    meta = {
+        "platforms": {
+            "host": {"platform": {"triple": host}},
+            "targets": [] if build_target is None else [{"platform": {"triple": build_target}}],
+        },
+    }
+    path = tmp_path / "nextest.json"
+    path.write_text(json.dumps({"rust-build-meta": meta}), encoding="utf-8")
+    artifact = retirement_nextest.RawFile.capture(path)
+    selection = {"package": "quanta-index-lexical", "test_targets": ["boot_inventory_data"]}
+    if expected_error is None:
+        retirement_nextest._require_lexical_platforms(artifact, artifact, selection)
+    else:
+        with pytest.raises(ValueError, match=expected_error):
+            retirement_nextest._require_lexical_platforms(artifact, artifact, selection)
+
+
+def test_boot_inventory_capture_refuses_darwin_before_build(tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    monkeypatch.setattr(retirement_nextest.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(retirement_nextest, "_capture_frozen_checkout", lambda *_: pytest.fail("entered capture"))
+    with pytest.raises(ValueError, match="retirement capture requires a Linux host"):
+        retirement_nextest.capture_release_execution(
+            checkout, "a" * 40, evidence, lane="test-integration-lane", package="quanta-index-lexical",
+            include_lib=False, test_targets=["boot_inventory_data"], filterset="all()", features=[],
         )
     assert not list(evidence.iterdir())
 
