@@ -32,8 +32,7 @@ use admitted::{InventoryControl, ScanFile};
 
 /// All ceilings are supplied by the service configuration; no implicit scan
 /// or publication capacity is inferred from observed usage.
-#[derive(Clone, Copy, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Copy)]
 #[expect(
     clippy::struct_field_names,
     reason = "public limit fields deliberately name each configured maximum"
@@ -45,6 +44,147 @@ pub struct PublicationBootInventoryLimits {
     pub max_entries: u64,
     pub max_depth: u32,
     pub max_pending_frames: u32,
+}
+
+impl<'de> serde::Deserialize<'de> for PublicationBootInventoryLimits {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
+
+        const FIELDS: &[&str] = &[
+            "max_bytes",
+            "max_files",
+            "max_pending",
+            "max_entries",
+            "max_depth",
+            "max_pending_frames",
+        ];
+
+        struct Field;
+        impl<'de> DeserializeSeed<'de> for Field {
+            type Value = &'static str;
+
+            fn deserialize<D: serde::Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<Self::Value, D::Error> {
+                deserializer.deserialize_identifier(self)
+            }
+        }
+
+        impl Visitor<'_> for Field {
+            type Value = &'static str;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("field identifier")
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                FIELDS
+                    .iter()
+                    .copied()
+                    .find(|name| *name == value)
+                    .ok_or_else(|| E::unknown_field(value, FIELDS))
+            }
+
+            fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+                self.visit_str(&String::from_utf8_lossy(value))
+            }
+
+            fn visit_u64<E: de::Error>(self, index: u64) -> Result<Self::Value, E> {
+                usize::try_from(index)
+                    .ok()
+                    .and_then(|index| FIELDS.get(index).copied())
+                    .ok_or_else(|| {
+                        E::invalid_value(de::Unexpected::Unsigned(index), &"field index 0 <= i < 6")
+                    })
+            }
+        }
+
+        struct Limits;
+
+        fn read_field<'de, M, T>(
+            map: &mut M,
+            slot: &mut Option<T>,
+            field: &'static str,
+        ) -> Result<(), M::Error>
+        where
+            M: MapAccess<'de>,
+            T: serde::Deserialize<'de>,
+        {
+            if slot.is_some() {
+                return Err(de::Error::duplicate_field(field));
+            }
+            *slot = Some(map.next_value()?);
+            Ok(())
+        }
+
+        fn read_element<'de, S, T>(sequence: &mut S, index: usize) -> Result<T, S::Error>
+        where
+            S: SeqAccess<'de>,
+            T: serde::Deserialize<'de>,
+        {
+            sequence.next_element()?.ok_or_else(|| {
+                de::Error::invalid_length(
+                    index,
+                    &"struct PublicationBootInventoryLimits with 6 elements",
+                )
+            })
+        }
+
+        impl<'de> Visitor<'de> for Limits {
+            type Value = PublicationBootInventoryLimits;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("struct PublicationBootInventoryLimits")
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let (mut max_bytes, mut max_files, mut max_pending, mut max_entries) =
+                    (None, None, None, None);
+                let (mut max_depth, mut max_pending_frames) = (None, None);
+                while let Some(field) = map.next_key_seed(Field)? {
+                    match field {
+                        "max_bytes" => read_field(&mut map, &mut max_bytes, field)?,
+                        "max_files" => read_field(&mut map, &mut max_files, field)?,
+                        "max_pending" => read_field(&mut map, &mut max_pending, field)?,
+                        "max_entries" => read_field(&mut map, &mut max_entries, field)?,
+                        "max_depth" => read_field(&mut map, &mut max_depth, field)?,
+                        "max_pending_frames" => {
+                            read_field(&mut map, &mut max_pending_frames, field)?
+                        }
+                        _ => return Err(de::Error::unknown_field(field, FIELDS)),
+                    }
+                }
+                Ok(PublicationBootInventoryLimits {
+                    max_bytes: max_bytes.ok_or_else(|| de::Error::missing_field("max_bytes"))?,
+                    max_files: max_files.ok_or_else(|| de::Error::missing_field("max_files"))?,
+                    max_pending: max_pending
+                        .ok_or_else(|| de::Error::missing_field("max_pending"))?,
+                    max_entries: max_entries
+                        .ok_or_else(|| de::Error::missing_field("max_entries"))?,
+                    max_depth: max_depth.ok_or_else(|| de::Error::missing_field("max_depth"))?,
+                    max_pending_frames: max_pending_frames
+                        .ok_or_else(|| de::Error::missing_field("max_pending_frames"))?,
+                })
+            }
+
+            fn visit_seq<S: SeqAccess<'de>>(
+                self,
+                mut sequence: S,
+            ) -> Result<Self::Value, S::Error> {
+                Ok(PublicationBootInventoryLimits {
+                    max_bytes: read_element(&mut sequence, 0)?,
+                    max_files: read_element(&mut sequence, 1)?,
+                    max_pending: read_element(&mut sequence, 2)?,
+                    max_entries: read_element(&mut sequence, 3)?,
+                    max_depth: read_element(&mut sequence, 4)?,
+                    max_pending_frames: read_element(&mut sequence, 5)?,
+                })
+            }
+        }
+
+        deserializer.deserialize_struct("PublicationBootInventoryLimits", FIELDS, Limits)
+    }
 }
 
 struct Frame<G> {
@@ -466,6 +606,34 @@ mod tests {
         budget: &RequestBudgetV1,
     ) -> Result<PublicationCapacity, CoreError> {
         seed_publication_capacity(lease, state_root, limits, &[], budget)
+    }
+
+    #[test]
+    fn boot_inventory_limits_preserve_closed_map_and_positional_diagnostics() -> TestResult {
+        let limits: PublicationBootInventoryLimits = serde_json::from_str("[1,2,3,4,5,6]")?;
+        require_equal(&limits.max_depth, &5, "positional depth")?;
+        require_equal(&limits.max_pending_frames, &6, "positional frame count")?;
+        for (wire, expected) in [
+            (
+                "[1,2,3,4,5]",
+                "invalid length 5, expected struct PublicationBootInventoryLimits with 6 elements",
+            ),
+            ("[1,2,3,4,5,6,7]", "trailing characters"),
+            (
+                r#"{"max_bytes":1,"max_bytes":2}"#,
+                "duplicate field `max_bytes`",
+            ),
+            (r#"{"future":1}"#, "unknown field `future`"),
+        ] {
+            let Err(error) = serde_json::from_str::<PublicationBootInventoryLimits>(wire) else {
+                return Err(format!("accepted invalid boot inventory limits: {wire}").into());
+            };
+            require(
+                error.to_string().contains(expected),
+                format!("unexpected boot inventory error for {wire}: {error}"),
+            )?;
+        }
+        Ok(())
     }
 
     #[test]
