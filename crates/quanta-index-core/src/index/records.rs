@@ -228,17 +228,125 @@ pub struct SourceRecordOwner {
     _memory: Option<super::MemoryLease>,
 }
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
 struct SourceRecordWire {
     path: String,
     bytes: ObjectRef,
     byte_len: u64,
     text: SourceTextAdmission,
-    #[serde(default)]
     source_repo_id: Option<String>,
-    #[serde(default)]
     language: Option<Box<str>>,
+}
+
+impl<'de> serde::Deserialize<'de> for SourceRecordWire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{DeserializeSeed, Error, MapAccess, SeqAccess, Visitor};
+
+        const FIELDS: &[&str] = &[
+            "path",
+            "bytes",
+            "byte_len",
+            "text",
+            "source_repo_id",
+            "language",
+        ];
+
+        struct Field;
+
+        impl Visitor<'_> for Field {
+            type Value = &'static str;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a source record field")
+            }
+
+            fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
+                FIELDS
+                    .iter()
+                    .copied()
+                    .find(|field| *field == value)
+                    .ok_or_else(|| E::unknown_field(value, FIELDS))
+            }
+        }
+
+        impl<'de> DeserializeSeed<'de> for Field {
+            type Value = &'static str;
+
+            fn deserialize<T: serde::Deserializer<'de>>(
+                self,
+                deserializer: T,
+            ) -> Result<Self::Value, T::Error> {
+                deserializer.deserialize_identifier(self)
+            }
+        }
+
+        fn read_field<'de, A: MapAccess<'de>, T: serde::Deserialize<'de>>(
+            map: &mut A,
+            slot: &mut Option<T>,
+            field: &'static str,
+        ) -> Result<(), A::Error> {
+            if slot.is_some() {
+                return Err(A::Error::duplicate_field(field));
+            }
+            *slot = Some(map.next_value()?);
+            Ok(())
+        }
+
+        struct Record;
+
+        impl<'de> Visitor<'de> for Record {
+            type Value = SourceRecordWire;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct SourceRecordWire")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let (mut path, mut bytes, mut byte_len, mut text) = (None, None, None, None);
+                let (mut source_repo_id, mut language) = (None, None);
+                while let Some(key) = map.next_key_seed(Field)? {
+                    match key {
+                        "path" => read_field(&mut map, &mut path, key)?,
+                        "bytes" => read_field(&mut map, &mut bytes, key)?,
+                        "byte_len" => read_field(&mut map, &mut byte_len, key)?,
+                        "text" => read_field(&mut map, &mut text, key)?,
+                        "source_repo_id" => read_field(&mut map, &mut source_repo_id, key)?,
+                        "language" => read_field(&mut map, &mut language, key)?,
+                        _ => return Err(A::Error::unknown_field(key, FIELDS)),
+                    }
+                }
+                Ok(SourceRecordWire {
+                    path: path.ok_or_else(|| A::Error::missing_field("path"))?,
+                    bytes: bytes.ok_or_else(|| A::Error::missing_field("bytes"))?,
+                    byte_len: byte_len.ok_or_else(|| A::Error::missing_field("byte_len"))?,
+                    text: text.ok_or_else(|| A::Error::missing_field("text"))?,
+                    source_repo_id: source_repo_id.unwrap_or_default(),
+                    language: language.unwrap_or_default(),
+                })
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let expected = &"struct SourceRecordWire with 6 elements";
+                Ok(SourceRecordWire {
+                    path: seq
+                        .next_element()?
+                        .ok_or_else(|| A::Error::invalid_length(0, expected))?,
+                    bytes: seq
+                        .next_element()?
+                        .ok_or_else(|| A::Error::invalid_length(1, expected))?,
+                    byte_len: seq
+                        .next_element()?
+                        .ok_or_else(|| A::Error::invalid_length(2, expected))?,
+                    text: seq
+                        .next_element()?
+                        .ok_or_else(|| A::Error::invalid_length(3, expected))?,
+                    source_repo_id: seq.next_element()?.unwrap_or_default(),
+                    language: seq.next_element()?.unwrap_or_default(),
+                })
+            }
+        }
+
+        deserializer.deserialize_struct("SourceRecordWire", FIELDS, Record)
+    }
 }
 
 impl SourceRecordOwner {
@@ -884,6 +992,15 @@ mod source_record_owner_tests {
         invalid_language.extend_from_slice(b",\"language\":\"Rust\"}");
         let mut duplicate_language = strict_prefix.to_vec();
         duplicate_language.extend_from_slice(b",\"language\":null,\"language\":\"rust\"}");
+        let old_tuple = br#"["src/lib.rs",[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7],3,"Excluded"]"#;
+        let old =
+            SourceRecordOwner::decode_json(old_tuple, &mut budget, MemoryLifetime::Temporary)?;
+        if old.source_repo_id.is_some() || old.language.is_some() || old.path != "src/lib.rs" {
+            return Err(IndexError::BackendViolation(
+                "positional source record lost its legacy optional fields".into(),
+            ));
+        }
+        drop(old);
         for wire in [
             b"{}".to_vec(),
             unknown_wire,
