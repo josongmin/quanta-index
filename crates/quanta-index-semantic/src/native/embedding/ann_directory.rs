@@ -117,9 +117,92 @@ impl ValidatedDeltaMember {
     }
 }
 
-#[derive(serde::Deserialize)]
 struct DirectoryFormatHeader {
     format: u32,
+}
+
+impl<'de> serde::Deserialize<'de> for DirectoryFormatHeader {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+
+        struct FormatKey;
+
+        impl<'de> DeserializeSeed<'de> for FormatKey {
+            type Value = bool;
+
+            fn deserialize<D: serde::Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<Self::Value, D::Error> {
+                deserializer.deserialize_identifier(self)
+            }
+        }
+
+        impl Visitor<'_> for FormatKey {
+            type Value = bool;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("field identifier")
+            }
+
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(value == "format")
+            }
+
+            fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+                Ok(value == b"format")
+            }
+
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                if value == 0 {
+                    Ok(true)
+                } else {
+                    Err(E::invalid_value(
+                        de::Unexpected::Unsigned(value),
+                        &"field index 0 <= i < 1",
+                    ))
+                }
+            }
+        }
+
+        struct Header;
+
+        impl<'de> Visitor<'de> for Header {
+            type Value = DirectoryFormatHeader;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct DirectoryFormatHeader")
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut format = None;
+                while let Some(is_format) = map.next_key_seed(FormatKey)? {
+                    if is_format {
+                        if format.is_some() {
+                            return Err(de::Error::duplicate_field("format"));
+                        }
+                        format = Some(map.next_value()?);
+                    } else {
+                        let _ignored = map.next_value::<IgnoredAny>()?;
+                    }
+                }
+                let format = format.ok_or_else(|| de::Error::missing_field("format"))?;
+                Ok(DirectoryFormatHeader { format })
+            }
+
+            fn visit_seq<S: SeqAccess<'de>>(
+                self,
+                mut sequence: S,
+            ) -> Result<Self::Value, S::Error> {
+                let format = sequence.next_element()?.ok_or_else(|| {
+                    de::Error::invalid_length(0, &"struct DirectoryFormatHeader with 1 element")
+                })?;
+                Ok(DirectoryFormatHeader { format })
+            }
+        }
+
+        deserializer.deserialize_struct("DirectoryFormatHeader", &["format"], Header)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1218,6 +1301,70 @@ mod source_reverse_format_tests {
             return Err(IndexError::BackendViolation(
                 "old ANN directory format was not refused".into(),
             ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn directory_header_classifies_format_only_after_validating_wire() -> Result<(), IndexError> {
+        let reference = ObjectRef(Digest([7; 32]));
+        for (payload, expected) in [
+            (
+                r#"{"later":{"children":["ignored",{"k":0}]},"format":5}"#,
+                Ok(()),
+            ),
+            (
+                r#"{"format":2,"later":null}"#,
+                Err(IndexError::RebuildRequired),
+            ),
+            ("[4]", Ok(())),
+        ] {
+            let stored = StoredObject::new(
+                RegisteredObject::unscoped(
+                    reference,
+                    u64::try_from(payload.len()).map_err(|_error| IndexError::ResourceLimited)?,
+                    Vec::new(),
+                ),
+                payload.as_bytes().to_vec(),
+                None,
+            );
+            let mut work = budget()?;
+            match (
+                require_directory_format(&stored, reference, &mut work),
+                expected,
+            ) {
+                (Ok(()), Ok(()))
+                | (Err(IndexError::RebuildRequired), Err(IndexError::RebuildRequired)) => {}
+                _ => {
+                    return Err(IndexError::BackendViolation(
+                        "ANN directory format classification changed".into(),
+                    ));
+                }
+            }
+        }
+        for (payload, expected) in [
+            (r#"{"format":2,"format":4}"#, "duplicate field `format`"),
+            (r#"{"format":2,"later":[}"#, "expected value"),
+            ("[2,4]", "trailing characters"),
+        ] {
+            let stored = StoredObject::new(
+                RegisteredObject::unscoped(
+                    reference,
+                    u64::try_from(payload.len()).map_err(|_error| IndexError::ResourceLimited)?,
+                    Vec::new(),
+                ),
+                payload.as_bytes().to_vec(),
+                None,
+            );
+            let mut work = budget()?;
+            match require_directory_format(&stored, reference, &mut work) {
+                Err(IndexError::CorruptObject(message)) if message.contains(expected) => {}
+                _ => {
+                    return Err(IndexError::BackendViolation(
+                        "malformed ANN directory reached the backend format selector".into(),
+                    ));
+                }
+            }
         }
         Ok(())
     }
