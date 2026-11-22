@@ -458,7 +458,7 @@ pub struct OpenAiSemanticAbReport {
     peak_daemon_rss_bytes: u64,
 }
 
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug)]
 struct OpenAiAbSourceEvidence {
     legacy_daemon_sha256: String,
     source_batch_digest: String,
@@ -467,6 +467,14 @@ struct OpenAiAbSourceEvidence {
     openai_publication_http_requests: u64,
     openai_publication_stats: Value,
 }
+quanta_index_contract::native_serde_struct!(OpenAiAbSourceEvidence {
+    legacy_daemon_sha256: String,
+    source_batch_digest: String,
+    hash: SearchCorpusActiveHeadV1,
+    openai: SearchCorpusActiveHeadV1,
+    openai_publication_http_requests: u64,
+    openai_publication_stats: Value,
+});
 
 fn score_semantic_case(
     query: &SemanticJudgedQuery,

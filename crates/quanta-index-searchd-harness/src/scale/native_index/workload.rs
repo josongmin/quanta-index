@@ -5,7 +5,6 @@
 
 use anyhow::{Context as _, Result};
 use quanta_index_core::index::WorkLimits;
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{ScaleTier, params_for};
@@ -57,14 +56,18 @@ impl NativeForegroundWorkload {
 
 // Only the external JSON boundary uses this decoder shape. The internal limits
 // remain the Core WorkLimits type consumed by the daemon configuration.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ExternalWorkLimits {
     reads: u64,
     writes: u64,
     bytes: u64,
     mutations: u64,
 }
+quanta_index_contract::native_serde_struct!(ExternalWorkLimits {
+    reads: u64,
+    writes: u64,
+    bytes: u64,
+    mutations: u64,
+});
 
 impl From<ExternalWorkLimits> for WorkLimits {
     fn from(value: ExternalWorkLimits) -> Self {

@@ -17,7 +17,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::RequestBudgetV1;
 use quanta_index_sdk::{ConnectOptions, QuantaIndex};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
@@ -36,8 +36,6 @@ use crate::{
 
 pub(super) const HISTORY_SAMPLES_SCHEMA: &str = "native-dsl-history-samples-v2";
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct PublishedHistoryFixture {
     socket: PathBuf,
     view: ViewRef,
@@ -46,9 +44,14 @@ struct PublishedHistoryFixture {
     // The fixture supplies the seed; each invocation opens its own session.
     open_key: [u8; 32],
 }
+quanta_index_contract::native_serde_struct!(PublishedHistoryFixture {
+    socket: PathBuf,
+    view: ViewRef,
+    instance: InstanceSpec,
+    cut: HistorySourceCutV1,
+    open_key: [u8; 32],
+});
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ColdHistoryFixture {
     history: PublishedHistoryFixture,
     daemon: PathBuf,
@@ -56,6 +59,90 @@ struct ColdHistoryFixture {
     config: PathBuf,
     config_sha256: String,
     source_git_head: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ColdHistoryFixture {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &[
+            "history",
+            "daemon",
+            "daemon_sha256",
+            "config",
+            "config_sha256",
+            "source_git_head",
+        ];
+
+        struct ColdHistoryVisitor;
+
+        impl<'de> de::Visitor<'de> for ColdHistoryVisitor {
+            type Value = ColdHistoryFixture;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("struct ColdHistoryFixture")
+            }
+
+            fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut history = None;
+                let mut daemon = None;
+                let mut daemon_sha256 = None;
+                let mut config = None;
+                let mut config_sha256 = None;
+                let mut source_git_head = None;
+
+                macro_rules! read_field {
+                    ($slot:ident) => {{
+                        if $slot.is_some() {
+                            return Err(de::Error::duplicate_field(stringify!($slot)));
+                        }
+                        $slot = Some(map.next_value()?);
+                    }};
+                }
+
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "history" => read_field!(history),
+                        "daemon" => read_field!(daemon),
+                        "daemon_sha256" => read_field!(daemon_sha256),
+                        "config" => read_field!(config),
+                        "config_sha256" => read_field!(config_sha256),
+                        "source_git_head" => read_field!(source_git_head),
+                        _ => return Err(de::Error::unknown_field(&key, FIELDS)),
+                    }
+                }
+
+                Ok(ColdHistoryFixture {
+                    history: history.ok_or_else(|| de::Error::missing_field("history"))?,
+                    daemon: daemon.ok_or_else(|| de::Error::missing_field("daemon"))?,
+                    daemon_sha256: daemon_sha256
+                        .ok_or_else(|| de::Error::missing_field("daemon_sha256"))?,
+                    config: config.ok_or_else(|| de::Error::missing_field("config"))?,
+                    config_sha256: config_sha256
+                        .ok_or_else(|| de::Error::missing_field("config_sha256"))?,
+                    source_git_head: source_git_head.unwrap_or_default(),
+                })
+            }
+
+            fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                macro_rules! read_field {
+                    ($index:literal) => {
+                        seq.next_element()?
+                            .ok_or_else(|| de::Error::invalid_length($index, &self))?
+                    };
+                }
+
+                Ok(ColdHistoryFixture {
+                    history: read_field!(0),
+                    daemon: read_field!(1),
+                    daemon_sha256: read_field!(2),
+                    config: read_field!(3),
+                    config_sha256: read_field!(4),
+                    source_git_head: read_field!(5),
+                })
+            }
+        }
+
+        deserializer.deserialize_struct("ColdHistoryFixture", FIELDS, ColdHistoryVisitor)
+    }
 }
 
 fn read_native_config(path: &Path) -> Result<Vec<u8>> {
@@ -385,6 +472,82 @@ pub(super) fn verify_sample(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quanta_index_contract::{
+        AuxEpochV1, ManifestGeneration, RepoId, RevisionId,
+        index::{
+            AuxiliaryGenerationKeyV1, CollectionId, Digest, GroupActivation, IndexInstanceId,
+            IndexKind, InputDomain, PublicationGroupId, SchemaId, SlotId, StorageFormatId,
+            TenantId, WorkspaceKey, WorktreeId,
+        },
+    };
+
+    #[test]
+    fn cold_fixture_preserves_optional_head_and_closed_schema() -> Result<()> {
+        let open_key = [1_u8; 32];
+        let history = json!({
+            "socket": "/tmp/history.sock",
+            "view": ViewRef {
+                workspace: WorkspaceKey {
+                    tenant: TenantId([1; 16]),
+                    collection: CollectionId([2; 16]),
+                    worktree: WorktreeId([3; 16]),
+                    slot: SlotId([4; 16]),
+                },
+                epoch: 1,
+                sequence: 2,
+                digest: Digest([3; 32]),
+            },
+            "instance": InstanceSpec {
+                instance: IndexInstanceId([1; 16]),
+                kind: IndexKind([2; 16]),
+                group: PublicationGroupId([3; 16]),
+                activation: GroupActivation::CoreRequired,
+                input_domain: InputDomain::History,
+                schema: SchemaId([4; 16]),
+                policy: Digest([5; 32]),
+                format: StorageFormatId([6; 16]),
+            },
+            "cut": HistorySourceCutV1 {
+                generation: AuxiliaryGenerationKeyV1 {
+                    repo_id: RepoId::new("history-fixture")?,
+                    revision_id: RevisionId::new("history-rev")?,
+                    generation: ManifestGeneration::new(1),
+                },
+                durable_epoch: AuxEpochV1::new(1),
+                snapshot_digest: Digest([6; 32]),
+                replay_start: Digest([7; 32]),
+            },
+            "open_key": open_key,
+        });
+        let fields = format!(
+            r#""history":{history},"daemon":"/daemon","daemon_sha256":"daemon-digest","config":"/config","config_sha256":"config-digest""#,
+        );
+        let sequence = format!(r#"{history},"/daemon","daemon-digest","/config","config-digest""#);
+        let head = "a".repeat(40);
+        for (raw, expected) in [
+            (format!("{{{fields}}}"), None),
+            (format!(r#"{{{fields},"source_git_head":null}}"#), None),
+            (
+                format!(r#"{{{fields},"source_git_head":"{head}"}}"#),
+                Some(head.as_str()),
+            ),
+            (format!("[{sequence},null]"), None),
+        ] {
+            let parsed: ColdHistoryFixture = serde_json::from_str(&raw)?;
+            assert_eq!(parsed.source_git_head.as_deref(), expected);
+            assert_eq!(parsed.history.view.sequence, 2);
+        }
+        for raw in [
+            format!(r#"{{{fields},"source_git_head":null,"source_git_head":null}}"#),
+            format!(r#"{{{fields},"unexpected":null}}"#),
+            format!("[{sequence}]"),
+            format!("[{sequence},null,null]"),
+            format!(r#"{{"history":{history}}}"#),
+        ] {
+            assert!(serde_json::from_str::<ColdHistoryFixture>(&raw).is_err());
+        }
+        Ok(())
+    }
 
     #[test]
     fn history_fixture_reuse_opens_distinct_sessions() -> Result<()> {
