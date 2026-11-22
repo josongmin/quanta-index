@@ -1,6 +1,6 @@
 //! Native DSL publication uses the ordinary immutable producer transaction.
 
-use std::{collections::BTreeSet, path::Path};
+use std::{collections::BTreeSet, fmt, path::Path};
 
 use quanta_index_contract::{
     index::{
@@ -23,27 +23,226 @@ use quanta_index_ipc::{
     CanonicalBatchDigestProgressError, MemoryLease, MemoryLifetime, MemoryScope, RequestBudgetV1,
     canonical_batch_digest_with_progress_v1, matches_batch_digest_token_v1,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize, de::Visitor};
 use sha2::{Digest as _, Sha256};
 
 use super::{AdmittedNativePublicationReply, NativeUdsClient, NativeUdsError};
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub struct NativeDslFileChangeV1 {
     pub source_owner: OwnerKey,
     /// None removes the previous contribution, including when the source was
     /// deleted. An admitted file with no chunks is an explicit empty value.
     pub next: Option<NativeDslFileV1>,
 }
+quanta_index_contract::native_serde_struct!([serde_identifier] NativeDslFileChangeV1 {
+    source_owner: OwnerKey,
+    next: Option<NativeDslFileV1> = default,
+});
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug)]
 pub enum NativeDslChangesV1 {
     Corpus {
         header: NativeDslCorpusV1,
         files: Vec<NativeDslFileChangeV1>,
     },
     RuntimeMetadata(NativeDslRuntimeCatalogV1),
+}
+
+impl Serialize for NativeDslChangesV1 {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Corpus { header, files } => {
+                let mut record =
+                    serializer.serialize_struct_variant("NativeDslChangesV1", 0, "Corpus", 2)?;
+                serde::ser::SerializeStructVariant::serialize_field(&mut record, "header", header)?;
+                serde::ser::SerializeStructVariant::serialize_field(&mut record, "files", files)?;
+                serde::ser::SerializeStructVariant::end(record)
+            }
+            Self::RuntimeMetadata(runtime) => serializer.serialize_newtype_variant(
+                "NativeDslChangesV1",
+                1,
+                "RuntimeMetadata",
+                runtime,
+            ),
+        }
+    }
+}
+
+enum DslChangeVariant {
+    Corpus,
+    RuntimeMetadata,
+}
+
+impl<'de> Deserialize<'de> for DslChangeVariant {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        struct NameVisitor;
+        impl Visitor<'_> for NameVisitor {
+            type Value = DslChangeVariant;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a Native DSL change variant")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<Self::Value, E> {
+                match name {
+                    "Corpus" => Ok(DslChangeVariant::Corpus),
+                    "RuntimeMetadata" => Ok(DslChangeVariant::RuntimeMetadata),
+                    _ => Err(E::unknown_variant(name, &["Corpus", "RuntimeMetadata"])),
+                }
+            }
+
+            fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> Result<Self::Value, E> {
+                let name = std::str::from_utf8(bytes).map_err(|_error| {
+                    E::invalid_value(serde::de::Unexpected::Bytes(bytes), &self)
+                })?;
+                self.visit_str(name)
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, index: u64) -> Result<Self::Value, E> {
+                match index {
+                    0 => Ok(DslChangeVariant::Corpus),
+                    1 => Ok(DslChangeVariant::RuntimeMetadata),
+                    _ => Err(E::invalid_value(
+                        serde::de::Unexpected::Unsigned(index),
+                        &self,
+                    )),
+                }
+            }
+        }
+        decoder.deserialize_identifier(NameVisitor)
+    }
+}
+
+enum CorpusField {
+    Header,
+    Files,
+    Ignore,
+}
+
+impl<'de> Deserialize<'de> for CorpusField {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        struct NameVisitor;
+        impl Visitor<'_> for NameVisitor {
+            type Value = CorpusField;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a Native DSL corpus field")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<Self::Value, E> {
+                Ok(match name {
+                    "header" => CorpusField::Header,
+                    "files" => CorpusField::Files,
+                    _ => CorpusField::Ignore,
+                })
+            }
+
+            fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> Result<Self::Value, E> {
+                Ok(match bytes {
+                    b"header" => CorpusField::Header,
+                    b"files" => CorpusField::Files,
+                    _ => CorpusField::Ignore,
+                })
+            }
+        }
+        decoder.deserialize_identifier(NameVisitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for NativeDslChangesV1 {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        struct ChangesVisitor;
+        impl<'de> Visitor<'de> for ChangesVisitor {
+            type Value = NativeDslChangesV1;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a Native DSL change variant")
+            }
+
+            fn visit_enum<A: serde::de::EnumAccess<'de>>(
+                self,
+                variants: A,
+            ) -> Result<Self::Value, A::Error> {
+                use serde::de::VariantAccess as _;
+                let (variant, payload) = variants.variant::<DslChangeVariant>()?;
+                match variant {
+                    DslChangeVariant::RuntimeMetadata => payload
+                        .newtype_variant()
+                        .map(NativeDslChangesV1::RuntimeMetadata),
+                    DslChangeVariant::Corpus => {
+                        struct CorpusVisitor;
+                        impl<'de> Visitor<'de> for CorpusVisitor {
+                            type Value = NativeDslChangesV1;
+
+                            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                                formatter.write_str("a Native DSL Corpus record")
+                            }
+
+                            fn visit_map<M: serde::de::MapAccess<'de>>(
+                                self,
+                                mut map: M,
+                            ) -> Result<Self::Value, M::Error> {
+                                let mut header = None;
+                                let mut files = None;
+                                while let Some(field) = map.next_key::<CorpusField>()? {
+                                    match field {
+                                        CorpusField::Header => {
+                                            if header.is_some() {
+                                                return Err(serde::de::Error::duplicate_field(
+                                                    "header",
+                                                ));
+                                            }
+                                            header = Some(map.next_value()?);
+                                        }
+                                        CorpusField::Files => {
+                                            if files.is_some() {
+                                                return Err(serde::de::Error::duplicate_field(
+                                                    "files",
+                                                ));
+                                            }
+                                            files = Some(map.next_value()?);
+                                        }
+                                        CorpusField::Ignore => {
+                                            let _: serde::de::IgnoredAny = map.next_value()?;
+                                        }
+                                    }
+                                }
+                                Ok(NativeDslChangesV1::Corpus {
+                                    header: header
+                                        .ok_or_else(|| serde::de::Error::missing_field("header"))?,
+                                    files: files
+                                        .ok_or_else(|| serde::de::Error::missing_field("files"))?,
+                                })
+                            }
+
+                            fn visit_seq<M: serde::de::SeqAccess<'de>>(
+                                self,
+                                mut sequence: M,
+                            ) -> Result<Self::Value, M::Error> {
+                                let header = sequence
+                                    .next_element()?
+                                    .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                                let files = sequence
+                                    .next_element()?
+                                    .ok_or_else(|| serde::de::Error::invalid_length(1, &self))?;
+                                if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                                    return Err(serde::de::Error::invalid_length(3, &self));
+                                }
+                                Ok(NativeDslChangesV1::Corpus { header, files })
+                            }
+                        }
+                        payload.struct_variant(&["header", "files"], CorpusVisitor)
+                    }
+                }
+            }
+        }
+        decoder.deserialize_enum(
+            "NativeDslChangesV1",
+            &["Corpus", "RuntimeMetadata"],
+            ChangesVisitor,
+        )
+    }
 }
 
 impl NativeDslChangesV1 {
@@ -64,14 +263,100 @@ impl NativeDslChangesV1 {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub struct NativeDslPublicationV1 {
     pub operation: OperationKey,
     pub expected_view: ViewRef,
     pub event_predecessor: u64,
     pub authority: Digest,
     pub changes: NativeDslChangesV1,
+}
+quanta_index_contract::native_serde_struct!([serde_identifier] NativeDslPublicationV1 {
+    operation: OperationKey,
+    expected_view: ViewRef,
+    event_predecessor: u64,
+    authority: Digest,
+    changes: NativeDslChangesV1,
+});
+
+#[cfg(test)]
+mod codec_tests {
+    use super::*;
+    use quanta_index_contract::{
+        GenerationPin, ManifestGeneration, RepoId, RevisionId,
+        index::{ProducerId, StableOwnerId},
+    };
+
+    #[test]
+    fn dsl_file_and_corpus_keep_old_cbor_and_optional_open_fields() {
+        let file = NativeDslFileChangeV1 {
+            source_owner: OwnerKey {
+                producer: ProducerId([3; 16]),
+                stable_id: StableOwnerId([4; 16]),
+            },
+            next: None,
+        };
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&file, &mut encoded).expect("file CBOR");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&encoded)),
+            "2a57f0300247cedc37c47c823321326860e103f11da2dadd403e5da2b4e815ff"
+        );
+        let mut value = ciborium::value::Value::serialized(&file).expect("file value");
+        let ciborium::value::Value::Map(fields) = &mut value else {
+            panic!("file record must be a map");
+        };
+        fields.retain(|(key, _)| key != &ciborium::value::Value::Text("next".into()));
+        let (key, _) = fields.first_mut().expect("source owner");
+        *key = ciborium::value::Value::Bytes(b"source_owner".to_vec());
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&value, &mut encoded).expect("file byte-key CBOR");
+        let decoded: NativeDslFileChangeV1 =
+            ciborium::de::from_reader(encoded.as_slice()).expect("missing next defaults");
+        assert!(decoded.next.is_none());
+
+        let corpus = NativeDslChangesV1::Corpus {
+            header: NativeDslCorpusV1 {
+                pin: GenerationPin::new(
+                    RepoId::new("repo").expect("repo"),
+                    RevisionId::new("revision").expect("revision"),
+                    ManifestGeneration::new(1),
+                ),
+                source_producer: ProducerId([3; 16]),
+                structural_ready: true,
+            },
+            files: vec![file],
+        };
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&corpus, &mut encoded).expect("corpus CBOR");
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&encoded)),
+            "674942f86f11f3135c3bddb8891ec07ddde3e7344a9e2d1321028b7cd40852ba"
+        );
+        let mut value = ciborium::value::Value::serialized(&corpus).expect("corpus value");
+        let ciborium::value::Value::Map(variants) = &mut value else {
+            panic!("changes must be a map");
+        };
+        let (variant, payload) = variants.first_mut().expect("Corpus variant");
+        *variant = ciborium::value::Value::Bytes(b"Corpus".to_vec());
+        let ciborium::value::Value::Map(fields) = payload else {
+            panic!("Corpus must be a record");
+        };
+        fields.push((
+            ciborium::value::Value::Text("irrelevant".into()),
+            ciborium::value::Value::Null,
+        ));
+        fields.push((
+            ciborium::value::Value::Bytes(vec![0xff]),
+            ciborium::value::Value::Null,
+        ));
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&value, &mut encoded).expect("open Corpus CBOR");
+        assert!(matches!(
+            ciborium::de::from_reader::<NativeDslChangesV1, _>(encoded.as_slice()),
+            Ok(NativeDslChangesV1::Corpus { .. })
+        ));
+    }
 }
 
 impl<P: AsRef<Path>> NativeUdsClient<P> {
