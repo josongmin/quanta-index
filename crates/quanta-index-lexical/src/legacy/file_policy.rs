@@ -32,6 +32,7 @@ pub(crate) fn policy() -> FilePolicy {
     }
 }
 
+/// Infallible by construction because the policy is encoded as fixed-width integers.
 pub(crate) fn policy_digest_for_paged() -> [u8; 32] {
     let policy = policy();
     let mut digest = Sha256::new();

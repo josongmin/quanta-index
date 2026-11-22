@@ -88,6 +88,7 @@ pub(super) fn verify_witness(
     Ok(())
 }
 
+/// Infallible by construction because the view and purpose bytes are already in memory.
 pub(super) fn session_key(view: ViewRef, purpose: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"quanta-index mixed retained read v1");

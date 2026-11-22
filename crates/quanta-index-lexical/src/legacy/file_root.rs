@@ -5,6 +5,8 @@ use crate::lexical_root_names::MAX_ROOT_BYTES;
 use quanta_index_core::CoreError;
 use sha2::{Digest as _, Sha256};
 pub(crate) const FILE_AUTHORITY_FORMAT: u16 = 22;
+
+/// Infallible by construction because only the domain and fixed-width policy digest are hashed.
 pub(crate) fn policy_digest() -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"quanta-file-authority-v22-packed-run-postings-policy\0");

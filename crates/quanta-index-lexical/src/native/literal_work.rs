@@ -26,6 +26,7 @@ pub(super) fn load_literal_body(
     Ok(body)
 }
 
+/// Infallible by construction because both owner key components have fixed widths.
 pub(super) fn owner_key(owner: OwnerKey) -> [u8; 32] {
     let mut key = [0; 32];
     for (target, byte) in key

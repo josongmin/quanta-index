@@ -18,6 +18,7 @@ impl OccurrenceDigestWitness {
         self.0 == reference.0
     }
 
+    /// Infallible by construction because this copies an existing 32-byte digest.
     pub(super) fn bytes(self) -> [u8; 32] {
         self.0.0
     }

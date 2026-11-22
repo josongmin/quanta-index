@@ -82,6 +82,7 @@ impl NativeBootManifest {
     }
 }
 
+/// Infallible by construction because the nonce and serialized payload are already in memory.
 pub(super) fn checksum(nonce: &[u8], payload: &[u8]) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(DOMAIN);
