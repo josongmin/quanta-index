@@ -68,22 +68,19 @@ pub fn hybrid_file_candidate_pool_sha256_v1(
     Ok(hash.finalize().into())
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct HybridFileHitV1 {
     pub file: SourceFileKey,
-    #[serde(deserialize_with = "required_option")]
     pub lexical: Option<HybridFileLaneWitnessV1>,
-    #[serde(deserialize_with = "required_option")]
     pub dense: Option<HybridFileLaneWitnessV1>,
     pub file_rrf_score: f64,
 }
-
-fn required_option<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
-    decoder: D,
-) -> Result<Option<T>, D::Error> {
-    Option::<T>::deserialize(decoder)
-}
+crate::native_serde_struct!([serde_identifier] HybridFileHitV1 {
+    file: SourceFileKey,
+    lexical: Option<HybridFileLaneWitnessV1>,
+    dense: Option<HybridFileLaneWitnessV1>,
+    file_rrf_score: f64,
+});
 
 impl HybridFileHitV1 {
     #[must_use]
@@ -115,11 +112,8 @@ pub struct HybridFileQueryResponseV1 {
     pub explanation: SearchExplanation,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct WireResponse {
     generation: GenerationPin,
-    #[serde(deserialize_with = "required_option")]
     selected_active_head: Option<SearchCorpusActiveHeadV1>,
     file_top_k: u32,
     bounded_file_count: u32,
@@ -130,6 +124,18 @@ struct WireResponse {
     dense_window: QueryResultWindowV2,
     explanation: SearchExplanation,
 }
+crate::native_serde_struct!([serde_identifier] WireResponse {
+    generation: GenerationPin,
+    selected_active_head: Option<SearchCorpusActiveHeadV1>,
+    file_top_k: u32,
+    bounded_file_count: u32,
+    lexical_pool_sha256: [u8; 32],
+    dense_pool_sha256: [u8; 32],
+    results: Vec<HybridFileHitV1>,
+    lexical_window: QueryResultWindowV2,
+    dense_window: QueryResultWindowV2,
+    explanation: SearchExplanation,
+});
 
 impl HybridFileQueryResponseV1 {
     pub fn validate_v1(&self) -> Result<(), String> {

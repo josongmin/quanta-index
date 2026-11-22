@@ -46,12 +46,14 @@ impl Serialize for HybridFileQueryRequestV1 {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct WireRequest {
     query: HybridQueryRequest,
     file_top_k: u32,
 }
+crate::native_serde_struct!([serde_identifier] WireRequest {
+    query: HybridQueryRequest,
+    file_top_k: u32,
+});
 
 impl<'de> Deserialize<'de> for HybridFileQueryRequestV1 {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {

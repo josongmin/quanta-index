@@ -619,28 +619,36 @@ mod tests {
         );
         assert!(!object.contains_key("rank_pools"));
 
-        object.insert("rank_pools".into(), serde_json::Value::Null);
+        assert_eq!(
+            object.insert("rank_pools".into(), serde_json::Value::Null),
+            None
+        );
         assert_eq!(
             serde_json::from_value::<GoTestTraceFileQueryResponseV1>(json.clone())
                 .expect("explicit null pools"),
             expected
         );
-        json.as_object_mut()
+        let removed_head = json
+            .as_object_mut()
             .expect("response object")
             .remove("selected_active_head");
+        assert_eq!(removed_head, Some(serde_json::Value::Null));
         assert!(serde_json::from_value::<GoTestTraceFileQueryResponseV1>(json).is_err());
 
         let mut hit = serde_json::to_value(&expected.results[0]).expect("hit JSON");
-        hit.as_object_mut()
+        let original_lane = hit
+            .as_object_mut()
             .expect("hit object")
             .insert("lexical".into(), serde_json::Value::Null);
+        assert!(original_lane.is_some_and(|lane| !lane.is_null()));
         assert!(
             serde_json::from_value::<GoTestTraceFileHitV1>(hit.clone())
                 .expect("explicit null lane")
                 .lexical
                 .is_none()
         );
-        hit.as_object_mut().expect("hit object").remove("lexical");
+        let removed_lane = hit.as_object_mut().expect("hit object").remove("lexical");
+        assert_eq!(removed_lane, Some(serde_json::Value::Null));
         assert!(serde_json::from_value::<GoTestTraceFileHitV1>(hit).is_err());
 
         let cbor_value = ciborium::value::Value::serialized(&expected).expect("response CBOR");

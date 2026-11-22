@@ -213,12 +213,15 @@ fn module_stack_symbol(line: &str, module_path: &str, source_path: &str) -> Opti
 /// The benchmark binds this exact
 /// module and version to a frozen source commit before sending the request.
 /// It remains a ranking hint, not server-side source provenance authority.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GoTestTraceModuleContextV1 {
     pub module_path: String,
     pub module_version: String,
 }
+crate::native_serde_struct!([serde_identifier] GoTestTraceModuleContextV1 {
+    module_path: String,
+    module_version: String,
+});
 
 impl GoTestTraceModuleContextV1 {
     pub fn validate_v1(&self) -> Result<(), String> {
