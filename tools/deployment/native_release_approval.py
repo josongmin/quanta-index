@@ -91,7 +91,7 @@ def _require_native_selection(root, selection_path, expected, q_sha256, launcher
 
 
 def verify_approval_request(request, *, q_sha256=None, launcher=None):
-    """Check the pinned inputs and selected files before committing to signing."""
+    """Check the pinned inputs and selected files at an approval boundary."""
     root, selection_path, policy = _request_paths(request)
     data = _verify_request_digests(request, selection_path, policy)
     if launcher is not None:
@@ -108,6 +108,7 @@ def verify_approval_request(request, *, q_sha256=None, launcher=None):
 
 def approve_selected_install(request, *, q_sha256, active_sha256, manifest_sha256, sign, launcher):
     root, selection_path, policy = _request_paths(request)
+    request = request.copy()
     expected = request["selection_sha256"]
     policy_sha = request["decision_policy_sha256"]
 
@@ -116,10 +117,10 @@ def approve_selected_install(request, *, q_sha256, active_sha256, manifest_sha25
         selection = _require_native_selection(root, selection_path, expected, q_sha256, launcher)
         payload = binding(selection, expected, policy_sha, active_sha256, manifest_sha256)
         launcher._verify_bootstrap_locked(selection, lock_fd)
-        _verify_request_digests(request, selection_path, policy)
-        if launcher._require_current_selection(selection_path, expected) != selection:
-            raise ValueError("Native release selection changed under its deployment lock")
-        return {"payload": payload, "signature_hex": sign(signing_bytes(payload)).hex()}
+        verify_approval_request(request, q_sha256=q_sha256, launcher=launcher)
+        signature_hex = sign(signing_bytes(payload)).hex()
+        verify_approval_request(request, q_sha256=q_sha256, launcher=launcher)
+        return {"payload": payload, "signature_hex": signature_hex}
 
 
 def _installed_bytes(path: Path, limit: int) -> bytes:

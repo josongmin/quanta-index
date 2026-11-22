@@ -144,6 +144,34 @@ def test_d_refuses_a_policy_change_during_boot_verification(tmp_path, monkeypatc
     sign.assert_not_called()
 
 
+@pytest.mark.parametrize(("changed_input", "expected_error"), [
+    ("policy", "release selection or decision policy changed"),
+    ("selection", "release selection or decision policy changed"),
+    ("config", "native config SHA-256 changed"),
+    ("binary", "selected binary SHA-256 changed"),
+])
+def test_d_refuses_changed_inputs_after_signing(tmp_path, monkeypatch, changed_input, expected_error):
+    selected, request = selection_fixture(tmp_path.resolve())
+    key = Ed25519PrivateKey.generate()
+    path = {
+        "policy": Path(request["decision_policy_path"]),
+        "selection": Path(request["selection_path"]),
+        "config": selected.native_config,
+        "binary": selected.binary,
+    }[changed_input]
+    monkeypatch.setattr(launcher, "_run_selected_command", Mock(return_value=0))
+
+    def sign_with_changed_input(message):
+        path.write_bytes(path.read_bytes() + b"\n")
+        return key.sign(message)
+
+    with pytest.raises((ValueError, launcher.SelectionError), match=expected_error):
+        approval.approve_selected_install(
+            request, q_sha256=selected.binary_sha256, active_sha256="1" * 64,
+            manifest_sha256="2" * 64, sign=sign_with_changed_input, launcher=launcher,
+        )
+
+
 def test_f_requires_the_installed_trust_directory_chain_to_be_protected(tmp_path, monkeypatch):
     trust = tmp_path.resolve() / "trust"
     trust.mkdir(mode=0o770)
