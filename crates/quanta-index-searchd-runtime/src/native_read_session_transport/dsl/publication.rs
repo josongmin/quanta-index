@@ -19,7 +19,10 @@ use quanta_index_ipc::{
 };
 use quanta_index_kernel::{ProjectionCommitBasis, ProjectionCommitValidator};
 use quanta_index_search_plane::{native_dsl, readiness::StructuralAuthorityState};
-use serde::{Deserialize, de::IgnoredAny};
+use serde::{
+    Deserialize,
+    de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor},
+};
 use sha2::{Digest as _, Sha256};
 
 use super::{
@@ -32,10 +35,108 @@ pub(super) const CHUNK_INDEX: &[u8] = b"native-dsl-chunks\0v1";
 
 pub(crate) struct NativeDslCommitValidator;
 
-#[derive(Deserialize)]
 struct HeaderShape {
     pin: Option<IgnoredAny>,
     catalog: Option<IgnoredAny>,
+}
+
+impl<'de> Deserialize<'de> for HeaderShape {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &["pin", "catalog"];
+
+        enum Field {
+            Pin,
+            Catalog,
+            Other,
+        }
+
+        impl<'de> Deserialize<'de> for Field {
+            fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+                struct Key;
+                impl Visitor<'_> for Key {
+                    type Value = Field;
+
+                    fn expecting(
+                        &self,
+                        formatter: &mut std::fmt::Formatter<'_>,
+                    ) -> std::fmt::Result {
+                        formatter.write_str("a Native DSL header field")
+                    }
+
+                    fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                        Ok(match value {
+                            "pin" => Field::Pin,
+                            "catalog" => Field::Catalog,
+                            _ => Field::Other,
+                        })
+                    }
+
+                    fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+                        Ok(match value {
+                            b"pin" => Field::Pin,
+                            b"catalog" => Field::Catalog,
+                            _ => Field::Other,
+                        })
+                    }
+                }
+                decoder.deserialize_identifier(Key)
+            }
+        }
+
+        struct Header;
+        impl<'de> Visitor<'de> for Header {
+            type Value = HeaderShape;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a Native DSL header shape")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let (mut pin, mut catalog) = (None, None);
+                let (mut seen_pin, mut seen_catalog) = (false, false);
+                while let Some(field) = map.next_key::<Field>()? {
+                    match field {
+                        Field::Pin => {
+                            if seen_pin {
+                                return Err(de::Error::duplicate_field("pin"));
+                            }
+                            pin = map.next_value()?;
+                            seen_pin = true;
+                        }
+                        Field::Catalog => {
+                            if seen_catalog {
+                                return Err(de::Error::duplicate_field("catalog"));
+                            }
+                            catalog = map.next_value()?;
+                            seen_catalog = true;
+                        }
+                        Field::Other => {
+                            let _ = map.next_value::<IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(HeaderShape { pin, catalog })
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                let pin = sequence
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let catalog = sequence
+                    .next_element()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                if sequence.next_element::<IgnoredAny>()?.is_some() {
+                    return Err(de::Error::invalid_length(3, &self));
+                }
+                Ok(HeaderShape { pin, catalog })
+            }
+        }
+
+        decoder.deserialize_struct("HeaderShape", FIELDS, Header)
+    }
 }
 
 impl ProjectionCommitValidator for NativeDslCommitValidator {
@@ -335,4 +436,34 @@ fn catalog_digest(
 
 fn invalid(message: &str) -> IndexError {
     IndexError::InvalidInput(message.into())
+}
+
+#[cfg(test)]
+mod header_shape_tests {
+    use super::HeaderShape;
+
+    #[test]
+    fn header_shape_preserves_map_defaults_null_and_positional_fields() {
+        for (wire, pin, catalog) in [
+            (r#"{}"#, false, false),
+            (r#"{"pin":null,"catalog":null}"#, false, false),
+            (r#"{"pin":{"value":1},"future":[1,2]}"#, true, false),
+            (r#"{"catalog":{"value":2}}"#, false, true),
+            (r#"[null,null]"#, false, false),
+            (r#"[{"value":1},null]"#, true, false),
+        ] {
+            let shape: HeaderShape = serde_json::from_str(wire).expect("header shape");
+            assert_eq!(shape.pin.is_some(), pin, "{wire}");
+            assert_eq!(shape.catalog.is_some(), catalog, "{wire}");
+        }
+        for wire in [
+            r#"{"pin":null,"pin":null}"#,
+            r#"{"catalog":null,"catalog":null}"#,
+            r#"[]"#,
+            r#"[null]"#,
+            r#"[null,null,null]"#,
+        ] {
+            assert!(serde_json::from_str::<HeaderShape>(wire).is_err(), "{wire}");
+        }
+    }
 }

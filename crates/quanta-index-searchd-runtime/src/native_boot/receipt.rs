@@ -16,21 +16,41 @@ use rusqlite::ffi::quanta_capacity_vfs::close_owned_file;
 use rustix::fs::{
     AtFlags, Mode, OFlags, RenameFlags, open, openat, renameat_with, statat, unlinkat,
 };
-use serde::Serialize;
+use serde::{Serialize, ser::SerializeStruct as _};
 
 const MAX_RECEIPT_BYTES: u64 = 4096;
 const TEMP_ATTEMPTS: usize = 32;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Serialize)]
 struct Receipt {
     root_nonce_hex: String,
     manifest_operation: quanta_index_core::index::OperationKey,
     manifest_object_hex: String,
     source_cut_digest_hex: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     protected_source_routes_hex: Option<String>,
     install_catalog_digest_hex: String,
+}
+
+impl Serialize for Receipt {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let has_routes = self.protected_source_routes_hex.is_some();
+        let mut record = serializer.serialize_struct("Receipt", if has_routes { 6 } else { 5 })?;
+        record.serialize_field("root_nonce_hex", &self.root_nonce_hex)?;
+        record.serialize_field("manifest_operation", &self.manifest_operation)?;
+        record.serialize_field("manifest_object_hex", &self.manifest_object_hex)?;
+        record.serialize_field("source_cut_digest_hex", &self.source_cut_digest_hex)?;
+        if has_routes {
+            record.serialize_field(
+                "protected_source_routes_hex",
+                &self.protected_source_routes_hex,
+            )?;
+        }
+        record.serialize_field(
+            "install_catalog_digest_hex",
+            &self.install_catalog_digest_hex,
+        )?;
+        record.end()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
