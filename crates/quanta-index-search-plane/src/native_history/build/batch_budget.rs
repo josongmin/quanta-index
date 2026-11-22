@@ -4,6 +4,7 @@ use super::{history_work_error, invalid};
 use crate::native_history::row_budget::{
     CommitShape, DiffHunkShape, RefTagShape, RowBacking, TextBytes, decode_json_shape,
     json_token_scratch,
+    shape_codec::{closed_shape, newtype_shape},
 };
 use quanta_index_contract::{
     FileContributorEntry, FileContributorIdentityEntry, HistoryDiffHunkUpsert, HistoryRefMutation,
@@ -16,103 +17,12 @@ use quanta_index_core::{
 };
 use serde::{
     Deserialize, Deserializer,
-    de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor},
+    de::{self, SeqAccess, Visitor},
 };
 use std::{fmt, mem};
 
 mod cbor_replay;
 pub(super) use cbor_replay::decode_cbor_replay;
-
-/// Resolve a closed History shape key without retaining decoded text.
-struct ShapeFieldSeed(&'static [&'static str]);
-
-impl<'de> DeserializeSeed<'de> for ShapeFieldSeed {
-    type Value = &'static str;
-
-    fn deserialize<D: Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
-        struct Key(&'static [&'static str]);
-        impl Visitor<'_> for Key {
-            type Value = &'static str;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a known History shape field")
-            }
-
-            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
-                self.0
-                    .iter()
-                    .copied()
-                    .find(|field| *field == value)
-                    .ok_or_else(|| E::unknown_field(value, self.0))
-            }
-
-            fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
-                let text = std::str::from_utf8(value)
-                    .map_err(|_| E::invalid_value(de::Unexpected::Bytes(value), &self))?;
-                self.visit_str(text)
-            }
-        }
-        decoder.deserialize_identifier(Key(self.0))
-    }
-}
-
-macro_rules! closed_shape {
-    (struct $name:ident { $($field:ident : $ty:ty $(= $map_default:ident)?),+ $(,)? }) => {
-        struct $name {
-            $($field: $ty,)+
-        }
-
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
-                const FIELDS: &[&str] = &[$(stringify!($field)),+];
-                struct Shape;
-                impl<'de> Visitor<'de> for Shape {
-                    type Value = $name;
-
-                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                        formatter.write_str(concat!("a ", stringify!($name), " History shape"))
-                    }
-
-                    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-                        $(let mut $field: Option<$ty> = None;)+
-                        while let Some(key) = map.next_key_seed(ShapeFieldSeed(FIELDS))? {
-                            match key {
-                                $(stringify!($field) => {
-                                    if $field.is_some() {
-                                        return Err(de::Error::duplicate_field(stringify!($field)));
-                                    }
-                                    $field = Some(map.next_value::<$ty>()?);
-                                },)+
-                                _ => unreachable!("shape key seed only returns schema keys"),
-                            }
-                        }
-                        Ok($name {
-                            $($field: closed_shape!(@map_value $field $(= $map_default)?),)+
-                        })
-                    }
-
-                    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-                        let mut index = 0usize;
-                        $(let $field = seq.next_element::<$ty>()?
-                            .ok_or_else(|| de::Error::invalid_length(index, &self))?;
-                          index = index.saturating_add(1);)+
-                        if seq.next_element::<de::IgnoredAny>()?.is_some() {
-                            return Err(de::Error::invalid_length(index.saturating_add(1), &self));
-                        }
-                        Ok($name { $($field,)+ })
-                    }
-                }
-                decoder.deserialize_struct(stringify!($name), FIELDS, Shape)
-            }
-        }
-    };
-    (@map_value $field:ident) => {
-        $field.ok_or_else(|| de::Error::missing_field(stringify!($field)))?
-    };
-    (@map_value $field:ident = default) => {
-        $field.unwrap_or_default()
-    };
-}
 
 fn add(left: u64, right: u64) -> Option<u64> {
     left.checked_add(right)
@@ -239,70 +149,10 @@ closed_shape!(
     }
 );
 
-enum RefShape {
-    Upsert(RefTagShape),
-    Delete(RefDeleteShape),
-}
-
-impl<'de> Deserialize<'de> for RefShape {
-    fn deserialize<D: Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
-        const VARIANTS: &[&str] = &["Upsert", "Delete"];
-        struct VariantSeed;
-        impl<'de> DeserializeSeed<'de> for VariantSeed {
-            type Value = &'static str;
-
-            fn deserialize<D: Deserializer<'de>>(
-                self,
-                decoder: D,
-            ) -> Result<Self::Value, D::Error> {
-                struct Variant;
-                impl Visitor<'_> for Variant {
-                    type Value = &'static str;
-
-                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                        formatter.write_str("a History ref variant")
-                    }
-
-                    fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
-                        VARIANTS
-                            .iter()
-                            .copied()
-                            .find(|name| *name == value)
-                            .ok_or_else(|| E::unknown_variant(value, VARIANTS))
-                    }
-
-                    fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
-                        let text = std::str::from_utf8(value)
-                            .map_err(|_| E::invalid_value(de::Unexpected::Bytes(value), &self))?;
-                        self.visit_str(text)
-                    }
-                }
-                decoder.deserialize_identifier(Variant)
-            }
-        }
-
-        struct RefVisitor;
-        impl<'de> Visitor<'de> for RefVisitor {
-            type Value = RefShape;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a History ref mutation")
-            }
-
-            fn visit_enum<A: de::EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
-                let (name, value) = de::EnumAccess::variant_seed(data, VariantSeed)?;
-                match name {
-                    "Upsert" => de::VariantAccess::newtype_variant::<RefTagShape>(value)
-                        .map(RefShape::Upsert),
-                    "Delete" => de::VariantAccess::newtype_variant::<RefDeleteShape>(value)
-                        .map(RefShape::Delete),
-                    _ => unreachable!("variant seed only returns schema names"),
-                }
-            }
-        }
-        decoder.deserialize_enum("RefShape", VARIANTS, RefVisitor)
-    }
-}
+newtype_shape!(enum RefShape {
+    Upsert: RefTagShape,
+    Delete: RefDeleteShape,
+});
 
 impl SizeOfShape for RefShape {
     fn size(self) -> Option<ShapeSize> {

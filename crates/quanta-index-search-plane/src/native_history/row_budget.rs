@@ -4,6 +4,9 @@ use super::*;
 use serde::de::{DeserializeOwned, SeqAccess};
 
 mod json_shape;
+pub(super) mod shape_codec;
+
+use shape_codec::{ShapeFieldSeed, ShapeVariantSeed, closed_shape, newtype_shape};
 
 pub(super) const SOURCE_JSON_IO_BUFFER_BYTES: usize = 4096;
 
@@ -137,30 +140,25 @@ impl<'de> Deserialize<'de> for ByteItems {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct CommitShape {
-    #[serde(rename = "wire_version")]
-    _wire_version: u32,
-    sha: TextBytes,
-    parents: TextItems,
-    #[serde(rename = "author_time_ms")]
-    _author_time_ms: u64,
-    #[serde(rename = "committer_time_ms")]
-    _committer_time_ms: u64,
-    #[serde(rename = "applied_at_ms")]
-    _applied_at_ms: u64,
-    author: TextBytes,
-    author_name: Option<TextBytes>,
-    author_email: Option<TextBytes>,
-    committer: TextBytes,
-    committer_name: Option<TextBytes>,
-    committer_email: Option<TextBytes>,
-    message: TextBytes,
-    #[serde(rename = "is_merge")]
-    _is_merge: bool,
-    tags: TextItems,
-}
+closed_shape!(
+    pub(super) struct CommitShape {
+        _wire_version as wire_version: u32,
+        sha: TextBytes,
+        parents: TextItems,
+        _author_time_ms as author_time_ms: u64,
+        _committer_time_ms as committer_time_ms: u64,
+        _applied_at_ms as applied_at_ms: u64,
+        author: TextBytes,
+        author_name: Option<TextBytes> = default,
+        author_email: Option<TextBytes> = default,
+        committer: TextBytes,
+        committer_name: Option<TextBytes> = default,
+        committer_email: Option<TextBytes> = default,
+        message: TextBytes,
+        _is_merge as is_merge: bool,
+        tags: TextItems,
+    }
+);
 
 impl CommitShape {
     fn text_bytes(&self) -> Result<u64, CoreError> {
@@ -214,58 +212,125 @@ fn key_backing(bytes: usize) -> Result<u64, CoreError> {
     mul(bytes.max(8) as u64, 3)
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct NativeShape<T> {
     key: ByteItems,
     data: NativeDataShape<T>,
 }
 
-#[derive(Deserialize)]
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for NativeShape<T> {
+    fn deserialize<D: Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        const FIELDS: &[&str] = &["key", "data"];
+        struct Shape<T>(std::marker::PhantomData<T>);
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for Shape<T> {
+            type Value = NativeShape<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a NativeShape History row")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut key = None;
+                let mut data = None;
+                while let Some(field) = map.next_key_seed(ShapeFieldSeed(FIELDS))? {
+                    match field {
+                        "key" => {
+                            if key.is_some() {
+                                return Err(de::Error::duplicate_field("key"));
+                            }
+                            key = Some(map.next_value::<ByteItems>()?);
+                        }
+                        "data" => {
+                            if data.is_some() {
+                                return Err(de::Error::duplicate_field("data"));
+                            }
+                            data = Some(map.next_value::<NativeDataShape<T>>()?);
+                        }
+                        _ => unreachable!("row field seed only returns schema keys"),
+                    }
+                }
+                Ok(NativeShape {
+                    key: key.ok_or_else(|| de::Error::missing_field("key"))?,
+                    data: data.ok_or_else(|| de::Error::missing_field("data"))?,
+                })
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let key = seq
+                    .next_element::<ByteItems>()?
+                    .ok_or_else(|| de::Error::invalid_length(0, &self))?;
+                let data = seq
+                    .next_element::<NativeDataShape<T>>()?
+                    .ok_or_else(|| de::Error::invalid_length(1, &self))?;
+                if seq.next_element::<de::IgnoredAny>()?.is_some() {
+                    return Err(de::Error::invalid_length(3, &self));
+                }
+                Ok(NativeShape { key, data })
+            }
+        }
+        decoder.deserialize_struct("NativeShape", FIELDS, Shape(std::marker::PhantomData))
+    }
+}
+
 enum NativeDataShape<T> {
     Row(T),
 }
 
-#[derive(Deserialize)]
-enum NativeCommitShape {
-    Commit(CommitShape),
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for NativeDataShape<T> {
+    fn deserialize<D: Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        const VARIANTS: &[&str] = &["Row"];
+        struct Shape<T>(std::marker::PhantomData<T>);
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for Shape<T> {
+            type Value = NativeDataShape<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a NativeDataShape History row variant")
+            }
+
+            fn visit_enum<A: de::EnumAccess<'de>>(self, data: A) -> Result<Self::Value, A::Error> {
+                let (name, value) = de::EnumAccess::variant_seed(data, ShapeVariantSeed(VARIANTS))?;
+                match name {
+                    "Row" => value.newtype_variant::<T>().map(NativeDataShape::Row),
+                    _ => unreachable!("row variant seed only returns schema names"),
+                }
+            }
+        }
+        decoder.deserialize_enum("NativeDataShape", VARIANTS, Shape(std::marker::PhantomData))
+    }
 }
 
-#[derive(Deserialize)]
-enum NativeRefTagShape {
-    Ref(RefTagShape),
-    Tag(RefTagShape),
-}
+newtype_shape!(enum NativeCommitShape {
+    Commit: CommitShape,
+});
 
-#[derive(Deserialize)]
-enum NativeDiffHunkShape {
-    DiffHunk(DiffHunkShape),
-}
+newtype_shape!(enum NativeRefTagShape {
+    Ref: RefTagShape,
+    Tag: RefTagShape,
+});
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct DiffHunkShape {
-    commit_sha: TextBytes,
-    file_path: TextBytes,
-    record: DiffRecordShape,
-}
+newtype_shape!(enum NativeDiffHunkShape {
+    DiffHunk: DiffHunkShape,
+});
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DiffRecordShape {
-    #[serde(rename = "wire_version")]
-    _wire_version: u32,
-    hunk_header: TextBytes,
-    #[serde(rename = "side")]
-    _side: quanta_index_contract::DiffHunkSide,
-    added_text: TextBytes,
-    removed_text: TextBytes,
-    touched_text: TextBytes,
-    #[serde(rename = "byte_start")]
-    _byte_start: u32,
-    #[serde(rename = "byte_end")]
-    _byte_end: u32,
-}
+closed_shape!(
+    pub(super) struct DiffHunkShape {
+        commit_sha: TextBytes,
+        file_path: TextBytes,
+        record: DiffRecordShape,
+    }
+);
+
+closed_shape!(
+    struct DiffRecordShape {
+        _wire_version as wire_version: u32,
+        hunk_header: TextBytes,
+        _side as side: quanta_index_contract::DiffHunkSide,
+        added_text: TextBytes,
+        removed_text: TextBytes,
+        touched_text: TextBytes,
+        _byte_start as byte_start: u32,
+        _byte_end as byte_end: u32,
+    }
+);
 
 impl DiffHunkShape {
     pub(super) fn text_bytes(&self) -> Result<u64, CoreError> {
@@ -282,12 +347,12 @@ impl DiffHunkShape {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct RefTagShape {
-    name: TextBytes,
-    sha: TextBytes,
-}
+closed_shape!(
+    pub(super) struct RefTagShape {
+        name: TextBytes,
+        sha: TextBytes,
+    }
+);
 
 impl RefTagShape {
     pub(super) fn text_bytes(&self) -> Result<u64, CoreError> {
@@ -558,6 +623,54 @@ mod tests {
         atomic::{AtomicU64, Ordering},
     };
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn history_row_shapes_preserve_nullable_fields_and_tagged_variants() {
+        let commit = br#"{"wire_version":1,"sha":"abc","parents":[],"author_time_ms":1,"committer_time_ms":1,"applied_at_ms":1,"author":"a","committer":"c","message":"m","is_merge":false,"tags":[]}"#;
+        let shape: CommitShape = decode_json_shape(commit).expect("omitted nullable commit fields");
+        assert!(shape.author_name.is_none());
+        assert!(shape.author_email.is_none());
+        assert!(shape.committer_name.is_none());
+        assert!(shape.committer_email.is_none());
+
+        let row: NativeShape<NativeRefTagShape> =
+            decode_json_shape(br#"{"key":[1],"data":{"Row":{"Ref":{"name":"main","sha":"abc"}}}}"#)
+                .expect("tagged Native row");
+        assert_eq!(row.key.0, 1);
+        assert!(matches!(
+            row.data,
+            NativeDataShape::Row(NativeRefTagShape::Ref(_))
+        ));
+        for invalid in [
+            br#"{"key":[1],"data":{"Row":{"Ref":{"name":"main","sha":"abc","other":0}}}}"#
+                .as_slice(),
+            br#"{"key":[1],"data":{"Row":{"0":{"name":"main","sha":"abc"}}}}"#.as_slice(),
+            br#"{"key":[1],"data":{"Row":{"Ref":{"name":"main","sha":"abc"}}},"key":[2]}"#
+                .as_slice(),
+        ] {
+            assert!(decode_json_shape::<NativeShape<NativeRefTagShape>>(invalid).is_err());
+        }
+
+        let mut cbor = Vec::new();
+        ciborium::ser::into_writer(
+            &ciborium::value::Value::Map(vec![
+                (
+                    ciborium::value::Value::Bytes(b"name".to_vec()),
+                    ciborium::value::Value::Text("main".into()),
+                ),
+                (
+                    ciborium::value::Value::Bytes(b"sha".to_vec()),
+                    ciborium::value::Value::Text("abc".into()),
+                ),
+            ]),
+            &mut cbor,
+        )
+        .expect("CBOR byte-key row");
+        let shape: RefTagShape =
+            ciborium::de::from_reader(cbor.as_slice()).expect("known byte keys");
+        assert_eq!(shape.name.0, 4);
+        assert_eq!(shape.sha.0, 3);
+    }
 
     struct Ledger {
         live: AtomicU64,
