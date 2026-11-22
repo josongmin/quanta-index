@@ -422,6 +422,7 @@ def test_final_shipment_reuses_canonical_s_product_validation(tmp_path):
     product = tmp_path / "tools/daemon_release_manifest"
     ci.mkdir(parents=True)
     product.mkdir()
+    (product / "__init__.py").touch()
     (ci / "source_snapshot_identity_v1.py").write_text(
         "def source_snapshot_digest_v1(*, cwd):\n    return 'a' * 64\n"
     )
@@ -997,7 +998,12 @@ def shipped_release(release_build, tmp_path):
     trust = tmp_path / "trust"
     trust.mkdir()
     key = Ed25519PrivateKey.generate()
-    active_bytes = signed_product_active(key, install_root, manifest_sha)
+    active_bytes = signed_product_active(key, install_root, manifest_sha, role_digests={
+        "cli_sha256": checker.file_sha256(bundle / "bin/quanta"),
+        "server_sha256": checker.file_sha256(bundle / "libexec/quanta/quanta-cli-server"),
+        "sql_rulepack_worker_sha256": checker.file_sha256(bundle / "libexec/quanta/quanta-sql-rulepack-worker"),
+        "parser_native_worker_sha256": checker.file_sha256(bundle / "libexec/quanta/quanta_native_worker_v3"),
+    })
     (trust / "active-generation.json").write_bytes(active_bytes)
     (trust / "deployment-public-key.bin").write_bytes(key.public_key().public_bytes(
         encoding=serialization.Encoding.Raw,
@@ -1126,6 +1132,42 @@ def test_shipped_release_requires_compiled_consumers_and_approved_bundle(
         assert "selected binary SHA-256 changed" in capsys.readouterr().err
     if fault == "foreign_product_key":
         assert "installed Product generation signature differs" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("field", "role"), [
+    ("cli_sha256", "public-cli"),
+    ("server_sha256", "server"),
+    ("sql_rulepack_worker_sha256", "sql-rulepack-worker"),
+    ("parser_native_worker_sha256", "parser-native-worker"),
+])
+def test_shipped_bundle_requires_each_signed_role_digest(shipped_release, field, role):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from tools.ci.tests.test_native_release_approval import signed_product_active
+    from tools.deployment.native_release_approval import signing_bytes
+
+    checker, _, binary, _, _, _, _, _, bundle, readback, trust, request, _ = shipped_release
+    installed = json.loads(readback.read_text())
+    role_digests = {name: digest for name, digest in installed["selected"].items() if name in {
+        "cli_sha256", "server_sha256", "sql_rulepack_worker_sha256", "parser_native_worker_sha256",
+    }}
+    role_digests[field] = "0" * 64
+    key = Ed25519PrivateKey.generate()
+    active = signed_product_active(key, bundle.parent.parent, bundle.name, role_digests=role_digests)
+    (trust / "active-generation.json").write_bytes(active)
+    (trust / "deployment-public-key.bin").write_bytes(key.public_key().public_bytes_raw())
+    installed["selected"] = json.loads(active)["payload"]
+    installed["installed_active_generation_sha256"] = hashlib.sha256(active).hexdigest()
+    approval = installed["native_q_approval"]
+    approval["payload"]["active_generation_sha256"] = installed["installed_active_generation_sha256"]
+    approval["signature_hex"] = key.sign(signing_bytes(approval["payload"])).hex()
+    readback.write_text(json.dumps(installed))
+
+    with pytest.raises(ValueError, match=f"installed Product role {role} differs from the shipped manifest"):
+        checker.shipped_bundle_findings(
+            bundle, readback, checker.file_sha256(binary), "b" * 40,
+            approval_request_path=request, trust_root=trust,
+        )
 
 
 def test_signed_bundle_cannot_qualify_without_committed_candidate_authority(shipped_release, capsys):

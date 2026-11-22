@@ -16,7 +16,7 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def signed_product_active(key, root, manifest_sha, *, generation=1):
+def signed_product_active(key, root, manifest_sha, *, generation=1, role_digests=None):
     payload = {
         "schema_version": "semantica-installed-product-active/v1",
         "install_root": str(root),
@@ -28,6 +28,8 @@ def signed_product_active(key, root, manifest_sha, *, generation=1):
         "sql_rulepack_worker_sha256": "d" * 64,
         "parser_native_worker_sha256": "e" * 64,
     }
+    if role_digests is not None:
+        payload.update(role_digests)
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("ascii")
     signature = key.sign(b"semantica.installed-product-active.v1\n" + canonical).hex()
     return json.dumps(

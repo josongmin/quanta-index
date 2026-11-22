@@ -39,10 +39,10 @@ ISOLATED_RELEASE_PREFIX = ".tantivy-release-"
 RUST_SOURCE_DIRS = ("crates", "benchmarks", "shared", "tools")
 TRUST_ROOT = Path("/etc/semantica-codegraph-v2/trust")
 SHIPPED_ROLES = {
-    "public-cli": "bin/quanta",
-    "server": "libexec/quanta/quanta-cli-server",
-    "sql-rulepack-worker": "libexec/quanta/quanta-sql-rulepack-worker",
-    "parser-native-worker": "libexec/quanta/quanta_native_worker_v3",
+    "public-cli": ("bin/quanta", "cli_sha256"),
+    "server": ("libexec/quanta/quanta-cli-server", "server_sha256"),
+    "sql-rulepack-worker": ("libexec/quanta/quanta-sql-rulepack-worker", "sql_rulepack_worker_sha256"),
+    "parser-native-worker": ("libexec/quanta/quanta_native_worker_v3", "parser_native_worker_sha256"),
 }
 INSTALLED_READBACK_STATE = "LOCAL_SIGNED_LINUX_INSTALLED_PRODUCT_PRODUCED_NOT_C01_ACCEPTANCE"
 
@@ -513,10 +513,15 @@ def shipped_bundle_findings(
     observed = set()
     for row in artifacts:
         role = row["role"]
-        if role not in SHIPPED_ROLES or role in observed or row["relative_path"] != SHIPPED_ROLES[role]:
+        if role not in SHIPPED_ROLES or role in observed:
             raise ValueError("shipped bundle artifact role or path differs")
+        relative, active_digest_field = SHIPPED_ROLES[role]
+        if row["relative_path"] != relative:
+            raise ValueError("shipped bundle artifact role or path differs")
+        if row["sha256"] != active[active_digest_field]:
+            raise ValueError(f"installed Product role {role} differs from the shipped manifest")
         observed.add(role)
-        entries.append((row["relative_path"], row))
+        entries.append((relative, row))
     if observed != set(SHIPPED_ROLES):
         raise ValueError("shipped bundle artifact inventory is incomplete")
     for relative, row in entries:
