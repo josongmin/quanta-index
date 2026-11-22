@@ -3,7 +3,6 @@
 
 use std::mem::size_of;
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::{AuxiliaryDomainV1, AuxiliaryRowFamilyV1, AuxiliaryRowKeyV1, AuxiliaryRowV1};
@@ -33,13 +32,18 @@ const FAMILIES: [AuxiliaryRowFamilyV1; 6] = [
     AuxiliaryRowFamilyV1::StateMeta,
 ];
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LegacyHistoryCheckpointPageRefV2 {
     pub reference: ObjectRef,
     pub ordinal: u32,
     pub row_count: u64,
 }
+
+quanta_index_contract::native_serde_struct!([serde_identifier] LegacyHistoryCheckpointPageRefV2 {
+    reference: ObjectRef,
+    ordinal: u32,
+    row_count: u64,
+});
 
 #[must_use]
 pub fn is_large_row_v2(payload: &[u8]) -> bool {
