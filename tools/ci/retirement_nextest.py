@@ -110,14 +110,28 @@ def release_event_roster(root: Path, revision: str) -> dict[str, dict[str, str]]
 
 
 @lru_cache(maxsize=8)
-def _committed_event_names(root: Path, revision: str) -> frozenset[str]:
-    return frozenset(release_event_roster(root, revision))
+def _committed_event_features(root: Path, revision: str) -> dict[str, frozenset[str]]:
+    profiles = {}
+    for batch in release_capture_batches(root, revision):
+        features = frozenset(batch["features"])
+        profiles.update((event, features) for event in batch["expected_events"])
+    return profiles
 
 
-def _require_roster_membership(root: Path, revision: str, events: set[str]) -> None:
-    outside = events - _committed_event_names(root, revision)
+def _require_roster_selection(
+    root: Path, revision: str, events: set[str], features: list[str],
+) -> None:
+    profiles = _committed_event_features(root, revision)
+    outside = events - profiles.keys()
     if outside:
         raise ValueError(f"Nextest events outside the committed retirement roster: {sorted(outside)}")
+    selected_features = frozenset(features)
+    for event in sorted(events):
+        if selected_features != profiles[event]:
+            raise ValueError(
+                f"Nextest Cargo features differ from the committed retirement profile for {event}: "
+                f"expected={sorted(profiles[event])} observed={sorted(selected_features)}"
+            )
 
 
 def release_capture_batches(root: Path, revision: str) -> list[dict]:
@@ -300,7 +314,7 @@ def check_frozen_inputs(
     _require_collected_build(binaries, inventory)
     selection = execution["selection"]
     selected = _check_selection(selection, inventory)
-    _require_roster_membership(root, release_revision, selected)
+    _require_roster_selection(root, release_revision, selected, selection["features"])
     _require_retirement_platforms(binaries, inventory, selection)
     expected_commands = _execution_commands(
         selection, target_dir.parent / binaries.path.name, target_dir.parent / cargo.path.name,
@@ -609,10 +623,16 @@ def capture_release_execution(
     evidence_dir = evidence_dir.resolve(strict=True)
     if evidence_dir.is_relative_to(root) or not evidence_dir.is_dir():
         raise ValueError("retirement evidence must use an existing directory outside the checkout")
+    resolved_features = [
+        feature if "/" in feature else f"{package}/{feature}"
+        for group in features
+        for feature in re.split(r"[\s,]+", group)
+        if feature
+    ]
     selected_events = None
     if expected_events is not None:
         selected_events = _exact_events(expected_events)
-        _require_roster_membership(root, revision, selected_events)
+        _require_roster_selection(root, revision, selected_events, resolved_features)
     _require_approved_old_q(root, revision, package, test_targets, os.environ.get(LEGACY_SHA_ENV))
     _require_capture_host(package, test_targets)
     source_states = _capture_frozen_checkout(root, revision)
@@ -621,6 +641,8 @@ def capture_release_execution(
     environment = {
         **os.environ,
         "CARGO_TARGET_DIR": str(target_dir),
+        # A proof target is built once. Collection and execution reuse its binaries.
+        "CARGO_INCREMENTAL": "0",
         "QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR": "1",
         "QUANTA_INDEX_RESOURCE_ADMISSION": "1",
     }
@@ -660,12 +682,6 @@ def capture_release_execution(
         require_capture_identity()
         return pin(path)
 
-    resolved_features = [
-        feature if "/" in feature else f"{package}/{feature}"
-        for group in features
-        for feature in re.split(r"[\s,]+", group)
-        if feature
-    ]
     selection = {
         "lane": lane, "package": package, "include_lib": include_lib, "test_targets": test_targets,
         "filterset": filterset, "features": resolved_features,
@@ -706,7 +722,7 @@ def capture_release_execution(
     selected = _check_selection(selection, inventory)
     _require_retirement_platforms(binaries, inventory, selection)
     if selected_events is None:
-        _require_roster_membership(root, revision, selected)
+        _require_roster_selection(root, revision, selected, resolved_features)
     require_unchanged(inputs, "Nextest build inputs changed during collection")
     events = capture(
         "nextest.jsonl", *commands["nextest.jsonl"],

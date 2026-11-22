@@ -342,7 +342,9 @@ def test_retirement_requires_complete_nextest_evidence(checker, capsys, monkeypa
             receipt_fields += f', inventory_sha256 = "{inventory_digest}"'
     release = evidence.startswith("release_")
     if release:
-        monkeypatch.setattr(retirement_nextest, "release_event_roster", lambda *_: {event: {}})
+        monkeypatch.setattr(retirement_nextest, "release_capture_batches", lambda *_: [{
+            "features": [], "expected_events": [event],
+        }])
     candidate_lock = b'version = 4\n# candidate lock\n'
     stale_lock = b'version = 4\n# previous lock\n'
     lock = checker.ROOT / "Cargo.lock"
@@ -537,6 +539,7 @@ def test_release_source_manifest_rejects_checkout_drift(tmp_path, monkeypatch, s
     None, "test", "native-daemon", "old-q", "supplier-removed", "test-restored",
     "old-q-restored", "metadata-restored", "retained-dylib", "extra-selection", "omitted-selection",
     "outside-roster", "retained-outside-roster", "outside-roster-without-expectation",
+    "outside-profile", "outside-profile-without-expectation", "retained-outside-profile",
     "retained-outside-roster-without-expectation", "roster-resume", "roster-changed-terminal",
     "native-stale-old-q",
 ])
@@ -552,6 +555,7 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
     calls = []
     monkeypatch.setenv("QUANTA_INDEX_RESOURCE_ADMISSION", "0")
     monkeypatch.setenv("QUANTA_INDEX_CACHE_ROOT", str(tmp_path / "foreign-cache"))
+    monkeypatch.setenv("CARGO_INCREMENTAL", "1")
     monkeypatch.setenv("CI", "true")
     legacy_path = tmp_path / "old-searchd"
     legacy_path.write_bytes(b"old daemon")
@@ -575,6 +579,7 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         target = Path(env["CARGO_TARGET_DIR"])
         assert target.parent == evidence and env["QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR"] == "1"
         assert env["QUANTA_INDEX_RESOURCE_ADMISSION"] == "1"
+        assert env["CARGO_INCREMENTAL"] == "0"
         assert "QUANTA_INDEX_CACHE_ROOT" not in env
         retained = target / "legacy-searchd"
         if uses_old_q:
@@ -673,8 +678,11 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
     monkeypatch.setattr(retirement_nextest, "_require_frozen_checkout", lambda *_: None)
     monkeypatch.setattr(retirement_nextest, "_capture_frozen_checkout", lambda *_: {})
     monkeypatch.setattr(retirement_nextest, "release_tree_sha256", lambda *_: "a" * 64)
-    committed_events = {event: {}, binary_id + "$missing": {}}
-    monkeypatch.setattr(retirement_nextest, "release_event_roster", lambda *_: committed_events)
+    committed_events = {event, binary_id + "$missing"}
+    committed_features = ["quanta-index-lexical/native-one", "quanta-index-lexical/native-two"]
+    monkeypatch.setattr(retirement_nextest, "release_capture_batches", lambda *_: [{
+        "features": committed_features, "expected_events": sorted(committed_events),
+    }])
     monkeypatch.setattr(retirement_nextest, "subprocess", SimpleNamespace(run=run))
     args = dict(
         lane="test-integration-lane", package="quanta-index-lexical",
@@ -682,6 +690,15 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         filterset="test(=passes)", features=["native-one, native-two"],
         expected_events=[event],
     )
+    if changed in {"outside-profile", "outside-profile-without-expectation"}:
+        args["features"].append("extra")
+        if changed == "outside-profile-without-expectation":
+            del args["expected_events"]
+        with pytest.raises(ValueError, match="features differ from the committed retirement profile"):
+            retirement_nextest.capture_release_execution(checkout, "b" * 40, evidence, **args)
+        assert len(calls) == (0 if changed == "outside-profile" else 3)
+        assert not list(evidence.glob("*-nextest.jsonl"))
+        return
     if changed == "outside-roster":
         args["expected_events"].append(binary_id + "$unexpected")
         with pytest.raises(ValueError, match="outside the committed retirement roster"):
@@ -706,7 +723,7 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         assert not list(evidence.glob("*-nextest.jsonl"))
         return
     if changed not in {
-        None, "supplier-removed", "retained-dylib", "retained-outside-roster",
+        None, "supplier-removed", "retained-dylib", "retained-outside-roster", "retained-outside-profile",
         "retained-outside-roster-without-expectation", "roster-resume", "roster-changed-terminal",
         "native-stale-old-q",
     }:
@@ -743,6 +760,13 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
         if changed == "retained-outside-roster-without-expectation":
             del manifest["execution"]["selection"]["expected_events"]
             retained_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        elif changed == "retained-outside-profile":
+            selection = manifest["execution"]["selection"]
+            selection["features"].append("quanta-index-lexical/extra")
+            manifest["execution"]["commands"] = retirement_nextest._execution_commands(
+                selection, evidence / f"{run_id}-binaries.json", evidence / f"{run_id}-cargo.json",
+            )
+            retained_manifest.write_text(json.dumps(manifest), encoding="utf-8")
         artifact = retirement_nextest.RawFile.capture(retained_manifest)
         observation = {
             "run_id": run_id,
@@ -755,9 +779,12 @@ def test_capture_uses_one_build_and_publishes_only_stable_execution(tmp_path, mo
             with pytest.raises(ValueError, match="retained Nextest executable bytes differ"):
                 retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "b" * 40)
         elif changed in {"retained-outside-roster", "retained-outside-roster-without-expectation"}:
-            del committed_events[event]
+            committed_events.remove(event)
             with pytest.raises(ValueError, match="outside the committed retirement roster"):
                 retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "c" * 40)
+        elif changed == "retained-outside-profile":
+            with pytest.raises(ValueError, match="features differ from the committed retirement profile"):
+                retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "b" * 40)
         else:
             retirement_nextest.check_frozen_inputs(artifact, observation, checkout, "b" * 40)
         if changed in {"roster-resume", "roster-changed-terminal"}:
@@ -1039,9 +1066,9 @@ def test_committed_retained_old_q_tests_require_same_candidate_exact_passes(
     body = (checker.ROOT / source).read_bytes()
     package, target = "quanta-index-lexical", "sealed_commitment_cost"
     binary_id = f"{package}::{target}"
-    monkeypatch.setattr(retirement_nextest, "release_event_roster", lambda *_: {
-        f"{binary_id}${case}": {} for case in cases
-    })
+    monkeypatch.setattr(retirement_nextest, "release_capture_batches", lambda *_: [{
+        "features": [], "expected_events": [f"{binary_id}${case}" for case in cases],
+    }])
     run_id = "3739620b-a0ff-451d-897f-e5a32fc146eb"
     evidence_dir = tmp_path.with_name(f"{tmp_path.name}-retained-evidence")
     evidence_dir.mkdir()
