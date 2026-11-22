@@ -190,16 +190,19 @@ def test_native_decision_cli_forwards_signed_install_requirement(tmp_path, monke
     runs = tmp_path / "runs.json"
     runs.write_text(json.dumps(["controlled-run-a"]))
     store = tmp_path / "store"
+    reviewed = tmp_path / "reviews.json"
     assert decision.main(
         _args(tmp_path) + [
             "--native-execution-root", str(store),
             "--native-execution-runs", str(runs),
+            "--native-reviewed-labels", str(reviewed),
             "--require-signed-install",
         ]
     ) == 0
     assert observed[0]["require_signed_install"] is True
     assert observed[0]["execution_evidence_root"] == store
     assert observed[0]["execution_run_ids"] == ["controlled-run-a"]
+    assert observed[0]["reviewed_labels_path"] == reviewed
 
 
 def test_native_decision_cli_forwards_reviewed_labels_separately_from_capture_cohort(

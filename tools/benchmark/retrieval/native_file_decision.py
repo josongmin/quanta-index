@@ -463,9 +463,9 @@ def build_native_file_decision(
 ) -> dict:
     """Replay all raw Native families and apply fixed quality thresholds.
 
-    Capture fields are compared with pinned files. Controlled runs and signed
-    installation are checked only when explicitly requested; the 960-second
-    production profile remains separate.
+    Capture fields are compared with pinned files. A signed quality decision
+    requires controlled runs and an independent review receipt for each
+    family. The 960-second production profile remains separate.
     """
     _require(
         (execution_evidence_root is None) == (execution_run_ids is None),
@@ -486,6 +486,10 @@ def build_native_file_decision(
             manifest["schema_version"] == 2
             and all("selection_path" in family for family in manifest["families"]),
             "Native signed installation requires a v2 selected cohort",
+        )
+        _require(
+            reviewed_labels_path is not None,
+            "Native signed quality decision requires independently reviewed labels",
         )
     if output is not None:
         output.protect(

@@ -1058,7 +1058,7 @@ def test_signed_native_quality_requires_controlled_v2_before_scoring(
         )
 
 
-@pytest.mark.parametrize("drift", [None, "generation", "other_selection"])
+@pytest.mark.parametrize("drift", [None, "generation", "other_selection", "missing_reviewed_labels"])
 def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact_scope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, synthetic_replay_sources,
     drift: str | None,
@@ -1109,6 +1109,15 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
         replay["capture"]["runtime_binding"]["decision_policy_sha256"] = _sha(policy)
         replay["report"]["capture_commitment_sha256"] = ev.digest(ev.canonical(replay["capture"]))
     by_family = {item["suite"]["suite_id"]: item for item in families}
+    reviewed = tmp_path / "signed-reviewed-labels.json"
+    review_paths = {}
+    for index, family in enumerate(by_family):
+        path = tmp_path / f"signed-review-{index}.json"
+        path.write_bytes(br'{"fixture":"reviewed"}')
+        review_paths[family] = path
+    reviewed.write_bytes(ev.canonical({
+        family: path.name for family, path in review_paths.items()
+    }))
     verified = False
     identity = {
         "active_generation_sha256": "a" * 64,
@@ -1140,12 +1149,17 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
             for family, replay in by_family.items()
         }
 
-    def replay(*args, **_options):
+    def replay(*args, reviewed_labels=None, expected_reviewed_labels=None, **_options):
         nonlocal drifted
         assert verified, "signed installation must be verified before scoring"
+        family = args[-1][-1]
+        if drift != "missing_reviewed_labels":
+            receipt = review_paths[family]
+            assert reviewed_labels == receipt
+            assert expected_reviewed_labels == (f"sha256:{_sha(receipt)}", receipt.stat().st_size)
         if drift == "generation":
             drifted = True
-        return copy.deepcopy(by_family[args[-1][-1]])
+        return copy.deepcopy(by_family[family])
 
     def check_install(actual_plan, actual_selected, policy_sha):
         assert actual_plan is plan
@@ -1166,6 +1180,14 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
         "execution_run_ids": ["fixture"],
         "require_signed_install": True,
     }
+    if drift == "missing_reviewed_labels":
+        with pytest.raises(decision.NativeDecisionError, match="independently reviewed labels"):
+            decision.build_native_file_decision(
+                manifest, policy, selected.binary, None, binaries[2], **options,
+            )
+        assert not verified
+        return
+    options["reviewed_labels_path"] = reviewed
     expected_errors = {
         "generation": (EvidenceError, "active generation changed"),
         "other_selection": (decision.NativeDecisionError, "selection digest changed"),
@@ -1185,6 +1207,7 @@ def test_signed_native_quality_verifies_install_before_scoring_and_reports_exact
     assert result["status"] == "quality_admit"
     assert result["signed_install_verified"] is True
     assert result["signed_install"] == identity
+    assert result["reviewed_labels_manifest_sha256"] == _sha(reviewed)
     assert result["product_default_decision"] is False
     assert result["runtime_qualified"] is False
 

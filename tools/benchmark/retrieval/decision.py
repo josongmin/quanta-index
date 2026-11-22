@@ -1533,7 +1533,10 @@ def main(argv: list[str] | None = None) -> int:
         "native-reviewed-labels",
     ):
         parser.add_argument(f"--{key}")
-    parser.add_argument("--require-signed-install", action="store_true")
+    parser.add_argument(
+        "--require-signed-install", action="store_true",
+        help="Require controlled Native captures, signed installation and --native-reviewed-labels",
+    )
     args = parser.parse_args(argv)
     try:
         native = any(
