@@ -36,8 +36,113 @@ struct Row {
     target: Option<ReclaimTarget>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct StoredTarget {
+// This row is covered by the reclaim checksum. Keep its field order and the
+// existing decoder's treatment of unknown fields and an omitted registration.
+macro_rules! stored_reclaim_target {
+    ($($field:ident: $ty:ty $(= $default:ident)?),+ $(,)?) => {
+        struct StoredTarget {
+            $($field: $ty,)+
+        }
+
+        impl Serialize for StoredTarget {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeStruct as _;
+                let mut row = serializer.serialize_struct("StoredTarget", STORED_TARGET_FIELDS.len())?;
+                $(row.serialize_field(stringify!($field), &self.$field)?;)+
+                row.end()
+            }
+        }
+
+        impl<'de> Deserialize<'de> for StoredTarget {
+            fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+                use serde::de::{Error as _, IgnoredAny, MapAccess, SeqAccess, Visitor};
+
+                struct Field(Option<&'static str>);
+
+                impl<'de> Deserialize<'de> for Field {
+                    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+                        struct Key;
+                        impl Visitor<'_> for Key {
+                            type Value = Field;
+
+                            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                                formatter.write_str("field identifier")
+                            }
+
+                            fn visit_str<E: serde::de::Error>(self, key: &str) -> Result<Field, E> {
+                                self.visit_bytes(key.as_bytes())
+                            }
+
+                            fn visit_bytes<E: serde::de::Error>(self, key: &[u8]) -> Result<Field, E> {
+                                Ok(Field(STORED_TARGET_FIELDS.iter().copied()
+                                    .find(|field| field.as_bytes() == key)))
+                            }
+                        }
+                        decoder.deserialize_identifier(Key)
+                    }
+                }
+
+                struct Row;
+                impl<'de> Visitor<'de> for Row {
+                    type Value = StoredTarget;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        formatter.write_str("struct StoredTarget")
+                    }
+
+                    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                        $(let mut $field: Option<$ty> = None;)+
+                        while let Some(Field(key)) = map.next_key::<Field>()? {
+                            match key {
+                                $(Some(stringify!($field)) => {
+                                    if $field.is_some() {
+                                        return Err(A::Error::duplicate_field(stringify!($field)));
+                                    }
+                                    $field = Some(map.next_value()?);
+                                },)+
+                                None => { let _: IgnoredAny = map.next_value()?; }
+                                Some(_) => unreachable!("reclaim field reader only returns declared names"),
+                            }
+                        }
+                        Ok(StoredTarget {
+                            $($field: stored_reclaim_target!(@map $field $(= $default)?),)+
+                        })
+                    }
+
+                    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                        let mut index = 0_usize;
+                        $(let $field = seq.next_element()?
+                            .ok_or_else(|| A::Error::invalid_length(index, &StoredTargetSequence))?;
+                          index = index.saturating_add(1);)+
+                        debug_assert_eq!(index, STORED_TARGET_FIELDS.len());
+                        Ok(StoredTarget { $($field,)+ })
+                    }
+                }
+                decoder.deserialize_struct("StoredTarget", STORED_TARGET_FIELDS, Row)
+            }
+        }
+
+        const STORED_TARGET_FIELDS: &[&str] = &[$(stringify!($field)),+];
+    };
+    (@map $field:ident) => {
+        $field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?
+    };
+    (@map $field:ident = default) => { $field.unwrap_or_default() };
+}
+
+struct StoredTargetSequence;
+
+impl serde::de::Expected for StoredTargetSequence {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "struct StoredTarget with {} elements",
+            STORED_TARGET_FIELDS.len()
+        )
+    }
+}
+
+stored_reclaim_target! {
     present: bool,
     root_device: u64,
     root_inode: u64,
@@ -51,7 +156,7 @@ struct StoredTarget {
     file_inode: u64,
     file_changed_nanos: i128,
     file_bytes: u64,
-    registration: Option<RegisteredObject>,
+    registration: Option<RegisteredObject> = default,
 }
 
 fn target_bytes(target: Option<&ReclaimTarget>) -> Result<Option<Vec<u8>>, IndexError> {
@@ -1658,6 +1763,36 @@ mod target_registration_tests {
             file_bytes: incarnation.bytes,
             registration: Some(registration.clone()),
         })?)
+    }
+
+    #[test]
+    fn persisted_absent_target_preserves_old_json_and_open_map_contract()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let expected = ReclaimTarget::AbsentProvisional(ObjectNamespaceBinding {
+            root_device: 1,
+            root_inode: 2,
+            objects_device: 1,
+            objects_inode: 3,
+            lease_device: 1,
+            lease_inode: 4,
+        });
+        let without_registration = concat!(
+            r#"{"present":false,"root_device":1,"root_inode":2,"objects_device":1,"objects_inode":3,"#,
+            r#""lease_device":1,"lease_inode":4,"shard_device":0,"shard_inode":0,"file_device":0,"#,
+            r#""file_inode":0,"file_changed_nanos":0,"file_bytes":0"#,
+        );
+        let canonical = format!(r#"{without_registration},"registration":null}}"#);
+        check_eq!(target_bytes(Some(&expected))?, Some(canonical.into_bytes()));
+
+        let compatible = format!(r#"{without_registration},"future":{{"tag":1}}}}"#);
+        check_eq!(decode_target(compatible.as_bytes())?, expected);
+
+        let duplicate = format!(r#"{without_registration},"present":false}}"#);
+        check!(matches!(
+            decode_target(duplicate.as_bytes()),
+            Err(IndexError::Storage(_))
+        ));
+        Ok(())
     }
 
     #[test]
