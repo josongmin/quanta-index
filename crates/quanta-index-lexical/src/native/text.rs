@@ -298,6 +298,19 @@ mod tests {
     };
 
     use super::*;
+    use serde::ser::SerializeStruct;
+
+    struct FixedOccurrence {
+        positions: [u32; 1],
+    }
+
+    impl Serialize for FixedOccurrence {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            let mut occurrence = serializer.serialize_struct("FixedOccurrence", 1)?;
+            occurrence.serialize_field("positions", &self.positions)?;
+            occurrence.end()
+        }
+    }
 
     macro_rules! check {
         ($condition:expr $(,)?) => {{
@@ -6088,10 +6101,6 @@ mod tests {
     #[test]
     fn occurrence_reuse_never_remembers_refused_or_malformed_batch_prefix() -> Result<(), IndexError>
     {
-        #[derive(Serialize)]
-        struct FixedOccurrence {
-            positions: [u32; 1],
-        }
         for case in 0..3 {
             let mut fixture = visitor_fixture()?;
             if case == 2 {
@@ -7316,10 +7325,6 @@ mod tests {
     #[test]
     fn occurrence_packet_installs_identical_leaves_once_and_expands_original_edits()
     -> Result<(), IndexError> {
-        #[derive(Serialize)]
-        struct FixedOccurrence {
-            positions: [u32; 1],
-        }
         // Nonadjacent aliases must preserve three term edits while installing
         // two leaves. A conflicting input or bad later output admits no hit.
         'cases: for fault in 0..3 {
@@ -7421,10 +7426,6 @@ mod tests {
 
     #[test]
     fn confirmed_occurrences_from_32_owners_share_one_inventory_packet() -> Result<(), IndexError> {
-        #[derive(Serialize)]
-        struct FixedOccurrence {
-            positions: [u32; 1],
-        }
         let mut fixture = visitor_fixture()?;
         fixture.objects.install_outputs = Some(vec![reference(90), reference(91)]);
         let scratch = TestScratch::default();
@@ -7835,10 +7836,6 @@ mod tests {
     #[test]
     fn occurrence_flush_admits_refs_and_edits_before_install_and_refunds_after_refusal()
     -> Result<(), IndexError> {
-        #[derive(Serialize)]
-        struct FixedOccurrence {
-            positions: [u32; 1],
-        }
         for case in 0..3 {
             let fixture = visitor_fixture()?;
             let (mut work, memory) = funded_batch_budget(1_000_000)?;

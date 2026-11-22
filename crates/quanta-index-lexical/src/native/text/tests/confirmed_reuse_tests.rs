@@ -228,10 +228,6 @@ fn confirmed_spill_reuses_all_sixty_five_leaves_across_two_owners_without_changi
 #[test]
 fn refused_partial_or_malformed_install_cannot_publish_a_confirmed_prefix() -> Result<(), IndexError>
 {
-    #[derive(Serialize)]
-    struct FixedOccurrence {
-        positions: [u32; 1],
-    }
     for case in 0..3 {
         let mut fixture = visitor_fixture()?;
         fixture.objects.install_outputs = match case {

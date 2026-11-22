@@ -80,11 +80,6 @@ fn cold_sql_replay_matches_canonical_unicode_and_repeated_positions() -> Result<
     Ok(())
 }
 
-#[derive(serde::Serialize)]
-struct FixedOccurrence {
-    positions: [u32; 1],
-}
-
 fn push_fixed(
     writes: &mut OccurrenceWrites<'_>,
     ordinal: u32,

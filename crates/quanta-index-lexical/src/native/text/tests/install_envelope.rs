@@ -1,10 +1,5 @@
 use super::*;
 
-#[derive(serde::Serialize)]
-struct OnePosition {
-    positions: [u32; 1],
-}
-
 struct CreditAdmissionScope {
     memory: Arc<TokenMemory>,
     accepted: Arc<AtomicUsize>,
@@ -132,7 +127,7 @@ fn stage(
     let byte = u8::try_from(slot).map_err(|_error| IndexError::ResourceLimited)?;
     let key = format!("\0term-{slot:03}");
     let payload = super::super::super::text_memory::encode(
-        &OnePosition {
+        &FixedOccurrence {
             positions: [u32::from(slot)],
         },
         budget,
