@@ -3229,6 +3229,8 @@ impl core::marker::UnsafeUnpin for quanta_index_contract_base::results::Approxim
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract_base::results::ApproximateQualityContractV2
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract_base::results::ApproximateQualityContractV2
 pub struct quanta_index_contract_base::ClosedFieldKeySeedV1(pub &'static [&'static str])
+impl quanta_index_contract_base::ClosedFieldKeySeedV1
+pub fn quanta_index_contract_base::ClosedFieldKeySeedV1::serde_identifier(self) -> impl for<'de> serde_core::de::DeserializeSeed<'de, Value = &'static str>
 impl<'de> serde_core::de::DeserializeSeed<'de> for quanta_index_contract_base::ClosedFieldKeySeedV1
 pub type quanta_index_contract_base::ClosedFieldKeySeedV1::Value = &'static str
 pub fn quanta_index_contract_base::ClosedFieldKeySeedV1::deserialize<D: serde_core::de::Deserializer<'de>>(self, deserializer: D) -> core::result::Result<Self::Value, <D as serde_core::de::Deserializer>::Error>
