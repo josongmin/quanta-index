@@ -2667,7 +2667,7 @@ fn assert_legacy_source_export_v1(
                 && bytes.len() >= length + 4,
             "Source export frame exceeds bound or is truncated",
         )?;
-        frames.push(serde_json::from_slice::<Frame>(&bytes[4..4 + length])?);
+        frames.push(Frame::decode_json_v1(&bytes[4..4 + length])?);
         bytes = &bytes[4 + length..];
     }
     let [

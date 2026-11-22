@@ -54,7 +54,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for RestoreFieldKeyV1 {
 }
 
 macro_rules! restore_open_record {
-    ($name:ident { $($field:ident : $ty:ty $(= $map_default:ident)?),+ $(,)? }) => {
+    ($( [$mode:ident] )? $name:ident { $($field:ident : $ty:ty $(= $map_default:ident)?),+ $(,)? }) => {
         impl serde::Serialize for $name {
             fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                 const FIELDS: &[&str] = &[$(stringify!($field)),+];
@@ -101,7 +101,7 @@ macro_rules! restore_open_record {
                         Ok($name { $($field,)+ })
                     }
                 }
-                deserializer.deserialize_struct(stringify!($name), FIELDS, RecordVisitor)
+                restore_open_record!(@read deserializer, $name, FIELDS, RecordVisitor $(, $mode)?)
             }
         }
     };
@@ -110,6 +110,12 @@ macro_rules! restore_open_record {
     };
     (@map_value $field:ident = default) => {
         $field.unwrap_or_default()
+    };
+    (@read $decoder:ident, $name:ident, $fields:ident, $visitor:ident) => {
+        $decoder.deserialize_struct(stringify!($name), $fields, $visitor)
+    };
+    (@read $decoder:ident, $name:ident, $fields:ident, $visitor:ident, map_only) => {
+        $decoder.deserialize_map($visitor)
     };
 }
 
@@ -287,8 +293,7 @@ impl LexicalSourceHeadsCommitmentV1 {
 /// Bounded private child stdout stream. A HeadBegin and its file frames are
 /// provisional until HeadComplete; all heads are provisional until InventoryComplete.
 /// A file body is emitted in <=64 KiB chunks without retaining the whole corpus.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", content = "body", rename_all = "snake_case")]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SourceSnapshotExportFrameV1 {
     HeadBegin {
         repo_id: RepoId,
@@ -337,6 +342,610 @@ pub enum SourceSnapshotExportFrameV1 {
         head_count: u64,
         repomap_head_count: u64,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourceFrameKindV1 {
+    HeadBegin,
+    FileBegin,
+    FileChunk,
+    FileEnd,
+    HeadComplete,
+    RepoMapBegin,
+    RepoMapChunk,
+    RepoMapComplete,
+    InventoryComplete,
+}
+
+impl SourceFrameKindV1 {
+    const NAMES: &'static [&'static str] = &[
+        "head_begin",
+        "file_begin",
+        "file_chunk",
+        "file_end",
+        "head_complete",
+        "repo_map_begin",
+        "repo_map_chunk",
+        "repo_map_complete",
+        "inventory_complete",
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::HeadBegin => "head_begin",
+            Self::FileBegin => "file_begin",
+            Self::FileChunk => "file_chunk",
+            Self::FileEnd => "file_end",
+            Self::HeadComplete => "head_complete",
+            Self::RepoMapBegin => "repo_map_begin",
+            Self::RepoMapChunk => "repo_map_chunk",
+            Self::RepoMapComplete => "repo_map_complete",
+            Self::InventoryComplete => "inventory_complete",
+        }
+    }
+
+    fn parse<E: serde::de::Error>(name: &str) -> Result<Self, E> {
+        match name {
+            "head_begin" => Ok(Self::HeadBegin),
+            "file_begin" => Ok(Self::FileBegin),
+            "file_chunk" => Ok(Self::FileChunk),
+            "file_end" => Ok(Self::FileEnd),
+            "head_complete" => Ok(Self::HeadComplete),
+            "repo_map_begin" => Ok(Self::RepoMapBegin),
+            "repo_map_chunk" => Ok(Self::RepoMapChunk),
+            "repo_map_complete" => Ok(Self::RepoMapComplete),
+            "inventory_complete" => Ok(Self::InventoryComplete),
+            _ => Err(E::unknown_variant(name, Self::NAMES)),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SourceFrameKindV1 {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        struct KindVisitor;
+        impl serde::de::Visitor<'_> for KindVisitor {
+            type Value = SourceFrameKindV1;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a Source export frame kind")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                SourceFrameKindV1::parse(value)
+            }
+
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
+                SourceFrameKindV1::parse(&value)
+            }
+        }
+        decoder.deserialize_identifier(KindVisitor)
+    }
+}
+
+macro_rules! source_frame_body_encode {
+    ($serializer:ident, $name:literal, { $($field:ident),+ $(,)? }) => {{
+        let mut body = $serializer.serialize_struct($name, [$(stringify!($field)),+].len())?;
+        $(serde::ser::SerializeStruct::serialize_field(&mut body, stringify!($field), $field)?;)+
+        serde::ser::SerializeStruct::end(body)
+    }};
+}
+
+struct SourceFrameBodyRefV1<'a>(&'a SourceSnapshotExportFrameV1);
+
+impl serde::Serialize for SourceFrameBodyRefV1<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            SourceSnapshotExportFrameV1::HeadBegin {
+                repo_id,
+                revision_id,
+                active,
+                applied_ack,
+                source_publication_event,
+                source_heads,
+                repomap_active,
+            } => {
+                source_frame_body_encode!(serializer, "HeadBegin", { repo_id, revision_id, active, applied_ack, source_publication_event, source_heads, repomap_active })
+            }
+            SourceSnapshotExportFrameV1::FileBegin {
+                source,
+                text_admitted,
+                source_bytes,
+            } => {
+                source_frame_body_encode!(serializer, "FileBegin", { source, text_admitted, source_bytes })
+            }
+            SourceSnapshotExportFrameV1::FileChunk { offset, bytes } => {
+                source_frame_body_encode!(serializer, "FileChunk", { offset, bytes })
+            }
+            SourceSnapshotExportFrameV1::FileEnd { source } => {
+                source_frame_body_encode!(serializer, "FileEnd", { source })
+            }
+            SourceSnapshotExportFrameV1::HeadComplete {
+                repo_id,
+                revision_id,
+                file_count,
+                source_heads,
+            } => {
+                source_frame_body_encode!(serializer, "HeadComplete", { repo_id, revision_id, file_count, source_heads })
+            }
+            SourceSnapshotExportFrameV1::RepoMapBegin {
+                repo_id,
+                revision_id,
+                generation,
+                old_active,
+                payload_bytes,
+                payload_sha256,
+            } => {
+                source_frame_body_encode!(serializer, "RepoMapBegin", { repo_id, revision_id, generation, old_active, payload_bytes, payload_sha256 })
+            }
+            SourceSnapshotExportFrameV1::RepoMapChunk { offset, bytes } => {
+                source_frame_body_encode!(serializer, "RepoMapChunk", { offset, bytes })
+            }
+            SourceSnapshotExportFrameV1::RepoMapComplete {
+                repo_id,
+                revision_id,
+            } => source_frame_body_encode!(serializer, "RepoMapComplete", { repo_id, revision_id }),
+            SourceSnapshotExportFrameV1::InventoryComplete {
+                head_count,
+                repomap_head_count,
+            } => {
+                source_frame_body_encode!(serializer, "InventoryComplete", { head_count, repomap_head_count })
+            }
+        }
+    }
+}
+
+impl serde::Serialize for SourceSnapshotExportFrameV1 {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let kind = match self {
+            Self::HeadBegin { .. } => SourceFrameKindV1::HeadBegin,
+            Self::FileBegin { .. } => SourceFrameKindV1::FileBegin,
+            Self::FileChunk { .. } => SourceFrameKindV1::FileChunk,
+            Self::FileEnd { .. } => SourceFrameKindV1::FileEnd,
+            Self::HeadComplete { .. } => SourceFrameKindV1::HeadComplete,
+            Self::RepoMapBegin { .. } => SourceFrameKindV1::RepoMapBegin,
+            Self::RepoMapChunk { .. } => SourceFrameKindV1::RepoMapChunk,
+            Self::RepoMapComplete { .. } => SourceFrameKindV1::RepoMapComplete,
+            Self::InventoryComplete { .. } => SourceFrameKindV1::InventoryComplete,
+        };
+        let mut frame = serializer.serialize_struct("SourceSnapshotExportFrameV1", 2)?;
+        serde::ser::SerializeStruct::serialize_field(&mut frame, "kind", kind.name())?;
+        serde::ser::SerializeStruct::serialize_field(
+            &mut frame,
+            "body",
+            &SourceFrameBodyRefV1(self),
+        )?;
+        serde::ser::SerializeStruct::end(frame)
+    }
+}
+
+// The outer frame can be a map or a positional pair, but its struct-variant
+// body is a map. Replay the already bounded input slice so we can decode a
+// body before its kind without retaining an untyped content tree.
+struct SourceHeadBeginBodyV1 {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    active: SearchCorpusActiveHeadV1,
+    applied_ack: BatchPublishReceipt,
+    source_publication_event: SourcePublicationEvent,
+    source_heads: LexicalSourceHeadsCommitmentV1,
+    repomap_active: Option<RepoMapExpectedActiveV2>,
+}
+restore_open_record!([map_only] SourceHeadBeginBodyV1 {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    active: SearchCorpusActiveHeadV1,
+    applied_ack: BatchPublishReceipt,
+    source_publication_event: SourcePublicationEvent,
+    source_heads: LexicalSourceHeadsCommitmentV1,
+    repomap_active: Option<RepoMapExpectedActiveV2> = default,
+});
+
+struct SourceFileBeginBodyV1 {
+    source: SourceFileRevision,
+    text_admitted: bool,
+    source_bytes: u64,
+}
+restore_open_record!([map_only] SourceFileBeginBodyV1 {
+    source: SourceFileRevision,
+    text_admitted: bool,
+    source_bytes: u64,
+});
+
+struct SourceChunkBodyV1 {
+    offset: u64,
+    bytes: Vec<u8>,
+}
+restore_open_record!([map_only] SourceChunkBodyV1 { offset: u64, bytes: Vec<u8> });
+
+struct SourceFileEndBodyV1 {
+    source: SourceFileRevision,
+}
+restore_open_record!([map_only] SourceFileEndBodyV1 {
+    source: SourceFileRevision
+});
+
+struct SourceHeadCompleteBodyV1 {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    file_count: u64,
+    source_heads: LexicalSourceHeadsCommitmentV1,
+}
+restore_open_record!([map_only] SourceHeadCompleteBodyV1 {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    file_count: u64,
+    source_heads: LexicalSourceHeadsCommitmentV1,
+});
+
+struct SourceRepoMapBeginBodyV1 {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    generation: ManifestGeneration,
+    old_active: RepoMapExpectedActiveV2,
+    payload_bytes: u64,
+    payload_sha256: Digest,
+}
+restore_open_record!([map_only] SourceRepoMapBeginBodyV1 {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+    generation: ManifestGeneration,
+    old_active: RepoMapExpectedActiveV2,
+    payload_bytes: u64,
+    payload_sha256: Digest,
+});
+
+struct SourceRepoMapCompleteBodyV1 {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+}
+restore_open_record!([map_only] SourceRepoMapCompleteBodyV1 {
+    repo_id: RepoId,
+    revision_id: RevisionId,
+});
+
+struct SourceInventoryCompleteBodyV1 {
+    head_count: u64,
+    repomap_head_count: u64,
+}
+restore_open_record!([map_only] SourceInventoryCompleteBodyV1 {
+    head_count: u64,
+    repomap_head_count: u64,
+});
+
+macro_rules! source_frame_decode_body {
+    ($decoder:ident, $record:ident, $variant:ident { $($field:ident),+ $(,)? }) => {{
+        let body: $record = serde::Deserialize::deserialize($decoder)?;
+        Ok(SourceSnapshotExportFrameV1::$variant { $($field: body.$field,)+ })
+    }};
+}
+
+struct SourceFrameBodySeedV1(SourceFrameKindV1);
+
+impl<'de> serde::de::DeserializeSeed<'de> for SourceFrameBodySeedV1 {
+    type Value = SourceSnapshotExportFrameV1;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        match self.0 {
+            SourceFrameKindV1::HeadBegin => source_frame_decode_body!(
+                decoder,
+                SourceHeadBeginBodyV1,
+                HeadBegin {
+                    repo_id,
+                    revision_id,
+                    active,
+                    applied_ack,
+                    source_publication_event,
+                    source_heads,
+                    repomap_active
+                }
+            ),
+            SourceFrameKindV1::FileBegin => source_frame_decode_body!(
+                decoder,
+                SourceFileBeginBodyV1,
+                FileBegin {
+                    source,
+                    text_admitted,
+                    source_bytes
+                }
+            ),
+            SourceFrameKindV1::FileChunk => {
+                source_frame_decode_body!(decoder, SourceChunkBodyV1, FileChunk { offset, bytes })
+            }
+            SourceFrameKindV1::FileEnd => {
+                source_frame_decode_body!(decoder, SourceFileEndBodyV1, FileEnd { source })
+            }
+            SourceFrameKindV1::HeadComplete => source_frame_decode_body!(
+                decoder,
+                SourceHeadCompleteBodyV1,
+                HeadComplete {
+                    repo_id,
+                    revision_id,
+                    file_count,
+                    source_heads
+                }
+            ),
+            SourceFrameKindV1::RepoMapBegin => source_frame_decode_body!(
+                decoder,
+                SourceRepoMapBeginBodyV1,
+                RepoMapBegin {
+                    repo_id,
+                    revision_id,
+                    generation,
+                    old_active,
+                    payload_bytes,
+                    payload_sha256
+                }
+            ),
+            SourceFrameKindV1::RepoMapChunk => source_frame_decode_body!(
+                decoder,
+                SourceChunkBodyV1,
+                RepoMapChunk { offset, bytes }
+            ),
+            SourceFrameKindV1::RepoMapComplete => source_frame_decode_body!(
+                decoder,
+                SourceRepoMapCompleteBodyV1,
+                RepoMapComplete {
+                    repo_id,
+                    revision_id
+                }
+            ),
+            SourceFrameKindV1::InventoryComplete => source_frame_decode_body!(
+                decoder,
+                SourceInventoryCompleteBodyV1,
+                InventoryComplete {
+                    head_count,
+                    repomap_head_count
+                }
+            ),
+        }
+    }
+}
+
+// With the body first, the previous adjacent-tag decoder validated JSON
+// scalars before retaining its buffered body. Validate the same input while
+// discarding each value, so field order never requires a temporary DOM.
+struct SourceFrameValueCheckV1;
+
+impl<'de> serde::Deserialize<'de> for SourceFrameValueCheckV1 {
+    fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+        struct ValueVisitor;
+        impl<'de> serde::de::Visitor<'de> for ValueVisitor {
+            type Value = SourceFrameValueCheckV1;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a valid JSON value")
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(SourceFrameValueCheckV1)
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+                self.visit_unit()
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+                self.visit_unit()
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+                self.visit_unit()
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+                self.visit_unit()
+            }
+
+            fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+                self.visit_unit()
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                while sequence
+                    .next_element::<SourceFrameValueCheckV1>()?
+                    .is_some()
+                {}
+                self.visit_unit()
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                while map
+                    .next_entry::<SourceFrameValueCheckV1, SourceFrameValueCheckV1>()?
+                    .is_some()
+                {}
+                self.visit_unit()
+            }
+        }
+        decoder.deserialize_any(ValueVisitor)
+    }
+}
+
+struct SourceFrameKindReadV1;
+
+impl SourceFrameKindReadV1 {
+    fn decode(bytes: &[u8]) -> Result<SourceFrameKindV1, serde_json::Error> {
+        struct KindReader;
+        impl<'de> serde::de::DeserializeSeed<'de> for KindReader {
+            type Value = SourceFrameKindV1;
+            fn deserialize<D: serde::Deserializer<'de>>(
+                self,
+                decoder: D,
+            ) -> Result<Self::Value, D::Error> {
+                struct Visitor;
+                impl<'de> serde::de::Visitor<'de> for Visitor {
+                    type Value = SourceFrameKindV1;
+                    fn expecting(
+                        &self,
+                        formatter: &mut std::fmt::Formatter<'_>,
+                    ) -> std::fmt::Result {
+                        formatter.write_str("an adjacent-tag Source export frame")
+                    }
+                    fn visit_map<A: serde::de::MapAccess<'de>>(
+                        self,
+                        mut map: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        let mut kind = None;
+                        let mut body_seen = false;
+                        while let Some(key) =
+                            map.next_key_seed(RestoreFieldKeyV1(&["kind", "body"]))?
+                        {
+                            match key {
+                                Some("kind") => {
+                                    if kind.is_some() {
+                                        return Err(serde::de::Error::duplicate_field("kind"));
+                                    }
+                                    kind = Some(map.next_value::<SourceFrameKindV1>()?);
+                                }
+                                Some("body") => {
+                                    if body_seen {
+                                        return Err(serde::de::Error::duplicate_field("body"));
+                                    }
+                                    if kind.is_none() {
+                                        let _: SourceFrameValueCheckV1 = map.next_value()?;
+                                    } else {
+                                        let _: serde::de::IgnoredAny = map.next_value()?;
+                                    }
+                                    body_seen = true;
+                                }
+                                None => {
+                                    let _: serde::de::IgnoredAny = map.next_value()?;
+                                }
+                                _ => unreachable!("restore field seed only returns schema names"),
+                            }
+                        }
+                        if !body_seen {
+                            return Err(serde::de::Error::missing_field("body"));
+                        }
+                        kind.ok_or_else(|| serde::de::Error::missing_field("kind"))
+                    }
+                    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                        self,
+                        mut seq: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        let kind = seq
+                            .next_element::<SourceFrameKindV1>()?
+                            .ok_or_else(|| serde::de::Error::missing_field("kind"))?;
+                        let _: serde::de::IgnoredAny = seq
+                            .next_element()?
+                            .ok_or_else(|| serde::de::Error::missing_field("body"))?;
+                        if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                            return Err(serde::de::Error::invalid_length(3, &self));
+                        }
+                        Ok(kind)
+                    }
+                }
+                decoder.deserialize_struct(
+                    "SourceSnapshotExportFrameV1",
+                    &["kind", "body"],
+                    Visitor,
+                )
+            }
+        }
+        let mut decoder = serde_json::Deserializer::from_slice(bytes);
+        let kind = serde::de::DeserializeSeed::deserialize(KindReader, &mut decoder)?;
+        decoder.end()?;
+        Ok(kind)
+    }
+}
+
+struct SourceFrameDecodeSeedV1(SourceFrameKindV1);
+
+impl<'de> serde::de::DeserializeSeed<'de> for SourceFrameDecodeSeedV1 {
+    type Value = SourceSnapshotExportFrameV1;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
+        struct FrameVisitor(SourceFrameKindV1);
+        impl<'de> serde::de::Visitor<'de> for FrameVisitor {
+            type Value = SourceSnapshotExportFrameV1;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an adjacent-tag Source export frame")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut kind_seen = false;
+                let mut body = None;
+                while let Some(key) = map.next_key_seed(RestoreFieldKeyV1(&["kind", "body"]))? {
+                    match key {
+                        Some("kind") => {
+                            if kind_seen {
+                                return Err(serde::de::Error::duplicate_field("kind"));
+                            }
+                            let actual = map.next_value::<SourceFrameKindV1>()?;
+                            if actual != self.0 {
+                                return Err(serde::de::Error::custom(
+                                    "Source frame kind changed between passes",
+                                ));
+                            }
+                            kind_seen = true;
+                        }
+                        Some("body") => {
+                            if body.is_some() {
+                                return Err(serde::de::Error::duplicate_field("body"));
+                            }
+                            body = Some(map.next_value_seed(SourceFrameBodySeedV1(self.0))?);
+                        }
+                        None => {
+                            let _: serde::de::IgnoredAny = map.next_value()?;
+                        }
+                        _ => unreachable!("restore field seed only returns schema names"),
+                    }
+                }
+                if !kind_seen {
+                    return Err(serde::de::Error::missing_field("kind"));
+                }
+                body.ok_or_else(|| serde::de::Error::missing_field("body"))
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let actual = seq
+                    .next_element::<SourceFrameKindV1>()?
+                    .ok_or_else(|| serde::de::Error::missing_field("kind"))?;
+                if actual != self.0 {
+                    return Err(serde::de::Error::custom(
+                        "Source frame kind changed between passes",
+                    ));
+                }
+                let body = seq
+                    .next_element_seed(SourceFrameBodySeedV1(self.0))?
+                    .ok_or_else(|| serde::de::Error::missing_field("body"))?;
+                if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    return Err(serde::de::Error::invalid_length(3, &self));
+                }
+                Ok(body)
+            }
+        }
+        decoder.deserialize_struct(
+            "SourceSnapshotExportFrameV1",
+            &["kind", "body"],
+            FrameVisitor(self.0),
+        )
+    }
+}
+
+impl SourceSnapshotExportFrameV1 {
+    /// Decode one already framed JSON payload without buffering an untyped body.
+    /// The caller owns the frame-length and memory admission before this call.
+    pub fn decode_json_v1(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        let kind = SourceFrameKindReadV1::decode(bytes)?;
+        let mut decoder = serde_json::Deserializer::from_slice(bytes);
+        let frame =
+            serde::de::DeserializeSeed::deserialize(SourceFrameDecodeSeedV1(kind), &mut decoder)?;
+        decoder.end()?;
+        Ok(frame)
+    }
 }
 
 pub const MAX_SOURCE_SNAPSHOT_CHUNK_BYTES_V1: usize = 64 * 1024;
@@ -469,15 +1078,197 @@ fn imported_source_publication_scope_v1(operation: OperationKey, view: ViewRef) 
 #[cfg(test)]
 mod tests {
     use super::{
-        LegacySourceManifestDigestV1, LexicalSourceHeadsCommitmentV1,
+        LegacySourceManifestDigestV1, LexicalSourceHeadsCommitmentV1, SourceSnapshotExportFrameV1,
         imported_source_publication_scope_v1,
     };
     use crate::index::{
         CollectionId, Digest, OperationKey, ProducerId, SlotId, StreamId, TenantId, ViewRef,
         WorkspaceKey, WorktreeId,
     };
-    use crate::{RepoId, RepoRelativePath, RevisionId, SourceFileKey, SourceFileRevision};
+    use crate::{
+        BatchPublishReceipt, CandidateCommitmentV1, GenerationSnapshot, ManifestGeneration, RepoId,
+        RepoRelativePath, RevisionId, SearchCorpusActivationTokenV1, SearchCorpusActiveHeadV1,
+        SearchCorpusGenerationIdentityV1, SearchPlaneTrackKind, SemanticContentRootsV1,
+        SourceFileKey, SourceFileRevision, SourcePublicationEvent,
+        repomap::RepoMapExpectedActiveV2,
+    };
     use sha2::{Digest as _, Sha256};
+    use std::num::NonZeroU64;
+
+    fn sample_source_export_frames_v1() -> Vec<SourceSnapshotExportFrameV1> {
+        let repo_id = RepoId::new("repo").expect("repo");
+        let revision_id = RevisionId::new("rev").expect("revision");
+        let generation = ManifestGeneration::new(7);
+        let snapshot = |track| GenerationSnapshot {
+            repo_id: repo_id.clone(),
+            revision_id: revision_id.clone(),
+            track,
+            manifest_generation: generation,
+            manifest_digest: "digest".into(),
+        };
+        let active = SearchCorpusActiveHeadV1 {
+            generation: SearchCorpusGenerationIdentityV1 {
+                lexical: snapshot(SearchPlaneTrackKind::Lexical),
+                semantic: snapshot(SearchPlaneTrackKind::Semantic),
+                semantic_content: SemanticContentRootsV1 {
+                    row_root_digest: format!("sha256:{}", "a".repeat(64)),
+                    membership_root_digest: format!("sha256:{}", "b".repeat(64)),
+                },
+            },
+            activation_token: SearchCorpusActivationTokenV1::new(
+                [1; crate::ACTIVATION_ROOT_INCARNATION_BYTES_V1],
+                NonZeroU64::new(1).expect("sequence"),
+            )
+            .expect("activation token"),
+        };
+        let source = SourceFileRevision {
+            file: SourceFileKey {
+                source_repo_id: repo_id.clone(),
+                repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            },
+            revision_id: revision_id.clone(),
+            source_sha256: [2; 32],
+        };
+        let source_heads = LexicalSourceHeadsCommitmentV1 {
+            root_sha256: Some([3; 32]),
+            entries: 1,
+        };
+        let old_active = RepoMapExpectedActiveV2::new(
+            NonZeroU64::new(1).expect("epoch"),
+            CandidateCommitmentV1::from_bytes([4; 32]),
+        );
+        vec![
+            SourceSnapshotExportFrameV1::HeadBegin {
+                repo_id: repo_id.clone(),
+                revision_id: revision_id.clone(),
+                active,
+                applied_ack: BatchPublishReceipt::empty_for(
+                    generation,
+                    Some("digest".into()),
+                    "batch",
+                ),
+                source_publication_event: SourcePublicationEvent {
+                    stream_id: "stream".into(),
+                    event_id: "event".into(),
+                    expected_base_event_id: None,
+                    payload_sha256: [5; 32],
+                },
+                source_heads,
+                repomap_active: None,
+            },
+            SourceSnapshotExportFrameV1::FileBegin {
+                source: source.clone(),
+                text_admitted: true,
+                source_bytes: 2,
+            },
+            SourceSnapshotExportFrameV1::FileChunk {
+                offset: 0,
+                bytes: vec![0, 255],
+            },
+            SourceSnapshotExportFrameV1::FileEnd { source },
+            SourceSnapshotExportFrameV1::HeadComplete {
+                repo_id: repo_id.clone(),
+                revision_id: revision_id.clone(),
+                file_count: 1,
+                source_heads,
+            },
+            SourceSnapshotExportFrameV1::RepoMapBegin {
+                repo_id: repo_id.clone(),
+                revision_id: revision_id.clone(),
+                generation,
+                old_active,
+                payload_bytes: 2,
+                payload_sha256: Digest([6; 32]),
+            },
+            SourceSnapshotExportFrameV1::RepoMapChunk {
+                offset: 0,
+                bytes: vec![1, 2],
+            },
+            SourceSnapshotExportFrameV1::RepoMapComplete {
+                repo_id,
+                revision_id,
+            },
+            SourceSnapshotExportFrameV1::InventoryComplete {
+                head_count: 1,
+                repomap_head_count: 1,
+            },
+        ]
+    }
+
+    #[test]
+    fn source_frame_json_codec_preserves_all_variants_and_body_first() {
+        for frame in sample_source_export_frames_v1() {
+            let wire = serde_json::to_string(&frame).expect("encode frame");
+            assert!(wire.starts_with("{\"kind\":"), "{wire}");
+            assert_eq!(
+                SourceSnapshotExportFrameV1::decode_json_v1(wire.as_bytes())
+                    .expect("two-pass decoder"),
+                frame
+            );
+            let (kind, body_with_closing_brace) = wire
+                .strip_prefix("{\"kind\":")
+                .expect("adjacent tag")
+                .split_once(",\"body\":")
+                .expect("body field");
+            let body = body_with_closing_brace
+                .strip_suffix('}')
+                .expect("outer close");
+            let body_first = format!("{{\"body\":{body},\"kind\":{kind}}}");
+            assert_eq!(
+                SourceSnapshotExportFrameV1::decode_json_v1(body_first.as_bytes())
+                    .expect("two-pass body-first decoder"),
+                frame
+            );
+        }
+    }
+
+    #[test]
+    fn source_frame_json_codec_keeps_fixed_wire_and_decode_edge_cases() {
+        let frame = SourceSnapshotExportFrameV1::FileChunk {
+            offset: 7,
+            bytes: vec![0, 1, 255],
+        };
+        assert_eq!(
+            serde_json::to_string(&frame).expect("frame JSON"),
+            r#"{"kind":"file_chunk","body":{"offset":7,"bytes":[0,1,255]}}"#
+        );
+        let full_chunk = SourceSnapshotExportFrameV1::FileChunk {
+            offset: 0,
+            bytes: vec![255; super::MAX_SOURCE_SNAPSHOT_CHUNK_BYTES_V1],
+        };
+        let full_wire = serde_json::to_vec(&full_chunk).expect("full chunk JSON");
+        assert_eq!(
+            SourceSnapshotExportFrameV1::decode_json_v1(&full_wire).expect("full chunk decode"),
+            full_chunk
+        );
+        for wire in [
+            r#"{"body":{"offset":7,"bytes":[0,1,255],"future":true},"kind":"file_chunk","future":{}}"#,
+            r#"["file_chunk",{"offset":7,"bytes":[0,1,255]}]"#,
+            r#"{"kind":"file_chunk","body":{"offset":7,"bytes":[0,1,255],"future":1e9999}}"#,
+        ] {
+            assert_eq!(
+                SourceSnapshotExportFrameV1::decode_json_v1(wire.as_bytes()).expect("file chunk"),
+                frame
+            );
+        }
+        for wire in [
+            r#"{"kind":"file_chunk","body":{"offset":7,"bytes":[0]},"kind":"file_chunk"}"#,
+            r#"{"body":{"offset":7,"bytes":[0]},"kind":"file_chunk","body":{}}"#,
+            r#"{"kind":"file_chunk","body":{"offset":7,"offset":8,"bytes":[0]}}"#,
+            r#"["file_chunk",[7,[0,1,255]]]"#,
+            r#"{"kind":"file_chunk","body":[7,[0,1,255]]}"#,
+            r#"{"body":[7,[0,1,255]],"kind":"file_chunk"}"#,
+            r#"{"body":{"offset":7,"bytes":[0],"future":1e9999},"kind":"file_chunk"}"#,
+            r#"{"body":{"offset":7,"bytes":[0],"future":"\ud800"},"kind":"file_chunk"}"#,
+            r#"{"kind":"file_chunk"}"#,
+            r#"{"body":{"offset":7,"bytes":[0]}}"#,
+        ] {
+            assert!(
+                SourceSnapshotExportFrameV1::decode_json_v1(wire.as_bytes()).is_err(),
+                "{wire}"
+            );
+        }
+    }
 
     #[test]
     fn source_heads_wire_preserves_open_map_and_nullable_root() {
