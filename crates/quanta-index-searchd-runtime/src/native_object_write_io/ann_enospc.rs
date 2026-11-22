@@ -2010,9 +2010,136 @@ fn real_ann_seal_file_fsync_eio_preserves_selected_views_and_recovers_same_opera
     Ok(())
 }
 
+// This cold-process witness has one wire schema for its field order and both
+// Serde data-model forms. Keep unknown map keys ignored, as the former derive did.
 #[cfg(target_os = "linux")]
-#[derive(serde::Serialize, serde::Deserialize)]
-struct CloseExpected {
+macro_rules! close_expected_wire {
+    ($($field:ident: $ty:ty),+ $(,)?) => {
+        struct CloseExpected {
+            $($field: $ty,)+
+        }
+
+        impl serde::Serialize for CloseExpected {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                const FIELDS: &[&str] = &[$(stringify!($field),)+];
+                let mut record = serializer.serialize_struct("CloseExpected", FIELDS.len())?;
+                $(serde::ser::SerializeStruct::serialize_field(
+                    &mut record, stringify!($field), &self.$field,
+                )?;)+
+                serde::ser::SerializeStruct::end(record)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for CloseExpected {
+            fn deserialize<D: serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> Result<Self, D::Error> {
+                const FIELDS: &[&str] = &[$(stringify!($field),)+];
+                const _: [(); 10] = [(); FIELDS.len()];
+                struct Field(&'static str);
+
+                impl<'de> serde::Deserialize<'de> for Field {
+                    fn deserialize<D: serde::Deserializer<'de>>(
+                        deserializer: D,
+                    ) -> Result<Self, D::Error> {
+                        struct FieldVisitor;
+
+                        impl<'de> serde::de::Visitor<'de> for FieldVisitor {
+                            type Value = Field;
+
+                            fn expecting(
+                                &self,
+                                formatter: &mut std::fmt::Formatter<'_>,
+                            ) -> std::fmt::Result {
+                                formatter.write_str("a CloseExpected field")
+                            }
+
+                            fn visit_str<E: serde::de::Error>(
+                                self,
+                                value: &str,
+                            ) -> Result<Field, E> {
+                                Ok(Field(FIELDS.iter().copied()
+                                    .find(|field| *field == value).unwrap_or("")))
+                            }
+
+                            fn visit_bytes<E: serde::de::Error>(
+                                self,
+                                value: &[u8],
+                            ) -> Result<Field, E> {
+                                Ok(Field(FIELDS.iter().copied()
+                                    .find(|field| field.as_bytes() == value).unwrap_or("")))
+                            }
+                        }
+
+                        deserializer.deserialize_identifier(FieldVisitor)
+                    }
+                }
+
+                struct RecordVisitor;
+
+                impl<'de> serde::de::Visitor<'de> for RecordVisitor {
+                    type Value = CloseExpected;
+
+                    fn expecting(
+                        &self,
+                        formatter: &mut std::fmt::Formatter<'_>,
+                    ) -> std::fmt::Result {
+                        formatter.write_str("struct CloseExpected")
+                    }
+
+                    fn visit_map<M: serde::de::MapAccess<'de>>(
+                        self,
+                        mut map: M,
+                    ) -> Result<Self::Value, M::Error> {
+                        $(let mut $field: Option<$ty> = None;)+
+                        while let Some(Field(key)) = map.next_key()? {
+                            match key {
+                                $(stringify!($field) => {
+                                    if $field.is_some() {
+                                        return Err(serde::de::Error::duplicate_field(
+                                            stringify!($field),
+                                        ));
+                                    }
+                                    $field = Some(map.next_value()?);
+                                },)+
+                                _ => {
+                                    let _ignored = map.next_value::<serde::de::IgnoredAny>()?;
+                                }
+                            }
+                        }
+                        Ok(CloseExpected {
+                            $($field: $field.ok_or_else(||
+                                serde::de::Error::missing_field(stringify!($field))
+                            )?,)+
+                        })
+                    }
+
+                    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                        self,
+                        mut sequence: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        let mut positions = 0..FIELDS.len();
+                        $(let $field = {
+                            let index = positions.next().unwrap_or(FIELDS.len());
+                            sequence.next_element()?.ok_or_else(||
+                                serde::de::Error::invalid_length(
+                                    index,
+                                    &"struct CloseExpected with 10 elements",
+                                )
+                            )?
+                        };)+
+                        Ok(CloseExpected { $($field,)+ })
+                    }
+                }
+
+                deserializer.deserialize_struct("CloseExpected", FIELDS, RecordVisitor)
+            }
+        }
+    };
+}
+
+#[cfg(target_os = "linux")]
+close_expected_wire! {
     old_pin_session: u64,
     old_pin_session_fence: u64,
     old_pin_fence: u64,

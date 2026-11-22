@@ -68,16 +68,115 @@ fn require_quality_completion(deadline: Instant, completed_at: Instant) -> TestR
     )
 }
 
-#[derive(serde::Deserialize)]
-struct RestartedVectorIndex {
-    mode: String,
-    index_min_rows: u64,
-    ann: Option<RestartedAnnIndex>,
+// These fixtures read projections of persisted JSON. Other fields in the
+// stored record are ignored, while repeated projected fields still fail.
+macro_rules! ann_json_projection {
+    (struct $name:ident { $($field:ident: $ty:ty $(= $map_default:ident)?),+ $(,)? }) => {
+        struct $name {
+            $($field: $ty,)+
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
+                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                struct Projection;
+                impl<'de> serde::de::Visitor<'de> for Projection {
+                    type Value = $name;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        formatter.write_str(concat!("struct ", stringify!($name)))
+                    }
+
+                    fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                        $(let mut $field: Option<$ty> = None;)+
+                        while let Some(key) = map.next_key::<String>()? {
+                            match key.as_str() {
+                                $(stringify!($field) => {
+                                    if $field.is_some() {
+                                        return Err(serde::de::Error::duplicate_field(stringify!($field)));
+                                    }
+                                    $field = Some(map.next_value::<$ty>()?);
+                                },)+
+                                _ => {
+                                    let _ignored = map.next_value::<serde::de::IgnoredAny>()?;
+                                }
+                            }
+                        }
+                        Ok($name {
+                            $($field: ann_json_projection!(@map $field $(= $map_default)?),)+
+                        })
+                    }
+
+                    fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
+                        let mut index = 0;
+                        $(
+                            let $field = seq.next_element::<$ty>()?.ok_or_else(|| {
+                                let noun = if FIELDS.len() == 1 { "element" } else { "elements" };
+                                let expected = format!(concat!("struct ", stringify!($name), " with {} {}"), FIELDS.len(), noun);
+                                serde::de::Error::invalid_length(index, &expected.as_str())
+                            })?;
+                            index += 1;
+                        )+
+                        debug_assert_eq!(index, FIELDS.len());
+                        Ok($name { $($field,)+ })
+                    }
+                }
+                decoder.deserialize_struct(stringify!($name), FIELDS, Projection)
+            }
+        }
+    };
+    (@map $field:ident = default) => {
+        $field.unwrap_or_default()
+    };
+    (@map $field:ident) => {
+        $field.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?
+    };
 }
 
-#[derive(serde::Deserialize)]
-struct RestartedAnnIndex {
-    indexed_rows: u64,
+ann_json_projection! {
+    struct RestartedVectorIndex {
+        mode: String,
+        index_min_rows: u64,
+        ann: Option<RestartedAnnIndex> = default,
+    }
+}
+
+ann_json_projection! {
+    struct RestartedAnnIndex {
+        indexed_rows: u64,
+    }
+}
+
+#[test]
+fn restarted_index_json_preserves_projection_and_positional_shape() -> TestResult {
+    for input in [
+        r#"{"mode":"exact","index_min_rows":256,"producer_metadata":{"epoch":1}}"#,
+        r#"{"mode":"exact","index_min_rows":256,"ann":null}"#,
+        r#"["exact",256,null]"#,
+    ] {
+        let index: RestartedVectorIndex = serde_json::from_str(input)?;
+        require(!check_restarted_index_mode(255, &index)?, input)?;
+    }
+    for input in [
+        r#"{"mode":"ivf_hnsw_sq","index_min_rows":256,"ann":{"indexed_rows":256,"future":true}}"#,
+        r#"["ivf_hnsw_sq",256,[256]]"#,
+    ] {
+        let index: RestartedVectorIndex = serde_json::from_str(input)?;
+        require(check_restarted_index_mode(256, &index)?, input)?;
+    }
+    for input in [
+        r#"{"mode":"exact","ann":null}"#,
+        r#"{"mode":"exact","index_min_rows":256,"ann":null,"ann":null}"#,
+        r#"["exact",256]"#,
+        r#"["exact",256,null,0]"#,
+        r#"["ivf_hnsw_sq",256,{"indexed_rows":256,"indexed_rows":256}]"#,
+    ] {
+        require(
+            serde_json::from_str::<RestartedVectorIndex>(input).is_err(),
+            input,
+        )?;
+    }
+    Ok(())
 }
 
 fn check_restarted_index_mode(rows: u32, index: &RestartedVectorIndex) -> TestResult<bool> {
@@ -145,39 +244,43 @@ fn check_restarted_lance_indices(
     // Read the object graph named by the two SDK query results after the
     // daemon releases its object namespace. Check the directory-to-region
     // identity and persisted index census for both named views.
-    #[derive(serde::Deserialize)]
-    struct Directory {
-        format: u32,
-        recipe: Digest,
-        owners: MapRoot,
-        regions: MapRoot,
-        delta: MapRoot,
-        source_reverse: MapRoot,
-        next_region: u64,
-        region_count: u32,
+    ann_json_projection! {
+        struct Directory {
+            format: u32,
+            recipe: Digest,
+            owners: MapRoot,
+            regions: MapRoot,
+            delta: MapRoot,
+            source_reverse: MapRoot,
+            next_region: u64,
+            region_count: u32,
+        }
     }
 
-    #[derive(serde::Deserialize)]
-    struct Descriptor {
-        fileset: ObjectRef,
-        members: MapRoot,
-        center: Vec<f32>,
-        rows: u32,
+    ann_json_projection! {
+        struct Descriptor {
+            fileset: ObjectRef,
+            members: MapRoot,
+            center: Vec<f32>,
+            rows: u32,
+        }
     }
 
-    #[derive(serde::Deserialize)]
-    struct Fileset {
-        recipe: Digest,
-        seal: Seal,
+    ann_json_projection! {
+        struct Fileset {
+            recipe: Digest,
+            seal: Seal,
+        }
     }
 
-    #[derive(serde::Deserialize)]
-    struct Seal {
-        generation: u64,
-        recipe: Digest,
-        dimension: u32,
-        rows: u32,
-        vector_index: RestartedVectorIndex,
+    ann_json_projection! {
+        struct Seal {
+            generation: u64,
+            recipe: Digest,
+            dimension: u32,
+            rows: u32,
+            vector_index: RestartedVectorIndex,
+        }
     }
 
     const LANCE_DIRECTORY_FORMAT: u32 = 5;
