@@ -60,7 +60,6 @@ use quanta_index_semantic::native::{
     validate_semantic_recipe_instance,
 };
 use rustix::fs::{Mode, OFlags, open};
-use serde::Deserialize;
 use signal_hook::{
     consts::{SIGINT, SIGTERM},
     iterator::{Handle as SignalHandle, Signals},
@@ -96,56 +95,361 @@ use sha2::{Digest as _, Sha256};
 const MAX_CONFIG_BYTES: u64 = 64 * 1024;
 const ACCEPT_IDLE: Duration = Duration::from_millis(50);
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NativeServeConfigV1 {
-    version: u32,
-    state_root: PathBuf,
-    socket_path: PathBuf,
-    #[serde(default)]
-    legacy_repomap_selection: Option<LegacyRepoMapSelectionConfigV1>,
-    #[serde(default)]
-    socket_access: Option<String>,
-    work_limits: WorkLimitsConfig,
-    resources: ResourcesConfig,
-    literal: DescriptorConfig,
-    file_map: DescriptorConfig,
-    text: TextConfig,
-    #[serde(default)]
-    maintenance: Option<MaintenanceConfig>,
-    #[serde(default)]
-    retention: Option<RetentionConfig>,
-    #[serde(default)]
-    read_sessions: Option<ReadSessionsConfig>,
-    #[serde(default)]
-    owned_work: Option<OwnedWorkConfig>,
-    #[serde(default)]
-    semantic: Option<SemanticConfig>,
-    #[serde(default)]
-    graph: Option<GraphConfig>,
-    #[serde(default)]
-    effort: Option<EffortConfig>,
-    #[serde(default)]
-    overlay: Option<OverlayConfig>,
-    #[serde(default)]
-    stub_ast: Option<StubAstConfig>,
+// Keep Native config decoding on the Serde data model: a record accepts a
+// named map or a positional sequence, but never silently drops a map field.
+macro_rules! native_record_map_field {
+    (required, $value:ident, $field:ident) => {
+        $value.ok_or_else(|| serde::de::Error::missing_field(stringify!($field)))?
+    };
+    (default, $value:ident, $field:ident) => {
+        $value.unwrap_or_default()
+    };
+    (optional, $value:ident, $field:ident) => {
+        $value.unwrap_or_default()
+    };
 }
 
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyRepoMapSelectionConfigV1 {
-    path: PathBuf,
-    sha256: [u8; 32],
+macro_rules! native_record_seq_field {
+    (required, $value:ident, $index:ident, $visitor:ident) => {
+        $value.ok_or_else(|| serde::de::Error::invalid_length($index, &$visitor))?
+    };
+    (default, $value:ident, $index:ident, $visitor:ident) => {
+        $value.unwrap_or_default()
+    };
+    (optional, $value:ident, $index:ident, $visitor:ident) => {
+        $value.ok_or_else(|| serde::de::Error::invalid_length($index, &$visitor))?
+    };
 }
 
-#[derive(Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WorkLimitsConfig {
-    reads: u64,
-    writes: u64,
-    bytes: u64,
-    mutations: u64,
+macro_rules! native_json_record {
+    ($(#[$attribute:meta])* struct $name:ident {
+        $($(#[$field_attribute:meta])* $field:ident: $type:ty => $mode:ident,)+
+    }) => {
+        $(#[$attribute])*
+        struct $name {
+            $($(#[$field_attribute])* $field: $type,)+
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                const FIELDS: &[&str] = &[$(stringify!($field),)+];
+                struct RecordVisitor;
+                struct FieldSeed;
+
+                impl<'de> serde::de::DeserializeSeed<'de> for FieldSeed {
+                    type Value = &'static str;
+
+                    fn deserialize<D: serde::Deserializer<'de>>(
+                        self,
+                        deserializer: D,
+                    ) -> Result<Self::Value, D::Error> {
+                        struct FieldVisitor;
+
+                        impl<'any> serde::de::Visitor<'any> for FieldVisitor {
+                            type Value = &'static str;
+
+                            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                                formatter.write_str("a Native config field")
+                            }
+
+                            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                                match value {
+                                    $(stringify!($field) => Ok(stringify!($field)),)+
+                                    _ => Err(E::unknown_field(value, FIELDS)),
+                                }
+                            }
+
+                            fn visit_bytes<E: serde::de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+                                let name = std::str::from_utf8(value).map_err(E::custom)?;
+                                self.visit_str(name)
+                            }
+                        }
+
+                        deserializer.deserialize_identifier(FieldVisitor)
+                    }
+                }
+
+                impl<'de> serde::de::Visitor<'de> for RecordVisitor {
+                    type Value = $name;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        write!(formatter, "struct {}", stringify!($name))
+                    }
+
+                    fn visit_map<M: serde::de::MapAccess<'de>>(
+                        self,
+                        mut map: M,
+                    ) -> Result<Self::Value, M::Error> {
+                        $(let mut $field: Option<$type> = None;)+
+                        while let Some(key) = map.next_key_seed(FieldSeed)? {
+                            match key {
+                                $(stringify!($field) => {
+                                    if $field.is_some() {
+                                        return Err(serde::de::Error::duplicate_field(stringify!($field)));
+                                    }
+                                    $field = Some(map.next_value()?);
+                                },)+
+                                _ => return Err(serde::de::Error::unknown_field(key, FIELDS)),
+                            }
+                        }
+                        Ok($name {
+                            $($field: native_record_map_field!($mode, $field, $field),)+
+                        })
+                    }
+
+                    fn visit_seq<S: serde::de::SeqAccess<'de>>(
+                        self,
+                        mut sequence: S,
+                    ) -> Result<Self::Value, S::Error> {
+                        let mut index = 0_usize;
+                        $(
+                            let value: Option<$type> = sequence.next_element()?;
+                            let $field = native_record_seq_field!($mode, value, index, self);
+                            index = index.saturating_add(1);
+                        )+
+                        if sequence.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                            return Err(serde::de::Error::invalid_length(index.saturating_add(1), &self));
+                        }
+                        Ok($name { $($field,)+ })
+                    }
+                }
+
+                deserializer.deserialize_struct(stringify!($name), FIELDS, RecordVisitor)
+            }
+        }
+    };
 }
+
+macro_rules! native_json_unit_enum {
+    ($name:ident { $($wire:literal => $variant:ident,)+ }) => {
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                const VARIANTS: &[&str] = &[$($wire,)+];
+                struct EnumVisitor;
+
+                impl<'de> serde::de::Visitor<'de> for EnumVisitor {
+                    type Value = $name;
+
+                    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        write!(formatter, "enum {}", stringify!($name))
+                    }
+
+                    fn visit_enum<A: serde::de::EnumAccess<'de>>(
+                        self,
+                        access: A,
+                    ) -> Result<Self::Value, A::Error> {
+                        use serde::de::VariantAccess as _;
+                        let (name, variant) = access.variant::<String>()?;
+                        let value = match name.as_str() {
+                            $($wire => $name::$variant,)+
+                            _ => return Err(serde::de::Error::unknown_variant(&name, VARIANTS)),
+                        };
+                        variant.unit_variant()?;
+                        Ok(value)
+                    }
+                }
+
+                deserializer.deserialize_enum(stringify!($name), VARIANTS, EnumVisitor)
+            }
+        }
+    };
+}
+
+// The JSON-only tagged variants need to accept `kind` in any field position.
+// RawValue keeps duplicate keys inside a selected payload visible to its
+// strict field decoder; inapplicable fields on a unit variant remain ignored.
+struct NativeTaggedInput {
+    kind: String,
+    fields: NativeTaggedFields,
+}
+
+enum NativeTaggedFields {
+    Object(Vec<(String, Box<serde_json::value::RawValue>)>),
+    Sequence(Vec<Box<serde_json::value::RawValue>>),
+}
+
+impl<'de> serde::Deserialize<'de> for NativeTaggedInput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct TaggedVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for TaggedVisitor {
+            type Value = NativeTaggedInput;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an internally tagged Native config")
+            }
+
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<Self::Value, M::Error> {
+                let mut kind = None;
+                let mut fields = Vec::new();
+                while let Some(name) = map.next_key::<String>()? {
+                    if name == "kind" {
+                        if kind.is_some() {
+                            return Err(serde::de::Error::duplicate_field("kind"));
+                        }
+                        kind = Some(map.next_value()?);
+                    } else {
+                        fields.push((name, map.next_value()?));
+                    }
+                }
+                Ok(NativeTaggedInput {
+                    kind: kind.ok_or_else(|| serde::de::Error::missing_field("kind"))?,
+                    fields: NativeTaggedFields::Object(fields),
+                })
+            }
+
+            fn visit_seq<S: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: S,
+            ) -> Result<Self::Value, S::Error> {
+                let kind = sequence
+                    .next_element()?
+                    .ok_or_else(|| serde::de::Error::missing_field("kind"))?;
+                let mut fields = Vec::new();
+                while let Some(value) = sequence.next_element()? {
+                    fields.push(value);
+                }
+                Ok(NativeTaggedInput {
+                    kind,
+                    fields: NativeTaggedFields::Sequence(fields),
+                })
+            }
+        }
+
+        deserializer.deserialize_any(TaggedVisitor)
+    }
+}
+
+fn native_variant_fields<E: serde::de::Error>(
+    fields: NativeTaggedFields,
+    allowed: &'static [&'static str],
+) -> Result<std::collections::BTreeMap<&'static str, Box<serde_json::value::RawValue>>, E> {
+    let mut object = std::collections::BTreeMap::new();
+    match fields {
+        NativeTaggedFields::Object(fields) => {
+            for (key, value) in fields {
+                let Some(field) = allowed
+                    .iter()
+                    .find(|field| **field == key.as_str())
+                    .copied()
+                else {
+                    return Err(E::unknown_field(&key, allowed));
+                };
+                if object.contains_key(field) {
+                    return Err(E::duplicate_field(field));
+                }
+                let _previous = object.insert(field, value);
+            }
+        }
+        NativeTaggedFields::Sequence(fields) => {
+            if fields.len() != allowed.len() {
+                return Err(E::custom(
+                    "tagged Native config has a wrong positional field count",
+                ));
+            }
+            for (field, value) in allowed.iter().copied().zip(fields) {
+                let _previous = object.insert(field, value);
+            }
+        }
+    }
+    Ok(object)
+}
+
+fn native_unit_fields<E: serde::de::Error>(fields: NativeTaggedFields) -> Result<(), E> {
+    match fields {
+        NativeTaggedFields::Object(fields) => {
+            for (_key, value) in fields {
+                let _ignored: serde_json::Value =
+                    serde_json::from_str(value.get()).map_err(E::custom)?;
+            }
+            Ok(())
+        }
+        NativeTaggedFields::Sequence(fields) if fields.is_empty() => Ok(()),
+        NativeTaggedFields::Sequence(_) => Err(E::custom(
+            "unit Native config variant has extra positional fields",
+        )),
+    }
+}
+
+fn native_required_field<T: serde::de::DeserializeOwned, E: serde::de::Error>(
+    fields: &mut std::collections::BTreeMap<&'static str, Box<serde_json::value::RawValue>>,
+    name: &'static str,
+) -> Result<T, E> {
+    let value = fields.remove(name).ok_or_else(|| E::missing_field(name))?;
+    serde_json::from_str(value.get()).map_err(E::custom)
+}
+
+fn native_optional_field<T: serde::de::DeserializeOwned, E: serde::de::Error>(
+    fields: &mut std::collections::BTreeMap<&'static str, Box<serde_json::value::RawValue>>,
+    name: &'static str,
+) -> Result<Option<T>, E> {
+    fields
+        .remove(name)
+        .map(|value| serde_json::from_str(value.get()))
+        .transpose()
+        .map_err(E::custom)
+        .map(Option::flatten)
+}
+
+macro_rules! native_tagged_record {
+    ($input:ident, Self::$variant:ident { $($field:ident $(= $optional:ident)?),+ $(,)? }) => {{
+        let mut fields = native_variant_fields($input, &[$(stringify!($field)),+])?;
+        Ok(Self::$variant {
+            $($field: native_tagged_record!(@value fields $field $(= $optional)?),)+
+        })
+    }};
+    (@value $fields:ident $field:ident) => {
+        native_required_field(&mut $fields, stringify!($field))?
+    };
+    (@value $fields:ident $field:ident = optional) => {
+        native_optional_field(&mut $fields, stringify!($field))?
+    };
+}
+
+native_json_record!(
+    struct NativeServeConfigV1 {
+        version: u32 => required,
+        state_root: PathBuf => required,
+        socket_path: PathBuf => required,
+        legacy_repomap_selection: Option<LegacyRepoMapSelectionConfigV1> => default,
+        socket_access: Option<String> => default,
+        work_limits: WorkLimitsConfig => required,
+        resources: ResourcesConfig => required,
+        literal: DescriptorConfig => required,
+        file_map: DescriptorConfig => required,
+        text: TextConfig => required,
+        maintenance: Option<MaintenanceConfig> => default,
+        retention: Option<RetentionConfig> => default,
+        read_sessions: Option<ReadSessionsConfig> => default,
+        owned_work: Option<OwnedWorkConfig> => default,
+        semantic: Option<SemanticConfig> => default,
+        graph: Option<GraphConfig> => default,
+        effort: Option<EffortConfig> => default,
+        overlay: Option<OverlayConfig> => default,
+        stub_ast: Option<StubAstConfig> => default,
+    }
+);
+
+native_json_record!(
+    #[derive(Clone)]
+    struct LegacyRepoMapSelectionConfigV1 {
+        path: PathBuf => required,
+        sha256: [u8; 32] => required,
+    }
+);
+
+native_json_record!(
+    #[derive(Clone, Copy)]
+    struct WorkLimitsConfig {
+        reads: u64 => required,
+        writes: u64 => required,
+        bytes: u64 => required,
+        mutations: u64 => required,
+    }
+);
 
 impl WorkLimitsConfig {
     fn validate(self) -> Result<WorkLimits> {
@@ -161,14 +465,15 @@ impl WorkLimitsConfig {
     }
 }
 
-#[derive(Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NeedConfig {
-    cpu_units: u64,
-    io_bytes: u64,
-    memory_bytes: u64,
-    provider_units: u64,
-}
+native_json_record!(
+    #[derive(Clone, Copy)]
+    struct NeedConfig {
+        cpu_units: u64 => required,
+        io_bytes: u64 => required,
+        memory_bytes: u64 => required,
+        provider_units: u64 => required,
+    }
+);
 
 impl From<NeedConfig> for ResourceNeed {
     fn from(value: NeedConfig) -> Self {
@@ -181,15 +486,15 @@ impl From<NeedConfig> for ResourceNeed {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExecutionConfig {
-    capacity: NeedConfig,
-    control: NeedConfig,
-    interactive: NeedConfig,
-    core: NeedConfig,
-    enrichment: NeedConfig,
-}
+native_json_record!(
+    struct ExecutionConfig {
+        capacity: NeedConfig => required,
+        control: NeedConfig => required,
+        interactive: NeedConfig => required,
+        core: NeedConfig => required,
+        enrichment: NeedConfig => required,
+    }
+);
 
 impl ExecutionConfig {
     fn into_plan(self) -> NativeResourcePlan {
@@ -203,17 +508,16 @@ impl ExecutionConfig {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ResourcesConfig {
-    physical: NativePhysicalProfile,
-    scratch_reserved_bytes: u64,
-    read_ticket_lease_ms: u64,
-    catalog_writer_cache_kib: u32,
-    #[serde(default)]
-    process_rss_ceiling_bytes: Option<u64>,
-    execution: ExecutionConfig,
-}
+native_json_record!(
+    struct ResourcesConfig {
+        physical: NativePhysicalProfile => required,
+        scratch_reserved_bytes: u64 => required,
+        read_ticket_lease_ms: u64 => required,
+        catalog_writer_cache_kib: u32 => required,
+        process_rss_ceiling_bytes: Option<u64> => default,
+        execution: ExecutionConfig => required,
+    }
+);
 
 impl ResourcesConfig {
     fn validate(self) -> Result<NativeServiceResources> {
@@ -242,13 +546,14 @@ impl ResourcesConfig {
     }
 }
 
-#[derive(Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DescriptorConfig {
-    kind: [u8; 16],
-    schema: [u8; 16],
-    format: [u8; 16],
-}
+native_json_record!(
+    #[derive(Clone, Copy)]
+    struct DescriptorConfig {
+        kind: [u8; 16] => required,
+        schema: [u8; 16] => required,
+        format: [u8; 16] => required,
+    }
+);
 
 impl DescriptorConfig {
     fn descriptor(self) -> AdapterDescriptor {
@@ -260,26 +565,24 @@ impl DescriptorConfig {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Bm25Config {
-    k1: f64,
-    b: f64,
-}
+native_json_record!(
+    struct Bm25Config {
+        k1: f64 => required,
+        b: f64 => required,
+    }
+);
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TextConfig {
-    descriptor: DescriptorConfig,
-    admission_policy: [u8; 32],
-    #[serde(default)]
-    layout: TextLayoutConfig,
-    bm25: Bm25Config,
-    read_need: NeedConfig,
-}
+native_json_record!(
+    struct TextConfig {
+        descriptor: DescriptorConfig => required,
+        admission_policy: [u8; 32] => required,
+        layout: TextLayoutConfig => default,
+        bm25: Bm25Config => required,
+        read_need: NeedConfig => required,
+    }
+);
 
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 enum TextLayoutConfig {
     #[default]
     TreeV1,
@@ -287,12 +590,12 @@ enum TextLayoutConfig {
     SegmentedLayeredV2,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GraphConfig {
-    descriptor: DescriptorConfig,
-    read_need: NeedConfig,
-}
+native_json_record!(
+    struct GraphConfig {
+        descriptor: DescriptorConfig => required,
+        read_need: NeedConfig => required,
+    }
+);
 
 struct ValidatedGraphConfig {
     descriptor: AdapterDescriptor,
@@ -313,15 +616,16 @@ impl GraphConfig {
     }
 }
 
-#[derive(Clone, Copy, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OverlayConfig {
-    text_instance: [u8; 16],
-    sessions: usize,
-    documents: usize,
-    document_bytes: usize,
-    total_bytes: usize,
-}
+native_json_record!(
+    #[derive(Clone, Copy)]
+    struct OverlayConfig {
+        text_instance: [u8; 16] => required,
+        sessions: usize => required,
+        documents: usize => required,
+        document_bytes: usize => required,
+        total_bytes: usize => required,
+    }
+);
 
 impl OverlayConfig {
     fn validate(self) -> Result<Self> {
@@ -339,21 +643,21 @@ impl OverlayConfig {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StubAstConfig {
-    policies: Vec<StubGrammarPolicyConfig>,
-}
+native_json_record!(
+    struct StubAstConfig {
+        policies: Vec<StubGrammarPolicyConfig> => required,
+    }
+);
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StubGrammarPolicyConfig {
-    language: String,
-    grammar_engine: String,
-    grammar_version: String,
-    grammar_hash: Option<[u8; 8]>,
-    grammar_policy: [u8; 32],
-}
+native_json_record!(
+    struct StubGrammarPolicyConfig {
+        language: String => required,
+        grammar_engine: String => required,
+        grammar_version: String => required,
+        grammar_hash: Option<[u8; 8]> => optional,
+        grammar_policy: [u8; 32] => required,
+    }
+);
 
 impl StubAstConfig {
     fn validate(self) -> Result<Vec<crate::native::StubGrammarPolicy>> {
@@ -376,20 +680,18 @@ impl StubAstConfig {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SemanticConfig {
-    scopes: Vec<ScopeConfig>,
-    descriptor: DescriptorConfig,
-    provider: SemanticProviderConfig,
-    max_source_bytes: u64,
-    #[serde(default)]
-    input: SemanticInputConfig,
-    read: SemanticReadPolicyConfig,
-}
+native_json_record!(
+    struct SemanticConfig {
+        scopes: Vec<ScopeConfig> => required,
+        descriptor: DescriptorConfig => required,
+        provider: SemanticProviderConfig => required,
+        max_source_bytes: u64 => required,
+        input: SemanticInputConfig => default,
+        read: SemanticReadPolicyConfig => required,
+    }
+);
 
-#[derive(Clone, Copy, Default, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[derive(Clone, Copy, Default)]
 enum SemanticInputConfig {
     #[default]
     SourceUtf8,
@@ -512,17 +814,15 @@ impl SemanticInputConfig {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SemanticReadPolicyConfig {
-    page_size: u32,
-    max_owners: u32,
-    max_query_bytes: usize,
-    need: NeedConfig,
-}
+native_json_record!(
+    struct SemanticReadPolicyConfig {
+        page_size: u32 => required,
+        max_owners: u32 => required,
+        max_query_bytes: usize => required,
+        need: NeedConfig => required,
+    }
+);
 
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum SemanticProviderConfig {
     OpenAi {
         model: String,
@@ -552,26 +852,26 @@ enum SemanticProviderConfig {
     },
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SemanticEgressConfig {
-    tenant_id: TenantId,
-    endpoint: String,
-    region: String,
-    retention: String,
-    profile: String,
-    source_content_consent: bool,
-}
+native_json_record!(
+    struct SemanticEgressConfig {
+        tenant_id: TenantId => required,
+        endpoint: String => required,
+        region: String => required,
+        retention: String => required,
+        profile: String => required,
+        source_content_consent: bool => required,
+    }
+);
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OpenAiWorkBudgetConfig {
-    inflight_requests_cap: u64,
-    inflight_bytes_cap: u64,
-    total_cost_micros_ceiling: u64,
-    retry_attempts_cap: u32,
-    openai_max_request_cost_micros: NonZeroU64,
-}
+native_json_record!(
+    struct OpenAiWorkBudgetConfig {
+        inflight_requests_cap: u64 => required,
+        inflight_bytes_cap: u64 => required,
+        total_cost_micros_ceiling: u64 => required,
+        retry_attempts_cap: u32 => required,
+        openai_max_request_cost_micros: NonZeroU64 => required,
+    }
+);
 
 impl OpenAiWorkBudgetConfig {
     fn limits(&self) -> Result<ProviderWorkBudgetV1> {
@@ -589,18 +889,18 @@ impl OpenAiWorkBudgetConfig {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PressureThresholdsConfig {
-    interactive_low_bps: u16,
-    interactive_high_bps: u16,
-    backlog_low: u32,
-    backlog_high: u32,
-    lag_low_ms: u64,
-    lag_high_ms: u64,
-    memory_clear_bytes: u64,
-    memory_high_pressure_bytes: u64,
-}
+native_json_record!(
+    struct PressureThresholdsConfig {
+        interactive_low_bps: u16 => required,
+        interactive_high_bps: u16 => required,
+        backlog_low: u32 => required,
+        backlog_high: u32 => required,
+        lag_low_ms: u64 => required,
+        lag_high_ms: u64 => required,
+        memory_clear_bytes: u64 => required,
+        memory_high_pressure_bytes: u64 => required,
+    }
+);
 
 impl From<PressureThresholdsConfig> for PressureThresholds {
     fn from(value: PressureThresholdsConfig) -> Self {
@@ -617,23 +917,21 @@ impl From<PressureThresholdsConfig> for PressureThresholds {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EffortConfig {
-    thresholds: PressureThresholdsConfig,
-    stable_idle_ms: u64,
-    clear_dwell_ms: u64,
-    minimum_residence_ms: u64,
-    worker_lag_max_age_ms: u64,
-    sample_ttl_ms: u64,
-    /// Select the foreground source for this daemon explicitly. The publisher
-    /// must observe the intended UI; activity in other apps is not inferred.
-    #[serde(default)]
-    interaction_source: Option<ForegroundObservationSource>,
-}
+native_json_record!(
+    struct EffortConfig {
+        thresholds: PressureThresholdsConfig => required,
+        stable_idle_ms: u64 => required,
+        clear_dwell_ms: u64 => required,
+        minimum_residence_ms: u64 => required,
+        worker_lag_max_age_ms: u64 => required,
+        sample_ttl_ms: u64 => required,
+        /// Select the foreground source for this daemon explicitly. The publisher
+        /// must observe the intended UI; activity in other apps is not inferred.
+        interaction_source: Option<ForegroundObservationSource> => default,
+    }
+);
 
-#[derive(Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy)]
 enum ForegroundObservationSource {
     RegisteredForegroundPublisher,
 }
@@ -1079,17 +1377,17 @@ fn tenant_id_hex(tenant: TenantId) -> Result<String> {
 }
 
 /// Explicit operator policy; omission disables automatic queue draining.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MaintenanceConfig {
-    interval_ms: u64,
-    wal_reclaim: WalReclaimConfig,
-    max_steps_per_round: u32,
-    child_limit: u32,
-    work_limits: WorkLimitsConfig,
-    round_timeout_ms: u64,
-    head_probe_every: u32,
-}
+native_json_record!(
+    struct MaintenanceConfig {
+        interval_ms: u64 => required,
+        wal_reclaim: WalReclaimConfig => required,
+        max_steps_per_round: u32 => required,
+        child_limit: u32 => required,
+        work_limits: WorkLimitsConfig => required,
+        round_timeout_ms: u64 => required,
+        head_probe_every: u32 => required,
+    }
+);
 
 impl MaintenanceConfig {
     fn validate(self, plan: NativeResourcePlan, owned_pump: bool) -> Result<NativeReclaimConfig> {
@@ -1110,33 +1408,33 @@ impl MaintenanceConfig {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct WalReclaimConfig {
-    trigger_bytes: u64,
-    min_interval_ms: u64,
-}
+native_json_record!(
+    struct WalReclaimConfig {
+        trigger_bytes: u64 => required,
+        min_interval_ms: u64 => required,
+    }
+);
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ScopeConfig {
-    workspace: WorkspaceKey,
-    epoch: u64,
-}
+native_json_record!(
+    struct ScopeConfig {
+        workspace: WorkspaceKey => required,
+        epoch: u64 => required,
+    }
+);
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct OwnedWorkConfig {
-    scopes: Vec<ScopeConfig>,
-    batch_limit: u32,
-    max_in_flight: u32,
-    poll_interval_ms: u64,
-    dispatch_limits: WorkLimitsConfig,
-    max_dispatches: u32,
-    total_timeout_ms: u64,
-    lease_ms: u64,
-    retry_backoff_ms: u64,
-}
+native_json_record!(
+    struct OwnedWorkConfig {
+        scopes: Vec<ScopeConfig> => required,
+        batch_limit: u32 => required,
+        max_in_flight: u32 => required,
+        poll_interval_ms: u64 => required,
+        dispatch_limits: WorkLimitsConfig => required,
+        max_dispatches: u32 => required,
+        total_timeout_ms: u64 => required,
+        lease_ms: u64 => required,
+        retry_backoff_ms: u64 => required,
+    }
+);
 
 impl OwnedWorkConfig {
     fn validate(self) -> Result<NativePumpConfig> {
@@ -1166,18 +1464,18 @@ impl OwnedWorkConfig {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RetentionConfig {
-    scopes: Vec<ScopeConfig>,
-    sequence_window: u64,
-    page_limit: u32,
-    custody_page_limit: Option<u32>,
-    interval_ms: u64,
-    round_timeout_ms: u64,
-    work_limits: WorkLimitsConfig,
-    head_probe_every: u32,
-}
+native_json_record!(
+    struct RetentionConfig {
+        scopes: Vec<ScopeConfig> => required,
+        sequence_window: u64 => required,
+        page_limit: u32 => required,
+        custody_page_limit: Option<u32> => optional,
+        interval_ms: u64 => required,
+        round_timeout_ms: u64 => required,
+        work_limits: WorkLimitsConfig => required,
+        head_probe_every: u32 => required,
+    }
+);
 
 impl RetentionConfig {
     fn validate(self) -> Result<NativeRetentionConfig> {
@@ -1203,14 +1501,14 @@ impl RetentionConfig {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReadSessionsConfig {
-    global_limit: usize,
-    per_uid_limit: usize,
-    terminal_ttl_millis: u64,
-    sweep_limit: usize,
-}
+native_json_record!(
+    struct ReadSessionsConfig {
+        global_limit: usize => required,
+        per_uid_limit: usize => required,
+        terminal_ttl_millis: u64 => required,
+        sweep_limit: usize => required,
+    }
+);
 impl ReadSessionsConfig {
     fn validate(self) -> Result<crate::native::NativeReadSessionConfig> {
         Ok(crate::native::NativeReadSessionConfig {
@@ -1246,6 +1544,93 @@ struct ValidatedConfig {
     effort: Option<ValidatedEffortConfig>,
     overlay: Option<OverlayConfig>,
     stub_ast: Option<Vec<crate::native::StubGrammarPolicy>>,
+}
+
+native_json_unit_enum!(TextLayoutConfig {
+    "tree-v1" => TreeV1,
+    "segmented-full-v1" => SegmentedFullV1,
+    "segmented-layered-v2" => SegmentedLayeredV2,
+});
+
+native_json_unit_enum!(ForegroundObservationSource {
+    "registered_foreground_publisher" => RegisteredForegroundPublisher,
+});
+
+impl<'de> serde::Deserialize<'de> for SemanticInputConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let NativeTaggedInput { kind, fields } = NativeTaggedInput::deserialize(deserializer)?;
+        match kind.as_str() {
+            // Serde's internally tagged unit variant ignores other JSON fields.
+            "source_utf8" => {
+                native_unit_fields(fields)?;
+                Ok(Self::SourceUtf8)
+            }
+            "file_local_chunks" => native_tagged_record!(
+                fields,
+                Self::FileLocalChunks {
+                    max_utf8_bytes,
+                    max_vectors,
+                }
+            ),
+            "certified_projection_chunks" => native_tagged_record!(
+                fields,
+                Self::CertifiedProjectionChunks {
+                    projection,
+                    producer,
+                    schema,
+                    max_vectors,
+                }
+            ),
+            _ => Err(serde::de::Error::unknown_variant(
+                &kind,
+                &[
+                    "source_utf8",
+                    "file_local_chunks",
+                    "certified_projection_chunks",
+                ],
+            )),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SemanticProviderConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let NativeTaggedInput { kind, fields } = NativeTaggedInput::deserialize(deserializer)?;
+        match kind.as_str() {
+            "open_ai" => native_tagged_record!(fields, Self::OpenAi {
+                    model,
+                    model_revision,
+                    dimension,
+                    api_key_env,
+                    base_url,
+                    max_batch,
+                    max_estimated_tokens_per_request,
+                    max_retries,
+                    timeout_ms,
+                    max_response_bytes,
+                    concurrency,
+                    egress,
+                    work_budget = optional,
+            }),
+            "local_code" => native_tagged_record!(
+                fields,
+                Self::LocalCode {
+                    origin,
+                    manifest_path,
+                    manifest_sha256,
+                    max_estimated_tokens_per_request,
+                    max_retries,
+                    timeout_ms,
+                    max_response_bytes,
+                    egress,
+                }
+            ),
+            _ => Err(serde::de::Error::unknown_variant(
+                &kind,
+                &["open_ai", "local_code"],
+            )),
+        }
+    }
 }
 
 impl NativeServeConfigV1 {
@@ -2623,6 +3008,21 @@ mod tests {
             r#"{"kind":"file_local_chunks","max_utf8_bytes":128,"max_vectors":4}"#,
         )?;
         local.validate(8)?;
+        for compatible in [
+            r#"{"max_utf8_bytes":128,"max_vectors":4,"kind":"file_local_chunks"}"#,
+            r#"["file_local_chunks",128,4]"#,
+        ] {
+            let parsed: SemanticInputConfig = serde_json::from_str(compatible)?;
+            if !matches!(
+                parsed,
+                SemanticInputConfig::FileLocalChunks {
+                    max_utf8_bytes: 128,
+                    max_vectors: 4
+                }
+            ) {
+                return Err(format!("wrong Semantic input mode for {compatible}").into());
+            }
+        }
         let certified: SemanticInputConfig = serde_json::from_value(serde_json::json!({
             "kind": "certified_projection_chunks", "projection": vec![1_u8; 16],
             "producer": vec![2_u8; 16], "schema": vec![3_u8; 16], "max_vectors": 4
@@ -2632,6 +3032,10 @@ mod tests {
             r#"{"kind":"file_local_chunks","max_utf8_bytes":3,"max_vectors":4}"#,
             r#"{"kind":"file_local_chunks","max_utf8_bytes":128,"max_vectors":0}"#,
             r#"{"kind":"certified_projection_chunks","projection":[1,2],"producer":[2],"schema":[3],"max_vectors":4}"#,
+            r#"{"kind":"file_local_chunks","max_utf8_bytes":128,"max_vectors":4,"max_vectors":5}"#,
+            r#"{"kind":"source_utf8","kind":"source_utf8"}"#,
+            r#"{"kind":"source_utf8","unbound":1e9999}"#,
+            r#"["source_utf8",1]"#,
         ] {
             let refused = serde_json::from_str::<SemanticInputConfig>(invalid)
                 .map_or(true, |input| input.validate(8).is_err());

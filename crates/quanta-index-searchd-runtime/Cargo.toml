@@ -84,7 +84,7 @@ rusqlite.workspace = true
 reqwest.workspace = true
 serde = { workspace = true }
 tokio = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
 sha2.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "net", "time"] }
 
